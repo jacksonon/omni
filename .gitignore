@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+*.tgz
+.env
+*.log
+
+# 项目本地配置（可能含 API Key，请用 omni.example.jsonc 作模板）
+omni.json
+omni.jsonc
+
+# 运行产物 / 本地状态
+.omni/
+hello
+
+# 系统文件
+.DS_Store

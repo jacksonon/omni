@@ -1,0 +1,131 @@
+/**
+ * 本地 mock OpenAI API 服务器。
+ *
+ * 用途：没有真实 API Key 也能端到端验证 Agent 循环——
+ * 第一轮返回一个 run_command 工具调用，模型执行工具后，
+ * 第二轮（历史中已有 role=tool 消息）返回最终回答。
+ *
+ * 用法：npm run mock（默认端口 8787，可用 PORT 环境变量覆盖）
+ */
+import http from 'node:http';
+
+const PORT = Number(process.env.PORT ?? 8787);
+// 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
+// reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
+const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
+const REASONING_1 = process.env.MOCK_REASONING === 'long' ? LONG_REASONING : '我需要分析这个任务。\n看起来应该先验证一下运行环境。';
+// MOCK_MARKDOWN=1 时最终回答包含 Markdown（加粗/代码块/列表/标题），用于验证 TUI 行式渲染
+const MARKDOWN_BASE =
+  process.env.MOCK_MARKDOWN === '1'
+    ? '任务完成 ✅ **mock 端到端验证通过**。\n\n## 验证点\n- 工具调用成功\n- 流式输出正常\n\n示例代码：\n```js\nconst result = await runCommand("echo mock-ok");\nconsole.log(result);\n```\n\n行内代码 `mock-ok` 与 **加粗** 均应正确渲染。'
+    : '任务完成 ✅ mock 端到端验证通过。';
+// MOCK_LONGLINE=1 时追加一长段无换行的散文（验证长消息自动折行而非截断）
+const LONG_LINE =
+  process.env.MOCK_LONGLINE === '1'
+    ? '\n\n这是一段特意构造的非常长的无换行文本，用来验证终端里的消息在超过屏幕宽度时会自动折行而不是被截断，长度一路延伸下去直到超过一行所能容纳的列数，从而确认每一段内容都完整可见。LONGLINE-END。'
+    : '';
+const MARKDOWN_ANSWER = MARKDOWN_BASE + LONG_LINE;
+
+const server = http.createServer((req, res) => {
+  // 兼容 baseURL 带 /v1 与不带 /v1 两种情况
+  const isChat = req.url?.endsWith('/chat/completions') ?? false;
+  if (req.method !== 'POST' || !isChat) {
+    res.writeHead(404).end();
+    return;
+  }
+
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => {
+    const { messages } = JSON.parse(body);
+    const last = messages[messages.length - 1];
+    const hasToolResult = last?.role === 'tool';
+
+    // omni 始终以流式请求，这里统一返回 SSE
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+
+    const sendChunk = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    if (!hasToolResult) {
+      // 第一轮：先输出思考过程，再要求调用 run_command 执行 echo
+      sendChunk({
+        id: 'mock-0',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', reasoning_content: REASONING_1 },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk({
+        id: 'mock-1',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_mock',
+                  type: 'function',
+                  function: { name: 'run_command', arguments: '{"command":"echo mock-ok"}' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+    } else {
+      // 第二轮：先输出思考过程，再返回最终回答
+      sendChunk({
+        id: 'mock-1.5',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', reasoning_content: '工具执行成功了，现在总结结果并回复用户。' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk({
+        id: 'mock-2',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: MARKDOWN_ANSWER },
+            finish_reason: null,
+          },
+        ],
+      });
+    }
+
+    sendChunk({
+      id: 'mock-3',
+      object: 'chat.completion.chunk',
+      created: Date.now(),
+      model: 'mock',
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    });
+    res.write('data: [DONE]\n\n');
+    res.end();
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`mock API 服务器已启动: http://127.0.0.1:${PORT}/v1/chat/completions`);
+});

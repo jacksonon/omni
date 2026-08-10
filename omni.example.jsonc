@@ -1,0 +1,22 @@
+{
+  // Omni 配置示例 —— 复制为 omni.json（或 omni.jsonc）后按需修改
+  // 优先级（从低到高）：默认值 < 全局配置 < 项目配置 < 自定义配置 < 环境变量 < CLI 参数
+  // 全局配置位置：~/.config/omni/omni.json
+
+  // 模型名（OpenAI 系用 gpt-4o 等；DeepSeek 用 deepseek-chat）
+  "model": "deepseek-chat",
+
+  // OpenAI 兼容 API 地址（智谱 / Moonshot / 本地 vLLM 等都可以）
+  "baseURL": "https://api.deepseek.com/v1",
+
+  // API Key（更推荐用环境变量 OMNI_API_KEY，避免明文入库；如放这里请注意文件权限）
+  "apiKey": "sk-你的密钥",
+
+  // Agent 最大循环步数（防止死循环）
+  "maxSteps": 20,
+
+  // 是否展示思考过程（默认 true）。
+  // 设 false 可关闭终端里的 💭 思考显示（完整思考仍会落盘 .omni/last-thinking.md）
+  // 也可用环境变量 OMNI_SHOW_THINKING=0 临时关闭
+  "showThinking": true
+}

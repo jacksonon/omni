@@ -1,0 +1,38 @@
+{
+  "name": "omni",
+  "version": "0.1.0",
+  "description": "Omni — 从零手写的 Coding Agent MVP（对标 opencode / codex / Claude Code）",
+  "type": "module",
+  "bin": {
+    "omni": "dist/omni.cjs"
+  },
+  "files": [
+    "dist/omni.cjs"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "dev:tui": "bun run ./src/tui-entry.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && tsc && npm run bundle",
+    "start": "node dist/index.js",
+    "bundle": "bun build ./src/index.ts --target=node --format=cjs --outfile=dist/omni.cjs",
+    "compile": "bun build --compile ./src/tui-entry.ts --outfile=release/omni",
+    "tui:snapshot": "bun run ./scripts/tui-snapshot.ts",
+    "mock": "node scripts/mock-server.mjs",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@opentui/core": "^0.5.1",
+    "@opentui/solid": "^0.5.1",
+    "@types/node": "^20.0.0",
+    "solid-js": "^1.9.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
