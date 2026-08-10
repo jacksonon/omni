@@ -20,14 +20,30 @@ import { parseArgs, printHelp } from './cli/args.js';
 import { runAgent } from './agent/loop.js';
 import { main, prepareRun } from './main.js';
 import { ConsoleOutput } from './output/console.js';
+import { logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
-import { startTui } from './tui/render.js';
+import { startTui, type TuiSession } from './tui/render.js';
 import { TuiOutput } from './tui/output.js';
 import { createTuiState } from './tui/state.js';
 import { isBun, isTTY, red } from './ui.js';
 import { VERSION } from './version.js';
 
+// 崩溃处理器：先于任何异步逻辑安装。未捕获异常落盘 + 尽力恢复终端后退出；
+// 未处理拒绝只记录不退出（不致命，但日志能揭示与重绘/按键的关联）。
+let activeSession: TuiSession | null = null;
+process.on('uncaughtException', (err) => {
+  logCrash('uncaughtException', err);
+  const s = activeSession;
+  activeSession = null;
+  if (s) void s.stop().catch(() => {});
+  setTimeout(() => process.exit(1), 150);
+});
+process.on('unhandledRejection', (reason) => {
+  logCrash('unhandledRejection', reason);
+});
+
 async function run(): Promise<void> {
+  logLifecycle('start', `omni v${VERSION} pid=${process.pid} args=${JSON.stringify(process.argv.slice(2))}`);
   const { taskArgs, overrides, flags, help, version } = parseArgs(process.argv.slice(2));
   if (help) {
     printHelp();
@@ -48,6 +64,7 @@ async function run(): Promise<void> {
   const singleTask = taskArgs.join(' ').trim();
   const state = createTuiState();
   const session = await startTui(state, { withInput: !singleTask });
+  activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
   output.banner(cfg);
 
@@ -72,8 +89,12 @@ async function run(): Promise<void> {
 }
 
 run()
-  .then(() => process.exit(0))
+  .then(() => {
+    logLifecycle('exit-clean', `pid=${process.pid}`);
+    process.exit(0);
+  })
   .catch((err) => {
+    logCrash('fatal', err);
     console.error(red('\n发生错误：'), err instanceof Error ? err.message : err);
     process.exit(1);
   });

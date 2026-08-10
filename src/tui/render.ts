@@ -23,6 +23,7 @@
  */
 import { BoxRenderable, InputRenderable, StyledText, TextAttributes, TextRenderable, createCliRenderer, createTextAttributes, parseColor } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
+import { logCrash } from './crashlog.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
 import type { TuiLineKind, TuiState } from './state.js';
 
@@ -139,13 +140,27 @@ function fitCount(text: string, budget: number): number {
   return i;
 }
 
+/** 可断行标点：断在这些字符之后（标点留在行尾）。中文为主——CJK 散文无空格，
+ * 标点是天然断点；英文逗号句号也可断（长 URL 通常含 '.' 可借此断行）。 */
+const BREAK_AFTER = '，。、；：！？）》」』】…·,.;:!?)]}';
+
+/** prefix 内最后一个可断行标点的位置（无则 -1） */
+function lastBreakPunctIndex(prefix: string): number {
+  let pi = -1;
+  for (const ch of BREAK_AFTER) {
+    const idx = prefix.lastIndexOf(ch);
+    if (idx > pi) pi = idx;
+  }
+  return pi;
+}
+
 /**
  * 把一行（样式片段）按显示列数折成多行（自动换行，替代原来的截断）。
  *
- * 规则：CJK 全角算 2 列；优先在空格处断行（保留词边界，空格本身丢弃），
- * 找不到空格则按列硬断；不切断代理对。折行后每行恰好占 1 个终端行，
- * 因此行数预算（computeRows 的 cap）精确成立，状态栏/输入框不会被挤出视口——
- * 这正是原来交给 TextBuffer word 换行会撑破预算、只能退而截断的问题。
+ * 规则：CJK 全角算 2 列；优先在空格处断行（词边界，空格丢弃），其次在标点后断行
+ * （标点留行尾，中文散文友好），否则按列硬断；不切断代理对。折行后每行恰好占
+ * 1 个终端行，因此行数预算（computeRows 的 cap）精确成立，状态栏/输入框不会被
+ * 挤出视口——这正是原来交给 TextBuffer word 换行会撑破预算、只能退而截断的问题。
  */
 function wrapChunks(chunks: MdChunk[], width: number): MdChunk[][] {
   if (width < 2) return [chunks]; // 极端窄视口：放弃折行，交给终端处理
@@ -166,6 +181,7 @@ function wrapChunks(chunks: MdChunk[], width: number): MdChunk[][] {
       const remain = width - used;
       if (remain >= visualWidth(text)) {
         cur.push({ ...c, text });
+        used += visualWidth(text); // 整段可放下：累积列数（后续 chunk 继续接在同一行）
         break;
       }
       const fit = fitCount(text, remain);
@@ -174,15 +190,18 @@ function wrapChunks(chunks: MdChunk[], width: number): MdChunk[][] {
         flush();
         continue;
       }
-      // 优先在空格处断行（词边界），空格本身丢弃；否则按列硬断
       const prefix = text.slice(0, fit);
-      let cut = fit;
       const sp = prefix.lastIndexOf(' ');
-      if (sp > 0) cut = sp;
+      const pi = lastBreakPunctIndex(prefix);
+      // 断点优先级：空格（断在空格处）> 最近标点之后（标点留行尾）> 硬断
+      let cut: number;
+      if (sp > 0 && sp >= pi) cut = sp;
+      else if (pi > 0) cut = pi + 1;
+      else cut = fit;
       cur.push({ ...c, text: text.slice(0, cut) });
       text = text.slice(cut);
-      if (cut < fit) text = text.slice(1); // 空格断行：丢弃该空格
-      else if (text.startsWith(' ')) text = text.slice(1); // 硬断：跳过行首空格
+      if (sp > 0 && sp >= pi) text = text.slice(1); // 空格断行：空格随断点丢弃
+      else if (text.startsWith(' ')) text = text.slice(1); // 标点/硬断后：跳过续行前导空格
       flush();
     }
   }
@@ -421,10 +440,24 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   const ctx = renderer as unknown as RenderContext; // CliRenderer 实现了 RenderContext
   const tree = mountTree(ctx, state, opts);
 
+  // 重绘串行化：流式节流/按键/flush 的 paint 可能重叠，而 OpenTUI 渲染器
+  // 不允许并发 loop()（原生侧非线程安全，并发调用是闪退高危候选）。
+  // 用 promise 链排队；单次失败写崩溃日志后不阻塞后续重绘，同时把错误上抛
+  // 给调用方（flush / 交互循环可见，避免静默吞掉）。
+  let paintChain: Promise<void> = Promise.resolve();
   const paint = async (): Promise<void> => {
-    repaintTree(ctx, tree, state, opts);
-    // 显式画一帧（与测试渲染器 renderOnce 内部一致；CLI 渲染器同样可用）
-    await (renderer as unknown as { loop(): Promise<void> }).loop();
+    const run = paintChain.then(async () => {
+      try {
+        repaintTree(ctx, tree, state, opts);
+        // 显式画一帧（与测试渲染器 renderOnce 内部一致；CLI 渲染器同样可用）
+        await (renderer as unknown as { loop(): Promise<void> }).loop();
+      } catch (e) {
+        logCrash('paint', e);
+        throw e;
+      }
+    });
+    paintChain = run.catch(() => {}); // 链保持已决状态，单次失败不影响下一次重绘
+    await run; // 调用方拿到真实结果（失败时 reject）
   };
 
   await paint();

@@ -217,13 +217,13 @@ async function main(): Promise<void> {
   console.log('✓ 场景 7 通过：scrollTop 上滚回看历史 + 提示行，回到 null 恢复跟随最新');
 
   // 场景 8：长行自动折行 —— 超宽行按显示列数折成多行（不截断），输入框布局不受影响
-  // 内容宽度 = 64 - 4 = 60：'很长的单行内容' 14 列 × 15 段 = 210 列 → 折成 4 行；
-  // 普通行（user）与 Markdown 行（answer）两条折行路径都覆盖。
+  // 内容宽度 = 64 - 4 = 60：普通行（user）与 Markdown 行（answer）两条折行路径都覆盖；
+  // 中文散文在标点（，）后断行，每段完整可见可计数。
   const s8 = createTuiState();
   s8.version = '0.1.0';
   s8.model = 'mock';
   pushLine(s8, { kind: 'user', text: '这是一条非常长的用户消息用来验证普通行的自动折行，'.repeat(5) + 'USEREND' });
-  pushLine(s8, { kind: 'answer', text: '很长的单行内容'.repeat(15) + '……ENDMARKER' });
+  pushLine(s8, { kind: 'answer', text: '很长的单行内容，'.repeat(15) + '……ENDMARKER' });
   s8.status = '任务完成';
   const r8 = await render(s8);
   console.log('=== 场景 8：长行自动折行（内容宽度 60）===');
