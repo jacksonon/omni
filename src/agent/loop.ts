@@ -23,7 +23,7 @@ import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
 
-const SYSTEM_PROMPT = `你是 Omni，一个运行在终端里的全功能编程 Agent（Coding Agent）。
+const SYSTEM_PROMPT = `你是 Omni，一个运行在终端里的编程 Agent（Agent 工程）。
 你可以通过工具读写文件、搜索代码、执行 shell 命令，自主完成用户的编程任务。
 
 工作准则：

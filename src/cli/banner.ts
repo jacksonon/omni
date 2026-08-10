@@ -7,7 +7,7 @@ import { bold, cyan, dim } from '../ui.js';
 import { VERSION } from '../version.js';
 
 export function printBanner(cfg: OmniConfig): void {
-  console.log(`${bold(cyan('Omni'))} v${VERSION} ${dim('— 从零手写的 Coding Agent MVP')}`);
+  console.log(`${bold(cyan('Omni'))} v${VERSION} ${dim('— Agent 工程')}`);
   console.log(`${dim('模型:')} ${bold(cfg.model)}${cfg.baseURL ? ` ${dim('· API:')} ${cfg.baseURL}` : ''} ${dim('· 步数上限:')} ${cfg.maxSteps}`);
   console.log(`${dim('工具:')} ${tools.map((t) => cyan(t.name)).join(', ')}`);
   console.log(`${dim('配置来源:')} ${cfg.sources.length ? cfg.sources.join(' → ') : '默认值'}\n`);

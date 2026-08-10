@@ -5,8 +5,8 @@
 
 ## 项目是什么
 
-Omni 是一个**从零手写的全功能 Coding Agent**（终端型 AI 编程助手），对标 opencode / codex / Claude Code。
-当前处于 **MVP 阶段**：单 Agent 循环 + 5 个基础工具，无框架依赖（裸 OpenAI SDK + 手写循环）。
+Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
+当前处于 **MVP 阶段**：单 Agent 循环 + 5 个基础工具，无框架依赖（裸 OpenAI SDK + 主循环）。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；

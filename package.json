@@ -1,7 +1,7 @@
 {
   "name": "omni",
   "version": "0.1.0",
-  "description": "Omni — 从零手写的 Coding Agent MVP（对标 opencode / codex / Claude Code）",
+  "description": "Omni — Agent 工程（终端型 AI 编程助手）",
   "type": "module",
   "bin": {
     "omni": "dist/omni.cjs"

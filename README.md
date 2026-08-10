@@ -1,8 +1,8 @@
 # Omni
 
-**从零手写的全功能 Coding Agent（终端型 AI 编程助手）** — 对标 opencode / codex / Claude Code。
+**Agent 工程**（终端型 AI 编程助手）。
 
-当前处于 **MVP 阶段**：单 Agent 循环 + 5 个基础工具，无框架依赖（裸 OpenAI SDK + 手写循环），并带一个全屏 TUI 界面。
+当前处于 **MVP 阶段**：单 Agent 循环 + 5 个基础工具，无框架依赖（裸 OpenAI SDK + 主循环），并带一个全屏 TUI 界面。
 
 ## 特性
 
