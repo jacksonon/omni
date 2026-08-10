@@ -140,7 +140,7 @@ export class TuiOutput implements Output {
   }
 
   onWaitForInput(): void {
-    this.state.status = '等待输入…（Enter 发送，/exit 退出）';
+    this.state.status = '等待输入… Enter 发送 · Shift+Enter 换行 · /exit 退出';
     this.schedulePaint();
   }
 
@@ -151,9 +151,9 @@ export class TuiOutput implements Output {
 
   showHelp(): void {
     pushLine(this.state, { kind: 'task', text: '帮助' });
-    pushLine(this.state, { kind: 'meta', text: '直接输入消息开始对话，Enter 发送。' });
+    pushLine(this.state, { kind: 'meta', text: '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。' });
     pushLine(this.state, { kind: 'meta', text: '/exit 退出 · /clear 清空上下文 · /help 显示帮助' });
-    pushLine(this.state, { kind: 'meta', text: '滚动：PgUp/PgDn 翻页 · ↑/↓ 逐行（输入框为空时）· End 回到底部' });
+    pushLine(this.state, { kind: 'meta', text: '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部' });
     pushLine(this.state, { kind: 'meta', text: '完整命令参考：omni --help（控制台）' });
     this.schedulePaint();
   }

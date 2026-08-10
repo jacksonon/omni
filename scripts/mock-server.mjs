@@ -10,6 +10,8 @@
 import http from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 8787);
+// MOCK_STREAM=1 时逐字分块 + 延迟发送（模拟真实模型几百次流式重绘，用于高重绘压力测试）
+const STREAM_MODE = process.env.MOCK_STREAM === '1';
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -45,6 +47,72 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
 
     const sendChunk = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    // MOCK_STREAM=1：把 reasoning/content 拆成小块、间隔 20ms 逐字发送，
+    // 制造与真实模型一致的成百上千次流式重绘
+    if (STREAM_MODE) {
+      const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+      const streamDelta = async (pieces, makeDelta) => {
+        for (const piece of pieces) {
+          await delay(20);
+          sendChunk({
+            id: 'mock-stream',
+            object: 'chat.completion.chunk',
+            created: Date.now(),
+            model: 'mock',
+            choices: [{ index: 0, delta: makeDelta(piece), finish_reason: null }],
+          });
+        }
+      };
+      const chars = (text) => Array.from(text);
+      (async () => {
+        if (!hasToolResult) {
+          await streamDelta(chars(REASONING_1), (p) => ({ role: 'assistant', reasoning_content: p }));
+          sendChunk({
+            id: 'mock-tool',
+            object: 'chat.completion.chunk',
+            created: Date.now(),
+            model: 'mock',
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_mock',
+                      type: 'function',
+                      function: { name: 'run_command', arguments: '{"command":"echo mock-ok"}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          });
+        } else {
+          await streamDelta(chars('工具执行成功了，现在总结结果并回复用户。'), (p) => ({
+            role: 'assistant',
+            reasoning_content: p,
+          }));
+          await streamDelta(chars(MARKDOWN_ANSWER), (p) => ({ role: 'assistant', content: p }));
+        }
+        sendChunk({
+          id: 'mock-done',
+          object: 'chat.completion.chunk',
+          created: Date.now(),
+          model: 'mock',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        });
+        res.write('data: [DONE]\n\n');
+        res.end();
+      })().catch((e) => {
+        res.write(`data: {"error": ${JSON.stringify(String(e))}}\n\n`);
+        res.end();
+      });
+      return;
+    }
 
     if (!hasToolResult) {
       // 第一轮：先输出思考过程，再要求调用 run_command 执行 echo

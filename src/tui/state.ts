@@ -23,6 +23,12 @@ export interface TuiLine {
 /** 内容区滚动意图（一次性，由 computeRows 在下次重绘时消费） */
 export type ScrollAction = 'line-up' | 'line-down' | 'page-up' | 'page-down' | 'top' | 'bottom';
 
+/** 滚动意图；lines 为逐行滚动步长（鼠标滚轮一格约 3 行） */
+export interface ScrollIntent {
+  action: ScrollAction;
+  lines?: number;
+}
+
 export interface TuiState {
   lines: TuiLine[];
   status: string;
@@ -30,12 +36,26 @@ export interface TuiState {
   version: string;
   /** 内容区滚动位置：null = 跟随最新（自动）；数字 = 视口首行索引（上滚状态） */
   scrollTop: number | null;
-  /** 待消费的滚动意图（按键 → computeRows 消费，避免滚动数学散落在按键层） */
-  scrollIntent: { action: ScrollAction } | null;
+  /** 待消费的滚动意图（按键/滚轮 → computeRows 消费，避免滚动数学散落在事件层） */
+  scrollIntent: ScrollIntent | null;
+  /**
+   * 输入框当前内容行数（1-5，多行编辑自动增高）。repaintTree 每次从
+   * 输入框的 lineCount 实时同步；computeRows 用它精确计算内容区预算——
+   * 输入框变高时内容区相应减少，状态栏/输入框永远不会被挤出去。
+   */
+  inputLines: number;
 }
 
 export function createTuiState(): TuiState {
-  return { lines: [], status: '', model: '', version: '', scrollTop: null, scrollIntent: null };
+  return {
+    lines: [],
+    status: '',
+    model: '',
+    version: '',
+    scrollTop: null,
+    scrollIntent: null,
+    inputLines: 1,
+  };
 }
 
 /** 追加一个段落 */

@@ -20,7 +20,7 @@ import { parseArgs, printHelp } from './cli/args.js';
 import { runAgent } from './agent/loop.js';
 import { main, prepareRun } from './main.js';
 import { ConsoleOutput } from './output/console.js';
-import { logCrash, logLifecycle } from './tui/crashlog.js';
+import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
 import { startTui, type TuiSession } from './tui/render.js';
 import { TuiOutput } from './tui/output.js';
@@ -35,11 +35,20 @@ process.on('uncaughtException', (err) => {
   logCrash('uncaughtException', err);
   const s = activeSession;
   activeSession = null;
-  if (s) void s.stop().catch(() => {});
-  setTimeout(() => process.exit(1), 150);
+  // 先恢复终端（否则提示画进备用屏会被抹掉），再打印提示并退出；stop 卡住时兜底退出
+  const restored = s ? s.stop().catch(() => {}) : Promise.resolve();
+  restored.then(() => {
+    console.error(red('\n⚠️ 发生崩溃，详情已写入 ') + crashLogPath());
+    process.exit(1);
+  });
+  setTimeout(() => process.exit(1), 500);
 });
 process.on('unhandledRejection', (reason) => {
   logCrash('unhandledRejection', reason);
+});
+// 终态标记：任何 process.exit 路径（含 exitOnCtrlC）都留痕，便于与崩溃区分
+process.on('exit', (code) => {
+  logLifecycle('process-exit', `code=${code}`);
 });
 
 async function run(): Promise<void> {

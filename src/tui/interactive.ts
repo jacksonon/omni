@@ -9,7 +9,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { InputRenderable } from '@opentui/core';
+import type { TextareaRenderable } from '@opentui/core';
 import { runAgent } from '../agent/loop.js';
 import type { RunOptions } from '../agent/types.js';
 import type { TuiOutput } from './output.js';
@@ -19,28 +19,29 @@ import type { ScrollAction, TuiState } from './state.js';
 /**
  * 等待输入框下一次 Enter 提交，resolve 出输入内容。
  *
- * InputRenderable 重写了 submit()：Enter 时 emit 'enter' 事件（携带当前值），
- * 不调用父类的 onSubmit 回调，所以这里监听 'enter' 事件而非设置 onSubmit。
+ * 多行 Textarea 的 Enter 由自定义 keyBinding 路由到 submit()，submit() 触发
+ * onSubmit 回调（不清空内容）。这里设置一次性 onSubmit：提交后立即解除，
+ * 从 plainText（buffer 全文本，含换行）读取输入。
  */
-function waitForSubmit(input: InputRenderable): Promise<string> {
+function waitForSubmit(input: TextareaRenderable): Promise<string> {
   return new Promise((resolve) => {
-    const handler = (value: string) => {
-      input.off('enter', handler); // 一次性：本次提交消费后移除，避免重复触发
-      resolve(value);
+    const handler = () => {
+      input.onSubmit = undefined; // 一次性：本次提交消费后移除，避免重复触发
+      resolve(input.plainText);
     };
-    input.on('enter', handler);
+    input.onSubmit = handler;
   });
 }
 
 /**
  * 按键 → 滚动动作（返回 null 表示交给输入框处理）。
  *
- * 冲突规则：输入框（Textarea）占用了 ↑/↓/Home/End（光标移动），
+ * 冲突规则：多行输入框（Textarea）占用了 ↑/↓/Home/End/Ctrl+U（光标移动/删除），
  * 所以只有当输入框为空时这些键才用于滚动；PgUp/PgDn/Ctrl+↑/↓/Ctrl+Home/End
  * 输入框未绑定，始终可滚动。
  */
-function resolveScrollAction(key: TuiKey, input: InputRenderable): ScrollAction | null {
-  const empty = input.value === '';
+function resolveScrollAction(key: TuiKey, input: TextareaRenderable): ScrollAction | null {
+  const empty = input.plainText === '';
   switch (key.name) {
     case 'pageup':
       return 'page-up';
@@ -54,6 +55,10 @@ function resolveScrollAction(key: TuiKey, input: InputRenderable): ScrollAction 
       return key.ctrl || key.meta || empty ? 'top' : null;
     case 'end':
       return key.ctrl || key.meta || empty ? 'bottom' : null;
+    case 'u':
+      return key.ctrl && empty ? 'page-up' : null; // Ctrl+U：空输入框时翻页上滚（有内容时留给删除到行首）
+    case 'd':
+      return key.ctrl && empty ? 'page-down' : null; // Ctrl+D：空输入框时翻页下滚
     default:
       return null;
   }
@@ -92,7 +97,7 @@ export async function runTuiInteractive(
       // 提交后回到最新：新消息和后续回答应立即可见
       state.scrollTop = null;
       state.scrollIntent = null;
-      input.value = '';
+      input.setText(''); // 多行 Textarea 的 value setter 不提交到 buffer，必须 setText 清空（同时复位自动增高）
       await session.paint(); // 立即清掉输入框，避免残留文本影响阅读
 
       if (!cmd) continue;

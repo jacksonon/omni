@@ -21,7 +21,7 @@
  * 输入框通过 marginTop:auto 吸收剩余空间，始终固定在视口最底部；
  * 状态栏在输入框正上方。单次任务模式（无输入框）时状态栏固定在末行。
  */
-import { BoxRenderable, InputRenderable, StyledText, TextAttributes, TextRenderable, createCliRenderer, createTextAttributes, parseColor } from '@opentui/core';
+import { BoxRenderable, StyledText, TextAttributes, TextRenderable, TextareaRenderable, createCliRenderer, createTextAttributes, parseColor } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
 import { logCrash } from './crashlog.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
@@ -32,8 +32,8 @@ export interface TuiSession {
   paint(): Promise<void>;
   /** 退出全屏（恢复终端） */
   stop(): Promise<void>;
-  /** 交互模式的输入框（单次任务模式为 null） */
-  input: InputRenderable | null;
+  /** 交互模式的输入框（多行 Textarea；单次任务模式为 null） */
+  input: TextareaRenderable | null;
   /**
    * 订阅每次按键（返回取消订阅函数）。
    * 全局监听先于输入框（renderable）执行，回调可调用 preventDefault() 阻止输入框处理该键。
@@ -116,6 +116,23 @@ function visualWidth(text: string): number {
   let w = 0;
   for (const ch of text) w += charWidth(ch);
   return w;
+}
+
+/**
+ * 估算输入框的可见行数：逻辑行数（\n 拆段）+ 长行折行后的行数。
+ *
+ * Textarea 的 lineCount 是逻辑行数（不含折行），而自动增高模式下长行会在框内
+ * 折成多行——只按 lineCount 同步预算会低估输入框实际高度，内容区溢出重叠
+ * （场景 2 修过的 bug 会在粘贴长行时复发）。按文本宽度估算折行数（宁可多估，
+ * 多估只是内容区少几行，不会重叠）。
+ */
+function estimateInputLines(text: string, innerWidth: number): number {
+  if (innerWidth < 2) return 1;
+  let lines = 0;
+  for (const seg of text.split('\n')) {
+    lines += Math.max(1, Math.ceil(visualWidth(seg) / innerWidth));
+  }
+  return lines;
 }
 
 /**
@@ -251,8 +268,13 @@ function buildBody(state: TuiState, width: number): Row[] {
  * 状态 → 可见内容行（尾部窗口 + 滚动）。状态栏是独立的 renderable，不在这里。
  *
  * 行数预算：根 Box 边框(2) + paddingY(2) = 4 行固定；
- * 交互模式再占 输入框(3) + 状态栏(1) = 4 行，内容区 = 高度 - 8；
+ * 交互模式再占 状态栏(1) + 输入框(inputLines 内容 + 边框 2)，
+ * 内容区 = 高度 - 7 - inputLines（inputLines=1 时即高度 - 8，与旧固定单行输入一致）；
  * 单次任务模式内容区 = 高度 - 5。
+ *
+ * 多行输入框自动增高（Enter 发送 / Shift+Enter 换行），inputLines 由 repaintTree
+ * 每次从输入框 lineCount 实时同步——输入框变高时内容区预算同步收缩，状态栏与
+ * 输入框永远不会被挤出视口。
  *
  * 滚动：scrollTop = null 跟随最新；上滚时显示「内容窗 + 底部提示行」。
  * scrollIntent（按键发出的一次性指令）在此消费，滚动数学集中在这一处。
@@ -264,13 +286,14 @@ export function computeRows(
 ): Row[] {
   const { height, width } = size;
   const body = buildBody(state, Math.max(1, (width ?? 80) - CONTENT_PAD));
-  // 极小高度时不强塞内容行（避免把输入框挤出视口）
-  const cap = Math.max(0, (height ?? 24) - 4 - (opts?.withInput ? 4 : 1));
+  // 输入框高度预算：内容行数(1-5) + 边框 2；极小高度时不强塞内容行（避免把输入框挤出视口）
+  const inputLines = opts?.withInput ? Math.min(5, Math.max(1, state.inputLines ?? 1)) : 0;
+  const cap = Math.max(0, (height ?? 24) - 4 - (opts?.withInput ? 1 + inputLines + 2 : 1));
   const total = body.length;
 
-  // 消费滚动意图（按键 → 一次性指令 → 这里换算成 scrollTop）
+  // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）
   if (state.scrollIntent) {
-    const { action } = state.scrollIntent;
+    const { action, lines = 1 } = state.scrollIntent;
     state.scrollIntent = null;
     if (total > cap && cap >= 2) {
       const contentCap = cap - 1; // 上滚模式预留 1 行给提示条
@@ -279,10 +302,10 @@ export function computeRows(
       const page = Math.max(1, contentCap);
       switch (action) {
         case 'line-up':
-          state.scrollTop = Math.max(0, cur - 1);
+          state.scrollTop = Math.max(0, cur - lines);
           break;
         case 'line-down':
-          state.scrollTop = cur + 1 >= maxTop ? null : cur + 1;
+          state.scrollTop = cur + lines >= maxTop ? null : cur + lines;
           break;
         case 'page-up':
           state.scrollTop = Math.max(0, cur - page);
@@ -304,7 +327,16 @@ export function computeRows(
     state.scrollTop = null;
     return body;
   }
-  if (state.scrollTop == null) return body.slice(total - cap);
+  if (state.scrollTop == null) {
+    // 跟随最新 + 溢出：窗口顶部加一行提示（否则用户不知道上面还有内容可上滚）
+    const contentCap = Math.max(1, cap - 1);
+    const visible = body.slice(total - contentCap);
+    visible.unshift({
+      text: `↑ 上方还有 ${total - contentCap} 行 · 滚轮/PgUp 上滚`,
+      style: { dim: true },
+    });
+    return visible;
+  }
 
   // 上滚模式：内容窗 cap-1 行 + 底部滚动提示行
   const contentCap = Math.max(1, cap - 1);
@@ -329,7 +361,7 @@ export interface TuiTree {
   cells: TextRenderable[];
   status: TextRenderable;
   inputBox: BoxRenderable | null;
-  input: InputRenderable | null;
+  input: TextareaRenderable | null;
 }
 
 /** 建树（首帧）：根边框 + 输入框 + 状态栏挂到 root 下，内容行由 repaintTree 维护 */
@@ -349,7 +381,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   (ctx as unknown as { root: BoxRenderable }).root.add(root);
 
   let inputBox: BoxRenderable | null = null;
-  let input: InputRenderable | null = null;
+  let input: TextareaRenderable | null = null;
   if (opts?.withInput) {
     inputBox = new BoxRenderable(ctx, {
       flexDirection: 'column',
@@ -364,13 +396,28 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
       // auto 上边距吸收内容区剩余空间：无论内容多少，输入框都钉在视口最底部
       marginTop: 'auto',
     });
-    // InputRenderable 自带 Enter → submit 绑定（return/kpenter/linefeed），
-    // Enter 时 emit 'enter' 事件（注意：它重写了 submit()，不走父类的 onSubmit 回调）
-    input = new InputRenderable(ctx, {
-      placeholder: '输入消息，Enter 发送；/exit 退出，/help 查看帮助',
-      maxLength: 4000,
+    // 多行输入框（对标 opencode）：Enter 发送、Shift+Enter 换行、内容自动增高。
+    // 不设固定 height，只给 minHeight/maxHeight → yoga 按内容行数自动增高（1-5 行），
+    // 超过 5 行后内部滚动（光标始终可见）；多行粘贴保留换行。
+    // 自定义 keyBindings 与默认绑定合并：return/kpenter/linefeed → submit（覆盖默认
+    // 的 newline），shift+return 等 → newline；其余编辑键（↑↓/Home/End/Ctrl+U 等）不变。
+    input = new TextareaRenderable(ctx, {
+      // 占位符必须单行内放得下：多行输入框高度预算按 inputLines（内容行数）计算，
+      // 占位符若折行会让输入框实际高度超预算、把内容区挤出（见 computeRows 注释）。
+      placeholder: '输入消息，Enter 发送；Shift+Enter 换行',
+      minHeight: 1,
+      maxHeight: 5,
       textColor: '#e2e8f0',
       placeholderColor: '#6b7280',
+      keyBindings: [
+        { name: 'return', action: 'submit' },
+        { name: 'kpenter', action: 'submit' },
+        { name: 'linefeed', action: 'submit' },
+        { name: 'return', shift: true, action: 'newline' },
+        { name: 'kpenter', shift: true, action: 'newline' },
+        { name: 'linefeed', shift: true, action: 'newline' },
+        // meta+return 保持默认 submit（Cmd/Ctrl+Enter 仍发送）
+      ],
     });
     inputBox.add(input);
   }
@@ -389,49 +436,105 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   return tree;
 }
 
-/** 重绘：更新标题/状态栏，按当前状态重建所有内容行，并画一帧 */
+/** 最近一条 applyRowToCell 错误（去重：连续相同错误只记一次，避免长会话刷爆崩溃日志） */
+let lastRowError = '';
+
+/**
+ * 把一行内容原位应用到复用单元格（chunks 行 → StyledText；普通行 → 文本 + 样式）。
+ *
+ * 样式必须**无条件**复位：细胞跨帧复用，上一帧可能是蓝色 user 行、下一帧是
+ * 无色 answer 行——`fg`/`attributes` 不重置会残留旧颜色（chunk 行复位为白色，
+ * 普通行无 fg 时同样回退白色）。
+ */
+function applyRowToCell(cell: TextRenderable, row: Row): void {
+  if (row.chunks) {
+    // 行式 Markdown：按片段构建 StyledText（每片段独立颜色/属性）
+    cell.content = new StyledText(
+      row.chunks.map((c) => ({
+        __isChunk: true as const,
+        text: c.text,
+        ...(c.fg ? { fg: parseColor(c.fg) } : {}),
+        attributes:
+          (c.bold ? TextAttributes.BOLD : 0) |
+          (c.italic ? TextAttributes.ITALIC : 0) |
+          (c.dim ? TextAttributes.DIM : 0) |
+          (c.underline ? TextAttributes.UNDERLINE : 0),
+      }))
+    );
+    (cell as { attributes?: number }).attributes = 0;
+    (cell as { fg?: unknown }).fg = parseColor('white');
+  } else {
+    cell.content = row.text;
+    (cell as { attributes?: number }).attributes = createTextAttributes(row.style);
+    (cell as { fg?: unknown }).fg = row.style.fg ? parseColor(row.style.fg) : parseColor('white');
+  }
+}
+
+/**
+ * 重绘：更新标题/状态栏，内容行走**细胞池复用**，并画一帧。
+ *
+ * 关键修复（用户报告「超过 1 屏内容全被清空」的根因）：早期实现每帧
+ * remove 全部旧 cells + new TextRenderable——每个 TextRenderable 持有一个
+ * 原生 TextBuffer，流式逐字/滚轮/按键触发的反复重建会耗尽原生对象池
+ * （实测约 1365 次重绘后 createTextBuffer 抛「Failed to create native
+ * renderable」）。异常发生在「旧 cells 已移除、新的还没建完」之间，内容区
+ * 就永久清空且每次重试都失败——崩溃日志里 6295 行该错误的实锤。
+ *
+ * 改为池只增不减：行数增加才新建（一次性原生分配），行数减少只隐藏
+ * （visible=false，不销毁、无原生抖动）；行内容原位更新 content/attributes/fg
+ * （setter 均为运行时可用，实测 5000 次原位更新零失败）。单行应用失败时
+ * 保留旧内容并记崩溃日志，不让整帧挂掉——内容永远不会再被「清空」。
+ */
 export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, opts?: { withInput?: boolean }): void {
   tree.root.title = `Omni v${state.version} · ${state.model}`;
   const height = (ctx as { height?: number }).height ?? 24;
   const width = (ctx as { width?: number }).width ?? 80;
+  // 实时同步输入框高度预算：多行输入框随内容自动增高（1-5 行），每次重绘
+  // 按「逻辑行数 + 长行折行」估算当前可见行数（lineCount 不含折行，见
+  // estimateInputLines 注释），computeRows 据此收缩内容区——输入框永远完整可见。
+  if (tree.input) {
+    const inner = Math.max(1, (width ?? 80) - CONTENT_PAD);
+    state.inputLines = Math.min(5, Math.max(1, estimateInputLines(tree.input.plainText, inner)));
+  }
   // 视口过小时隐藏状态栏，优先保证输入框完整可见
   //（交互模式需 8 行：输入框 3 + 状态栏 1 + 边框/内边距 4；单任务模式仅需 5 行）
   tree.status.visible = opts?.withInput ? height >= 8 : height >= 5;
   tree.status.content = state.status;
 
-  for (const c of tree.cells) tree.root.remove(c);
-  tree.cells = [];
-
+  const rows = computeRows(state, { height, width }, opts);
   const anchor = tree.status; // 内容行始终插在状态栏之前（状态栏与输入框固定在底部）
-  for (const row of computeRows(state, { height, width }, opts)) {
-    if (row.chunks) {
-      // 行式 Markdown：按片段构建 StyledText（每片段独立颜色/属性）
-      const styled = new StyledText(
-        row.chunks.map((c) => ({
-          __isChunk: true as const,
-          text: c.text,
-          ...(c.fg ? { fg: parseColor(c.fg) } : {}),
-          attributes:
-            (c.bold ? TextAttributes.BOLD : 0) |
-            (c.italic ? TextAttributes.ITALIC : 0) |
-            (c.dim ? TextAttributes.DIM : 0) |
-            (c.underline ? TextAttributes.UNDERLINE : 0),
-        }))
-      );
-      // wrapMode: none —— 行已在 buildBody 中按列数折行，这里每行固定 1 个终端行，行数预算不被打破（见 computeRows 注释）
-      tree.cells.push(new TextRenderable(ctx, { content: styled, wrapMode: 'none' }));
-    } else {
-      tree.cells.push(
-        new TextRenderable(ctx, {
-          content: row.text,
-          attributes: createTextAttributes(row.style),
-          ...(row.style.fg ? { fg: parseColor(row.style.fg) } : {}),
-          wrapMode: 'none',
-        })
-      );
+  while (tree.cells.length < rows.length) {
+    // 池增长：新建细胞插到状态栏前（一次原生分配；此后原位更新不再分配）
+    const cell = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    tree.cells.push(cell);
+    tree.root.insertBefore(cell, anchor);
+  }
+  for (let i = 0; i < tree.cells.length; i++) {
+    const cell = tree.cells[i];
+    if (i >= rows.length) {
+      cell.visible = false; // 行数减少：隐藏多余细胞，不销毁
+      continue;
+    }
+    cell.visible = true;
+    try {
+      applyRowToCell(cell, rows[i]);
+    } catch (e) {
+      // 单行失败保留旧内容，不让整帧挂掉；连续相同错误只记一次（防刷爆日志）
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== lastRowError) {
+        lastRowError = msg;
+        logCrash('repaint-row', e);
+      }
     }
   }
-  for (const c of tree.cells) tree.root.insertBefore(c, anchor);
+}
+
+/** OpenTUI 鼠标事件的结构化子集（滚轮滚动用） */
+interface MouseEventLike {
+  type?: string;
+  scroll?: { direction?: string; delta?: number };
+  x?: number;
+  y?: number;
 }
 
 /** 创建 TUI 会话：建树 + 首帧，返回 paint/stop/input/onKeyPress */
@@ -440,24 +543,57 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   const ctx = renderer as unknown as RenderContext; // CliRenderer 实现了 RenderContext
   const tree = mountTree(ctx, state, opts);
 
-  // 重绘串行化：流式节流/按键/flush 的 paint 可能重叠，而 OpenTUI 渲染器
-  // 不允许并发 loop()（原生侧非线程安全，并发调用是闪退高危候选）。
-  // 用 promise 链排队；单次失败写崩溃日志后不阻塞后续重绘，同时把错误上抛
-  // 给调用方（flush / 交互循环可见，避免静默吞掉）。
-  let paintChain: Promise<void> = Promise.resolve();
+  // 重绘串行化 + 尾沿合并：OpenTUI 渲染器不允许并发 loop()（原生侧非线程安全，
+  // 并发调用是闪退高危候选），而流式节流/按键/滚轮/flush 的 paint 可能重叠。
+  // 策略：一帧执行期间到达的新调用只置 paintQueued，当前帧结束后补跑一帧——
+  // 保证「先写 scrollIntent 再 paint」的意图一定被补帧消费（否则意图滞留、
+  // 滚轮/连按会被静默丢弃）；flush 等待批次排空，避免与 stop 竞争。
+  // 单次失败写崩溃日志后继续，不让整个 TUI 拖崩。
+  let paintRunning = false;
+  let paintQueued = false;
+  let paintSettled: Promise<void> = Promise.resolve();
   const paint = async (): Promise<void> => {
-    const run = paintChain.then(async () => {
+    if (paintRunning) {
+      paintQueued = true; // 有帧在跑：请求补一帧（消费最新 state），并等当前批次结束
+      await paintSettled;
+      return;
+    }
+    paintRunning = true;
+    const run = (async () => {
       try {
-        repaintTree(ctx, tree, state, opts);
-        // 显式画一帧（与测试渲染器 renderOnce 内部一致；CLI 渲染器同样可用）
-        await (renderer as unknown as { loop(): Promise<void> }).loop();
-      } catch (e) {
-        logCrash('paint', e);
-        throw e;
+        do {
+          paintQueued = false;
+          try {
+            repaintTree(ctx, tree, state, opts);
+            // 显式画一帧（与测试渲染器 renderOnce 内部一致；CLI 渲染器同样可用）
+            await (renderer as unknown as { loop(): Promise<void> }).loop();
+          } catch (e) {
+            logCrash('paint', e);
+          }
+        } while (paintQueued); // 执行期间又有请求 → 补一帧，直到无人请求
+      } finally {
+        paintRunning = false;
       }
-    });
-    paintChain = run.catch(() => {}); // 链保持已决状态，单次失败不影响下一次重绘
-    await run; // 调用方拿到真实结果（失败时 reject）
+    })();
+    paintSettled = run.catch(() => {});
+    await paintSettled;
+  };
+
+  // 鼠标滚轮滚动：OpenTUI 上报 SGR 滚轮事件（\e[<64/65;x;yM）并沿渲染树冒泡到根 Box。
+  // 在根 Box 上挂处理器（实例属性遮蔽原型 onMouseEvent 方法，属刻意为之）：
+  // 滚轮上/下 → 滚动意图（每格约 3 行），与键盘滚动同一套机制；只在 scroll 类型事件时
+  // 消费，点击/移动保持默认行为（不干扰输入框聚焦）。同方向连续滚轮累加步长——
+  // 帧执行期间到达的多格并入同一意图，由尾沿补帧一次性消费，快速连滚不丢格。
+  (tree.root as unknown as { onMouseEvent?: (e: MouseEventLike) => void }).onMouseEvent = (e) => {
+    if (e.type !== 'scroll' || !e.scroll) return;
+    const dir = e.scroll.direction;
+    if (dir !== 'up' && dir !== 'down') return;
+    const action = dir === 'up' ? 'line-up' : 'line-down';
+    const lines = Math.min(6, Math.max(1, Math.round(e.scroll.delta ?? 1) * 3));
+    const prev = state.scrollIntent;
+    state.scrollIntent =
+      prev && prev.action === action ? { action, lines: (prev.lines ?? 1) + lines } : { action, lines };
+    void paint();
   };
 
   await paint();

@@ -27,8 +27,8 @@ export function logCrash(tag: string, err: unknown): void {
   }
 }
 
-/** 记录启动/正常退出标记（帮助区分“干净退出”与“崩溃”） */
-export function logLifecycle(tag: 'start' | 'exit-clean', detail: string): void {
+/** 记录启动/退出标记（帮助区分“干净退出”与“崩溃”） */
+export function logLifecycle(tag: 'start' | 'exit-clean' | 'process-exit', detail: string): void {
   try {
     const file = crashLogPath();
     mkdirSync(path.dirname(file), { recursive: true });

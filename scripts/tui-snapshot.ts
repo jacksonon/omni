@@ -8,7 +8,7 @@
  */
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
-import { mountTree, repaintTree } from '../src/tui/render.js';
+import { computeRows, mountTree, repaintTree } from '../src/tui/render.js';
 import { createTuiState, pushLine, type TuiState } from '../src/tui/state.js';
 
 function fill(state: TuiState, fillLines: number): void {
@@ -54,17 +54,17 @@ async function main(): Promise<void> {
   console.log('=== 场景 2：溢出跟随最新（20 行视口）===');
   console.log(r2.frame);
 
-  const checks2 = ['当前目录共 3 个文件', '任务完成', '第 40 行填充'];
+  const checks2 = ['当前目录共 3 个文件', '任务完成', '第 40 行填充', '上方还有'];
   const missing2 = checks2.filter((c) => !r2.frame.includes(c));
   if (missing2.length) {
-    console.error(`✗ 场景 2 缺少最新内容: ${missing2.join(', ')}`);
+    console.error(`✗ 场景 2 缺少最新内容/顶部提示: ${missing2.join(', ')}`);
     process.exit(1);
   }
   if (r2.frame.includes('第 1 行填充') || r2.frame.includes('你是谁？')) {
     console.error('✗ 场景 2 显示了最早的行（未正确跟随最新）');
     process.exit(1);
   }
-  console.log('✓ 场景 2 通过：溢出时自动跟随最新，旧行被裁剪');
+  console.log('✓ 场景 2 通过：溢出时自动跟随最新 + 顶部「上方还有」提示，旧行被裁剪');
 
   // 场景 3：状态变更后 repaintTree 增量重绘（模拟 agent 运行中途新增工具步骤）
   const s3 = createTuiState();
@@ -247,6 +247,84 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 8 通过：普通行与 Markdown 行均自动折行完整显示，输入框布局未被撑破');
+
+  // 场景 9：鼠标滚轮滚动意图（lines 步长消费）+ 跟随模式顶部溢出提示
+  const s9 = createTuiState();
+  fill(s9, 40);
+  s9.scrollTop = 30;
+  s9.scrollIntent = { action: 'line-up', lines: 3 };
+  const r9 = computeRows(s9, { height: 20, width: 64 }, { withInput: true });
+  if (s9.scrollTop !== 27) {
+    console.error(`✗ 场景 9 滚轮上滚步长未生效（scrollTop=${s9.scrollTop}，期望 27）`);
+    process.exit(1);
+  }
+  const last9 = r9[r9.length - 1];
+  if (!last9.text.includes('已上滚')) {
+    console.error(`✗ 场景 9 上滚模式底部提示行缺失: ${last9.text}`);
+    process.exit(1);
+  }
+  s9.scrollIntent = { action: 'bottom' };
+  computeRows(s9, { height: 20, width: 64 }, { withInput: true });
+  const topHint9 = computeRows(s9, { height: 20, width: 64 }, { withInput: true })[0];
+  if (!topHint9.text.includes('上方还有')) {
+    console.error(`✗ 场景 9 跟随模式顶部溢出提示缺失: ${topHint9.text}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 9 通过：滚轮步长滚动（lines=3）+ 回底部后顶部溢出提示');
+
+  // 场景 10：多行输入框（opencode 风格）——Enter 发送 / Shift+Enter 换行 / 自动增高
+  // a) 真实 Textarea 渲染：setText 三行内容后输入框自动增高，三行全部可见
+  const s10 = createTuiState();
+  s10.version = '0.1.0';
+  s10.model = 'mock';
+  pushLine(s10, { kind: 'user', text: '❯ 多行输入测试' });
+  pushLine(s10, { kind: 'answer', text: '这是回答。' });
+  s10.status = '任务完成';
+  const t10 = await createTestRenderer({ width: 64, height: 20 });
+  const tree10 = mountTree(t10.renderer, s10, { withInput: true });
+  await t10.renderOnce();
+  const inp10 = tree10.input;
+  if (!inp10) {
+    console.error('✗ 场景 10 输入框未创建');
+    process.exit(1);
+  }
+  // 空输入时占位符可见（且单行，不撑破预算）
+  const frame10empty = t10.captureCharFrame();
+  if (!frame10empty.includes('输入消息，Enter 发送')) {
+    console.error('✗ 场景 10 空输入时占位符缺失');
+    process.exit(1);
+  }
+  inp10.setText('第一行\n第二行\n第三行');
+  inp10.focus();
+  await t10.renderOnce();
+  const frame10 = t10.captureCharFrame();
+  console.log('=== 场景 10：多行输入框自动增高 ===');
+  console.log(frame10);
+  const checks10 = ['第一行', '第二行', '第三行'];
+  const missing10 = checks10.filter((c) => !frame10.includes(c));
+  if (missing10.length) {
+    console.error(`✗ 场景 10 多行输入未完整渲染: ${missing10.join(', ')}`);
+    process.exit(1);
+  }
+  // 清空后应复位为单行（setText 是唯一可靠的清空路径）
+  inp10.setText('');
+  await t10.renderOnce();
+  const frame10b = t10.captureCharFrame();
+  if (frame10b.includes('第一行') || frame10b.includes('第三行')) {
+    console.error('✗ 场景 10 setText 清空后内容残留');
+    process.exit(1);
+  }
+  // b) 预算单元断言：inputLines=3 时内容区比 inputLines=1 少 2 行（输入框增高收缩内容区）
+  const s10b = createTuiState();
+  fill(s10b, 20);
+  const rows1 = computeRows(s10b, { height: 20, width: 64 }, { withInput: true });
+  s10b.inputLines = 3;
+  const rows3 = computeRows(s10b, { height: 20, width: 64 }, { withInput: true });
+  if (rows1.length - rows3.length !== 2) {
+    console.error(`✗ 场景 10 输入框增高后内容区预算未收缩（1行=${rows1.length}，3行=${rows3.length}，应差 2）`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 10 通过：多行输入自动增高 + 内容区预算随输入框高度收缩');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);
