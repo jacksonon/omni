@@ -7,8 +7,11 @@
  * 运行：npm run tui:snapshot（或 bun run ./scripts/tui-snapshot.ts）
  */
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
+import { gateTool } from '../src/safety/policy.js';
 import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
-import { computeRows, hitTestCard, mountTree, repaintTree, type CardRect } from '../src/tui/render.js';
+import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect } from '../src/tui/render.js';
 import { createTuiState, pushLine, type TuiState } from '../src/tui/state.js';
 import { visualWidth } from '../src/tui/width.js';
 
@@ -1325,6 +1328,138 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 21 通过：/thinking 全局展开/折叠 + 折叠态点击单独展开/收起（+ thinking / - thinking 头行，无行数/提示文案）');
+
+  // 场景 22：工具审批卡片（安全护栏）——渲染 + 点击命中判定
+  console.log('=== 场景 22：工具审批卡片 ===');
+  const s22 = createTuiState();
+  s22.version = '0.1.0';
+  s22.model = 'mock';
+  pushLine(s22, { kind: 'user', text: '清理临时文件' });
+  s22.approval = { tool: 'run_command', summary: '$ rm -rf /tmp/x', reason: '对临时目录执行 rm -rf' };
+  let approved22: boolean | null = null;
+  s22.approvalResolve = (b) => (approved22 = b);
+  s22.status = '等待审批：run_command';
+  const rows22 = computeRows(s22, { height: 20, width: 64 }, { withInput: true });
+  if (!rows22.some((r) => r.text.includes('需要审批')) || !rows22.some((r) => r.text.includes('[y] 批准'))) {
+    console.error('✗ 场景 22 审批卡片未渲染（需要审批 / [y] 批准 缺失）');
+    process.exit(1);
+  }
+  const apprIdx22 = rows22.map((r, i) => (r.approvalId !== undefined ? i : -1)).filter((i) => i >= 0);
+  if (apprIdx22.length === 0) {
+    console.error('✗ 场景 22 审批行未标记 approvalId');
+    process.exit(1);
+  }
+  const rect22 = { top: apprIdx22[0], bottom: apprIdx22[apprIdx22.length - 1] };
+  if (!hitTestApproval(s22, rect22, rect22.top)) {
+    console.error('✗ 场景 22 审批卡片区域内点击未命中');
+    process.exit(1);
+  }
+  if (hitTestApproval(s22, rect22, rect22.top - 1) || hitTestApproval(s22, null, rect22.top) || hitTestApproval(s22, rect22, rect22.bottom + 1)) {
+    console.error('✗ 场景 22 审批卡片区域外点击误命中');
+    process.exit(1);
+  }
+  const r22 = await render(s22);
+  if (!r22.frame.includes('需要审批') || !r22.frame.includes('[y] 批准') || !r22.frame.includes('rm -rf /tmp/x')) {
+    console.error('✗ 场景 22 审批卡片未渲染进帧');
+    process.exit(1);
+  }
+  // 未解析前 approval 保持（不允许被渲染层清掉）
+  if (s22.approval === null || approved22 !== null) {
+    console.error('✗ 场景 22 渲染层错误地解析/清除了审批');
+    process.exit(1);
+  }
+  console.log('✓ 场景 22 通过：审批卡片渲染（工具/摘要/原因/[y]批准 [n]拒绝）+ 点击命中判定');
+
+  // 场景 23：安全策略（权限分级 gateTool 纯函数）
+  console.log('=== 场景 23：权限分级 ===');
+  // full：危险命令硬拦截，普通命令放行
+  const g23a = gateTool('full', 'run_command', { command: 'git push origin main' });
+  if (!('allow' in g23a) || g23a.allow !== false) {
+    console.error('✗ 场景 23 full 级未硬拦截 git push');
+    process.exit(1);
+  }
+  if (gateTool('full', 'run_command', { command: 'echo hi' }).allow !== true) {
+    console.error('✗ 场景 23 full 级普通命令被误拦');
+    process.exit(1);
+  }
+  // safe：危险命令转审批（不再硬拦），普通命令放行
+  const g23b = gateTool('safe', 'run_command', { command: 'rm -rf /tmp/x' });
+  if (!('needApproval' in g23b)) {
+    console.error('✗ 场景 23 safe 级危险命令未转审批');
+    process.exit(1);
+  }
+  if (gateTool('safe', 'run_command', { command: 'ls' }).allow !== true) {
+    console.error('✗ 场景 23 safe 级普通命令被误拦');
+    process.exit(1);
+  }
+  // ask：所有工具调用都需要审批
+  if (!('needApproval' in gateTool('ask', 'read_file', { path: 'a.ts' }))) {
+    console.error('✗ 场景 23 ask 级读工具未转审批');
+    process.exit(1);
+  }
+  // read：写/执行直接拒绝（连询问都不给），读放行
+  if (gateTool('read', 'run_command', { command: 'ls' }).allow !== false) {
+    console.error('✗ 场景 23 read 级未拒绝 run_command');
+    process.exit(1);
+  }
+  if (gateTool('read', 'write_file', { path: 'a.ts' }).allow !== false) {
+    console.error('✗ 场景 23 read 级未拒绝 write_file');
+    process.exit(1);
+  }
+  if (gateTool('read', 'read_file', { path: 'a.ts' }).allow !== true) {
+    console.error('✗ 场景 23 read 级误拦 read_file');
+    process.exit(1);
+  }
+  console.log('✓ 场景 23 通过：权限分级（full 硬拦 / safe 危险转审批 / ask 全询问 / read 只读）');
+
+  // 场景 24：上下文管理（相关文件预载 + 摘要切分边界）
+  console.log('=== 场景 24：上下文管理 ===');
+  const files24 = await selectRelevantFiles('读取 package.json 的 name，并看看 src/index.ts 的入口', 5, 100000);
+  if (!files24.some((f) => f.path === 'package.json') || !files24.some((f) => f.path === 'src/index.ts')) {
+    console.error(`✗ 场景 24 相关文件预载未命中: ${JSON.stringify(files24.map((f) => f.path))}`);
+    process.exit(1);
+  }
+  const files24b = await selectRelevantFiles('读取 does-not-exist-xyz.ts 的内容', 5, 100000);
+  if (files24b.length !== 0) {
+    console.error('✗ 场景 24 不存在的路径未被过滤');
+    process.exit(1);
+  }
+  // 摘要切分边界：不切开「assistant 工具调用 ↔ 其 tool 结果」配对
+  const msgs24: ChatCompletionMessageParam[] = [
+    { role: 'user', content: '任务一' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: '{}' } }],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: '结果一' },
+    { role: 'user', content: '任务二' },
+    { role: 'assistant', content: '回答二' },
+    { role: 'user', content: '任务三' },
+    { role: 'assistant', content: '回答三' },
+  ];
+  const split24 = findSummarizeSplit(msgs24, 2); // 期望 5：head=[0..4] 完整回合，tail=[5..6]
+  if (split24 !== 5) {
+    console.error(`✗ 场景 24 摘要切分点错误（期望 5，实际 ${split24}）`);
+    process.exit(1);
+  }
+  // 切点前一跳是 assistant(带工具调用) → 整组回退留 tail（配对不被切开）
+  const msgs24b: ChatCompletionMessageParam[] = [
+    { role: 'user', content: '任务一' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: '{}' } }],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: '结果一' },
+    { role: 'user', content: '任务二' },
+  ];
+  const split24b = findSummarizeSplit(msgs24b, 2); // 期望 -1：切点(2)前一跳是 assistant 工具调用 → 回退到 1 < 2，不值得压缩
+  if (split24b !== -1) {
+    console.error(`✗ 场景 24 工具配对边界未保护（期望 -1，实际 ${split24b}）`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 24 通过：相关文件预载（命中/过滤）+ 摘要切分不切开工具配对');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

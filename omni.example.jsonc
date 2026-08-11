@@ -12,11 +12,52 @@
   // API Key（更推荐用环境变量 OMNI_API_KEY，避免明文入库；如放这里请注意文件权限）
   "apiKey": "sk-你的密钥",
 
-  // Agent 最大循环步数（防止死循环）
-  "maxSteps": 50, // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
+  // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
+  "maxSteps": 50,
 
   // 是否展示思考过程（默认 true）。
   // 设 false 可关闭终端里的 💭 思考显示（完整思考仍会落盘 .omni/last-thinking.md）
   // 也可用环境变量 OMNI_SHOW_THINKING=0 临时关闭
-  "showThinking": true
+  "showThinking": true,
+
+  // ── 安全护栏 ─────────────────────────────────────────────
+  // 权限分级（默认 safe）：
+  //   full —— 直通（危险命令仍硬拦截）
+  //   safe —— 危险命令（rm -rf /、git push、mkfs 等）改为询问用户
+  //   ask  —— 所有工具调用都询问
+  //   read —— 只读：run_command / write_file 直接拒绝
+  // 也可用环境变量 OMNI_PERMISSION=safe 临时指定
+  "permission": "safe",
+
+  // 是否写审计日志（默认 true；落盘 ~/.config/omni/audit.log，记录每次工具调用与审批决策）
+  "auditLog": true,
+
+  // ── 上下文管理 ───────────────────────────────────────────
+  // 长对话摘要压缩：消息数超过该值后，把最旧的完整回合压成摘要（0 = 关闭）
+  "summarizeAt": 40,
+
+  // 压缩时保留最近多少条消息原文
+  "summarizeWindow": 8,
+
+  // 任务文本里出现的现有文件路径 → 首轮前预载内容进上下文（默认 true）
+  "preloadFiles": true,
+  "preloadMaxFiles": 5,        // 最多预载文件数
+  "preloadMaxBytes": 30720,    // 单文件预载字节上限（30KB）
+
+  // ── 子代理 ───────────────────────────────────────────────
+  // delegate 工具：把独立子任务委托给子代理（隔离上下文；默认 true）
+  "allowSubagents": true,
+  "maxSubagentSteps": 10,      // 子代理最大循环步数
+
+  // ── MCP 外部工具 ─────────────────────────────────────────
+  // 可选：配置后启动时自动发现并注册 MCP 工具（名称带 server 前缀，如 demo_ping）
+  // 示例（官方文件系统服务器）：
+  // "mcpServers": {
+  //   "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
+  //   "filesystem": {
+  //     "command": "npx",
+  //     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allow"]
+  //   }
+  // }
+  "mcpServers": {}
 }

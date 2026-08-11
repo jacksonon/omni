@@ -15,6 +15,7 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { TextareaRenderable } from '@opentui/core';
+import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
@@ -97,6 +98,18 @@ export async function runTuiInteractive(
         void session.paint().catch(() => {});
       }, 0);
     };
+    // 工具审批卡片（安全护栏）：y/Enter 批准、n/Esc 拒绝。
+    // 消费按键不进入输入框（运行中输入框已 blur）；并行审批串行排队（见 TuiOutput）。
+    if (state.approval) {
+      if (key.name === 'y' || key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+        state.approvalResolve?.(true);
+      } else if (key.name === 'n' || key.name === 'escape' || key.name === 'esc') {
+        state.approvalResolve?.(false);
+      }
+      key.preventDefault();
+      paintNow();
+      return;
+    }
     // 命令面板打开时：面板消费所有按键（↑/↓/数字选择、Enter 确认、Esc 取消），
     // preventDefault 阻止输入框处理——不会把方向键当光标移动、Enter 也不会误提交。
     if (state.menu) {
@@ -177,6 +190,8 @@ export async function runTuiInteractive(
 
       messages.push({ role: 'user', content: cmd });
       out.onUserMessage(cmd);
+      // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context）
+      await prepareContext(client, model, messages, runOpts.context ?? {});
       // Agent 运行期间 blur 输入框：防止运行中键入的内容混入下一轮输入
       input.blur();
       await runAgent(client, model, messages, runOpts, out);

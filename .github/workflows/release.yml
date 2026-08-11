@@ -1,0 +1,57 @@
+# Release — 打 tag 自动构建并发布
+# 触发：推送任意 v* tag（如 v0.2.0）→ 构建 → 生成 Release（tgz + 原生二进制）
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck + build (dist/omni.cjs)
+        run: npm run build
+
+      - name: Compile native binary (release/omni)
+        run: npm run compile
+
+      - name: Verify artifacts
+        run: |
+          test -s dist/omni.cjs && echo "dist/omni.cjs OK ($(wc -c < dist/omni.cjs) bytes)"
+          test -x release/omni && echo "release/omni OK ($(wc -c < release/omni) bytes)"
+          cp release/omni omni-linux-x64
+
+      - name: npm pack (omni-<version>.tgz)
+        run: |
+          mkdir -p dist-pkg
+          npm pack --pack-destination ./dist-pkg
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-pkg/*.tgz
+            omni-linux-x64
+          generate_release_notes: true

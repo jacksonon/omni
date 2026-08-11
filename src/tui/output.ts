@@ -6,6 +6,7 @@
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import type { Output, TokenUsage } from '../output/types.js';
+import type { ApprovalRequest } from '../safety/index.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
 import { appendLine, clearLines, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
@@ -99,7 +100,7 @@ export class TuiOutput implements Output {
     await this.session.paint();
   }
 
-  banner(cfg: OmniConfig): void {
+  banner(cfg: OmniConfig, _toolNames?: string[]): void {
     this.state.version = VERSION;
     this.state.model = cfg.model;
     this.state.status = `模型 ${cfg.model} · 就绪`;
@@ -183,6 +184,36 @@ export class TuiOutput implements Output {
   onMaxSteps(max: number): void {
     pushLine(this.state, { kind: 'warn', text: `⚠️ 已达到最大步数（${max}），任务可能未完成` });
     this.state.status = '已中止';
+    this.schedulePaint();
+  }
+
+  /**
+   * 工具调用审批（安全护栏）：渲染审批卡片（内容流末尾，y 批准 / n 拒绝 /
+   * 鼠标点击左右半区），resolve 后显示下一条（并行工具的多条审批串行展示）。
+   * resolver 挂在 state.approvalResolve 上——startTui（鼠标）与 interactive（按键）
+   * 无需反向依赖 TuiOutput 即可完成审批。
+   */
+  private approvalQueue: { req: ApprovalRequest; resolve: (b: boolean) => void }[] = [];
+  requestApproval(req: ApprovalRequest): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.approvalQueue.push({ req, resolve });
+      this.showNextApproval();
+    });
+  }
+
+  private showNextApproval(): void {
+    if (this.state.approval || this.approvalQueue.length === 0) return; // 已有卡片在等 → 排队
+    const next = this.approvalQueue.shift()!;
+    this.state.approval = { tool: next.req.tool, summary: next.req.summary, reason: next.req.reason };
+    this.state.approvalResolve = (allow: boolean) => {
+      this.state.approval = null;
+      this.state.approvalResolve = null;
+      this.state.status = '';
+      next.resolve(allow);
+      this.schedulePaint();
+      this.showNextApproval(); // 串行：处理队列里的下一条
+    };
+    this.state.status = `等待审批：${next.req.tool}`;
     this.schedulePaint();
   }
 

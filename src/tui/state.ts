@@ -76,6 +76,19 @@ export interface TuiMenu {
 }
 
 /**
+ * 工具调用审批（安全护栏）：`run_command` 命中危险命令 / 权限分级要求确认时，
+ * 内容流末尾渲染审批卡片（`[y] 批准  [n] 拒绝`），鼠标点击左右半区或键盘 y/n 决定。
+ */
+export interface TuiApproval {
+  /** 请求审批的工具名 */
+  tool: string;
+  /** 人类可读摘要（如 `$ rm -rf /`） */
+  summary: string;
+  /** 需要审批的原因（危险命令匹配 / 权限策略） */
+  reason: string;
+}
+
+/**
  * 斜杠命令联想列表（输入框内容以 / 开头时显示在输入框上方）。
  *
  * 非模态：用户可继续输入（列表按最新文本过滤，无匹配自动隐藏）；
@@ -152,6 +165,14 @@ export interface TuiState {
    * 避免 repaintTree 每次按 inputText 重新生成列表导致 Esc 失效。
    */
   cmdSuggestDismissedText: string | null;
+  /** 工具调用审批卡片（安全护栏）：非空时内容流末尾渲染审批卡（y 批准 / n 拒绝 / 点击左右半区） */
+  approval: TuiApproval | null;
+  /**
+   * 审批结果回调（TuiOutput.requestApproval 注入；渲染层/按键层调用后由
+   * TuiOutput 置 null）。放 state 上让 startTui（鼠标）与 interactive（按键）
+   * 无需反向依赖 TuiOutput 即可完成审批。
+   */
+  approvalResolve: ((allow: boolean) => void) | null;
 }
 
 export function createTuiState(): TuiState {
@@ -176,6 +197,8 @@ export function createTuiState(): TuiState {
     cmdSuggest: null,
     inputText: '',
     cmdSuggestDismissedText: null,
+    approval: null,
+    approvalResolve: null,
   };
 }
 

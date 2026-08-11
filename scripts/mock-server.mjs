@@ -40,8 +40,11 @@ const server = http.createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     const parsed = JSON.parse(body);
-    const { messages } = parsed;
+    const messages = parsed.messages ?? [];
     const wantUsage = parsed.stream_options?.include_usage === true;
+    // 上下文管理：长对话摘要压缩是独立请求（system 提示词以「把以下 Agent 对话压缩」开头）
+    const wantSummary =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('把以下 Agent 对话压缩成要点摘要');
     // 会话标题生成是独立轻量请求：max_tokens 很小（≤60）→ 返回固定标题
     const wantTitle = parsed.max_tokens != null && parsed.max_tokens <= 60;
     const last = messages[messages.length - 1];
@@ -61,6 +64,21 @@ const server = http.createServer((req, res) => {
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       ...(wantUsage ? { usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 } } : {}),
     });
+
+    if (wantSummary) {
+      // 摘要压缩请求：返回固定摘要（长对话压缩 e2e 验证）
+      sendChunk({
+        id: 'mock-summary',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', content: '（摘要）用户要求验证 mock 端到端链路，已执行命令并确认结果正常。' }, finish_reason: null }],
+      });
+      sendChunk(usageChunk('mock-summary-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
     if (wantTitle) {
       // 标题请求：直接返回固定标题（首轮对话后 TUI 顶部显示「— mock 端到端验证 —」）

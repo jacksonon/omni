@@ -19,6 +19,7 @@ import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { formatToolCall, previewOutput } from '../output/format.js';
 import type { Output } from '../output/types.js';
+import { Safety } from '../safety/index.js';
 import { truncate } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
@@ -57,6 +58,14 @@ export async function runAgent(
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
+  // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
+  // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
+  const safety = new Safety({
+    tier: opts.permission ?? 'full',
+    audit: opts.auditLog ?? false,
+    requestApproval: opts.requestApproval ?? (() => false),
+    summarize: formatToolCall,
+  });
 
   for (let step = 0; step < maxSteps; step++) {
     // 系统提示词：每轮请求前构造带 system 消息的副本（不能 push 进 messages——
@@ -159,18 +168,27 @@ export async function runAgent(
     // 没有工具调用 → 模型给出了最终回答，循环结束
     if (toolCalls.size === 0) return;
 
-    // 依次执行工具，结果回传
-    for (const call of assistantMsg.tool_calls!) {
-      const tool = opts.tools.find((t) => t.name === call.function.name);
-      let result: string;
-      if (!tool) {
-        result = `错误：未知工具「${call.function.name}」。可用工具：${opts.tools.map((t) => t.name).join(', ')}`;
-      } else {
+    // 并行执行：一次响应里的多个工具调用并发跑（Promise.all），结果按原顺序回传。
+    // 副作用工具（多个 run_command 写同一文件等）由模型自行负责顺序/冲突；
+    // 安全护栏（审批/审计）逐调用独立。
+    const calls = assistantMsg.tool_calls!;
+    const results = await Promise.all(
+      calls.map(async (call) => {
+        const tool = opts.tools.find((t) => t.name === call.function.name);
+        if (!tool) {
+          return `错误：未知工具「${call.function.name}」。可用工具：${opts.tools.map((t) => t.name).join(', ')}`;
+        }
         const parsed = parseArgs(call.function.arguments);
         if (!parsed.ok) {
-          result = `错误：工具参数不是合法 JSON：${call.function.arguments}`;
+          return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
+        }
+        output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args));
+        // 安全护栏过闸：拒绝 → 结果回传模型（自我纠错）；需要审批 → 用户决定
+        const gate = await safety.gate(tool, parsed.args);
+        let result: string;
+        if (!gate.allow) {
+          result = `已拦截：${gate.reason}\n请向用户说明情况，由其决定如何继续。`;
         } else {
-          output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args));
           try {
             result = await tool.execute(parsed.args);
           } catch (err: any) {
@@ -178,13 +196,15 @@ export async function runAgent(
             result = `执行失败：${err?.message ?? err}`;
           }
         }
-      }
-      if (tool) {
         // 预览只取前几行（终端展示用），完整结果仍回传给模型
         output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result));
-      }
-      messages.push({ role: 'tool', tool_call_id: call.id, content: truncate(result) });
-    }
+        return result;
+      })
+    );
+    // 结果按原调用顺序回传（OpenAI 按 tool_call_id 关联，顺序无关但保持一致更稳）
+    results.forEach((result, i) => {
+      messages.push({ role: 'tool', tool_call_id: calls[i].id, content: truncate(result) });
+    });
   }
 
   output.onMaxSteps(maxSteps);

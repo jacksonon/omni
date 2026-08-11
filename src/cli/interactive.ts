@@ -6,6 +6,7 @@ import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
@@ -50,6 +51,8 @@ export async function runInteractive(
     }
     messages.push({ role: 'user', content: cmd });
     out.onUserMessage(cmd);
+    // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context）
+    await prepareContext(client, model, messages, runOpts.context ?? {});
     await runAgent(client, model, messages, runOpts, out);
     out.onTurnEnd();
     safePrompt();

@@ -17,8 +17,9 @@
  * 命令式 renderable 渲染（见 tui/render.ts），完全不依赖 JSX 转换。
  */
 import { parseArgs, printHelp } from './cli/args.js';
+import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
-import { main, prepareRun } from './main.js';
+import { attachRuntime, main, prepareRun } from './main.js';
 import { ConsoleOutput } from './output/console.js';
 import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
@@ -69,18 +70,21 @@ async function run(): Promise<void> {
     return;
   }
 
-  const { cfg, client, messages, runOpts } = prepareRun(overrides);
+  const ctx = prepareRun(overrides);
+  const { cfg, client, messages, runOpts } = ctx;
   const singleTask = taskArgs.join(' ').trim();
   const state = createTuiState();
   const session = await startTui(state, { withInput: !singleTask });
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
-  output.banner(cfg);
+  await attachRuntime(ctx, output); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  output.banner(cfg, runOpts.tools.map((t) => t.name));
 
   try {
     if (singleTask) {
       output.onUserMessage(singleTask);
       messages.push({ role: 'user', content: singleTask });
+      await prepareContext(client, cfg.model, messages, runOpts.context ?? {});
       await runAgent(client, cfg.model, messages, runOpts, output);
       output.onTurnEnd();
     } else {

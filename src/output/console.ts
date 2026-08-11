@@ -7,11 +7,14 @@
  *   采用「执行中开框 → 完成后输出直接进框」的静态展开形态
  * - 管道模式（非 TTY）：思考不内联，仅提示落盘路径；颜色自动禁用
  */
+import readline from 'node:readline/promises';
+import { stdin as input, stderr as errOut } from 'node:process';
 import { printBanner } from '../cli/banner.js';
 import { printHelp } from '../cli/args.js';
 import type { OmniConfig } from '../config/index.js';
 import type { ThinkingDisplay } from '../agent/types.js';
 import { createThinkingDisplay } from '../agent/thinking.js';
+import type { ApprovalRequest } from '../safety/index.js';
 import { createSpinner, dim, isTTY, red, yellow, type Spinner } from '../ui.js';
 import { cardBottomLine, cardContentLine, cardSepLine, wrapText } from './format.js';
 import type { Output, TokenUsage } from './types.js';
@@ -31,8 +34,8 @@ export class ConsoleOutput implements Output {
     this.thinking = createThinkingDisplay(opts.showThinking);
   }
 
-  banner(cfg: OmniConfig): void {
-    printBanner(cfg);
+  banner(cfg: OmniConfig, toolNames?: string[]): void {
+    printBanner(cfg, toolNames);
   }
 
   onRound(step: number, maxSteps: number): void {
@@ -138,5 +141,37 @@ export class ConsoleOutput implements Output {
 
   showHelp(): void {
     printHelp();
+  }
+
+  /**
+   * 工具调用审批（安全护栏）：TTY 下用 readline 在 stderr 询问（不污染 stdout 管道），
+   * y/回车 = 允许，其余 = 拒绝；非 TTY（管道）自动拒绝（fail-safe）。
+   * 并行工具调用的多个审批通过 promise 链串行（readline 接口不并发）。
+   */
+  private approvalTail: Promise<void> = Promise.resolve();
+  requestApproval(req: ApprovalRequest): Promise<boolean> {
+    let resolveMe!: (b: boolean) => void;
+    const p = new Promise<boolean>((r) => (resolveMe = r));
+    this.approvalTail = this.approvalTail.then(async () => {
+      try {
+        resolveMe(await this.promptApproval(req));
+      } catch {
+        resolveMe(false); // 审批异常 → fail-safe 拒绝
+      }
+    });
+    return p;
+  }
+
+  private async promptApproval(req: ApprovalRequest): Promise<boolean> {
+    if (!isTTY) return false; // 管道模式自动拒绝（无法交互）
+    const rl = readline.createInterface({ input, output: errOut });
+    try {
+      const ans = await rl.question(
+        `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n  ${dim(req.reason)}\n  批准执行？[y/N] `
+      );
+      return /^y/i.test(ans.trim());
+    } finally {
+      rl.close();
+    }
   }
 }

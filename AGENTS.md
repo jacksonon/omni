@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前处于 **MVP 阶段**：单 Agent 循环 + 5 个基础工具，无框架依赖（裸 OpenAI SDK + 主循环）。
+当前为 **MVP+ 阶段**：单 Agent 循环 + 5 个基础工具 + 安全护栏 + 上下文管理 + 子代理/并行工具 + MCP 外部工具，无框架依赖（裸 OpenAI SDK + 主循环）。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -22,6 +22,8 @@ npm start -- "<任务>"     # 运行 tsc 产物（node dist/index.js）
 npm run mock              # 启动本地 mock API 服务器（无 Key 端到端验证，端口 8787）
 npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
+npm run eval              # 评估：真实 API 跑任务集 + 完成率报告（eval-report.json）
+npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 ```
 
 > ⚠️ **打包需要 bun**（`bundle` / `compile` / `npm pack` 的 prepack 都会调用 bun）：`bun --version` 验证。开发运行（`dev`）不需要。
@@ -50,7 +52,7 @@ npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 | 全局配置 | `~/.config/omni/omni.json` | 用户级默认（尊重 `XDG_CONFIG_HOME`） |
 | 项目配置 | `omni.json` / `omni.jsonc` | 从当前目录向上找，最近的生效；git 根与 home 为边界 |
 | 自定义配置 | `OMNI_CONFIG` 环境变量 或 `--config <路径>` | 显式指定 |
-| 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_DEBUG` | 覆盖配置文件；`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体 |
+| 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | 覆盖配置文件；`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体 |
 | CLI 参数 | `-m, --model <名称>` | 最高优先级 |
 
 **配置字段**：
@@ -61,7 +63,15 @@ npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
   "baseURL": "https://api.deepseek.com/v1", // OpenAI 兼容 API 地址
   "apiKey": "sk-xxx",                    // 更推荐用环境变量 OMNI_API_KEY
   "maxSteps": 50,                         // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
-  "showThinking": true                    // 展示思考过程（默认 true；false 关闭终端显示，仍落盘 .omni/last-thinking.md）
+  "showThinking": true,                   // 展示思考过程（默认 true；false 关闭终端显示，仍落盘 .omni/last-thinking.md）
+  "permission": "safe",                  // 安全护栏权限分级：full / safe（危险命令询问，默认）/ ask / read
+  "auditLog": true,                       // 写审计日志（~/.config/omni/audit.log；默认 true）
+  "summarizeAt": 40,                      // 长对话摘要压缩阈值（消息数；0 = 关闭）
+  "preloadFiles": true,                   // 预载任务文本中出现的相关文件（默认 true）
+  "allowSubagents": true,                 // 启用子代理 delegate 工具（默认 true）
+  "mcpServers": {                         // MCP 外部工具（可选）：{ 名称: { command, args?, env? } }
+    "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
+  }
 }
 ```
 
@@ -73,51 +83,69 @@ npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 src/
   index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互）
   version.ts            # 版本号常量
-  ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner
+  ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
-    banner.ts           # 启动 banner（版本/模型/工具/配置来源）
-    interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文
+    banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
+    interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含上下文准备）
   agent/
-    loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用 → 执行 → 结果回传
+    loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
     thinking.ts         # 思考过程：流式显示（浅色保留在屏幕，不折叠）/落盘（reasoning 字段提取）
     messages.ts         # 消息组装：assistant 消息构造、工具参数解析
+    context.ts          # 上下文管理：相关文件预载（selectRelevantFiles）+ 长对话摘要压缩（summarizeContext）
+    subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸）
+    title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     types.ts            # RunOptions / ThinkingDisplay 共享类型
+  safety/
+    index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用）
+    policy.ts           # 权限分级（full/safe/ask/read）+ 危险命令检测
+    audit.ts            # 审计日志落盘（~/.config/omni/audit.log）
   tools/
-    index.ts            # 工具注册表（登记新工具处）
+    index.ts            # 静态工具注册表（新增工具登记处）
     types.ts            # Tool 接口（独立文件避免循环导入）
     util.ts             # 公共小函数：num / resolvePath / truncate / TOOL_OUTPUT_LIMIT
     read-file.ts        # read_file
     write-file.ts       # write_file
     list-directory.ts   # list_directory
     search-code.ts      # search_code
-    run-command.ts      # run_command（危险命令拦截）
+    run-command.ts      # run_command（超时 + 输出截断；危险拦截兜底在 safety/policy）
+    delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
+    mcp.ts              # MCP 客户端：stdio JSON-RPC + 运行时工具发现注册（McpClient/discoverMcpTools）
   config/
-    index.ts            # 配置加载：分层合并
+    index.ts            # 配置加载：分层合并（含权限/审计/上下文/子代理/MCP 字段）
     jsonc.ts            # JSONC 解析（注释/尾逗号）
     discover.ts         # 配置发现：目录内查找 + cwd 向上查找
   tui/
-    state.ts            # TUI 状态（纯对象，无响应式依赖）
-    render.ts           # 命令式渲染：mountTree/repaintTree/startTui（见下方 TUI 说明）
+    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单状态）
+    render.ts           # 渲染编排：mountTree/repaintTree/startTui（行构建在 rows.ts）
+    rows.ts             # 内容行构建：buildBody/computeRows/卡片与审批卡/点击命中（纯函数）
+    layout.ts           # 布局常量 + 按显示列数的折行/截断数学（不依赖 OpenTUI）
+    theme.ts            # 主题色板与取色（system/light/dark）
     output.ts           # TuiOutput：事件 → 状态写入 → 30ms 节流重绘 + 退出前 flush
-    interactive.ts      # TUI 交互模式：输入框提交等待 + /exit /clear /help + 多轮循环
+    interactive.ts      # TUI 交互模式：输入框提交等待 + 命令/审批按键 + 多轮循环
   tui-entry.ts          # TUI 入口（纯 TS 无 JSX）：TTY 门控 + 回退 console
-scripts/mock-server.mjs # 本地 mock OpenAI API，用于无 Key 端到端测试
-scripts/tui-snapshot.ts # TUI 快照验证（createTestRenderer 内存渲染断言）
+scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage 分支）
+scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
+scripts/tui-snapshot.ts # TUI 快照验证（24 场景：渲染/滚动/命令/审批/权限/上下文）
+scripts/eval/tasks.ts   # 评估任务集（mock 离线 / 真实 API 两套）
+scripts/eval/run-eval.ts# 评估运行器：跑任务集 + 完成率报告（npm run eval[:mock]）
 ```
 
-### 核心循环（src/agent.ts）
+### 核心循环（src/agent/loop.ts）
 
 ```
 for step in 1..maxSteps:
-  1. 流式调用 LLM（携带全部历史消息）
+  1. 流式调用 LLM（携带全部历史消息 + 系统提示词）
   2. 无工具调用 → 输出最终回答，结束
-  3. 有工具调用 → 解析 JSON 参数 → 执行工具
-  4. 结果以 role=tool 回传 → 回到 1
+  3. 有工具调用 → 解析 JSON 参数 → **并行执行**（Promise.all）
+     · 每个调用先过 Safety 闸门（权限分级 + 审批 + 审计）
+  4. 结果按原顺序以 role=tool 回传 → 回到 1
 ```
 
 关键机制：
-- **自我纠错**：工具执行失败时，错误信息作为工具结果返回给模型，由模型自己修正；
+- **自我纠错**：工具执行失败/被拒时，错误信息作为工具结果返回给模型，由模型自己修正；
+- **安全护栏**：每个工具调用（含 MCP 外部工具与子代理）过 `Safety.gate`——权限分级（full 直通/safe 危险命令询问/ask 全询问/read 只读）+ 审批 UI（console readline / TUI 审批卡片，管道模式自动拒绝）+ 审计日志；
+- **并行工具**：一次响应的多个 tool_calls 并发执行（Promise.all），结果按调用顺序回传；
 - **截断**：工具结果超过 8000 字符会被截断并提示模型"用 read_file 定向获取"，防止上下文被撑爆；
 - **防死循环**：`maxSteps` 上限（默认 50；典型任务 15 次内完成，20 对复杂任务偏紧）。
 
@@ -142,7 +170,9 @@ for step in 1..maxSteps:
 > - **Markdown 行式渲染**（`tui/markdown.ts`）：最终回答按行解析成带样式片段（加粗/行内代码/斜体/**删除线 ~~**/标题/引用/水平线/围栏代码块/**无序列表 • / 有序列表 / 任务清单 ☑☐**/**GFM 表格**），语法标记（`**`、` `、```` ``` ````、`#`、`~~`、`- [x]`）隐藏（conceal），代码块行统一着色；**表格渲染成 box-drawing 方框**（`┌──┬──┐` 表头加粗青色、`:---:` 居中/`:--` 左/`--:` 右对齐、列宽按内容自然宽度（CJK 全角 2 列）、超内容宽时收缩最宽列并截断单元格——每行总宽 = Σ列 + 3n + 1 ≤ 内容宽，折行不会打破对齐；`markdownToRows(text, contentWidth?)` 传宽度时表格才收缩，缓存 key 带宽度前缀、终端 resize 自动重解析）；流式友好（每次重绘对完整文本重解析，未闭合标记按纯文本处理）。**用户消息后自动插 1 行空白间距**（用户输入与 AI 思考不紧贴，buildBody 的 user 分支）。刻意不用 MarkdownRenderable——它是动态高度块，无法参与尾部窗口裁剪；行式方案每行高度固定为 1；
 > - 快照验证（`tui:snapshot`）用 `createTestRenderer` 内存渲染，与 CLI 共用 mountTree/repaintTree 同一渲染路径，5 个场景断言（布局/溢出跟随/增量重绘/TuiOutput+flush/Markdown 渲染与 conceal，含输入框与用户消息）。
 
-### 工具列表（src/tools.ts）
+### 工具列表（src/tools/）
+
+静态注册表 5 个基础工具；`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
 
 | 工具 | 作用 |
 |---|---|
@@ -151,6 +181,8 @@ for step in 1..maxSteps:
 | `list_directory` | 列出目录内容 |
 | `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
 | `run_command` | 执行 shell 命令（带超时 + 危险命令拦截 + 输出截断） |
+| `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`） |
+| `mcp_*` | **MCP 外部工具**：经 stdio JSON-RPC 调用外部服务器（可选，`mcpServers`） |
 
 ## 对 AI Agent 的协作规范
 
@@ -166,15 +198,17 @@ for step in 1..maxSteps:
 > 来源：仓库根目录 `Agent开发认知梳理.md` 的认知地图（概念层 → 设计层 → 实现层 → 交付层）。
 
 - [x] **MVP**：Agent 循环 + 5 基础工具 + mock 端到端测试
-- [ ] 上下文管理：工具结果截断（✅ 已实现）→ 消息摘要压缩 → 相关文件选择性加载
-- [ ] 安全护栏：危险命令确认、权限分级、审计日志
-- [ ] 评估体系：自建任务集 + 完成率统计；进阶 SWE-bench
-- [ ] CLI 体验：ANSI 着色、TUI 状态展示（对标 opencode）
-- [ ] MCP 接入（外部工具生态）
-- [ ] 子代理（subagent）与并行工具执行
+- [x] 上下文管理：工具结果截断 → 消息摘要压缩 → 相关文件选择性加载
+- [x] 安全护栏：危险命令确认、权限分级、审计日志
+- [x] 评估体系：自建任务集 + 完成率统计（mock 离线可进 CI）
+- [x] CLI 体验：ANSI 着色、TUI 状态展示（对标 opencode）
+- [x] MCP 接入（外部工具生态）
+- [x] 子代理（subagent）与并行工具执行
+- [ ] 进阶：SWE-bench 评测、上下文摘要的跨会话持久化、MCP 资源/提示（prompts）协议
 
 ## 演进日志
 
+- **2026-08-11（第四十七次）**：**路线图全量推进：安全护栏 + 上下文管理 + 并行工具 + 子代理 + MCP + 评估体系 + 工程结构整理**——用户要求「完善所有未完成功能，注意业务划分，构建完美工程结构」（五条路线图全部勾选、功能+结构并行）。**① 结构整理**：`render.ts`（1268 行）拆为 `theme.ts`（主题色板与取色）/`layout.ts`（布局常量 + 折行截断数学，不依赖 OpenTUI）/`rows.ts`（buildBody/computeRows/卡片/点击命中，纯函数）/`render.ts`（仅编排 mountTree/repaintTree/startTui + 兼容 re-export）；新增业务域目录 `safety/`（policy/audit/index）与 `agent/context.ts`。**② 安全护栏**（`src/safety/`）：权限分级 `permission: full/safe/ask/read`（policy.ts：危险命令正则库 + 分级白名单；safe=危险命令询问、ask=所有命令询问、read=只读工具白名单、full=不拦截）；`Output.onApprovalRequest` + 审批队列（TUI 卡片 `⚠ 需要确认` + `[y/n]` 按键审批、console TTY readline、**非 TTY 自动拒绝**）；`audit.ts` 审计日志落盘 `~/.config/omni/audit.log`（JSONL：时间/工具/参数/级别/决策）；loop 工具执行前过 `Safety.gate()`，子代理共用同一闸门。**③ 上下文管理**（`agent/context.ts`）：`selectRelevantFiles`（按任务关键词扫描 cwd 命中文件，预载进首轮 system 附注，preloadMaxFiles 默认 5）+ `summarizeContext`（历史消息超 summarizeAt 阈值（默认 40 条）时用一次轻量 LLM 请求把早期对话压成摘要，保持首条 user 与最近轮次完整，摘要以 system 注入、原消息从历史移除）。**④ 并行工具执行**：loop 支持一次多 `tool_calls` 并发 `Promise.all` 执行、结果按序回传（防模型靠响应顺序推断）。**⑤ 子代理**（`agent/subagent.ts` + `tools/delegate.ts`）：隔离上下文嵌套循环（独立消息历史、无 UI、maxSubagentSteps 默认 10、深度限制 2、共用 Safety 闸门），入口按配置注入 `delegate` 工具。**⑥ MCP 接入**（`tools/mcp.ts`）：`mcpServers` 配置（command/args），stdio JSON-RPC 客户端 `McpClient`（initialize/notifications/initialized/tools/list + 阻塞调用序列化），`discoverMcpTools` 启动时连接各服务器 → `tools/list` → 包装成 Tool 注册进运行时工具表，请求处理 `tools/call` 透传结果。**⑦ 评估体系**（`scripts/eval/`）：`tasks.ts` 任务集（mock 离线 10 条 / 真实 API 8 条）+ `run-eval.ts` 运行器（串行跑任务 → 判定完成（回答含关键词）→ 输出 JSON 报告 + 完成率，`npm run eval` / `npm run eval:mock`）。**⑧ config/示例/入口**：新增 `permission/auditLog/summarizeAt/preloadLimit/mcpServers/maxSubagentSteps` 字段；`main.ts` 新增 `attachRuntime`（Safety + MCP 工具发现 + delegate 注入 + 上下文准备），cli/tui 两入口共用；banner 显示权限档位。验证：typecheck + 快照 **24 场景**全绿（新增场景 22 审批卡/场景 23 权限分级/场景 24 上下文摘要）+ `eval:mock` 100% + console 端到端（banner 权限 + 卡片）+ 审批/审计端到端（ask 管道自动拒绝、audit.log 记录 rejected）+ MCP 端到端（demo_ping 工具发现注册）+ 子代理探针 + 并行工具探针 + `npm run build`（0.79MB）+ TUI PTY 冒烟（退出码 0、零崩溃）+ 代码审查。
 - **2026-08-10（第一次）**：初始化 MVP。Agent 循环（流式 + 工具调用 + 自我纠错）+ 5 工具 + mock server 端到端验证。技术栈：TypeScript / NodeNext / 裸 openai SDK。
 - **2026-08-10（第二次）**：安全与健壮性加固——run_command 危险命令拦截（rm -rf /、mkfs、dd 写盘、fork bomb、git push 等）；统一截断逻辑（tools.ts 单一实现）；search_code 兜底支持正则匹配；参数 NaN 防护；交互模式新增 `/clear`；CLI 新增 `--version`；mock server 简化（恒流式）。
 - **2026-08-10（第三次）**：打包完善——bun 单文件打包（`dist/omni.cjs`）、bun 原生二进制（`release/omni`，零依赖）、npm pack 发布链路（`omni-0.1.0.tgz`，仅含 dist）；全局安装 + 端到端验证通过。

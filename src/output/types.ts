@@ -9,6 +9,7 @@
  */
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
+import type { ApprovalRequest } from '../safety/index.js';
 
 /** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
 export interface TokenUsage {
@@ -23,8 +24,8 @@ export interface Output {
    * main 不再注册自己的 SIGINT 处理（避免打断 TUI 退出清理流程）。
    */
   readonly exitOnCtrlC?: boolean;
-  /** 启动 banner（console 打印横幅；TUI 写入头部信息） */
-  banner(cfg: OmniConfig): void;
+  /** 启动 banner（console 打印横幅；TUI 写入头部信息）。toolNames 为运行时工具链（含动态工具） */
+  banner(cfg: OmniConfig, toolNames?: string[]): void;
   /** 思考展示（流式 write + finish；思考内容保留在屏幕上） */
   thinking: ThinkingDisplay;
   /** 新一轮开始（console 启动 spinner；TUI 更新状态栏） */
@@ -45,6 +46,12 @@ export interface Output {
   onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void;
   /** 一次工具执行完成（ok=是否成功；preview 为输出前几行，可空） */
   onToolResult(ok: boolean, chars: number, preview?: string[]): void;
+  /**
+   * 工具调用审批（安全护栏，权限分级需要确认时调用）：返回 true = 允许执行。
+   * 实现方负责 UI——console 用 readline 询问、TUI 用审批卡片（y/n 或鼠标左右半区）；
+   * 非交互（管道）自动拒绝（fail-safe）。可选：缺省时 loop 直接拒绝。
+   */
+  requestApproval?(req: ApprovalRequest): Promise<boolean>;
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
   /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */

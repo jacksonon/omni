@@ -12,6 +12,9 @@ omni.jsonc
 # 运行产物 / 本地状态
 .omni/
 hello
+# 评估报告 / 审计日志
+eval-report.json
+audit.log
 
 # 系统文件
 .DS_Store

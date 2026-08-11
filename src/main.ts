@@ -12,13 +12,18 @@
  */
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig } from './config/index.js';
+import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
+import { Safety, type ApprovalRequest } from './safety/index.js';
+import { createDelegateTool } from './tools/delegate.js';
 import { tools } from './tools/index.js';
+import { discoverMcpTools } from './tools/mcp.js';
 import { red } from './ui.js';
 import { VERSION } from './version.js';
 
@@ -63,6 +68,46 @@ export function prepareRun(overrides: ConfigOverrides): RunContext {
   return { cfg, client, messages, runOpts };
 }
 
+/**
+ * 组装运行时（console 与 TUI 入口共用）：安全护栏 + 动态工具链 + 上下文管理选项。
+ *
+ * · 安全护栏：权限分级 + 审计 + 审批回调（由 Output 层实现 UI——console readline /
+ *   TUI 审批卡片；管道模式回调返回 false = 自动拒绝，fail-safe）
+ * · 动态工具链：静态 5 工具 + delegate 子代理工具（可关）+ MCP 外部工具（配置了才连）
+ * · 上下文管理：相关文件预载 + 长对话摘要压缩（按配置注入 runOpts.context）
+ */
+export async function attachRuntime(ctx: RunContext, output: Output): Promise<void> {
+  const { cfg, client } = ctx;
+  // 审批回调缺省 = 拒绝（fail-safe）；Output 实现了 requestApproval 则用它
+  const requestApproval: (req: ApprovalRequest) => Promise<boolean> | boolean =
+    output.requestApproval ?? (() => false);
+  const gate = new Safety({
+    tier: cfg.permission,
+    audit: cfg.auditLog,
+    requestApproval,
+    summarize: formatToolCall,
+  });
+  ctx.runOpts.permission = cfg.permission;
+  ctx.runOpts.auditLog = cfg.auditLog;
+  ctx.runOpts.requestApproval = requestApproval;
+  // 上下文管理选项（interactive/single-task 每轮输入后调 prepareContext 用）
+  ctx.runOpts.context = {
+    summarizeAt: cfg.summarizeAt,
+    summarizeWindow: cfg.summarizeWindow,
+    preloadFiles: cfg.preloadFiles,
+    preloadMaxFiles: cfg.preloadMaxFiles,
+    preloadMaxBytes: cfg.preloadMaxBytes,
+  };
+  // 动态工具链：静态工具 + 子代理 delegate（可关）+ MCP 外部工具（失败只警告不阻塞）
+  const toolchain = [...tools];
+  if (cfg.allowSubagents) {
+    toolchain.push(createDelegateTool({ client, model: cfg.model, tools: toolchain, gate, maxSteps: cfg.maxSubagentSteps }));
+  }
+  const mcpTools = await discoverMcpTools(cfg.mcpServers);
+  toolchain.push(...mcpTools);
+  ctx.runOpts.tools = toolchain;
+}
+
 export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<void> {
   const { taskArgs, overrides, help, version } = parseArgs(process.argv.slice(2));
   if (help) {
@@ -74,9 +119,11 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     return;
   }
 
-  const { cfg, client, messages, runOpts } = prepareRun(overrides);
+  const ctx = prepareRun(overrides);
+  const { cfg, client, messages, runOpts } = ctx;
   const output = makeOutput(cfg);
-  output.banner(cfg);
+  await attachRuntime(ctx, output); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  output.banner(cfg, runOpts.tools.map((t) => t.name));
 
   const singleTask = taskArgs.join(' ').trim();
   if (singleTask) {
@@ -89,6 +136,7 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
       });
     }
     messages.push({ role: 'user', content: singleTask });
+    await prepareContext(client, cfg.model, messages, runOpts.context ?? {});
     await runAgent(client, cfg.model, messages, runOpts, output);
     return;
   }

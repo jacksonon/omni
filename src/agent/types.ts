@@ -1,6 +1,8 @@
 /**
  * Agent 层共享类型。
  */
+import type { ContextOptions } from './context.js';
+import type { ApprovalRequest, PermissionTier } from '../safety/index.js';
 import type { Tool } from '../tools/index.js';
 
 export interface RunOptions {
@@ -11,6 +13,17 @@ export interface RunOptions {
   maxSteps?: number;
   /** 是否在终端展示思考过程（默认 true；关闭后仍会捕获并落盘 .omni/last-thinking.md） */
   showThinking?: boolean;
+  /** 安全护栏：权限分级（缺省 full = 直通，兼容旧调用） */
+  permission?: PermissionTier;
+  /** 安全护栏：是否写审计日志 */
+  auditLog?: boolean;
+  /**
+   * 安全护栏：工具审批回调（console readline / TUI 审批卡片；由入口注入）。
+   * 缺省 = 拒绝（fail-safe）——未接入审批 UI 的环境不会静默放行危险操作。
+   */
+  requestApproval?: (req: ApprovalRequest) => Promise<boolean> | boolean;
+  /** 上下文管理：相关文件预载 + 长对话摘要压缩（由入口按配置注入；缺省 = 关闭） */
+  context?: ContextOptions;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */

@@ -10,6 +10,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { PermissionTier } from '../safety/index.js';
+import type { McpServerConfig } from '../tools/mcp.js';
 import { parseJsonc } from './jsonc.js';
 import { findInDir, findProjectConfig } from './discover.js';
 
@@ -22,6 +24,29 @@ export interface OmniConfig {
   userAgent?: string;
   /** 是否在终端展示思考过程（默认 true；关闭后仍会落盘 .omni/last-thinking.md） */
   showThinking: boolean;
+  /**
+   * 安全护栏权限分级：full（直通，危险命令硬拦截）/ safe（危险命令询问）/ ask（全部询问）/ read（只读）。
+   * 默认 safe——危险命令不再直接拦截，改为询问用户。
+   */
+  permission: PermissionTier;
+  /** 是否写审计日志（~/.config/omni/audit.log；默认 true） */
+  auditLog: boolean;
+  /** 长对话摘要压缩：消息数超过该值触发（0 = 关闭；默认 40） */
+  summarizeAt: number;
+  /** 压缩时保留最近多少条消息原文（默认 8） */
+  summarizeWindow: number;
+  /** 是否预载任务文本中出现的相关文件（默认 true） */
+  preloadFiles: boolean;
+  /** 最多预载文件数（默认 5） */
+  preloadMaxFiles: number;
+  /** 单文件预载字节上限（默认 30KB） */
+  preloadMaxBytes: number;
+  /** 是否启用子代理（delegate 工具；默认 true） */
+  allowSubagents: boolean;
+  /** 子代理最大循环步数（默认 10） */
+  maxSubagentSteps: number;
+  /** MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
+  mcpServers?: Record<string, McpServerConfig>;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
   sources: string[];
 }
@@ -36,7 +61,20 @@ export interface ConfigOverrides {
 
 // 轮次上限默认 50：典型任务（探索 ~3 + 修改 ~4 + 验证 ~2 + 修复迭代 ~4）在 15 次内
 // 完成，20 对复杂任务偏紧；50 只作防死循环兜底，多数任务远用不满
-const DEFAULTS = { model: 'gpt-4o-mini', maxSteps: 50, showThinking: true };
+const DEFAULTS = {
+  model: 'gpt-4o-mini',
+  maxSteps: 50,
+  showThinking: true,
+  permission: 'safe' as PermissionTier,
+  auditLog: true,
+  summarizeAt: 40,
+  summarizeWindow: 8,
+  preloadFiles: true,
+  preloadMaxFiles: 5,
+  preloadMaxBytes: 30 * 1024,
+  allowSubagents: true,
+  maxSubagentSteps: 10,
+};
 
 function readJson(file: string): Record<string, unknown> | null {
   try {
@@ -63,6 +101,42 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.maxSteps = Math.max(1, Math.floor(data.maxSteps));
   }
   if (typeof data.showThinking === 'boolean') cfg.showThinking = data.showThinking;
+  if (['full', 'safe', 'ask', 'read'].includes(String(data.permission))) {
+    cfg.permission = data.permission as PermissionTier;
+  }
+  if (typeof data.auditLog === 'boolean') cfg.auditLog = data.auditLog;
+  if (typeof data.summarizeAt === 'number' && Number.isFinite(data.summarizeAt)) {
+    cfg.summarizeAt = Math.max(0, Math.floor(data.summarizeAt));
+  }
+  if (typeof data.summarizeWindow === 'number' && Number.isFinite(data.summarizeWindow)) {
+    cfg.summarizeWindow = Math.max(2, Math.floor(data.summarizeWindow));
+  }
+  if (typeof data.preloadFiles === 'boolean') cfg.preloadFiles = data.preloadFiles;
+  if (typeof data.preloadMaxFiles === 'number' && Number.isFinite(data.preloadMaxFiles)) {
+    cfg.preloadMaxFiles = Math.max(0, Math.floor(data.preloadMaxFiles));
+  }
+  if (typeof data.preloadMaxBytes === 'number' && Number.isFinite(data.preloadMaxBytes)) {
+    cfg.preloadMaxBytes = Math.max(1024, Math.floor(data.preloadMaxBytes));
+  }
+  if (typeof data.allowSubagents === 'boolean') cfg.allowSubagents = data.allowSubagents;
+  if (typeof data.maxSubagentSteps === 'number' && Number.isFinite(data.maxSubagentSteps)) {
+    cfg.maxSubagentSteps = Math.max(1, Math.floor(data.maxSubagentSteps));
+  }
+  if (data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)) {
+    const servers: Record<string, McpServerConfig> = {};
+    for (const [name, v] of Object.entries(data.mcpServers as Record<string, unknown>)) {
+      if (v && typeof v === 'object' && typeof (v as McpServerConfig).command === 'string') {
+        servers[name] = {
+          command: (v as McpServerConfig).command,
+          args: Array.isArray((v as McpServerConfig).args) ? (v as McpServerConfig).args : undefined,
+          env: (v as McpServerConfig).env && typeof (v as McpServerConfig).env === 'object'
+            ? (v as McpServerConfig).env
+            : undefined,
+        };
+      }
+    }
+    if (Object.keys(servers).length > 0) cfg.mcpServers = servers;
+  }
   addSource(sources, label);
 }
 
@@ -112,6 +186,13 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   if (process.env.OMNI_SHOW_THINKING) {
     cfg.showThinking = !['0', 'false', 'no', 'off'].includes(process.env.OMNI_SHOW_THINKING.toLowerCase());
     addSource(sources, '环境变量 OMNI_SHOW_THINKING');
+  }
+  if (process.env.OMNI_PERMISSION) {
+    const p = process.env.OMNI_PERMISSION.toLowerCase();
+    if (['full', 'safe', 'ask', 'read'].includes(p)) {
+      cfg.permission = p as PermissionTier;
+      addSource(sources, '环境变量 OMNI_PERMISSION');
+    }
   }
 
   // 5) CLI 参数
