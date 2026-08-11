@@ -35,7 +35,13 @@ jobs:
         run: npm run build
 
       - name: Compile native binary (release/omni)
-        run: npm run compile
+        run: |
+          # bun 静态解析 @opentui/core 的 chunk-bun 按 libc 分支的 import：
+          # 需同时提供 gnu + musl 原生包，否则 linux 下编译报 Could not resolve musl。
+          # npm 默认拒绝跨 libc 安装，用 --force --no-save 绕过（不影响 package.json/lock）。
+          MUSL_VER=$(node -p "require('./node_modules/@opentui/core/package.json').version")
+          npm i --force --no-save "@opentui/core-linux-x64-musl@${MUSL_VER}"
+          npm run compile
 
       - name: Verify artifacts
         run: |
