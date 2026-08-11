@@ -10,6 +10,13 @@
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 
+/** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
+export interface TokenUsage {
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
 export interface Output {
   /**
    * 渲染端自行处理 Ctrl+C（如 TUI 渲染器的 exitOnCtrlC）时为 true，
@@ -28,17 +35,19 @@ export interface Output {
   onAnswer(text: string): void;
   /** 正文结束（console 补换行，让后续内容从新行开始） */
   onAnswerEnd(): void;
+  /** 一轮流式响应结束时的 token 用量（TUI footer 右下角累计展示；console 忽略） */
+  onUsage(usage: TokenUsage): void;
   /** 模型请求失败 */
   onRequestFailed(err: unknown): void;
   /** 思考内容落盘完成 */
   onThinkingSaved(len: number, file: string | null): void;
-  /** 一次工具调用开始 */
+  /** 一次工具调用开始（argsPreview 为 formatToolCall 的人类可读摘要，非裸 JSON） */
   onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void;
-  /** 一次工具执行完成（ok=是否成功） */
-  onToolResult(ok: boolean, chars: number): void;
+  /** 一次工具执行完成（ok=是否成功；preview 为输出前几行，可空） */
+  onToolResult(ok: boolean, chars: number, preview?: string[]): void;
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
-  /** 交互模式：回显用户输入的消息（TUI 蓝色 ❯；console 彩色回显） */
+  /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */
   onUserMessage(text: string): void;
   /** 交互模式：一轮对话结束（TUI 插入分隔空行；console 补空行） */
   onTurnEnd(): void;

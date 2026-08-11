@@ -34,7 +34,9 @@ export interface ConfigOverrides {
   model?: string;
 }
 
-const DEFAULTS = { model: 'gpt-4o-mini', maxSteps: 20, showThinking: true };
+// 轮次上限默认 50：典型任务（探索 ~3 + 修改 ~4 + 验证 ~2 + 修复迭代 ~4）在 15 次内
+// 完成，20 对复杂任务偏紧；50 只作防死循环兜底，多数任务远用不满
+const DEFAULTS = { model: 'gpt-4o-mini', maxSteps: 50, showThinking: true };
 
 function readJson(file: string): Record<string, unknown> | null {
   try {

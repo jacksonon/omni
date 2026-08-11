@@ -16,10 +16,10 @@ const STREAM_MODE = process.env.MOCK_STREAM === '1';
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
 const REASONING_1 = process.env.MOCK_REASONING === 'long' ? LONG_REASONING : '我需要分析这个任务。\n看起来应该先验证一下运行环境。';
-// MOCK_MARKDOWN=1 时最终回答包含 Markdown（加粗/代码块/列表/标题），用于验证 TUI 行式渲染
+// MOCK_MARKDOWN=1 时最终回答包含 Markdown（加粗/表格/代码块/列表/任务清单/标题），用于验证 TUI 行式渲染
 const MARKDOWN_BASE =
   process.env.MOCK_MARKDOWN === '1'
-    ? '任务完成 ✅ **mock 端到端验证通过**。\n\n## 验证点\n- 工具调用成功\n- 流式输出正常\n\n示例代码：\n```js\nconst result = await runCommand("echo mock-ok");\nconsole.log(result);\n```\n\n行内代码 `mock-ok` 与 **加粗** 均应正确渲染。'
+    ? '任务完成 ✅ **mock 端到端验证通过**。\n\n## 验证点\n- 工具调用成功\n- 流式输出正常\n\n| 项目 | 状态 | 说明 |\n| --- | :---: | --- |\n| 工具调用 | ✅ | 执行成功 |\n| 流式输出 | ✅ | 逐字渲染 |\n| ~~废弃项~~ | ❌ | 已移除 |\n\n- [x] 已完成事项\n- [ ] 待办事项\n\n示例代码：\n```js\nconst result = await runCommand("echo mock-ok");\nconsole.log(result);\n```\n\n行内代码 `mock-ok` 与 **加粗** 均应正确渲染。'
     : '任务完成 ✅ mock 端到端验证通过。';
 // MOCK_LONGLINE=1 时追加一长段无换行的散文（验证长消息自动折行而非截断）
 const LONG_LINE =
@@ -39,7 +39,11 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    const { messages } = JSON.parse(body);
+    const parsed = JSON.parse(body);
+    const { messages } = parsed;
+    const wantUsage = parsed.stream_options?.include_usage === true;
+    // 会话标题生成是独立轻量请求：max_tokens 很小（≤60）→ 返回固定标题
+    const wantTitle = parsed.max_tokens != null && parsed.max_tokens <= 60;
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
 
@@ -47,6 +51,31 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
 
     const sendChunk = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    // stream_options.include_usage 时末 chunk 携带 usage（TUI footer 展示 token 用量）
+    const usageChunk = (id) => ({
+      id,
+      object: 'chat.completion.chunk',
+      created: Date.now(),
+      model: 'mock',
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      ...(wantUsage ? { usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 } } : {}),
+    });
+
+    if (wantTitle) {
+      // 标题请求：直接返回固定标题（首轮对话后 TUI 顶部显示「— mock 端到端验证 —」）
+      sendChunk({
+        id: 'mock-title',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'mock 端到端验证' }, finish_reason: null }],
+      });
+      sendChunk(usageChunk('mock-title-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
     // MOCK_STREAM=1：把 reasoning/content 拆成小块、间隔 20ms 逐字发送，
     // 制造与真实模型一致的成百上千次流式重绘
@@ -98,13 +127,7 @@ const server = http.createServer((req, res) => {
           }));
           await streamDelta(chars(MARKDOWN_ANSWER), (p) => ({ role: 'assistant', content: p }));
         }
-        sendChunk({
-          id: 'mock-done',
-          object: 'chat.completion.chunk',
-          created: Date.now(),
-          model: 'mock',
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        });
+        sendChunk(usageChunk('mock-done'));
         res.write('data: [DONE]\n\n');
         res.end();
       })().catch((e) => {
@@ -182,13 +205,7 @@ const server = http.createServer((req, res) => {
       });
     }
 
-    sendChunk({
-      id: 'mock-3',
-      object: 'chat.completion.chunk',
-      created: Date.now(),
-      model: 'mock',
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    });
+    sendChunk(usageChunk('mock-3'));
     res.write('data: [DONE]\n\n');
     res.end();
   });

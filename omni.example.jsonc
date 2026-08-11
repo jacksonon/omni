@@ -13,7 +13,7 @@
   "apiKey": "sk-你的密钥",
 
   // Agent 最大循环步数（防止死循环）
-  "maxSteps": 20,
+  "maxSteps": 50, // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
 
   // 是否展示思考过程（默认 true）。
   // 设 false 可关闭终端里的 💭 思考显示（完整思考仍会落盘 .omni/last-thinking.md）

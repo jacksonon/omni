@@ -17,6 +17,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { formatToolCall, previewOutput } from '../output/format.js';
 import type { Output } from '../output/types.js';
 import { truncate } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
@@ -51,7 +52,7 @@ export async function runAgent(
   opts: RunOptions,
   output: Output
 ): Promise<void> {
-  const maxSteps = opts.maxSteps ?? 20;
+  const maxSteps = opts.maxSteps ?? 50;
   const toolSchemas = opts.tools.map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -75,12 +76,24 @@ export async function runAgent(
     output.onRound(step, maxSteps);
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     try {
-      stream = await client.chat.completions.create({
-        model,
-        messages: requestMessages,
-        tools: toolSchemas,
-        stream: true,
-      });
+      // stream_options.include_usage：让末个 chunk 携带 usage（TUI footer 展示 token 用量）。
+      // 个别网关不认该字段会直接报错 → 回退为不带 usage 的普通流式请求（用量展示降级为 0）
+      try {
+        stream = await client.chat.completions.create({
+          model,
+          messages: requestMessages,
+          tools: toolSchemas,
+          stream: true,
+          stream_options: { include_usage: true },
+        });
+      } catch {
+        stream = await client.chat.completions.create({
+          model,
+          messages: requestMessages,
+          tools: toolSchemas,
+          stream: true,
+        });
+      }
     } catch (err) {
       output.onRequestFailed(err);
       throw err;
@@ -89,6 +102,7 @@ export async function runAgent(
     // 流式累积：思考（reasoning）、正文（content）与工具调用（tool_calls）
     let content = '';
     let reasoning = '';
+    let lastUsage: OpenAI.Completions.CompletionUsage | null = null;
     const toolCalls = new Map<number, ToolCallAccum>();
     let streamStarted = false;
     const thinking = output.thinking;
@@ -101,6 +115,7 @@ export async function runAgent(
         streamStarted = true;
         output.onStreamStart();
       }
+      if (chunk.usage) lastUsage = chunk.usage; // include_usage 时末 chunk 携带用量
       const delta = chunk.choices[0]?.delta;
       const piece = extractReasoning(delta);
       if (piece) {
@@ -123,6 +138,13 @@ export async function runAgent(
     }
     if (thinking.shown) finishThinking(); // 流结束仍展开 → 兜底结束思考区
     if (content) output.onAnswerEnd();
+    if (lastUsage) {
+      output.onUsage({
+        prompt: lastUsage.prompt_tokens ?? 0,
+        completion: lastUsage.completion_tokens ?? 0,
+        total: lastUsage.total_tokens ?? 0,
+      });
+    }
 
     // 思考内容落盘 + 管道模式提示（提示仅当思考展示开启时输出，保持管道输出可控）
     if (reasoning) {
@@ -148,7 +170,7 @@ export async function runAgent(
         if (!parsed.ok) {
           result = `错误：工具参数不是合法 JSON：${call.function.arguments}`;
         } else {
-          output.onToolStep(step, maxSteps, tool.name, JSON.stringify(parsed.args).slice(0, 120));
+          output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args));
           try {
             result = await tool.execute(parsed.args);
           } catch (err: any) {
@@ -158,7 +180,8 @@ export async function runAgent(
         }
       }
       if (tool) {
-        output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length);
+        // 预览只取前几行（终端展示用），完整结果仍回传给模型
+        output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result));
       }
       messages.push({ role: 'tool', tool_call_id: call.id, content: truncate(result) });
     }

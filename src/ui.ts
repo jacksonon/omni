@@ -27,6 +27,20 @@ export const green = wrap('32');
 export const yellow = wrap('33');
 export const red = wrap('31');
 
+/**
+ * 终端窗口/标签页标题的 OSC 0 序列（`\x1b]0;标题\x07`，tab/窗口标题通用）。
+ * 标题会清洗掉控制字符（防注入任意转义序列）；纯函数，便于单元断言。
+ */
+export function terminalTitleSequence(title: string): string {
+  return `\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`;
+}
+
+/** 设置终端窗口/标签页标题（仅 TTY 下发送——非 TTY 无窗口可设置，写了也是垃圾字节） */
+export function setTerminalTitle(title: string): void {
+  if (!isTTY) return;
+  process.stdout.write(terminalTitleSequence(title));
+}
+
 export interface Spinner {
   /** 停止并清除 spinner 行，可附带一条结束消息 */
   stop(msg?: string): void;

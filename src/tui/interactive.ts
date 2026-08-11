@@ -2,7 +2,12 @@
  * TUI 交互模式：底部输入框 + 消息滚动区，多轮对话全部在 TUI 内完成。
  *
  * 流程：等待输入框 Enter 提交 → 回显用户消息 → 跑一轮 Agent → 等待下一轮。
- * 支持 /exit、/clear、/help 命令。Ctrl+C 由渲染器的 exitOnCtrlC 处理（直接退出进程）。
+ * 支持 / 命令（/theme /exit /clear /help，见 commands.ts）：
+ *   · 提交 `/xxx` 时调 runCommand 分发，'exit' 结果结束循环；
+ *   · 带面板的命令（如 /theme）打开 state.menu——面板打开期间键盘事件由
+ *     handleMenuKey 在全局 keypress 里先于输入框拦截（↑/↓/数字选择、Enter 确认、
+ *     Esc 取消），输入框不参与，也不会误提交。
+ * Ctrl+C 由渲染器的 exitOnCtrlC 处理（直接退出进程）。
  *
  * 按键刷新：输入框内部编辑会自行 requestRender，但这里再订阅一次 keypress
  * 显式重绘，兜底保证键入字符实时上屏（与 30ms 节流无关，代价很小）。
@@ -11,7 +16,10 @@ import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { TextareaRenderable } from '@opentui/core';
 import { runAgent } from '../agent/loop.js';
+import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
+import { setTerminalTitle } from '../ui.js';
+import { handleMenuKey, runCommand } from './commands.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
 import type { ScrollAction, TuiState } from './state.js';
@@ -76,22 +84,79 @@ export async function runTuiInteractive(
   const input = session.input;
   if (!input) return;
 
-  const unsubKey = session.onKeyPress((key) => {
+  const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
+    // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
+    // 让输入框先插入字符、repaintTree 再读到最新文本。合并 pending：连发按键只挂一个定时器。
+    const paintNow = (): void => void session.paint().catch(() => {});
+    let deferredPending = false;
+    const paintDeferred = (): void => {
+      if (deferredPending) return;
+      deferredPending = true;
+      setTimeout(() => {
+        deferredPending = false;
+        void session.paint().catch(() => {});
+      }, 0);
+    };
+    // 命令面板打开时：面板消费所有按键（↑/↓/数字选择、Enter 确认、Esc 取消），
+    // preventDefault 阻止输入框处理——不会把方向键当光标移动、Enter 也不会误提交。
+    if (state.menu) {
+      if (handleMenuKey(key, state)) key.preventDefault();
+      paintNow();
+      return;
+    }
+    // 命令联想列表（输入以 / 开头时显示）：非模态——只有 ↑/↓/Tab/Enter/Esc 被消费，
+    // 其它按键照常输入（列表在下次 paint 按最新文本过滤，互不影响）。
+    // Enter：填入高亮命令并 submit()——走主循环正常分发路径（/exit 也能正确退出）。
+    const sug = state.cmdSuggest;
+    if (sug && sug.items.length > 0) {
+      const sel = Math.min(sug.selected, sug.items.length - 1);
+      if (key.name === 'up') {
+        sug.selected = (sel - 1 + sug.items.length) % sug.items.length;
+        key.preventDefault();
+      } else if (key.name === 'down') {
+        sug.selected = (sel + 1) % sug.items.length;
+        key.preventDefault();
+      } else if (key.name === 'tab') {
+        // Tab：只填入命令（带尾空格让联想自动消失），用户可继续编辑后 Enter 执行
+        input.setText(`/${sug.items[sel]} `);
+        state.cmdSuggest = null;
+        key.preventDefault();
+      } else if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+        // Enter：直接执行高亮命令（填入后 submit，主循环 runCommand 分发）
+        input.setText(`/${sug.items[sel]}`);
+        state.cmdSuggest = null;
+        key.preventDefault();
+        input.submit();
+      } else if (key.name === 'escape' || key.name === 'esc') {
+        // 记录关闭时的输入文本：文本不变则保持隐藏（否则 repaintTree 会复活列表）
+        state.cmdSuggest = null;
+        state.cmdSuggestDismissedText = state.inputText;
+        key.preventDefault();
+      }
+      paintNow();
+      return;
+    }
     // 滚动键：发出一次性意图（computeRows 消费），preventDefault 阻止输入框处理该键
     const action = resolveScrollAction(key, input);
     if (action) {
       state.scrollIntent = { action };
       key.preventDefault();
     }
-    // 输入框自行 requestRender，这里兜底重绘（无状态变更时 repaint 是幂等的）
-    void session.paint().catch(() => {});
+    // 输入框自行 requestRender，这里兜底重绘（无状态变更时 repaint 是幂等的）；
+    // 再延迟一帧刷新联想列表（输入框 buffer 在按键后才更新，见上）
+    paintNow();
+    paintDeferred();
   });
 
   try {
     input.focus();
+    let turn = 0; // 真实对话轮次（斜杠命令/空输入不计）
     for (;;) {
-      out.onWaitForInput();
-      await session.paint();
+      // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
+      if (!state.menu) {
+        out.onWaitForInput();
+        await session.paint();
+      }
       const text = await waitForSubmit(input);
       const cmd = text.trim();
       // 提交后回到最新：新消息和后续回答应立即可见
@@ -101,14 +166,12 @@ export async function runTuiInteractive(
       await session.paint(); // 立即清掉输入框，避免残留文本影响阅读
 
       if (!cmd) continue;
-      if (cmd === '/exit') break;
-      if (cmd === '/clear') {
-        messages.length = 0;
-        out.clearScrollback();
-        continue;
-      }
-      if (cmd === '/help') {
-        out.showHelp();
+      // 斜杠命令：注册表分发（/theme 打开面板、/exit 返回 'exit' 结束循环…）
+      if (cmd.startsWith('/')) {
+        const ctx = { state, out, session, input, messages };
+        const result = await runCommand(ctx, cmd);
+        await session.paint();
+        if (result === 'exit') break;
         continue;
       }
 
@@ -117,6 +180,18 @@ export async function runTuiInteractive(
       // Agent 运行期间 blur 输入框：防止运行中键入的内容混入下一轮输入
       input.blur();
       await runAgent(client, model, messages, runOpts, out);
+      turn++;
+      // 首轮对话结束后异步生成会话标题：独立轻量 LLM 调用，不阻塞主流程
+      // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；
+      // 失败静默，不打扰对话）
+      if (turn === 1 && state.sessionTitle === null) {
+        void generateSessionTitle(client, model, messages).then((title) => {
+          if (title && state.sessionTitle === null) {
+            state.sessionTitle = title;
+            setTerminalTitle(title);
+          }
+        });
+      }
       out.onTurnEnd();
       input.focus();
     }

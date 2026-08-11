@@ -5,10 +5,10 @@
  */
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
-import type { Output } from '../output/types.js';
+import type { Output, TokenUsage } from '../output/types.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
-import { appendLine, clearLines, pushLine, type TuiState } from './state.js';
+import { appendLine, clearLines, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
 
 const NOOP_THINKING: ThinkingDisplay = {
   get shown() {
@@ -54,6 +54,9 @@ export class TuiOutput implements Output {
     };
   }
 
+  /** spinner 定时器（200ms 间隔循环动画帧） */
+  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
+
   /** 30ms 节流：合并同一突发内的多次变更，避免逐 chunk 重绘 */
   private schedulePaint(): void {
     if (this.paintTimer) return;
@@ -68,7 +71,27 @@ export class TuiOutput implements Output {
    * 退出前调用：取消节流计时器并立即画最后一帧，
    * 确保 30ms 窗口内未渲染的最终状态（如“任务完成”）上屏。
    */
+  private startSpinner(): void {
+    this.stopSpinner();
+    this.spinnerTimer = setInterval(() => {
+      if (this.state.spinnerIndex >= 0) {
+        this.state.spinnerIndex = (this.state.spinnerIndex + 1) % SPINNER_FRAMES.length;
+        const f = SPINNER_FRAMES[this.state.spinnerIndex];
+        this.state.status = `${f} 思考中`;
+        this.schedulePaint();
+      }
+    }, 200);
+  }
+
+  private stopSpinner(): void {
+    if (this.spinnerTimer) {
+      clearInterval(this.spinnerTimer);
+      this.spinnerTimer = null;
+    }
+  }
+
   async flush(): Promise<void> {
+    this.stopSpinner();
     if (this.paintTimer) {
       clearTimeout(this.paintTimer);
       this.paintTimer = null;
@@ -83,13 +106,22 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
+  private toolSeq = 0;
+
   onRound(step: number, maxSteps: number): void {
-    this.state.status = `思考中（第 ${step + 1}/${maxSteps} 轮）`;
+    this.state.spinnerIndex = 0;
+    this.state.generating = false;
+    const f = SPINNER_FRAMES[0];
+    this.state.status = `${f} 思考中`;
+    this.startSpinner();
     this.schedulePaint();
   }
 
   onStreamStart(): void {
-    this.state.status = '生成中…';
+    this.stopSpinner();
+    this.state.spinnerIndex = -1;
+    this.state.generating = true;
+    this.state.status = '';
     this.schedulePaint();
   }
 
@@ -99,10 +131,21 @@ export class TuiOutput implements Output {
   }
 
   onAnswerEnd(): void {
-    // 段落天然换行，无需额外处理
+    this.state.generating = false;
+    this.schedulePaint();
+  }
+
+  onUsage(usage: TokenUsage): void {
+    // 会话累计 token 用量（footer 右下角展示；usage 来自流末 chunk，网关不支持时为 0）
+    this.state.tokens.prompt += usage.prompt;
+    this.state.tokens.completion += usage.completion;
+    this.state.tokens.total += usage.total;
+    this.schedulePaint();
   }
 
   onRequestFailed(err: unknown): void {
+    this.stopSpinner();
+    this.state.spinnerIndex = -1;
     this.state.status = '请求失败';
     pushLine(this.state, { kind: 'warn', text: `请求失败：${(err as Error)?.message ?? String(err)}` });
     this.schedulePaint();
@@ -113,13 +156,27 @@ export class TuiOutput implements Output {
   }
 
   onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void {
-    pushLine(this.state, { kind: 'step', text: `→ [${step + 1}/${maxSteps}] ${name}(${argsPreview})` });
-    this.state.status = `执行中（第 ${step + 1}/${maxSteps} 轮）`;
+    // 工具调用画成卡片（kind='tool'）：标题 + 摘要；完成后收起、点击展开
+    pushLine(this.state, {
+      kind: 'tool',
+      text: argsPreview,
+      card: { id: ++this.toolSeq, name, summary: argsPreview, status: 'running', output: [], expanded: false },
+    });
+    this.state.status = '执行中…';
     this.schedulePaint();
   }
 
-  onToolResult(ok: boolean, chars: number): void {
-    pushLine(this.state, { kind: ok ? 'result-ok' : 'result-err', text: ok ? `✓ 返回 ${chars} 字符` : `✗ 返回 ${chars} 字符` });
+  onToolResult(ok: boolean, chars: number, preview?: string[]): void {
+    // 找到最近一个执行中的卡片，填入结果（默认收起，点击展开看输出）
+    for (let i = this.state.lines.length - 1; i >= 0; i--) {
+      const l = this.state.lines[i];
+      if (l.kind === 'tool' && l.card?.status === 'running') {
+        l.card.status = ok ? 'ok' : 'err';
+        l.card.output = preview ?? [];
+        l.card.chars = chars;
+        break;
+      }
+    }
     this.schedulePaint();
   }
 
@@ -130,7 +187,8 @@ export class TuiOutput implements Output {
   }
 
   onUserMessage(text: string): void {
-    pushLine(this.state, { kind: 'user', text: `❯ ${text}` });
+    // 用户消息不带 ❯ 前缀（蓝细线 + 白字灰底气泡本身已标识用户输入）
+    pushLine(this.state, { kind: 'user', text });
     this.schedulePaint();
   }
 
@@ -140,7 +198,8 @@ export class TuiOutput implements Output {
   }
 
   onWaitForInput(): void {
-    this.state.status = '等待输入… Enter 发送 · Shift+Enter 换行 · /exit 退出';
+    // 不显示等待文本（输入框已有占位符）；保留空白状态栏
+    this.state.status = '';
     this.schedulePaint();
   }
 
@@ -152,7 +211,7 @@ export class TuiOutput implements Output {
   showHelp(): void {
     pushLine(this.state, { kind: 'task', text: '帮助' });
     pushLine(this.state, { kind: 'meta', text: '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。' });
-    pushLine(this.state, { kind: 'meta', text: '/exit 退出 · /clear 清空上下文 · /help 显示帮助' });
+    pushLine(this.state, { kind: 'meta', text: '/theme 主题（亮/暗/跟随系统） · /thinking 思考展开/折叠 · /exit 退出 · /clear 清空上下文 · /help 显示帮助' });
     pushLine(this.state, { kind: 'meta', text: '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部' });
     pushLine(this.state, { kind: 'meta', text: '完整命令参考：omni --help（控制台）' });
     this.schedulePaint();
