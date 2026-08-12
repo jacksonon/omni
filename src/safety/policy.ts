@@ -5,14 +5,14 @@
  * 而是作为安全层的一部分——所有工具（含 MCP 外部工具 / 子代理）统一过闸。
  *
  * 权限分级（permission 配置）：
- *   · full —— 一切直接执行（当前行为；危险命令仍**硬拦截**，这是保命防线）
- *   · safe —— 危险命令改为**询问用户**（不再硬拦截，交给用户决定）；其余直接执行
+ *   · full —— 一切直接执行（含危险命令，用户选择全量信任即不设防）
+ *   · safe —— 危险命令**询问用户**（默认；交给用户决定），其余直接执行
  *   · ask  —— 所有工具调用都询问
  *   · read —— 只读模式：run_command / write_file 直接拒绝（不给询问机会）
  */
 export type PermissionTier = 'full' | 'safe' | 'ask' | 'read';
 
-/** 危险命令清单：命中即拦（full 硬拦 / safe 以上转审批）。正则保守，避免误伤 */ 
+/** 危险命令清单：命中即拦（full 直通 / safe 以上转审批）。正则保守，避免误伤 */ 
 const DANGEROUS_COMMANDS: { re: RegExp; msg: string }[] = [
   { re: /(\s|^)rm\s+-[a-z]*r[a-z]*f\s+\//, msg: '对根目录执行 rm -rf' },
   { re: /(\s|^)mkfs/, msg: '格式化磁盘（mkfs）' },
@@ -36,7 +36,7 @@ const WRITE_TOOLS = new Set(['write_file', 'run_command']);
 /**
  * 工具调用过闸结果：
  *   · allow —— 直接放行
- *   · deny —— 直接拒绝（读模式 / full 级危险命令硬拦截），reason 说明原因
+ *   · deny —— 直接拒绝（读模式），reason 说明原因
  *   · needApproval —— 需要用户确认，reason 说明为什么
  */
 export type GateResult =
@@ -53,13 +53,10 @@ export function gateTool(tier: PermissionTier, toolName: string, args: Record<st
     }
     return { allow: true };
   }
-  // run_command：危险命令检测（full 硬拦 / safe+ 转审批）
-  if (toolName === 'run_command') {
+  // run_command：危险命令检测（full 直通任意命令 / safe 及以上转审批）
+  if (toolName === 'run_command' && tier !== 'full') {
     const danger = dangerousCommand(String(args.command ?? ''));
-    if (danger) {
-      if (tier === 'full') return { allow: false, reason: danger };
-      return { needApproval: true, reason: danger };
-    }
+    if (danger) return { needApproval: true, reason: danger };
   }
   // ask：所有工具调用都需要确认
   if (tier === 'ask') return { needApproval: true, reason: 'ask 模式：所有工具调用需用户确认' };

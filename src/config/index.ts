@@ -25,8 +25,8 @@ export interface OmniConfig {
   /** 是否在终端展示思考过程（默认 true；关闭后仍会落盘 .omni/last-thinking.md） */
   showThinking: boolean;
   /**
-   * 安全护栏权限分级：full（直通，危险命令硬拦截）/ safe（危险命令询问）/ ask（全部询问）/ read（只读）。
-   * 默认 safe——危险命令不再直接拦截，改为询问用户。
+   * 安全护栏权限分级：full（直通，任意命令含危险命令）/ safe（危险命令询问）/ ask（全部询问）/ read（只读）。
+   * 默认 safe——危险命令不直接拦截，改为询问用户，用户允许后执行。
    */
   permission: PermissionTier;
   /** 是否写审计日志（~/.config/omni/audit.log；默认 true） */

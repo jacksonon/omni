@@ -22,8 +22,8 @@
 
   // ── 安全护栏 ─────────────────────────────────────────────
   // 权限分级（默认 safe）：
-  //   full —— 直通（危险命令仍硬拦截）
-  //   safe —— 危险命令（rm -rf /、git push、mkfs 等）改为询问用户
+  //   full —— 直通（任意命令，含危险命令）
+  //   safe —— 危险命令（rm -rf /、git push、mkfs 等）询问用户，允许后执行
   //   ask  —— 所有工具调用都询问
   //   read —— 只读：run_command / write_file 直接拒绝
   // 也可用环境变量 OMNI_PERMISSION=safe 临时指定

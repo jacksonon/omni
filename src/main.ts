@@ -80,9 +80,12 @@ export function prepareRun(overrides: ConfigOverrides): RunContext {
  */
 export async function attachRuntime(ctx: RunContext, output: Output): Promise<void> {
   const { cfg, client } = ctx;
-  // 审批回调缺省 = 拒绝（fail-safe）；Output 实现了 requestApproval 则用它
-  const requestApproval: (req: ApprovalRequest) => Promise<boolean> | boolean =
-    output.requestApproval ?? (() => false);
+  // 审批回调缺省 = 拒绝（fail-safe）；Output 实现了 requestApproval 则用它。
+  // 注意 bind(output)：实现里用了 this（ConsoleOutput 串行队列 / TuiOutput 审批队列），
+  // 未绑定直接传递会在 Safety 侧以普通函数调用 → this 错位 → 静默抛错被 fail-safe 吞掉（审批永不弹出）
+  const requestApproval: (req: ApprovalRequest) => Promise<boolean> | boolean = output.requestApproval
+    ? output.requestApproval.bind(output)
+    : () => false;
   const gate = new Safety({
     tier: cfg.permission,
     audit: cfg.auditLog,

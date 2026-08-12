@@ -1375,10 +1375,9 @@ async function main(): Promise<void> {
 
   // 场景 23：安全策略（权限分级 gateTool 纯函数）
   console.log('=== 场景 23：权限分级 ===');
-  // full：危险命令硬拦截，普通命令放行
-  const g23a = gateTool('full', 'run_command', { command: 'git push origin main' });
-  if (!('allow' in g23a) || g23a.allow !== false) {
-    console.error('✗ 场景 23 full 级未硬拦截 git push');
+  // full：任意命令直通（含危险命令——用户选择全量信任），普通命令放行
+  if (gateTool('full', 'run_command', { command: 'git push origin main' }).allow !== true) {
+    console.error('✗ 场景 23 full 级危险命令未直通');
     process.exit(1);
   }
   if (gateTool('full', 'run_command', { command: 'echo hi' }).allow !== true) {
@@ -1413,7 +1412,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 23 read 级误拦 read_file');
     process.exit(1);
   }
-  console.log('✓ 场景 23 通过：权限分级（full 硬拦 / safe 危险转审批 / ask 全询问 / read 只读）');
+  console.log('✓ 场景 23 通过：权限分级（full 直通任意命令 / safe 危险转审批 / ask 全询问 / read 只读）');
 
   // 场景 24：上下文管理（相关文件预载 + 摘要切分边界）
   console.log('=== 场景 24：上下文管理 ===');

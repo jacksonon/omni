@@ -581,6 +581,26 @@ interface MouseEventLike {
 export async function startTui(state: TuiState, opts?: { withInput?: boolean }): Promise<TuiSession> {
   const renderer = await createCliRenderer({ exitOnCtrlC: true });
   const ctx = renderer as unknown as RenderContext; // CliRenderer 实现了 RenderContext
+  // 跟踪 onKeyPress/主题订阅：stop() 时统一清理，避免订阅泄漏
+  const keyUnsubs = new Set<() => void>();
+  // 工具审批卡片按键（安全护栏）：y/Enter 批准、n/Esc 拒绝。
+  // 必须在能力协商（waitForThemeMode）之前注册——实测 OpenTUI 在协商/paint 完成后
+  // 才注册的 keypress 全局监听收不到按键（事件派发已与监听注册脱节）
+  const onApprovalKey = (key: TuiKey): void => {
+    if (!state.approval) return;
+    if (key.name === 'y' || key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+      state.approvalResolve?.(true);
+    } else if (key.name === 'n' || key.name === 'escape' || key.name === 'esc') {
+      state.approvalResolve?.(false);
+    }
+    key.preventDefault(); // 消费按键不进入输入框（运行中输入框已 blur；并行审批串行排队）
+    void paint();
+  };
+  const unsubApproval = () => {
+    renderer.keyInput.off('keypress', onApprovalKey);
+  };
+  keyUnsubs.add(unsubApproval);
+  renderer.keyInput.on('keypress', onApprovalKey);
   // 主题检测：OpenTUI 通过 OSC 10/11 查询终端背景色并按亮度推断亮/暗。
   // 结果存 detectedTheme（themeMode=system 时取色用）；超时/不支持保持默认深色。
   try {
@@ -682,8 +702,6 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   };
 
   await paint();
-  // 跟踪 onKeyPress 订阅：stop() 时统一清理，避免订阅泄漏
-  const keyUnsubs = new Set<() => void>();
   // 主题检测可能晚于首帧完成（OSC 查询异步返回）：收到 theme_mode 事件时
   // 更新 detectedTheme 并重绘（repaintTree 每帧按最新主题取色；system 模式自动跟随）
   const onThemeMode = (mode: unknown): void => {

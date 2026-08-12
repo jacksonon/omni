@@ -59,7 +59,7 @@ export class Safety {
       return { allow: true };
     }
     if ('allow' in g) {
-      // 直接拒绝（读模式 / full 级危险命令硬拦截）
+      // 直接拒绝（读模式）
       this.record(tool.name, summary, `deny:${g.reason}`);
       return { allow: false, reason: g.reason };
     }

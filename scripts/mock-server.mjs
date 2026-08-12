@@ -14,6 +14,8 @@ const PORT = Number(process.env.PORT ?? 8787);
 const STREAM_MODE = process.env.MOCK_STREAM === '1';
 // MOCK_WRITE=1 时第一轮改发 write_file 调用（/undo 撤销 e2e 验证：写入 undo-test.txt）
 const MOCK_WRITE = process.env.MOCK_WRITE === '1';
+// MOCK_DANGEROUS=1 时第一轮发危险命令 run_command（full 直通 / safe 审批 e2e 验证）
+const MOCK_DANGEROUS = process.env.MOCK_DANGEROUS === '1';
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -60,11 +62,14 @@ const server = http.createServer((req, res) => {
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是记忆整理员');
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
-    // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）。
+    // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）；
+    // MOCK_DANGEROUS=1 时发危险命令（full 直通 / safe 审批 e2e）。
     // 注意用 JSON.stringify 生成 arguments——单引号字符串里的 \n 是真实换行，会让 JSON 非法
     const firstToolCall = MOCK_WRITE
       ? { name: 'write_file', arguments: JSON.stringify({ path: 'undo-test.txt', content: 'mock-write-content\n' }) }
-      : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
+      : MOCK_DANGEROUS
+        ? { name: 'run_command', arguments: '{"command":"git push origin main"}' }
+        : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
     // 计划模式（/plan）：loop 按 planMode 过滤后请求的 tools 里没有 run_command →
     // 直接返回一份「实施计划」回答（不发起工具调用），验证只读工具链 e2e
     const planMode =
