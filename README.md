@@ -11,7 +11,7 @@
 - **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
-- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、`/` 命令（主题切换/思考折叠）
+- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、`/` 命令（主题切换/思考折叠/计划模式/撤销修改/init 生成记忆）
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
 - **三种产物**：单文件 JS 包（`dist/omni.cjs`）、原生二进制（`release/omni`）、npm 安装包；GitHub Actions 打 tag 自动构建发布
@@ -78,6 +78,9 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "showThinking": true,                  // 展示思考过程（仍落盘）
   "permission": "safe",                  // 安全护栏：full / safe（默认）/ ask / read
   "auditLog": true,                      // 写审计日志（默认 true）
+  "agentsFile": true,                    // 项目记忆 AGENTS.md：每次会话首轮自动加载（默认 true）
+  "globalAgentsFile": true,              // 全局记忆 ~/.config/omni/AGENTS.md：跨项目偏好，级联在项目记忆之前
+  "autoMemory": true,                    // 会话结束时把新表达的偏好自动追加进全局记忆
   "summarizeAt": 40,                     // 长对话摘要压缩阈值（0 = 关闭）
   "preloadFiles": true,                  // 预载任务相关文件（默认 true）
   "allowSubagents": true,                // 启用子代理（默认 true）
@@ -147,7 +150,12 @@ npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
 - [x] 评估体系：自建任务集 + 完成率统计（mock 离线可进 CI）
 - [x] MCP 接入（外部工具生态）
 - [x] 子代理（subagent）与并行工具执行
-- [ ] 进阶：SWE-bench 评测、上下文摘要的跨会话持久化、MCP 资源/提示（prompts）协议
+- [x] **记忆系统**：全局记忆 + 项目记忆级联加载（`/init` 项目 / `/init --global` 全局 / 会话结束自动写入 + 偏好去重/矛盾合并）
+- [x] **会话持久化**：交互对话 JSONL 落盘 + `--continue` / `-r <id>` / `-l` 跨进程恢复
+- [x] **/plan 计划模式**：只读工具过滤 + 输出实施计划，确认后再执行
+- [x] **/undo 文件撤销**：write_file 自动快照 + `/undo` / `/undo all` 回滚本次会话修改
+- [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换，子代理同步
+- [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 技术栈
 

@@ -12,6 +12,8 @@ import http from 'node:http';
 const PORT = Number(process.env.PORT ?? 8787);
 // MOCK_STREAM=1 时逐字分块 + 延迟发送（模拟真实模型几百次流式重绘，用于高重绘压力测试）
 const STREAM_MODE = process.env.MOCK_STREAM === '1';
+// MOCK_WRITE=1 时第一轮改发 write_file 调用（/undo 撤销 e2e 验证：写入 undo-test.txt）
+const MOCK_WRITE = process.env.MOCK_WRITE === '1';
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -47,8 +49,27 @@ const server = http.createServer((req, res) => {
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('把以下 Agent 对话压缩成要点摘要');
     // 会话标题生成是独立轻量请求：max_tokens 很小（≤60）→ 返回固定标题
     const wantTitle = parsed.max_tokens != null && parsed.max_tokens <= 60;
+    // /init 生成 AGENTS.md 是独立请求（system 提示词以「你是项目文档工程师」开头）
+    const wantInit =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是项目文档工程师');
+    // /init --global 生成全局记忆（system 提示词以「你是用户偏好整理员」开头）
+    const wantInitGlobal =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是用户偏好整理员');
+    // 会话结束自动写入全局记忆（system 提示词以「你是记忆整理员」开头）
+    const wantMemoryExtract =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是记忆整理员');
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
+    // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）。
+    // 注意用 JSON.stringify 生成 arguments——单引号字符串里的 \n 是真实换行，会让 JSON 非法
+    const firstToolCall = MOCK_WRITE
+      ? { name: 'write_file', arguments: JSON.stringify({ path: 'undo-test.txt', content: 'mock-write-content\n' }) }
+      : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
+    // 计划模式（/plan）：loop 按 planMode 过滤后请求的 tools 里没有 run_command →
+    // 直接返回一份「实施计划」回答（不发起工具调用），验证只读工具链 e2e
+    const planMode =
+      Array.isArray(parsed.tools) &&
+      !parsed.tools.some((t) => t.function?.name === 'run_command');
 
     // omni 始终以流式请求，这里统一返回 SSE
     res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -95,6 +116,102 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (wantInitGlobal) {
+      // /init --global 请求：返回固定全局记忆（全局记忆 e2e 验证）
+      sendChunk({
+        id: 'mock-init-global',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content:
+                '# 全局偏好\n\n## 通用\n- 优先使用中文回复\n- 代码注释使用中文\n\n## 工具\n- 常用 npm 管理依赖\n\n## 工作方式\n- 小步快跑，先验证再继续',
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-init-global-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (wantMemoryExtract) {
+      // 会话结束自动写入：返回固定偏好条目（autoMemory e2e 验证——追加进全局记忆文件）
+      sendChunk({
+        id: 'mock-memory-extract',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '- 用户偏好使用中文回复\n- 用户喜欢简洁的步骤说明' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-memory-extract-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (planMode && !hasToolResult) {
+      // 计划模式请求：返回实施计划（不调用任何工具；若历史已有 tool 结果则正常回答）
+      sendChunk({
+        id: 'mock-plan',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content:
+                '## 实施计划（计划模式 · 只读调研）\n\n1. 用 list_directory 查看项目根目录结构；\n2. 用 read_file 阅读 package.json 确认脚本；\n3. 确认后退出计划模式再执行修改。',
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-plan-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (wantInit) {
+      // /init 请求：返回固定 AGENTS.md（/init e2e 验证——生成文件内容 + 不覆盖已存在）
+      sendChunk({
+        id: 'mock-init',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content:
+                '# Mock 项目\n\n## 项目是什么\nmock 端到端验证用项目。\n\n## 常用命令\n- `npm run dev` 开发运行\n\n## 对 AI Agent 的协作规范\n- 改代码前先读相关文件。',
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-init-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
     // MOCK_STREAM=1：把 reasoning/content 拆成小块、间隔 20ms 逐字发送，
     // 制造与真实模型一致的成百上千次流式重绘
     if (STREAM_MODE) {
@@ -130,7 +247,7 @@ const server = http.createServer((req, res) => {
                       index: 0,
                       id: 'call_mock',
                       type: 'function',
-                      function: { name: 'run_command', arguments: '{"command":"echo mock-ok"}' },
+                      function: firstToolCall,
                     },
                   ],
                 },
@@ -177,15 +294,14 @@ const server = http.createServer((req, res) => {
         model: 'mock',
         choices: [
           {
-            index: 0,
-            delta: {
+            index: 0,              delta: {
               role: 'assistant',
               tool_calls: [
                 {
                   index: 0,
                   id: 'call_mock',
                   type: 'function',
-                  function: { name: 'run_command', arguments: '{"command":"echo mock-ok"}' },
+                  function: firstToolCall,
                 },
               ],
             },

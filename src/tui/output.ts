@@ -242,7 +242,7 @@ export class TuiOutput implements Output {
   showHelp(): void {
     pushLine(this.state, { kind: 'task', text: '帮助' });
     pushLine(this.state, { kind: 'meta', text: '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。' });
-    pushLine(this.state, { kind: 'meta', text: '/theme 主题（亮/暗/跟随系统） · /thinking 思考展开/折叠 · /exit 退出 · /clear 清空上下文 · /help 显示帮助' });
+    pushLine(this.state, { kind: 'meta', text: '/theme 主题（亮/暗/跟随系统） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /init [--global] 生成项目/全局记忆 · /exit 退出 · /clear 清空上下文 · /help 显示帮助' });
     pushLine(this.state, { kind: 'meta', text: '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部' });
     pushLine(this.state, { kind: 'meta', text: '完整命令参考：omni --help（控制台）' });
     this.schedulePaint();

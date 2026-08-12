@@ -14,6 +14,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
+import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
@@ -24,7 +25,8 @@ import { Safety, type ApprovalRequest } from './safety/index.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { tools } from './tools/index.js';
 import { discoverMcpTools } from './tools/mcp.js';
-import { red } from './ui.js';
+import { UndoStack, withUndoSnapshot } from './tools/undo.js';
+import { dim, red } from './ui.js';
 import { VERSION } from './version.js';
 
 // 抑制第三方依赖（openai SDK 等）触发的 Node 过时 API 警告，保持终端干净
@@ -90,8 +92,13 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   ctx.runOpts.permission = cfg.permission;
   ctx.runOpts.auditLog = cfg.auditLog;
   ctx.runOpts.requestApproval = requestApproval;
+  // 共用闸门（delegate 子代理用它）：/permission 切换时 setTier 同步，子代理与主循环权限一致
+  ctx.runOpts.safetyGate = gate;
   // 上下文管理选项（interactive/single-task 每轮输入后调 prepareContext 用）
   ctx.runOpts.context = {
+    agentsFile: cfg.agentsFile,
+    globalAgentsFile: cfg.globalAgentsFile,
+    autoMemory: cfg.autoMemory,
     summarizeAt: cfg.summarizeAt,
     summarizeWindow: cfg.summarizeWindow,
     preloadFiles: cfg.preloadFiles,
@@ -99,23 +106,87 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     preloadMaxBytes: cfg.preloadMaxBytes,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ MCP 外部工具（失败只警告不阻塞）
-  const toolchain = [...tools];
+  // /undo 撤销：先把静态工具表包装（write_file 执行前快照原内容进 UndoStack），
+  // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
+  const undoStack = new UndoStack();
+  const tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
+  const toolchain = [...tracked];
   if (cfg.allowSubagents) {
-    toolchain.push(createDelegateTool({ client, model: cfg.model, tools: toolchain, gate, maxSteps: cfg.maxSubagentSteps }));
+    toolchain.push(createDelegateTool({ client, model: cfg.model, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps }));
   }
   const mcpTools = await discoverMcpTools(cfg.mcpServers);
   toolchain.push(...mcpTools);
   ctx.runOpts.tools = toolchain;
+  ctx.runOpts.undoStack = undoStack;
+}
+
+/**
+ * -l / --list-sessions：列出已保存的会话（无需 API Key，先于 prepareRun 处理）。
+ * 返回 true = 已处理（调用方应 return）。
+ */
+export async function printSessions(): Promise<boolean> {
+  const list = await listSessions();
+  if (list.length === 0) {
+    console.log(dim('暂无已保存的会话（交互模式退出时自动落盘，可用 --continue 恢复）。'));
+  } else {
+    console.log('已保存的会话（--continue 恢复最近一次，-r <id> 恢复指定）：');
+    for (const s of list) console.log(formatSessionInfo(s));
+  }
+  return true;
+}
+
+/**
+ * 会话恢复 + 交互模式创建（console 与 TUI 入口共用）：
+ * · --continue → 恢复当前项目最近一次会话；-r <id> → 恢复指定会话（找不到 → 打印错误并返回 false = 终止）；
+ * · 恢复成功 → 历史消息载入 messages，runOpts.sessionPath 指向原文件（继续追加）；
+ * · 无恢复 → 交互模式自动创建新会话文件（单任务模式不落盘）。
+ */
+export async function prepareSessionPersistence(
+  flags: { continueSession: boolean },
+  resumeId: string | null,
+  cfg: OmniConfig,
+  messages: ChatCompletionMessageParam[],
+  runOpts: RunOptions,
+  singleTask: boolean
+): Promise<boolean> {
+  if (flags.continueSession || resumeId) {
+    const file = resumeId
+      ? await findSessionById(resumeId)
+      : ((await latestSession(process.cwd()))?.path ?? null);
+    if (!file) {
+      if (resumeId) {
+        console.error(red(`会话「${resumeId}」不存在（用 -l / --list-sessions 查看可用会话）。`));
+        return false;
+      }
+      console.log(dim('未找到当前项目的历史会话，从新会话开始。'));
+    } else {
+      const loaded = await loadSession(file);
+      if (loaded) {
+        messages.push(...loaded.messages);
+        runOpts.sessionPath = file; // 恢复后继续追加到同一会话文件
+        console.log(dim(`已恢复会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}）`));
+      }
+    }
+  }
+  // 交互模式：无恢复时创建新会话文件（单任务模式不落盘）
+  if (!singleTask && !runOpts.sessionPath) {
+    runOpts.sessionPath = (await createSession({ project: process.cwd(), model: cfg.model })) ?? undefined;
+  }
+  return true;
 }
 
 export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<void> {
-  const { taskArgs, overrides, help, version } = parseArgs(process.argv.slice(2));
+  const { taskArgs, overrides, flags, resumeId, help, version } = parseArgs(process.argv.slice(2));
   if (help) {
     printHelp();
     return;
   }
   if (version) {
     console.log(`omni v${VERSION}`);
+    return;
+  }
+  if (flags.listSessions) {
+    await printSessions();
     return;
   }
 
@@ -126,6 +197,9 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   output.banner(cfg, runOpts.tools.map((t) => t.name));
 
   const singleTask = taskArgs.join(' ').trim();
+  // 会话持久化：--continue / -r 恢复历史；交互模式自动创建会话文件
+  const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
+  if (!ok) return;
   if (singleTask) {
     // 单次任务模式：Ctrl+C 清掉 spinner 行后退出（交互模式保留 readline 默认的清行行为）
     // TUI 模式由渲染器自行处理 Ctrl+C（output.exitOnCtrlC），这里跳过避免打断全屏退出清理

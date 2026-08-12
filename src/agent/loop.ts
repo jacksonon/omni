@@ -20,7 +20,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { formatToolCall, previewOutput } from '../output/format.js';
 import type { Output } from '../output/types.js';
 import { Safety } from '../safety/index.js';
-import { truncate } from '../tools/index.js';
+import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
@@ -42,6 +42,32 @@ const SYSTEM_PROMPT = `你是 Omni，一个运行在终端里的编程 Agent（A
 /** 工具返回的错误前缀（用于 ✓/✗ 判定与自我纠错提示） */
 const TOOL_ERROR_PREFIX = /^(错误|执行失败|已拦截)/;
 
+/** 计划模式（/plan）下对模型暴露的只读工具：只允许调研，不允许修改/执行 */
+export const READ_ONLY_TOOLS = new Set(['read_file', 'list_directory', 'search_code']);
+
+/** 计划模式追加在系统提示词末尾的说明（指导模型只调研、输出方案，不直接动手） */
+export const PLAN_MODE_NOTE =
+  '\n\n当前处于**计划模式（只读）**：只允许使用 read_file / list_directory / search_code 调研，' +
+  '禁止修改文件、执行命令或调用其它工具。请先充分调研项目现状，' +
+  '然后输出一份清晰可执行的**实施计划**（分步骤，每步说明改动点与验证方式），' +
+  '不要直接动手修改。用户确认计划后会退出计划模式再执行。';
+
+/**
+ * 构建工具 JSON Schema 列表（纯函数，供测试）：
+ * planMode 时只保留只读工具（read_file / list_directory / search_code），
+ * 其余工具（write_file / run_command / delegate / MCP 等）不出现在模型可见的工具表里。
+ */
+export function buildToolSchemas(
+  tools: Pick<Tool, 'name' | 'description' | 'parameters'>[],
+  planMode: boolean
+): { type: 'function'; function: { name: string; description: string; parameters: Tool['parameters'] } }[] {
+  const visible = planMode ? tools.filter((t) => READ_ONLY_TOOLS.has(t.name)) : tools;
+  return visible.map((t) => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
 /**
  * 运行 Agent 循环。messages 会被就地追加（assistant 消息与 tool 结果），
  * 因此交互模式下可跨轮次保持对话上下文。
@@ -54,10 +80,9 @@ export async function runAgent(
   output: Output
 ): Promise<void> {
   const maxSteps = opts.maxSteps ?? 50;
-  const toolSchemas = opts.tools.map((t) => ({
-    type: 'function' as const,
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
+  // 计划模式（/plan）：只暴露只读工具 + 系统提示词追加只读说明（由 buildToolSchemas 过滤）
+  const planMode = opts.planMode === true;
+  const toolSchemas = buildToolSchemas(opts.tools, planMode);
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
   const safety = new Safety({
@@ -71,7 +96,7 @@ export async function runAgent(
     // 系统提示词：每轮请求前构造带 system 消息的副本（不能 push 进 messages——
     // 该数组被原地追加 assistant/tool 消息用于跨轮上下文，直接 push 会每轮重复累积）
     const requestMessages: ChatCompletionMessageParam[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: planMode ? SYSTEM_PROMPT + PLAN_MODE_NOTE : SYSTEM_PROMPT },
       ...messages,
     ];
 

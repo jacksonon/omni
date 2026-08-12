@@ -17,6 +17,8 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { TextareaRenderable } from '@opentui/core';
 import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
+import { maybeWriteGlobalMemory } from '../agent/memory.js';
+import { appendSessionMessages, finalizeSession, persistableMessages } from '../agent/session.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { setTerminalTitle } from '../ui.js';
@@ -84,6 +86,21 @@ export async function runTuiInteractive(
 ): Promise<void> {
   const input = session.input;
   if (!input) return;
+  // 会话持久化：增量追加每轮新增消息。
+  // savedCount 统计**可落盘**消息数（脚手架 system 消息不落盘，见 persistableMessages）：
+  // · --continue/-r 恢复时历史已在文件里 → 从可落盘数起步，避免整段重复追加（review 抓到的 bug）；
+  // · prepareContext 每轮可能 unshift 全局/项目记忆/预载 system 消息（不落盘）——按可落盘数
+  //   切片不受下标偏移影响（否则恢复会话会把上轮回答重复写盘，实测抓到）
+  const sessionPath = runOpts.sessionPath;
+  let savedCount = persistableMessages(messages).length;
+  const persistTurn = async (): Promise<void> => {
+    if (!sessionPath) return;
+    const persistable = persistableMessages(messages);
+    if (savedCount > persistable.length) savedCount = 0; // /clear 后上下文重置
+    if (persistable.length <= savedCount) return;
+    await appendSessionMessages(sessionPath, persistable.slice(savedCount)).catch(() => {});
+    savedCount = persistable.length;
+  };
 
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
@@ -163,6 +180,8 @@ export async function runTuiInteractive(
 
   try {
     input.focus();
+    // 权限档位：初始取入口配置（runOpts.permission = cfg.permission），/permission 面板切换
+    state.permission = runOpts.permission ?? state.permission;
     let turn = 0; // 真实对话轮次（斜杠命令/空输入不计）
     for (;;) {
       // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
@@ -181,10 +200,17 @@ export async function runTuiInteractive(
       if (!cmd) continue;
       // 斜杠命令：注册表分发（/theme 打开面板、/exit 返回 'exit' 结束循环…）
       if (cmd.startsWith('/')) {
-        const ctx = { state, out, session, input, messages };
+        const ctx = { state, out, session, input, messages, client, model, undoStack: runOpts.undoStack };
         const result = await runCommand(ctx, cmd);
         await session.paint();
-        if (result === 'exit') break;
+        if (result === 'exit') {
+          // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
+          if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
+            await maybeWriteGlobalMemory(client, model, messages).catch(() => {});
+          }
+          if (sessionPath) await finalizeSession(sessionPath).catch(() => {}); // 刷新会话更新时间
+          break;
+        }
         continue;
       }
 
@@ -194,7 +220,12 @@ export async function runTuiInteractive(
       await prepareContext(client, model, messages, runOpts.context ?? {});
       // Agent 运行期间 blur 输入框：防止运行中键入的内容混入下一轮输入
       input.blur();
+      runOpts.planMode = state.planMode; // 每轮同步计划模式（/plan 切换即时生效）
+      // 每轮同步权限档位：主循环按 runOpts.permission 新建 Safety；共用闸门（子代理）setTier 同步
+      runOpts.permission = state.permission;
+      runOpts.safetyGate?.setTier(state.permission);
       await runAgent(client, model, messages, runOpts, out);
+      await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
       turn++;
       // 首轮对话结束后异步生成会话标题：独立轻量 LLM 调用，不阻塞主流程
       // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；

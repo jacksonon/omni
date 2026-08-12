@@ -6,6 +6,9 @@
  *
  * 运行：npm run tui:snapshot（或 bun run ./scripts/tui-snapshot.ts）
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
@@ -986,7 +989,7 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 5) {
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 9) {
     console.error(`✗ 场景 19 输入 / 未列出全部命令: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
@@ -1052,7 +1055,7 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  const checks19 = ['/theme', '切换主题', '/thinking', '展开 / 折叠全部思考过程', '/exit', '/clear', '/help'];
+  const checks19 = ['/theme', '切换主题', '/thinking', '展开 / 折叠全部思考过程', '/plan', '计划模式（只读调研，不修改文件）', '/undo', '撤销本次会话的 write_file 修改', '/init', '生成 AGENTS.md 项目记忆文件', '/exit', '/clear', '/help'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1460,6 +1463,731 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 24 通过：相关文件预载（命中/过滤）+ 摘要切分不切开工具配对');
+
+  // 场景 25：项目记忆 AGENTS.md —— 发现/加载/注入 + /init 命令注册与生成
+  console.log('=== 场景 25：项目记忆（AGENTS.md 自动加载 + /init）===');
+  const { findAgentsFile, loadProjectMemory, memoryMessage, MEMORY_MAX_BYTES } = await import('../src/agent/memory.js');
+  const { cleanInitContent, findProjectRoot, collectProjectSnapshot, writeAgentsFile } = await import('../src/agent/init.js');
+  const { prepareContext } = await import('../src/agent/context.js');
+  // a) 发现：从 src/ 向上找到仓库根 AGENTS.md（git 根为边界）
+  const agents25 = findAgentsFile(path.join(process.cwd(), 'src'));
+  if (!agents25 || !agents25.endsWith('AGENTS.md')) {
+    console.error(`✗ 场景 25 AGENTS.md 向上发现失败: ${JSON.stringify(agents25)}`);
+    process.exit(1);
+  }
+  // b) 加载：内容非空且超长截断（本仓库 AGENTS.md 超过上限，应带截断提示）
+  const mem25 = await loadProjectMemory(path.join(process.cwd(), 'src'));
+  if (!mem25 || mem25.content.length === 0) {
+    console.error('✗ 场景 25 loadProjectMemory 返回空');
+    process.exit(1);
+  }
+  if (mem25.content.length > MEMORY_MAX_BYTES + 500) {
+    console.error(`✗ 场景 25 记忆未截断（${mem25.content.length} > ${MEMORY_MAX_BYTES}）`);
+    process.exit(1);
+  }
+  // c) 消息构建：system 角色 + 前缀标识（prepareContext 靠它去重）
+  const msg25 = memoryMessage(mem25);
+  if (msg25.role !== 'system' || typeof msg25.content !== 'string' || !msg25.content.startsWith('[项目记忆 AGENTS.md')) {
+    console.error(`✗ 场景 25 memoryMessage 格式错误: ${JSON.stringify(msg25.content).slice(0, 80)}`);
+    process.exit(1);
+  }
+  // d) prepareContext 注入：agentsFile 默认开 → 首轮自动注入一次；再调用不重复
+  //    （globalAgentsFile: false 隔离：本机若有 ~/.config/omni/AGENTS.md 不影响本场景断言）
+  const msgs25: ChatCompletionMessageParam[] = [{ role: 'user', content: '你好' }];
+  await prepareContext({} as never, 'mock', msgs25, { agentsFile: true, globalAgentsFile: false, preloadFiles: false, summarizeAt: 0 });
+  const memoryCount25 = msgs25.filter((m) => typeof m.content === 'string' && m.content.startsWith('[项目记忆 AGENTS.md')).length;
+  if (memoryCount25 !== 1 || msgs25[0].role !== 'system') {
+    console.error(`✗ 场景 25 记忆未注入到首部（count=${memoryCount25}）`);
+    process.exit(1);
+  }
+  await prepareContext({} as never, 'mock', msgs25, { agentsFile: true, globalAgentsFile: false, preloadFiles: false, summarizeAt: 0 });
+  if (msgs25.filter((m) => typeof m.content === 'string' && m.content.startsWith('[项目记忆 AGENTS.md')).length !== 1) {
+    console.error('✗ 场景 25 记忆重复注入');
+    process.exit(1);
+  }
+  // e) agentsFile=false 关闭：不注入
+  const msgs25b: ChatCompletionMessageParam[] = [{ role: 'user', content: '你好' }];
+  await prepareContext({} as never, 'mock', msgs25b, { agentsFile: false, globalAgentsFile: false, preloadFiles: false, summarizeAt: 0 });
+  if (msgs25b.some((m) => typeof m.content === 'string' && m.content.startsWith('[项目记忆 AGENTS.md'))) {
+    console.error('✗ 场景 25 agentsFile=false 仍注入记忆');
+    process.exit(1);
+  }
+  // f) /init 命令注册：findCommand 命中 + 联想列出（findCommand/runCommand 已在场景 21 声明，这里用别名）
+  const { findCommand: findCmd25, runCommand: runCmd25, commandSuggestions } = await import('../src/tui/commands.js');
+  if (!findCmd25('init')) {
+    console.error('✗ 场景 25 /init 命令未注册');
+    process.exit(1);
+  }
+  if (!commandSuggestions('in').some((c) => c.name === 'init')) {
+    console.error('✗ 场景 25 /init 不在联想列表');
+    process.exit(1);
+  }
+  // g) 生成：cleanInitContent 去代码块包裹；快照含顶层内容；项目根定位 git 根
+  if (cleanInitContent('```markdown\n# 标题\n内容\n```') !== '# 标题\n内容') {
+    console.error(`✗ 场景 25 cleanInitContent 未去代码块: ${JSON.stringify(cleanInitContent('```markdown\n# 标题\n内容\n```'))}`);
+    process.exit(1);
+  }
+  const root25 = findProjectRoot(process.cwd());
+  if (!root25.endsWith('omni')) {
+    console.error(`✗ 场景 25 findProjectRoot 未定位到 git 根: ${root25}`);
+    process.exit(1);
+  }
+  const snap25 = await collectProjectSnapshot(root25);
+  if (!snap25.includes('package.json') || !snap25.includes('## 顶层内容')) {
+    console.error('✗ 场景 25 项目快照缺关键内容');
+    process.exit(1);
+  }
+  // h) 写入：已存在 AGENTS.md → 拒绝覆盖（本仓库根目录就有 AGENTS.md）
+  const write25 = await writeAgentsFile(root25, '# 测试内容');
+  if (write25.ok) {
+    console.error('✗ 场景 25 已存在的 AGENTS.md 被覆盖');
+    process.exit(1);
+  }
+  if (!write25.path.endsWith('AGENTS.md')) {
+    console.error(`✗ 场景 25 写入目标路径错误: ${write25.path}`);
+    process.exit(1);
+  }
+  // i) /init 无 client 时提示不崩溃（命令层守卫）
+  const s25 = createTuiState();
+  await runCmd25({ state: s25, out: {}, session: {}, input: {}, messages: [] } as never, '/init');
+  if (!s25.lines.some((l) => l.text.includes('/init 需要 LLM 客户端'))) {
+    console.error('✗ 场景 25 /init 无 client 未提示');
+    process.exit(1);
+  }
+  console.log('✓ 场景 25 通过：AGENTS.md 发现/截断/消息构建 + prepareContext 注入与去重 + /init 注册/生成/防覆盖');
+
+  // 场景 26：全局记忆 —— 路径/级联注入/自动写入 + /init --global 分发
+  console.log('=== 场景 26：全局记忆（级联加载 + 自动写入 + --global）===');
+  const memModule26 = await import('../src/agent/memory.js');
+  const { globalMemoryDir, globalMemoryPath, loadGlobalMemory, globalMemoryMessage, extractSessionMemory, appendGlobalMemory, GLOBAL_MEMORY_PREFIX } = memModule26;
+  const initModule26 = await import('../src/agent/init.js');
+  const { generateGlobalAgentsFile, writeGlobalAgentsFile, collectGlobalSnapshot } = initModule26;
+  // a) 路径：尊重 XDG_CONFIG_HOME（临时目录下 omni/AGENTS.md）
+  const oldXdg = process.env.XDG_CONFIG_HOME;
+  const fakeXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-global-'));
+  process.env.XDG_CONFIG_HOME = fakeXdg;
+  const globalDir26 = globalMemoryDir();
+  const globalFile26 = globalMemoryPath();
+  if (globalDir26 !== path.join(fakeXdg, 'omni') || !globalFile26.endsWith(path.join('omni', 'AGENTS.md'))) {
+    console.error(`✗ 场景 26 全局记忆路径错误: dir=${globalDir26} file=${globalFile26}`);
+    process.exit(1);
+  }
+  // b) 写入全局记忆文件 → 读取 + 消息构建
+  fs.mkdirSync(globalDir26, { recursive: true });
+  fs.writeFileSync(globalFile26, '# 全局偏好\n- 用中文回复\n');
+  const gmem26 = await loadGlobalMemory();
+  if (!gmem26 || !gmem26.content.includes('用中文回复')) {
+    console.error('✗ 场景 26 loadGlobalMemory 读取失败');
+    process.exit(1);
+  }
+  const gmsg26 = globalMemoryMessage(gmem26);
+  if (gmsg26.role !== 'system' || typeof gmsg26.content !== 'string' || !gmsg26.content.startsWith(GLOBAL_MEMORY_PREFIX)) {
+    console.error(`✗ 场景 26 globalMemoryMessage 格式错误: ${JSON.stringify(gmsg26.content).slice(0, 60)}`);
+    process.exit(1);
+  }
+  // c) 级联注入顺序：全局在前、项目在后（repo 根有 AGENTS.md；XDG 指向临时全局）
+  const msgs26: ChatCompletionMessageParam[] = [{ role: 'user', content: '你好' }];
+  await prepareContext({} as never, 'mock', msgs26, { agentsFile: true, globalAgentsFile: true, preloadFiles: false, summarizeAt: 0 });
+  const isGlobal26 = (m: ChatCompletionMessageParam): boolean => typeof m.content === 'string' && m.content.startsWith('[全局记忆 AGENTS.md');
+  const isProject26 = (m: ChatCompletionMessageParam): boolean => typeof m.content === 'string' && m.content.startsWith('[项目记忆 AGENTS.md');
+  const gi26 = msgs26.findIndex(isGlobal26);
+  const pi26 = msgs26.findIndex(isProject26);
+  if (gi26 < 0 || pi26 < 0 || gi26 >= pi26) {
+    console.error(`✗ 场景 26 级联顺序错误（全局=${gi26} 项目=${pi26}，应 全局<项目）: ${JSON.stringify(msgs26.map((m) => typeof m.content === 'string' ? m.content.slice(0, 14) : m.role))}`);
+    process.exit(1);
+  }
+  // d) globalAgentsFile=false：全局不注入、项目仍注入
+  const msgs26b: ChatCompletionMessageParam[] = [{ role: 'user', content: '你好' }];
+  await prepareContext({} as never, 'mock', msgs26b, { agentsFile: true, globalAgentsFile: false, preloadFiles: false, summarizeAt: 0 });
+  if (msgs26b.some(isGlobal26) || !msgs26b.some(isProject26)) {
+    console.error('✗ 场景 26 globalAgentsFile=false 未隔离全局记忆');
+    process.exit(1);
+  }
+  // e) 自动写入：extractSessionMemory 提取 → appendGlobalMemory 追加（含防膨胀裁剪）
+  const fakeStream26 = {
+    async *[Symbol.asyncIterator]() {
+      yield { choices: [{ delta: { content: '- 用户偏好使用中文回复\n- 用户喜欢简洁的步骤说明' } }] };
+    },
+  };
+  const fakeClient26: any = { chat: { completions: { create: async () => fakeStream26 } } };
+  const entry26 = await extractSessionMemory(fakeClient26, 'mock', [{ role: 'user', content: '以后都用中文回复我' }]);
+  if (!entry26 || !entry26.includes('中文回复')) {
+    console.error(`✗ 场景 26 extractSessionMemory 提取失败: ${JSON.stringify(entry26)}`);
+    process.exit(1);
+  }
+  // 无新偏好：返回「无」→ null
+  const noneStream26 = {
+    async *[Symbol.asyncIterator]() {
+      yield { choices: [{ delta: { content: '无' } }] };
+    },
+  };
+  const entryNone26 = await extractSessionMemory({ chat: { completions: { create: async () => noneStream26 } } } as any, 'mock', [{ role: 'user', content: '帮我看下时间' }]);
+  if (entryNone26 !== null) {
+    console.error(`✗ 场景 26 「无」未转为 null: ${JSON.stringify(entryNone26)}`);
+    process.exit(1);
+  }
+  const appended26 = await appendGlobalMemory(entry26!);
+  if (!appended26) {
+    console.error('✗ 场景 26 appendGlobalMemory 失败');
+    process.exit(1);
+  }
+  const after26 = fs.readFileSync(globalFile26, 'utf8');
+  // 新条目写入；去重生效：「用户偏好使用中文回复」与已有的「- 用中文回复」近似重复 → 不重复追加
+  if (!after26.includes('用户喜欢简洁的步骤说明') || !after26.includes('## 会话记忆（')) {
+    console.error(`✗ 场景 26 自动写入内容缺失: ${JSON.stringify(after26.slice(-200))}`);
+    process.exit(1);
+  }
+  if (after26.includes('用户偏好使用中文回复')) {
+    console.error(`✗ 场景 26 去重未生效（「用户偏好使用中文回复」与「- 用中文回复」重复，不应追加）: ${JSON.stringify(after26.slice(-200))}`);
+    process.exit(1);
+  }
+  // 防膨胀：写满 60KB 上限 → 追加后只保留最近段落
+  fs.writeFileSync(globalFile26, '手写头部\n\n' + '## 会话记忆（2026-01-01）\n\n' + 'x'.repeat(50 * 1024));
+  await appendGlobalMemory('最新偏好条目');
+  const trimmed26 = fs.readFileSync(globalFile26, 'utf8');
+  if (Buffer.byteLength(trimmed26, 'utf8') > 60 * 1024 + 200 || !trimmed26.includes('最新偏好条目') || !trimmed26.includes('手写头部')) {
+    console.error(`✗ 场景 26 防膨胀裁剪失败（${Buffer.byteLength(trimmed26, 'utf8')} 字节）`);
+    process.exit(1);
+  }
+  // f) /init --global：命令分发带 --global 参数（无 client 时提示，不崩溃）；
+  //    writeGlobalAgentsFile 已存在不覆盖
+  const s26 = createTuiState();
+  await runCmd25({ state: s26, out: {}, session: {}, input: {}, messages: [], args: '--global' } as never, '/init --global');
+  if (!s26.lines.some((l) => l.text.includes('/init 需要 LLM 客户端'))) {
+    console.error('✗ 场景 26 /init --global 无 client 未提示');
+    process.exit(1);
+  }
+  const gw26 = await writeGlobalAgentsFile('# 新内容');
+  if (gw26.ok) {
+    console.error('✗ 场景 26 writeGlobalAgentsFile 覆盖了已存在文件');
+    process.exit(1);
+  }
+  if (!gw26.path.endsWith('AGENTS.md')) {
+    console.error(`✗ 场景 26 全局写入路径错误: ${gw26.path}`);
+    process.exit(1);
+  }
+  // g) 快照：全局目录内容 + 运行环境
+  const snap26 = await collectGlobalSnapshot();
+  if (!snap26.includes('全局配置目录') || !snap26.includes('运行环境')) {
+    console.error('✗ 场景 26 全局快照缺关键内容');
+    process.exit(1);
+  }
+  // 清理临时 XDG 目录并恢复环境
+  process.env.XDG_CONFIG_HOME = oldXdg;
+  fs.rmSync(fakeXdg, { recursive: true, force: true });
+  console.log('✓ 场景 26 通过：全局记忆路径/级联顺序/开关隔离/自动提取写入/防膨胀/--global 分发/防覆盖');
+
+  // 场景 27：偏好去重 / 矛盾合并 —— normalizeMemoryItem/topicKey/extractMemoryItems/dedupMemoryItems
+  //          + appendGlobalMemory 合并语义（重复跳过、矛盾原位替换、全重复返回 false）
+  console.log('=== 场景 27：偏好去重（重复跳过 + 矛盾替换）===');
+  const mem27 = await import('../src/agent/memory.js');
+  const { normalizeMemoryItem, topicKey, extractMemoryItems, dedupMemoryItems, appendGlobalMemory: appendGlobalMemory27 } = mem27;
+  // a) 规范化：去 - 前缀/标点/折叠空白/小写
+  if (normalizeMemoryItem('- 用中文回复。') !== '用中文回复') {
+    console.error(`✗ 场景 27 normalizeMemoryItem 失败: ${JSON.stringify(normalizeMemoryItem('- 用中文回复。'))}`);
+    process.exit(1);
+  }
+  if (normalizeMemoryItem('  Reply   in  English  ') !== 'reply in english') {
+    console.error(`✗ 场景 27 normalizeMemoryItem 未折叠空白/小写: ${JSON.stringify(normalizeMemoryItem('  Reply   in  English  '))}`);
+    process.exit(1);
+  }
+  // b) 主题关键词：取分隔符前的短语
+  if (topicKey('回复语言：中文') !== '回复语言' || topicKey('常用命令：npm') !== '常用命令') {
+    console.error(`✗ 场景 27 topicKey 提取失败: ${JSON.stringify([topicKey('回复语言：中文'), topicKey('常用命令：npm')])}`);
+    process.exit(1);
+  }
+  // c) 条目提取：- 开头的行；纯文本兜底为单条目
+  if (JSON.stringify(extractMemoryItems('- 用中文\n- 用 npm')) !== JSON.stringify(['- 用中文', '- 用 npm'])) {
+    console.error(`✗ 场景 27 extractMemoryItems 失败: ${JSON.stringify(extractMemoryItems('- 用中文\n- 用 npm'))}`);
+    process.exit(1);
+  }
+  if (JSON.stringify(extractMemoryItems('喜欢简洁的回答')) !== JSON.stringify(['喜欢简洁的回答'])) {
+    console.error(`✗ 场景 27 extractMemoryItems 纯文本兜底失败: ${JSON.stringify(extractMemoryItems('喜欢简洁的回答'))}`);
+    process.exit(1);
+  }
+  // d) 去重：精确重复跳过；近似重复（包含关系）跳过；同主题矛盾替换
+  const known27 = new Map<string, string>([
+    ['用中文回复', '- 用中文回复'],
+    ['回复语言中文', '- 回复语言：中文'],
+    ['喜欢简洁的回答', '- 喜欢简洁的回答'],
+  ]);
+  const d27 = dedupMemoryItems(known27, [
+    '- 用中文回复。', // 规范化后与「用中文回复」相同 → 重复跳过
+    '- 用中文回复，谢谢', // 包含「用中文回复」→ 近似重复跳过
+    '- 回复语言：English', // 同主题（回复语言）不同内容 → 矛盾替换
+    '- 用户喜欢先用 npm 安装', // 新条目
+  ]);
+  if (d27.fresh.length !== 1 || d27.fresh[0] !== '- 用户喜欢先用 npm 安装') {
+    console.error(`✗ 场景 27 去重结果错误: ${JSON.stringify(d27)}`);
+    process.exit(1);
+  }
+  if (d27.replaced.get('- 回复语言：中文') !== '- 回复语言：English') {
+    console.error(`✗ 场景 27 矛盾替换未生效: ${JSON.stringify([...d27.replaced])}`);
+    process.exit(1);
+  }
+  if (d27.replaced.has('- 用中文回复')) {
+    console.error('✗ 场景 27 重复条目被误判为矛盾替换');
+    process.exit(1);
+  }
+  // e) appendGlobalMemory 合并语义（临时 XDG）：追加 → 再追加相同 → 全重复返回 false 且不堆积
+  const oldXdg27 = process.env.XDG_CONFIG_HOME;
+  const fakeXdg27 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-dedup-'));
+  process.env.XDG_CONFIG_HOME = fakeXdg27;
+  const ok27a = await appendGlobalMemory27('- 回复语言：中文');
+  const ok27b = await appendGlobalMemory27('- 回复语言：中文。'); // 规范化后重复
+  const ok27c = await appendGlobalMemory27('- 回复语言：English'); // 同主题（回复语言）矛盾替换
+  const memFile27 = path.join(fakeXdg27, 'omni', 'AGENTS.md');
+  const final27 = fs.readFileSync(memFile27, 'utf8');
+  if (!ok27a || ok27b !== false || !ok27c) {
+    console.error(`✗ 场景 27 appendGlobalMemory 返回语义错误: ${JSON.stringify([ok27a, ok27b, ok27c])}`);
+    process.exit(1);
+  }
+  // 重复追加不堆积（「回复语言」主题全文只出现一次）；矛盾后「English」原位替换掉「中文」
+  const topicCount27 = final27.split('回复语言').length - 1;
+  if (topicCount27 !== 1 || !final27.includes('回复语言：English') || final27.includes('回复语言：中文')) {
+    console.error(`✗ 场景 27 去重/替换结果错误（主题出现 ${topicCount27} 次）: ${JSON.stringify(final27)}`);
+    process.exit(1);
+  }
+  process.env.XDG_CONFIG_HOME = oldXdg27;
+  fs.rmSync(fakeXdg27, { recursive: true, force: true });
+  console.log('✓ 场景 27 通过：规范化/主题提取/去重/矛盾替换 + appendGlobalMemory 合并（重复 false、原位替换）');
+
+  // 场景 28：/plan 计划模式 —— 命令注册 + 只读工具过滤 + 系统提示 + footer 常驻指示
+  console.log('=== 场景 28：/plan 计划模式（只读调研）===');
+  const loop28 = await import('../src/agent/loop.js');
+  const { buildToolSchemas, READ_ONLY_TOOLS, PLAN_MODE_NOTE } = loop28;
+  const cmd28 = await import('../src/tui/commands.js');
+  const { findCommand: findCmd28, runCommand: runCmd28 } = cmd28;
+  // a) /plan 命令注册 + 切换（runCommand 分发，无提示文字，只翻转 state.planMode）
+  if (!findCmd28('plan')) {
+    console.error('✗ 场景 28 /plan 命令未注册');
+    process.exit(1);
+  }
+  const s28 = createTuiState();
+  await runCmd28({ state: s28, out: {}, session: {}, input: {}, messages: [] } as never, '/plan');
+  if (!s28.planMode) {
+    console.error('✗ 场景 28 /plan 未进入计划模式');
+    process.exit(1);
+  }
+  if (s28.lines.some((l) => l.text.includes('计划'))) {
+    console.error('✗ 场景 28 /plan 不应推 meta 提示文字（footer 常驻指示即可）');
+    process.exit(1);
+  }
+  await runCmd28({ state: s28, out: {}, session: {}, input: {}, messages: [] } as never, '/plan');
+  if (s28.planMode) {
+    console.error('✗ 场景 28 /plan 再次执行未退出计划模式');
+    process.exit(1);
+  }
+  // b) 只读工具过滤：planMode 时只剩 read_file/list_directory/search_code
+  const allTools28 = [
+    { name: 'read_file', description: '读文件' },
+    { name: 'list_directory', description: '列目录' },
+    { name: 'search_code', description: '搜索' },
+    { name: 'write_file', description: '写文件' },
+    { name: 'run_command', description: '执行命令' },
+  ];
+  const full28 = buildToolSchemas(allTools28, false);
+  const plan28 = buildToolSchemas(allTools28, true);
+  if (full28.length !== 5 || plan28.length !== 3) {
+    console.error(`✗ 场景 28 工具过滤数量错误（full=${full28.length} plan=${plan28.length}）`);
+    process.exit(1);
+  }
+  if (plan28.some((t) => !READ_ONLY_TOOLS.has(t.function.name))) {
+    console.error(`✗ 场景 28 计划模式暴露了非只读工具: ${JSON.stringify(plan28.map((t) => t.function.name))}`);
+    process.exit(1);
+  }
+  for (const n of ['read_file', 'list_directory', 'search_code']) {
+    if (!plan28.some((t) => t.function.name === n)) {
+      console.error(`✗ 场景 28 计划模式缺少只读工具 ${n}`);
+      process.exit(1);
+    }
+  }
+  // c) 系统提示追加只读说明
+  if (!PLAN_MODE_NOTE.includes('计划模式') || !PLAN_MODE_NOTE.includes('read_file')) {
+    console.error(`✗ 场景 28 PLAN_MODE_NOTE 内容缺失: ${JSON.stringify(PLAN_MODE_NOTE.slice(0, 60))}`);
+    process.exit(1);
+  }
+  // d) footer 常驻指示：planMode=true 时模型行显示「模型 X · 计划模式」
+  const s28b = createTuiState();
+  s28b.version = '0.1.0';
+  s28b.model = 'mock';
+  s28b.planMode = true;
+  pushLine(s28b, { kind: 'user', text: '你好' });
+  const r28 = await render(s28b);
+  if (!r28.frame.includes('模型 mock · 计划模式')) {
+    console.error('✗ 场景 28 footer 未显示计划模式指示');
+    process.exit(1);
+  }
+  s28b.planMode = false;
+  const r28b = await render(s28b);
+  if (r28b.frame.includes('计划模式')) {
+    console.error('✗ 场景 28 退出计划模式后 footer 指示未消失');
+    process.exit(1);
+  }
+  console.log('✓ 场景 28 通过：/plan 注册切换 + 只读工具过滤（write/run 不可见）+ 系统提示 + footer 常驻指示');
+
+  // 场景 29：会话持久化 —— JSONL 落盘 / 列表 / 恢复 round-trip + 脚手架过滤
+  console.log('=== 场景 29：会话持久化（JSONL 落盘 / --continue / -r）===');
+  const sess29 = await import('../src/agent/session.js');
+  const {
+    sessionsDir,
+    createSession,
+    appendSessionMessages,
+    finalizeSession,
+    listSessions,
+    latestSession,
+    findSessionById,
+    loadSession,
+    persistableMessages,
+    formatSessionInfo,
+  } = sess29;
+  const oldXdg29 = process.env.XDG_CONFIG_HOME;
+  const fakeXdg29 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-sess-'));
+  process.env.XDG_CONFIG_HOME = fakeXdg29;
+  // a) 目录路径尊重 XDG
+  if (!sessionsDir().startsWith(fakeXdg29)) {
+    console.error(`✗ 场景 29 sessionsDir 未尊重 XDG_CONFIG_HOME: ${sessionsDir()}`);
+    process.exit(1);
+  }
+  // b) 创建 → meta 首行
+  const proj29 = '/tmp/demo-project';
+  const file29 = await createSession({ project: proj29, model: 'mock-model' });
+  if (!file29 || !file29.endsWith('.jsonl') || !fs.existsSync(file29)) {
+    console.error(`✗ 场景 29 createSession 失败: ${file29}`);
+    process.exit(1);
+  }
+  const head29 = fs.readFileSync(file29, 'utf8').split('\n')[0];
+  const meta29 = JSON.parse(head29);
+  if (meta29.t !== 'meta' || meta29.project !== proj29 || meta29.model !== 'mock-model' || !meta29.id) {
+    console.error(`✗ 场景 29 meta 首行格式错误: ${JSON.stringify(meta29)}`);
+    process.exit(1);
+  }
+  // c) 追加消息：脚手架（项目记忆/预载）被过滤，对话消息完整保留
+  const msgs29: ChatCompletionMessageParam[] = [
+    { role: 'system', content: '[项目记忆 AGENTS.md：/x/AGENTS.md]\n项目约定' },
+    { role: 'system', content: '[已按任务预载相关文件]\nfile content' },
+    { role: 'user', content: '帮我看看项目结构' },
+    { role: 'assistant', content: '好的，我来看看。' },
+    { role: 'user', content: '再改一下 README' },
+  ];
+  const persistable29 = persistableMessages(msgs29);
+  if (persistable29.some((m) => typeof m.content === 'string' && m.content.startsWith('['))) {
+    console.error(`✗ 场景 29 persistableMessages 未过滤脚手架: ${JSON.stringify(persistable29)}`);
+    process.exit(1);
+  }
+  if (!(await appendSessionMessages(file29, msgs29))) {
+    console.error('✗ 场景 29 appendSessionMessages 失败');
+    process.exit(1);
+  }
+  // d) round-trip：loadSession 恢复出对话消息（不含脚手架）
+  const loaded29 = await loadSession(file29);
+  if (!loaded29 || loaded29.messages.length !== 3) {
+    console.error(`✗ 场景 29 loadSession round-trip 消息数错误: ${JSON.stringify(loaded29?.messages.length)}`);
+    process.exit(1);
+  }
+  if (loaded29.messages[0].role !== 'user' || loaded29.messages[2].content !== '再改一下 README') {
+    console.error(`✗ 场景 29 loadSession 内容错误: ${JSON.stringify(loaded29.messages)}`);
+    process.exit(1);
+  }
+  // e) 列表 / 最近 / 按 id 查找
+  await finalizeSession(file29);
+  const list29 = await listSessions(proj29);
+  if (list29.length !== 1 || list29[0].messages !== 3 || list29[0].id !== meta29.id) {
+    console.error(`✗ 场景 29 listSessions 错误: ${JSON.stringify(list29.map((s) => ({ id: s.id, n: s.messages })))}`);
+    process.exit(1);
+  }
+  const latest29 = await latestSession(proj29);
+  if (!latest29 || latest29.id !== meta29.id) {
+    console.error('✗ 场景 29 latestSession 未命中');
+    process.exit(1);
+  }
+  const byId29 = await findSessionById(meta29.id);
+  if (!byId29 || path.resolve(byId29) !== path.resolve(file29)) {
+    console.error('✗ 场景 29 findSessionById 未命中');
+    process.exit(1);
+  }
+  if (!formatSessionInfo(list29[0]).includes(meta29.id) || !formatSessionInfo(list29[0]).includes('3 条消息')) {
+    console.error(`✗ 场景 29 formatSessionInfo 错误: ${formatSessionInfo(list29[0])}`);
+    process.exit(1);
+  }
+  // f) 项目隔离：别的项目列表为空
+  if ((await listSessions('/other/project')).length !== 0) {
+    console.error('✗ 场景 29 会话未按项目隔离');
+    process.exit(1);
+  }
+  // g) 恢复防重复回归（review 抓到的 bug）：--continue 恢复 + prepareContext 注入脚手架
+  //    （unshift 全局记忆 system 消息）→ 按**可落盘数**切片，不会因下标偏移重复写盘
+  const msgs29g: ChatCompletionMessageParam[] = [
+    { role: 'user', content: '第一轮' },
+    { role: 'assistant', content: '回答一' },
+  ];
+  const file29g = await createSession({ project: proj29, model: 'mock' });
+  if (!file29g || !(await appendSessionMessages(file29g, msgs29g))) {
+    console.error('✗ 场景 29 恢复回归前置失败');
+    process.exit(1);
+  }
+  const loaded29g = await loadSession(file29g);
+  if (!loaded29g || loaded29g.messages.length !== 2) {
+    console.error('✗ 场景 29 恢复回归加载失败');
+    process.exit(1);
+  }
+  const resumed29: ChatCompletionMessageParam[] = [...loaded29g.messages];
+  const savedCount29 = persistableMessages(resumed29).length; // 已落盘可落盘数 = 2
+  // prepareContext 注入脚手架（unshift 一条全局记忆 system）→ 可落盘计数不受影响
+  resumed29.unshift({ role: 'system', content: '[全局记忆 AGENTS.md：/x/AGENTS.md]\n用中文' });
+  resumed29.push({ role: 'user', content: '继续' });
+  resumed29.push({ role: 'assistant', content: '回答二' });
+  const toAppend29 = persistableMessages(resumed29).slice(savedCount29);
+  if (toAppend29.length !== 2 || toAppend29[0].content !== '继续' || toAppend29[1].content !== '回答二') {
+    console.error(`✗ 场景 29 恢复后按可落盘数切片错误（应只追加新轮 2 条）: ${JSON.stringify(toAppend29.map((m) => m.content))}`);
+    process.exit(1);
+  }
+  process.env.XDG_CONFIG_HOME = oldXdg29;
+  fs.rmSync(fakeXdg29, { recursive: true, force: true });
+  console.log('✓ 场景 29 通过：JSONL 落盘/脚手架过滤/round-trip 恢复/列表/最近/按 id/项目隔离/格式化/恢复防重复');
+
+  // 场景 30：/undo 文件撤销 —— UndoStack 快照/恢复 + /undo 命令端到端（恢复已有文件/删除新建/空栈）
+  console.log('=== 场景 30：/undo 文件撤销 ===');
+  const undo30 = await import('../src/tools/undo.js');
+  const { UndoStack, applyUndo, withUndoSnapshot, SNAPSHOT_MAX_BYTES } = undo30;
+  const cmd30 = await import('../src/tui/commands.js');
+  const { findCommand: findCmd30, runCommand: runCmd30 } = cmd30;
+  // a) 命令注册 + 联想
+  if (!findCmd30('undo')) {
+    console.error('✗ 场景 30 /undo 命令未注册');
+    process.exit(1);
+  }
+  // b) 快照已有文件 → 修改 → applyUndo 恢复原内容
+  const tmp30 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-undo-'));
+  const f30a = path.join(tmp30, 'a.txt');
+  fs.writeFileSync(f30a, '原始内容 v1');
+  const stack30 = new UndoStack();
+  if (!(await stack30.snapshotWrite(f30a))) {
+    console.error('✗ 场景 30 已有文件快照失败');
+    process.exit(1);
+  }
+  fs.writeFileSync(f30a, '被修改的内容 v2');
+  const entry30 = stack30.pop();
+  if (!entry30 || !entry30.existed || entry30.content !== '原始内容 v1') {
+    console.error(`✗ 场景 30 快照内容错误: ${JSON.stringify(entry30)}`);
+    process.exit(1);
+  }
+  const msg30 = await applyUndo(entry30);
+  if (fs.readFileSync(f30a, 'utf8') !== '原始内容 v1' || !msg30.includes('已恢复')) {
+    console.error(`✗ 场景 30 撤销未恢复原内容（${msg30}）: ${JSON.stringify(fs.readFileSync(f30a, 'utf8'))}`);
+    process.exit(1);
+  }
+  // c) 快照新建文件 → 撤销删除文件
+  const f30b = path.join(tmp30, 'b-new.txt');
+  if (!(await stack30.snapshotWrite(f30b))) {
+    console.error('✗ 场景 30 新建文件快照失败');
+    process.exit(1);
+  }
+  fs.writeFileSync(f30b, '新建内容');
+  const entry30b = stack30.pop();
+  if (!entry30b || entry30b.existed) {
+    console.error(`✗ 场景 30 新建文件快照标记错误: ${JSON.stringify(entry30b)}`);
+    process.exit(1);
+  }
+  const msg30b = await applyUndo(entry30b);
+  if (fs.existsSync(f30b) || !msg30b.includes('删除')) {
+    console.error(`✗ 场景 30 新建文件撤销未删除（${msg30b}）`);
+    process.exit(1);
+  }
+  // d) 大小上限：超过 SNAPSHOT_MAX_BYTES 的快照跳过（不记录）
+  const f30c = path.join(tmp30, 'big.txt');
+  fs.writeFileSync(f30c, 'x'.repeat(SNAPSHOT_MAX_BYTES + 1));
+  const stack30c = new UndoStack();
+  if (await stack30c.snapshotWrite(f30c)) {
+    console.error('✗ 场景 30 超大文件不应记录快照');
+    process.exit(1);
+  }
+  if (stack30c.size !== 0) {
+    console.error('✗ 场景 30 超大文件快照仍入栈');
+    process.exit(1);
+  }
+  // e) withUndoSnapshot 包装：write_file 执行前自动快照；非写工具原样返回
+  const stack30e = new UndoStack();
+  const wrapped30 = withUndoSnapshot({ name: 'write_file', description: '', parameters: {}, execute: async () => 'ok' }, stack30e);
+  if (wrapped30 === undefined || wrapped30.name !== 'write_file') {
+    console.error('✗ 场景 30 包装后工具名错误');
+    process.exit(1);
+  }
+  await wrapped30.execute({ path: f30a, content: 'v3' });
+  if (stack30e.size !== 1 || stack30e.snapshotList()[0].content !== '原始内容 v1') {
+    console.error('✗ 场景 30 withUndoSnapshot 未在写入前快照');
+    process.exit(1);
+  }
+  const passthrough30 = withUndoSnapshot({ name: 'run_command', description: '', parameters: {}, execute: async () => 'ok' }, stack30e);
+  if (passthrough30.name !== 'run_command') {
+    console.error('✗ 场景 30 非写工具不应被包装');
+    process.exit(1);
+  }
+  // f) /undo 命令端到端（TUI）：真实文件 + 快照栈 → 命令恢复文件 + 注入 system 提示
+  const f30d = path.join(tmp30, 'undo-cmd.txt');
+  fs.writeFileSync(f30d, '会话前内容');
+  const s30 = createTuiState();
+  const msgs30: ChatCompletionMessageParam[] = [];
+  const stack30f = new UndoStack();
+  await stack30f.snapshotWrite(f30d);
+  fs.writeFileSync(f30d, '会话修改后的内容');
+  await runCmd30({ state: s30, out: {}, session: {}, input: {}, messages: msgs30, undoStack: stack30f } as never, '/undo');
+  if (fs.readFileSync(f30d, 'utf8') !== '会话前内容') {
+    console.error(`✗ 场景 30 /undo 未恢复文件: ${JSON.stringify(fs.readFileSync(f30d, 'utf8'))}`);
+    process.exit(1);
+  }
+  if (!s30.lines.some((l) => l.text.includes('已恢复') && l.text.includes('undo-cmd.txt'))) {
+    console.error(`✗ 场景 30 /undo 结果提示缺失: ${JSON.stringify(s30.lines)}`);
+    process.exit(1);
+  }
+  if (!msgs30.some((m) => typeof m.content === 'string' && m.content.startsWith('[已执行 /undo]'))) {
+    console.error('✗ 场景 30 /undo 未注入 system 提示');
+    process.exit(1);
+  }
+  // g) /undo all：多文件全部恢复 + 新建文件删除；空栈提示不崩溃
+  const f30e = path.join(tmp30, 'e.txt');
+  const f30f = path.join(tmp30, 'f-new.txt');
+  fs.writeFileSync(f30e, 'E 原');
+  const stack30g = new UndoStack();
+  await stack30g.snapshotWrite(f30e);
+  await stack30g.snapshotWrite(f30f); // 新建
+  fs.writeFileSync(f30e, 'E 改');
+  fs.writeFileSync(f30f, 'F 新内容');
+  const s30g = createTuiState();
+  const msgs30g: ChatCompletionMessageParam[] = [];
+  await runCmd30({ state: s30g, out: {}, session: {}, input: {}, messages: msgs30g, undoStack: stack30g, args: 'all' } as never, '/undo all');
+  if (fs.readFileSync(f30e, 'utf8') !== 'E 原' || fs.existsSync(f30f)) {
+    console.error('✗ 场景 30 /undo all 未全部恢复（E 应回原、f-new 应删除）');
+    process.exit(1);
+  }
+  if (!s30g.lines.some((l) => l.text.includes('已撤销全部 2 个写操作'))) {
+    console.error(`✗ 场景 30 /undo all 提示缺失: ${JSON.stringify(s30g.lines)}`);
+    process.exit(1);
+  }
+  const s30h = createTuiState();
+  await runCmd30({ state: s30h, out: {}, session: {}, input: {}, messages: [] } as never, '/undo');
+  if (!s30h.lines.some((l) => l.text.includes('没有可撤销'))) {
+    console.error('✗ 场景 30 空栈 /undo 未提示');
+    process.exit(1);
+  }
+  // h) 边界：目标是目录 / stat 非 ENOENT 错误 → 不记录快照（review 抓到的误判）
+  const dir30 = path.join(tmp30, 'subdir');
+  fs.mkdirSync(dir30);
+  const stack30h = new UndoStack();
+  if (await stack30h.snapshotWrite(dir30)) {
+    console.error('✗ 场景 30 目录不应记录快照（会被误判为新建文件）');
+    process.exit(1);
+  }
+  if (stack30h.size !== 0) {
+    console.error('✗ 场景 30 目录仍入栈');
+    process.exit(1);
+  }
+  // 同一文件多次写入：popAll 逆序恢复 → 回到会话前状态
+  const f30i = path.join(tmp30, 'i.txt');
+  fs.writeFileSync(f30i, '原始');
+  const stack30i = new UndoStack();
+  await stack30i.snapshotWrite(f30i);
+  fs.writeFileSync(f30i, '第一次改');
+  await stack30i.snapshotWrite(f30i);
+  fs.writeFileSync(f30i, '第二次改');
+  const all30i = stack30i.popAll();
+  for (const e of all30i) await applyUndo(e);
+  if (fs.readFileSync(f30i, 'utf8') !== '原始' || all30i.length !== 2) {
+    console.error(`✗ 场景 30 同文件多次写入 popAll 未回到原始状态: ${JSON.stringify(fs.readFileSync(f30i, 'utf8'))}`);
+    process.exit(1);
+  }
+  fs.rmSync(tmp30, { recursive: true, force: true });
+  console.log('✓ 场景 30 通过：快照/恢复/删除新建/上限/包装器 + /undo 与 /undo all 命令端到端/空栈提示');
+
+  // 场景 31：/permission 安全权限面板 —— 低=read / 中=safe / 高=ask / 全量=full
+  // 打开面板（默认高亮当前档位）+ ↑/↓/数字选择 + Enter 确认（state.permission 变更+meta）+ Esc 取消 + 渲染
+  const cmd31 = await import('../src/tui/commands.js');
+  const { openPermissionMenu, handleMenuKey: handleMenuKey31, PERMISSION_OPTIONS } = cmd31;
+  console.log('=== 场景 31：/permission 安全权限面板 ===');
+  const s31 = createTuiState();
+  s31.version = '0.1.0';
+  s31.model = 'mock';
+  s31.permission = 'safe'; // 默认中（标准）
+  pushLine(s31, { kind: 'user', text: '你好' });
+  s31.status = '任务完成';
+  // a) 面板打开：4 个档位，高亮当前值（safe）
+  openPermissionMenu(s31);
+  if (!s31.menu || s31.menu.id !== 'permission' || PERMISSION_OPTIONS.length !== 4) {
+    console.error(`✗ 场景 31 面板未正确打开: ${JSON.stringify(s31.menu)}`);
+    process.exit(1);
+  }
+  if (s31.menu.selectedIndex !== 1 || s31.menu.currentValue !== 'safe') {
+    console.error(`✗ 场景 31 初始高亮/当前值错误: ${JSON.stringify(s31.menu)}`);
+    process.exit(1);
+  }
+  // b) 键盘：↑ 从「中」上移到「低」→ 数字 1 直接选中「低」并确认 → permission=read、面板关闭、meta 提示
+  if (!handleMenuKey31({ name: 'up', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu?.selectedIndex !== 0) {
+    console.error(`✗ 场景 31 ↑ 未移动高亮: ${JSON.stringify(s31.menu)}`);
+    process.exit(1);
+  }
+  if (!handleMenuKey31({ name: '1', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu !== null || s31.permission !== 'read') {
+    console.error(`✗ 场景 31 数字键确认未生效（permission 应=read、面板应关闭）: ${JSON.stringify(s31.menu)}`);
+    process.exit(1);
+  }
+  if (!s31.lines.some((l) => l.text.includes('已切换安全权限 → 低'))) {
+    console.error(`✗ 场景 31 确认后 meta 提示缺失: ${JSON.stringify(s31.lines)}`);
+    process.exit(1);
+  }
+  // c) Enter 确认：打开面板 → ↓ 移到「全量」→ Enter → permission=full
+  openPermissionMenu(s31);
+  handleMenuKey31({ name: 'down', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31);
+  handleMenuKey31({ name: 'down', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31);
+  handleMenuKey31({ name: 'down', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31);
+  if (!handleMenuKey31({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu !== null || s31.permission !== 'full') {
+    console.error(`✗ 场景 31 Enter 确认未生效（permission 应=full）: ${JSON.stringify(s31.menu)}`);
+    process.exit(1);
+  }
+  // d) Esc 取消：再打开面板 → Esc → 面板关闭且档位不变
+  openPermissionMenu(s31);
+  s31.menu!.selectedIndex = 2; // 高亮「高」但不确认
+  if (!handleMenuKey31({ name: 'escape', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu !== null || s31.permission !== 'full') {
+    console.error('✗ 场景 31 Esc 取消未生效');
+    process.exit(1);
+  }
+  // e) runCommand('/permission') 分发：注册表里找到 → 打开面板（interactive 走同一路径）
+  const s31e = createTuiState();
+  s31e.version = '0.1.0';
+  s31e.model = 'mock';
+  s31e.permission = 'ask';
+  const msgs31e: unknown[] = [];
+  await cmd31.runCommand({ state: s31e, out: {}, session: {}, input: {}, messages: msgs31e } as never, '/permission');
+  if (!s31e.menu || s31e.menu.id !== 'permission' || s31e.menu.selectedIndex !== 2) {
+    console.error(`✗ 场景 31 runCommand /permission 未打开面板（应高亮当前 ask）: ${JSON.stringify(s31e.menu)}`);
+    process.exit(1);
+  }
+  // f) 面板浮层渲染（alert）：4 个档位 + 当前值 ✓ + 光标 › + 提示行；未确认无切换提示
+  const s31f = createTuiState();
+  s31f.version = '0.1.0';
+  s31f.model = 'mock';
+  s31f.permission = 'read';
+  pushLine(s31f, { kind: 'user', text: '你好' });
+  openPermissionMenu(s31f);
+  const t31f = await createTestRenderer({ width: 64, height: 20 });
+  const tree31f = mountTree(t31f.renderer, s31f, { withInput: true });
+  await t31f.renderOnce();
+  const r31 = { frame: t31f.captureCharFrame() };
+  console.log(r31.frame);
+  const checks31 = ['安全权限', '低（只读）', '中（标准）', '高（谨慎）', '全量（直通）', '› 低（只读）', 'Enter 确认', 'Esc 取消'];
+  const missing31 = checks31.filter((c) => !r31.frame.includes(c));
+  if (missing31.length) {
+    console.error(`✗ 场景 31 面板渲染缺: ${missing31.join(', ')}`);
+    process.exit(1);
+  }
+  if (r31.frame.includes('已切换安全权限')) {
+    console.error('✗ 场景 31 未确认就出现了切换提示');
+    process.exit(1);
+  }
+  const rows31f = computeRows(s31f, { height: 20, width: 64 }, { withInput: true });
+  if (rows31f.some((r) => r.text.includes('低（只读）') || r.text.includes('Enter 确认'))) {
+    console.error('✗ 场景 31 菜单行仍内联在内容流（应移到 alert 浮层）');
+    process.exit(1);
+  }
+  console.log('✓ 场景 31 通过：/permission 面板 4 档位（低/中/高/全量）+ ↑↓/数字/Enter/Esc + runCommand 分发 + 浮层渲染');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

@@ -31,6 +31,12 @@ export interface OmniConfig {
   permission: PermissionTier;
   /** 是否写审计日志（~/.config/omni/audit.log；默认 true） */
   auditLog: boolean;
+  /** 是否加载项目记忆 AGENTS.md（跨会话共享；默认 true） */
+  agentsFile: boolean;
+  /** 是否加载全局记忆 ~/.config/omni/AGENTS.md（跨项目共享；默认 true） */
+  globalAgentsFile: boolean;
+  /** 会话结束时把新表达的偏好自动追加进全局记忆（默认 true） */
+  autoMemory: boolean;
   /** 长对话摘要压缩：消息数超过该值触发（0 = 关闭；默认 40） */
   summarizeAt: number;
   /** 压缩时保留最近多少条消息原文（默认 8） */
@@ -67,6 +73,9 @@ const DEFAULTS = {
   showThinking: true,
   permission: 'safe' as PermissionTier,
   auditLog: true,
+  agentsFile: true,
+  globalAgentsFile: true,
+  autoMemory: true,
   summarizeAt: 40,
   summarizeWindow: 8,
   preloadFiles: true,
@@ -105,6 +114,9 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.permission = data.permission as PermissionTier;
   }
   if (typeof data.auditLog === 'boolean') cfg.auditLog = data.auditLog;
+  if (typeof data.agentsFile === 'boolean') cfg.agentsFile = data.agentsFile;
+  if (typeof data.globalAgentsFile === 'boolean') cfg.globalAgentsFile = data.globalAgentsFile;
+  if (typeof data.autoMemory === 'boolean') cfg.autoMemory = data.autoMemory;
   if (typeof data.summarizeAt === 'number' && Number.isFinite(data.summarizeAt)) {
     cfg.summarizeAt = Math.max(0, Math.floor(data.summarizeAt));
   }

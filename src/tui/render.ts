@@ -430,7 +430,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.blueBar.content = Array(state.inputLines + 4).fill(ACCENT_BAR).join('\n');
   }
   // 模型行（输入框下方，灰色块内）+ 路径/token 行（灰色块下方，左右分列）
-  if (tree.footerModel) tree.footerModel.content = `模型 ${state.model}`;
+  // 计划模式（/plan）：模型行追加常驻指示「· 计划模式」——用户随时知道自己处于只读调研态
+  if (tree.footerModel) {
+    tree.footerModel.content = state.planMode ? `模型 ${state.model} · 计划模式` : `模型 ${state.model}`;
+  }
   if (tree.footerPath && tree.footerTokens) {
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2); // 路径/token 行内容宽
     const tokensText = formatTokens(state.tokens.total);

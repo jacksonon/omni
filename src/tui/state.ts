@@ -4,6 +4,7 @@
  * 由 TuiOutput 写入，render 层在每次 paint 时读取并重建渲染树。
  * 模型：一列"段落"（TuiLine），paint 时按 \n 拆成多行。
  */
+import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
 
 /** spinner 动画帧（braille 点阵） */
@@ -157,6 +158,17 @@ export interface TuiState {
   menu: TuiMenu | null;
   /** 命令联想列表（null = 不显示；paint 时按输入框文本刷新） */
   cmdSuggest: CmdSuggestion | null;
+  /**
+   * 计划模式（/plan 切换）：只读调研，不修改文件。
+   * 会话级状态（/clear 不清除）；footer 模型行显示「模型 X · 计划模式」；
+   * interactive 每轮把它同步进 runOpts.planMode（loop 据此过滤只读工具 + 系统提示）。
+   */
+  planMode: boolean;
+  /**
+   * 安全权限档位（/permission 切换）：低=read / 中=safe / 高=ask / 全量=full。
+   * 会话级状态；interactive 每轮同步进 runOpts.permission 并 setTier 到共用闸门。
+   */
+  permission: PermissionTier;
   /** 输入框当前文本（repaintTree 同步，buildBody/联想共用） */
   inputText: string;
   /**
@@ -195,6 +207,8 @@ export function createTuiState(): TuiState {
     detectedTheme: 'dark',
     menu: null,
     cmdSuggest: null,
+    planMode: false,
+    permission: 'safe',
     inputText: '',
     cmdSuggestDismissedText: null,
     approval: null,

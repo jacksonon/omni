@@ -6,7 +6,9 @@ import type { ConfigOverrides } from '../config/index.js';
 export interface ParsedArgs {
   taskArgs: string[];
   overrides: ConfigOverrides;
-  flags: { noTui: boolean };
+  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean };
+  /** --resume/-r <id>：要恢复的会话 id（null = 未指定） */
+  resumeId: string | null;
   help: boolean;
   version: boolean;
 }
@@ -15,7 +17,8 @@ export interface ParsedArgs {
 export function parseArgs(args: string[]): ParsedArgs {
   const taskArgs: string[] = [];
   const overrides: ConfigOverrides = {};
-  const flags = { noTui: false };
+  const flags = { noTui: false, listSessions: false, continueSession: false };
+  let resumeId: string | null = null;
   let help = false;
   let version = false;
 
@@ -46,21 +49,38 @@ export function parseArgs(args: string[]): ParsedArgs {
       case '--no-tui':
         flags.noTui = true;
         break;
+      case '--continue':
+        // 恢复当前项目最近一次会话（-c 已被 --config 占用，故只用长选项）
+        flags.continueSession = true;
+        break;
+      case '--resume':
+      case '-r':
+        resumeId = takeValue() ?? null;
+        break;
+      case '--list-sessions':
+      case '-l':
+        flags.listSessions = true;
+        break;
       default:
         taskArgs.push(a);
     }
   }
-  return { taskArgs, overrides, flags, help, version };
+  return { taskArgs, overrides, flags, resumeId, help, version };
 }
 
 export function printHelp(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
-  omni                进入交互模式（输入 /exit 退出，/help 查看帮助）
+  omni                进入交互模式（/exit 退出；/init [--global] 生成项目/全局记忆；/plan 计划模式；/permission 安全权限；/undo 撤销本次会话的文件修改；/help 查看帮助）
+
+会话持久化（跨进程恢复对话）：
+  omni --continue "继续任务"      恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
+  omni -r <会话id> "继续任务"      恢复指定会话（id 见 --list-sessions 输出）
+  omni -l / --list-sessions       列出已保存的会话
 
 参数：
   -m, --model <名称>    指定模型（覆盖配置文件）
-  -c, --config <路径>   指定配置文件（覆盖自动发现）
+  -c, --config <路径>   指定配置文件（覆盖自动发现；-c 已被占用，会话恢复用 --continue）
       --no-tui          禁用全屏 TUI（默认：bun + 终端时自动启用）
   -h, --help            显示帮助
   -v, --version         显示版本

@@ -39,6 +39,14 @@ export class Safety {
   constructor(private opts: SafetyOptions) {}
 
   /**
+   * 动态修改权限档位（/permission 命令运行时切换）：主循环每轮按 runOpts.permission
+   * 新建实例所以天然生效；这里让共用实例（delegate 子代理的 gate）同步切换。
+   */
+  setTier(tier: PermissionTier): void {
+    this.opts.tier = tier;
+  }
+
+  /**
    * 工具调用过闸：判定 → （需要时）审批 → 审计。返回 { allow, reason? }。
    * 拒绝时 reason 说明原因（由 loop 作为工具结果回传模型，触发自我纠错）。
    */

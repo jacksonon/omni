@@ -19,7 +19,7 @@
 import { parseArgs, printHelp } from './cli/args.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
-import { attachRuntime, main, prepareRun } from './main.js';
+import { attachRuntime, main, prepareRun, prepareSessionPersistence, printSessions } from './main.js';
 import { ConsoleOutput } from './output/console.js';
 import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
@@ -54,13 +54,17 @@ process.on('exit', (code) => {
 
 async function run(): Promise<void> {
   logLifecycle('start', `omni v${VERSION} pid=${process.pid} args=${JSON.stringify(process.argv.slice(2))}`);
-  const { taskArgs, overrides, flags, help, version } = parseArgs(process.argv.slice(2));
+  const { taskArgs, overrides, flags, resumeId, help, version } = parseArgs(process.argv.slice(2));
   if (help) {
     printHelp();
     return;
   }
   if (version) {
     console.log(`omni v${VERSION}`);
+    return;
+  }
+  if (flags.listSessions) {
+    await printSessions();
     return;
   }
 
@@ -73,12 +77,30 @@ async function run(): Promise<void> {
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
   const singleTask = taskArgs.join(' ').trim();
+  // 会话持久化：--continue / -r 恢复历史（历史消息在 startTui 前载入，随后回放到 TUI）；
+  // 交互模式自动创建会话文件。console.log 此时还未进入全屏，直接输出恢复提示。
+  const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
+  if (!ok) return;
   const state = createTuiState();
   const session = await startTui(state, { withInput: !singleTask });
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
   await attachRuntime(ctx, output); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
   output.banner(cfg, runOpts.tools.map((t) => t.name));
+  // 恢复的会话：把历史消息回放到 TUI（用户消息/纯文本回答；工具调用历史不重建卡片），
+  // 让对话流与消息上下文一致——新一轮在历史之后继续
+  if (messages.length > 0) {
+    for (const m of messages) {
+      if (m.role === 'user' && typeof m.content === 'string' && m.content) {
+        output.onUserMessage(m.content);
+      } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
+        output.onAnswer(m.content);
+        output.onAnswerEnd();
+      }
+    }
+    output.onTurnEnd();
+    await output.flush().catch(() => {});
+  }
 
   try {
     if (singleTask) {

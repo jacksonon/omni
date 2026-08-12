@@ -4,6 +4,7 @@
 import type { ContextOptions } from './context.js';
 import type { ApprovalRequest, PermissionTier } from '../safety/index.js';
 import type { Tool } from '../tools/index.js';
+import type { UndoStack } from '../tools/undo.js';
 
 export interface RunOptions {
   tools: Tool[];
@@ -24,6 +25,26 @@ export interface RunOptions {
   requestApproval?: (req: ApprovalRequest) => Promise<boolean> | boolean;
   /** 上下文管理：相关文件预载 + 长对话摘要压缩（由入口按配置注入；缺省 = 关闭） */
   context?: ContextOptions;
+  /**
+   * 计划模式（/plan 切换）：只对模型暴露只读工具（read_file/list_directory/search_code），
+   * 并在系统提示词追加只读说明——模型只调研、输出实施计划，不直接修改。
+   */
+  planMode?: boolean;
+  /**
+   * 会话持久化文件（JSONL 落盘路径；交互模式由入口创建，每轮对话结束追加消息，
+   * 退出时刷新 meta。CLI/TUI 交互循环读取，单任务模式不落盘）。
+   */
+  sessionPath?: string;
+  /**
+   * /undo 撤销栈（入口 attachRuntime 创建并包装 write_file 工具）：写操作前快照，
+   * 交互模式 /undo 命令 pop 恢复；主循环与子代理共用包装后的工具表。
+   */
+  undoStack?: UndoStack;
+  /**
+   * 共用 Safety 闸门实例（attachRuntime 注入，delegate 子代理用它）：
+   * /permission 运行时切换档位时同步 setTier，让子代理与主循环权限一致。
+   */
+  safetyGate?: import('../safety/index.js').Safety;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */
