@@ -1,6 +1,6 @@
 {
   "name": "omni",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Omni — Agent 工程（终端型 AI 编程助手）",
   "type": "module",
   "bin": {
