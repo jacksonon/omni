@@ -62,6 +62,8 @@ export class ConsoleOutput implements Output {
   onRequestFailed(err: unknown): void {
     this.spinner?.stop(red('✗ 请求失败'));
     this.spinner = null;
+    // 打印实际错误（401/网络/端点等），用户才能知道修什么（发消息闪退的排查线索）
+    console.log(red(`✗ ${(err as Error)?.message ?? String(err)}`));
   }
 
   onThinkingSaved(len: number, file: string | null): void {

@@ -18,3 +18,6 @@ audit.log
 
 # 系统文件
 .DS_Store
+
+# 其他应用的本地数据（freebuff 桌面端数据库）
+.freebuff/

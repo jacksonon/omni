@@ -57,6 +57,49 @@ export class TuiOutput implements Output {
 
   /** spinner 定时器（200ms 间隔循环动画帧） */
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  /** 当前 spinner 状态栏文案后缀（思考中 / 执行中…；startSpinner 设置） */
+  private spinnerLabel = '思考中';
+  /** 统计行左侧 loading 定时器（200ms 一帧；独立于状态栏 spinner——流式期间
+   * spinnerIndex 会被置 -1 但 loading 不受影响，会话进行中一直转） */
+  private loadingTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * 会话进行中（interactive 每轮 runAgent 前 / 单任务模式）调用：统计行左侧
+   * 显示 loading 并开始转圈；Esc 取消或会话结束 stopLoading 后消失。
+   */
+  startLoading(): void {
+    this.state.loading = true;
+    this.state.loadingIndex = 0;
+    if (this.loadingTimer) return; // 已在转：幂等
+    this.loadingTimer = setInterval(() => {
+      this.state.loadingIndex = (this.state.loadingIndex + 1) % SPINNER_FRAMES.length;
+      this.schedulePaint();
+    }, 200);
+  }
+
+  /** 会话结束 / Esc 取消：隐藏 loading 并停掉动画定时器 */
+  stopLoading(): void {
+    this.state.loading = false;
+    this.state.loadingIndex = -1;
+    if (this.loadingTimer) {
+      clearInterval(this.loadingTimer);
+      this.loadingTimer = null;
+    }
+    this.schedulePaint();
+  }
+
+  /**
+   * 取消当前回合的视觉反馈（右侧 loading + 状态栏 spinner/文案）——Esc //stop
+   * 取消时**同步立即**调用（不等 runAgent 返回：逐 chunk abort 至多延迟一个 chunk
+   * 间隔，期间 loading 不立即停、「思考中」残留会让用户以为取消没生效——用户反馈）。
+   */
+  cancelVisuals(): void {
+    this.stopLoading();
+    this.stopSpinner();
+    this.state.spinnerIndex = -1;
+    this.state.status = '';
+    this.schedulePaint();
+  }
 
   /** 30ms 节流：合并同一突发内的多次变更，避免逐 chunk 重绘 */
   private schedulePaint(): void {
@@ -72,13 +115,19 @@ export class TuiOutput implements Output {
    * 退出前调用：取消节流计时器并立即画最后一帧，
    * 确保 30ms 窗口内未渲染的最终状态（如“任务完成”）上屏。
    */
-  private startSpinner(): void {
+  /**
+   * 启动 spinner 动画（200ms 一帧）：推进 spinnerIndex + 更新状态栏文案
+   * （`${帧} ${label}`）。思考阶段 label=思考中；工具执行阶段 label=执行中…——
+   * 两者共用同一套帧，卡片执行中行也从 spinnerIndex 取当前帧（动画 loading）。
+   */
+  private startSpinner(label = '思考中'): void {
+    this.spinnerLabel = label;
     this.stopSpinner();
     this.spinnerTimer = setInterval(() => {
       if (this.state.spinnerIndex >= 0) {
         this.state.spinnerIndex = (this.state.spinnerIndex + 1) % SPINNER_FRAMES.length;
         const f = SPINNER_FRAMES[this.state.spinnerIndex];
-        this.state.status = `${f} 思考中`;
+        this.state.status = `${f} ${this.spinnerLabel}`;
         this.schedulePaint();
       }
     }, 200);
@@ -93,6 +142,7 @@ export class TuiOutput implements Output {
 
   async flush(): Promise<void> {
     this.stopSpinner();
+    this.stopLoading(); // 退出前确保 loading 定时器不残留（setInterval 会拖住进程退出）
     if (this.paintTimer) {
       clearTimeout(this.paintTimer);
       this.paintTimer = null;
@@ -114,7 +164,7 @@ export class TuiOutput implements Output {
     this.state.generating = false;
     const f = SPINNER_FRAMES[0];
     this.state.status = `${f} 思考中`;
-    this.startSpinner();
+    this.startSpinner('思考中');
     this.schedulePaint();
   }
 
@@ -137,10 +187,32 @@ export class TuiOutput implements Output {
   }
 
   onUsage(usage: TokenUsage): void {
-    // 会话累计 token 用量（footer 右下角展示；usage 来自流末 chunk，网关不支持时为 0）
+    // 会话累计 token 用量（footer 统计行展示；usage 来自流末 chunk，网关不支持时为 0）
     this.state.tokens.prompt += usage.prompt;
     this.state.tokens.completion += usage.completion;
     this.state.tokens.total += usage.total;
+    this.state.stats.cached += usage.cached ?? 0;
+    this.schedulePaint();
+  }
+
+  onTurnStart(): void {
+    // 轮数：交互模式每轮用户提交 / 单次任务各 1 次（runAgent 开头触发）
+    this.state.stats.turns += 1;
+    this.schedulePaint();
+  }
+
+  onLlmLap(llmMs: number, firstTokenMs: number | null): void {
+    // LLM 请求墙钟累计 + 首 token 延迟累计（平均 = sum/count）
+    this.state.stats.llmMs += llmMs;
+    if (firstTokenMs !== null) {
+      this.state.stats.firstTokenSum += firstTokenMs;
+      this.state.stats.firstTokenCount += 1;
+    }
+    this.schedulePaint();
+  }
+
+  onToolsLap(toolsMs: number): void {
+    this.state.stats.toolsMs += toolsMs;
     this.schedulePaint();
   }
 
@@ -157,13 +229,19 @@ export class TuiOutput implements Output {
   }
 
   onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void {
+    // 步数统计：每次工具调用 +1（footer 统计行）
+    this.state.stats.steps += 1;
     // 工具调用画成卡片（kind='tool'）：标题 + 摘要；完成后收起、点击展开
     pushLine(this.state, {
       kind: 'tool',
       text: argsPreview,
       card: { id: ++this.toolSeq, name, summary: argsPreview, status: 'running', output: [], expanded: false },
     });
-    this.state.status = '执行中…';
+    // 工具执行中：启动 spinner 动画（卡片执行中行 + 状态栏都是动画 loading，
+    // 而不是静态「⏳ 执行中…」——用户要求）；并行工具多次 onToolStep 幂等（startSpinner 重置定时器）
+    this.state.spinnerIndex = 0;
+    this.state.status = `${SPINNER_FRAMES[0]} 执行中…`;
+    this.startSpinner('执行中…');
     this.schedulePaint();
   }
 
@@ -177,6 +255,13 @@ export class TuiOutput implements Output {
         l.card.chars = chars;
         break;
       }
+    }
+    // 并行工具：还有卡片在跑则保持 spinner；全部结束后停止动画（下一轮 onRound 重新启动）
+    const stillRunning = this.state.lines.some((l) => l.kind === 'tool' && l.card?.status === 'running');
+    if (!stillRunning) {
+      this.stopSpinner();
+      this.state.spinnerIndex = -1;
+      this.state.status = '';
     }
     this.schedulePaint();
   }
@@ -224,6 +309,11 @@ export class TuiOutput implements Output {
   }
 
   onTurnEnd(): void {
+    // 兜底清理回合视觉（思考中/执行中阶段被取消时，onStreamStart/onToolResult 的清空
+    // 不会执行——状态栏会残留「⠋ 思考中」+ spinner 定时器继续跑，用户反馈 ESC 后仍显示）
+    this.stopSpinner();
+    this.state.spinnerIndex = -1;
+    this.state.status = '';
     pushLine(this.state, { kind: 'meta', text: '' });
     this.schedulePaint();
   }

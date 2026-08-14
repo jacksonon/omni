@@ -7,6 +7,8 @@ import type { MdChunk } from './markdown.js';
 import type { TuiTheme } from './theme.js';
 import { charWidth, visualWidth } from './width.js';
 import type { Row } from './rows.js';
+import type { SessionStats, TuiState } from './state.js';
+import type { TokenUsage } from '../output/types.js';
 
 /** 内容区可用宽度 = 视口宽 - paddingX(2)（无根边框） */
 export const CONTENT_PAD = 2;
@@ -17,10 +19,99 @@ export const ACCENT_BAR = '▍';
 /** 生成中的光标标记（半块字符，追加在最后一行输出末尾） */
 export const STREAM_CURSOR = '▌';
 
-/** token 用量展示：`⚡ 12.3k tok`（<1000 显示原数） */
-export function formatTokens(n: number): string {
-  const num = n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-  return `⚡ ${num} tok`;
+/** 时长格式化：`10m58s` / `7s`（毫秒输入；LLM/工具耗时用） */
+export function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s >= 60) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+/** 紧凑数值：`3M` / `44.2K` / `123`（token 统计用） */
+export function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
+/** 工具调用时长：<60s 显示一位小数秒（8.6s），≥60s 用分秒（1m05s）——与用户示例一致 */
+function formatToolDur(ms: number): string {
+  return ms >= 60_000 ? formatDuration(ms) : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * 状态行段（footer 统计行的可配置单元）：id 是配置/持久化键（/settings statusline
+ * 按 id 勾选与排序），label 是面板显示名，build 生成该段文本（不含 `| ` 分隔）。
+ */
+export interface StatuslineSegment {
+  id: string;
+  label: string;
+  build(s: SessionStats, t: TokenUsage): string;
+}
+
+/** 全部可用状态行段（顺序 = 默认显示顺序） */
+export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
+  {
+    id: 'rounds',
+    label: '轮次/步数',
+    build: (s) => `${s.turns} 轮 · ${s.steps} 步`,
+  },
+  {
+    id: 'llm',
+    label: 'LLM/工具耗时',
+    build: (s) => `LLM ${formatDuration(s.llmMs)} · 工具调用 ${formatToolDur(s.toolsMs)}`,
+  },
+  {
+    id: 'speed',
+    label: '首token/速率',
+    build: (s, t) => {
+      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
+      const rate = s.llmMs > 0 ? Math.round(t.completion / (s.llmMs / 1000)) : 0;
+      return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+    },
+  },
+  {
+    id: 'cache',
+    label: '缓存命中',
+    build: (s, t) => `缓存命中 ${t.prompt > 0 ? Math.round((s.cached / t.prompt) * 100) : 0}%`,
+  },
+  {
+    id: 'tokens',
+    label: '输入/输出',
+    build: (_s, t) => `输入 ${formatCompact(t.prompt)} tok · 输出 ${formatCompact(t.completion)} tok`,
+  },
+];
+
+/** 默认状态行段顺序（未配置 / 非法时回退） */
+export const STATUSLINE_DEFAULT: string[] = STATUSLINE_SEGMENTS.map((sg) => sg.id);
+
+/**
+ * 构建 footer 统计行（用户要求的格式，各段以 `| ` 分隔）：
+ *   `7 轮 · 41 步| LLM 10m58s · 工具调用 7s| 首 token 平均 6.5s · 112 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok`
+ * 数据来自 state.stats（TuiOutput 按事件累计）+ state.tokens（onUsage 累计）。
+ * 段的选择与顺序由 state.statusline 决定（/settings statusline 配置：空格勾选、←/→ 排序、
+ * Enter 保存并立即生效）；未知 id 丢弃；空数组（用户全部取消）→ 返回空串（不显示状态行）。
+ */
+export function buildFooterStats(state: TuiState): string {
+  const order = state.statusline ?? STATUSLINE_DEFAULT;
+  const segs = order
+    .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
+    .filter((x): x is StatuslineSegment => !!x)
+    .map((sg) => sg.build(state.stats, state.tokens));
+  return segs.join('| ');
+}
+
+/** 统计行按可用宽度段级截断：优先保留左侧（轮次/步数/LLM 段），超宽丢弃右侧段并加 … */
+export function fitFooterStats(text: string, width: number): string {
+  if (width < 4 || visualWidth(text) <= width) return text;
+  const segs = text.split('| ');
+  let out = '';
+  for (const seg of segs) {
+    const cand = out ? `${out}| ${seg}` : seg;
+    if (visualWidth(cand) > width) break;
+    out = cand;
+  }
+  if (!out) return truncateMiddle(text, width);
+  return out === text ? text : `${out}…`;
 }
 
 /** 文本中段截断（保留头尾，省略号指示省略）：长路径只显示首段与末段 */

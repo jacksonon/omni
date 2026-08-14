@@ -11,12 +11,13 @@ import {
   cardInnerWidth,
   cardTitleLine,
   toolCardLines,
+  wrapText,
   type ToolCardRole,
 } from '../output/format.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
 import { CONTENT_PAD, STREAM_CURSOR, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
-import type { TuiLineKind, TuiMenu, TuiState } from './state.js';
+import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState } from './state.js';
 
 /** 行样式（对应 createTextAttributes 的字段） */
 export interface RowStyle {
@@ -57,45 +58,46 @@ export interface Row {
   approvalId?: number;
 }
 
-/** 工具卡片的行样式：首行（标题）青色、末行与纯分隔行浅色、提示行浅色，其余默认 */
+/** 工具卡片的行样式：命令加粗深色、执行/结果/分隔/输出/提示深棕；顶/底为空白留白行 */
 function toolRowStyle(role: ToolCardRole, theme: TuiTheme): RowStyle {
   switch (role) {
     case 'top':
     case 'bottom':
-      // 顶/底边框：普通边框色（暗色白 / 亮色灰），无特殊颜色
-      return { fg: theme.cardBorder };
+      // 顶/底留白行：只有底色（块式卡片的垂直边距），无文字样式
+      return {};
     case 'cmd':
-      // 第一行命令：加粗，与执行/结果缩略（dim）区分（用户要求文字要有区分）
-      return { bold: true };
+      // 第一行命令：加粗 + 黄底深字（淡黄底上默认白字/黑字都不可读，统一深棕）
+      return { bold: true, fg: theme.cardDim };
     case 'exec':
     case 'result':
     case 'sep':
     case 'out':
     case 'hint':
-      return { dim: true };
+      // 黄底深字：统一深棕（amber-900）——淡黄底上浅色字不可读
+      return { fg: theme.cardDim };
     default:
       return {};
   }
 }
 
 /**
- * 工具卡片行：左右边框 `│` 用普通边框色（暗色白/亮色灰，与内容区分），
- * 中间内容按角色着色（命令加粗、执行/结果/输出浅色）。
- * 用户要求：不要特殊彩色边框，就普通白色（暗）/灰色（亮）。
+ * 工具卡片行（块式）：不再用 ╭─╮│╰╯ 边框——整行以 cardBg 背景色填充成色块
+ * （用户要求「代码执行使用有颜色背景区域的块，而不是用一个边框」），文字按角色
+ * 着色（命令加粗、执行/结果/输出卡专属深色）。每行已由 toolCardLines 补齐到内容宽度，
+ * 背景色填满整行，多行拼成完整色块。
+ *
+ * **完整长方形**（用户要求「不要缺角」）：顶/底留白行也整行 cardBg 填满——
+ * 不再是左右角透明的圆角块，四角直角、无缺口。
  */
 function toolCardRow(text: string, role: ToolCardRole, theme: TuiTheme): Row {
-  const border = theme.cardBorder;
-  if (role === 'top' || role === 'bottom') {
-    return { text, style: { fg: border } };
-  }
-  // 内容行：│ 内容 │ → 拆成 [边框, 内容, 边框] 三段着色
-  const inner = text.slice(1, -1);
   const contentStyle = toolRowStyle(role, theme);
-  const chunks: MdChunk[] = [
-    { text: '│', fg: border },
-    { text: inner, ...contentStyle },
-    { text: '│', fg: border },
-  ];
+  if (role === 'top' || role === 'bottom') {
+    // 完整长方形：整行 cardBg 填满（text 为全空格，长度 == 列数），无透明角
+    const w = Math.max(3, text.length);
+    const chunks: MdChunk[] = [{ text: ' '.repeat(w), bg: theme.cardBg }];
+    return { text, style: {}, chunks };
+  }
+  const chunks: MdChunk[] = [{ text, ...contentStyle, bg: theme.cardBg }];
   return { text, style: {}, chunks };
 }
 
@@ -126,6 +128,36 @@ export function menuPanelRows(menu: TuiMenu, contentWidth: number): Row[] {
 }
 
 /**
+ * 命令输出面板行（所有 / 命令的独立窗口）：圆角方框 + 标题 + 输出行 + 滚动提示。
+ * 内容行按面板宽折行（每行恰好 1 个终端行，边框不被撑破），超高时垂直滚动
+ * （panel.scroll 由交互层 ↑/↓ 调整，这里 clamp 到合法区间并回写）。
+ */
+export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeight: number): Row[] {
+  const inner = cardInnerWidth(contentWidth);
+  // 可见主体行数：视口减标题 1 + 提示 1 + 底边 1（面板居中，上下留白）
+  const maxVisible = Math.max(2, viewportHeight - 6);
+  // 长行折行成多行（内容完整可滚动查看，不截断）；源行之间不插空行（保持紧凑）
+  const body: string[] = [];
+  for (const raw of panel.lines) {
+    for (const seg of wrapText(raw, inner - 1)) body.push(seg);
+  }
+  const total = body.length;
+  const scroll = Math.min(Math.max(0, panel.scroll), Math.max(0, total - maxVisible));
+  panel.scroll = scroll;
+  const visible = body.slice(scroll, scroll + maxVisible);
+  const rows: Row[] = [{ text: cardTitleLine(panel.title, '', inner), style: { fg: 'cyan' } }];
+  if (visible.length === 0) rows.push({ text: cardContentLine('（无输出）', inner), style: { dim: true } });
+  for (const t of visible) rows.push({ text: cardContentLine(t, inner), style: {} });
+  const remain = total - (scroll + maxVisible);
+  rows.push({
+    text: cardContentLine(remain > 0 ? `↑↓ 滚动 · Esc 关闭（还有 ${remain} 行）` : 'Esc 关闭', inner),
+    style: { dim: true },
+  });
+  rows.push({ text: cardBottomLine(inner), style: { dim: true } });
+  return rows;
+}
+
+/**
  * 工具调用审批卡片（安全护栏）：`state.approval` 非空时渲染。
  * 与工具卡片同款圆角方框：标题行 `╭─ 需要审批 ─╮` + 工具/原因 + 批准/拒绝按钮行。
  * 点击左侧区域批准、右侧区域拒绝（approvalId 标记整卡，startTui 按点击 x 列判定）；
@@ -148,14 +180,60 @@ export function approvalPanelRows(
   return rows;
 }
 
+/**
+ * 状态行设置面板（/settings statusline）：圆角方框 + 勾选列表（✓/☐）+ 排序操作提示。
+ * 与菜单面板（menuPanelRows）同款边框结构，渲染在菜单浮层（menuOverlay）里——
+ * 独立于会话流。高亮项 › 青色加粗；勾选 ✓ / 未勾选 ☐；←/→ 调整顺序。
+ */
+export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number): Row[] {
+  const inner = cardInnerWidth(contentWidth);
+  const rows: Row[] = [{ text: cardTitleLine('设置：状态行', '', inner), style: { fg: 'cyan' } }];
+  for (let i = 0; i < panel.items.length; i++) {
+    const it = panel.items[i]!;
+    const cursor = i === panel.selected ? '› ' : '  ';
+    const check = it.enabled ? '✓' : '☐';
+    rows.push({
+      text: cardContentLine(`${cursor}${check} ${it.label}`, inner),
+      style: i === panel.selected ? { fg: 'cyan', bold: true } : {},
+    });
+  }
+  rows.push({
+    text: cardContentLine('空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消', inner),
+    style: { dim: true },
+  });
+  rows.push({ text: cardBottomLine(inner), style: { dim: true } });
+  return rows;
+}
+
 /** 状态 → 全部内容行（未裁剪窗口），每行已按内容宽度折行（不截断） */
 export function buildBody(state: TuiState, width: number): Row[] {
   const theme = themeFor(state);
   const body: Row[] = [];
   // 会话标题不显示在信息流里——首轮对话后由模型自动生成，改设为终端窗口/标签页标题
   // （setTerminalTitle，见 interactive.ts），保持对话流纯净。
+  // 内容组间距：thinking / tool（工具卡片）/ other 三类内容组之间留空行。
+  //（用户反馈「工具区域附近的思考或回答不要紧贴」）：工具卡片上方/下方与思考、回答
+  // 之间都插空行；连续 thinking 段落、连续工具卡片（并行调用属同一区域）之间不加；
+  // 已有空行不重复插（如 user 消息自带尾随空行）；**卡片顶/底留白行是卡片的一部分**
+  //（cardId 非空，带底色），不视为分隔空行——切出工具区域时仍要插真正的空行。
+  // **thinking ↔ 工具卡片之间留 2 行**（用户要求「loading思考中 和 tool 工具调用的
+  // 黄色区域，需要一个合理的间距」——思考内容与黄色卡片视觉上分隔更明显），
+  // 其余组间切换（tool↔回答、thinking↔回答等）留 1 行。
+  let prevGroup: 'thinking' | 'tool' | 'other' | null = null;
+  const isRealBlank = (r: Row): boolean => r.text === '' && r.cardId === undefined;
+  const pushGap = (rows: number): void => {
+    for (let i = 0; i < rows; i++) body.push({ text: '', style: {} });
+  };
   for (let li = 0; li < state.lines.length; li++) {
     const line = state.lines[li];
+    const group: 'thinking' | 'tool' | 'other' =
+      line.kind === 'thinking' ? 'thinking' : line.kind === 'tool' ? 'tool' : 'other';
+    if (group !== prevGroup && body.length > 0 && !isRealBlank(body[body.length - 1])) {
+      const thinkingTool =
+        (prevGroup === 'thinking' && group === 'tool') || (prevGroup === 'tool' && group === 'thinking');
+      pushGap(thinkingTool ? 2 : 1);
+    }
+    prevGroup = group;
     if (line.kind === 'answer') {
       // 最终回答走行式 Markdown 渲染（加粗/行内代码/代码块/标题/引用/表格/列表/任务清单等）。
       // 传内容宽度：表格按此收缩列宽（超宽截断），每行不折行、对齐不被打断。
@@ -173,9 +251,13 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'tool' && line.card) {
-      // 工具调用卡片：无标题圆角方框（命令/执行缩略/结果缩略），
-      // 收起/展开由 card.expanded 决定（点击切换）；边框用普通色（暗白/亮灰）
-      const lines = toolCardLines(line.card, width);
+      // 工具调用卡片：颜色背景块（命令/执行缩略/结果缩略），收起/展开由
+      // card.expanded 决定（点击切换）。执行中（status=running）时把当前 spinner
+      // 帧传进卡片——执行中行显示动画 loading 而非静态「⏳ 执行中…」（用户要求）；
+      // 帧由 TuiOutput 的 200ms 定时器推进，无动画（spinnerIndex=-1）时缺省 ⏳。
+      const spinner =
+        state.spinnerIndex >= 0 ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length] : undefined;
+      const lines = toolCardLines({ ...line.card, spinner }, width);
       for (const l of lines) {
         body.push({ ...toolCardRow(l.text, l.role, theme), cardId: line.card.id });
       }
@@ -243,13 +325,13 @@ export function buildBody(state: TuiState, width: number): Row[] {
  * renderable，不在这里。
  *
  * 行数预算：根 Box paddingY(2) = 2 行固定（无边框）；
- * 交互模式再占 状态栏(1) + 灰色块（paddingY 2 + 输入框 inputLines + 间距 1 + 模型 1）
- * + 路径/token 行(1)，即内容区 = 高度 - 8 - inputLines（inputLines=1 时即高度 - 9）；
+ * 交互模式再占 状态栏(1) + 灰色块（输入框 inputLines + 间距 1 + 模型 1，paddingY 0）
+ * + 统计行间距(1) + 统计行(1)，即内容区 = 高度 - 9 - inputLines（inputLines=1 时即高度 - 10）；
  * 单次任务模式内容区 = 高度 - 3。
  *
  * 多行输入框自动增高（Enter 发送 / Shift+Enter 换行），inputLines 由 repaintTree
  * 每次从输入框 lineCount 实时同步（蓝色细线同步增高）——输入框变高时内容区预算
- * 同步收缩，灰色块与路径/token 行永远不会被挤出视口。
+ * 同步收缩，灰色块与统计行永远不会被挤出视口。
  *
  * 滚动：scrollTop = null 跟随最新；上滚时显示「内容窗 + 底部提示行」。
  * scrollIntent（按键发出的一次性指令）在此消费，滚动数学集中在这一处。
@@ -261,13 +343,18 @@ export function computeRows(
 ): Row[] {
   const { height, width } = size;
   const body = buildBody(state, Math.max(1, (width ?? 80) - CONTENT_PAD));
-  // footer 高度预算：输入内容行数(1-5) + 间距 1 + 模型行 1 + 路径/token 行 1 + paddingY 2；
-  // 极小高度时不强塞内容行（避免把灰色块挤出视口）
+  // footer 高度预算：输入内容行数(1-5) + 间距 1 + 模型行 1 + 统计行 1（paddingY 0，
+  // 灰块低）+ 16px 圆角边框 2 行（rounded border 同色线）；极小高度时不强塞内容行（避免把灰色块挤出视口）
   const inputLines = opts?.withInput ? Math.min(5, Math.max(1, state.inputLines ?? 1)) : 0;
   // 命令联想列表是**独立浮层**（absolute 定位，见 repaintTree）——不占内容流，
   // 内容区预算不再减它的行数（对话不因联想出现而跳动）
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏(1) + 灰色块(inputLines+4) + 路径/token 行(1)
-  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 1 + inputLines + 5 : 1));
+  // 待发送消息区（输入框上方小视图）：标题 1 + 最多 4 条 + 超出时「还有 N 条」1 行（空列表 0 行）；
+  // 预算同步收缩（灰色块永远完整可见）。
+  const pendingCount = state.pending.length;
+  const pendingRows =
+    opts?.withInput && pendingCount > 0 ? 1 + Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) : 0;
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows)
+  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 1 + inputLines + 6 + pendingRows : 1));
   const total = body.length;
 
   // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）

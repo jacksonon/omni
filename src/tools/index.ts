@@ -13,6 +13,7 @@ import { writeFileTool } from './write-file.js';
 import { listDirectoryTool } from './list-directory.js';
 import { searchCodeTool } from './search-code.js';
 import { runCommandTool } from './run-command.js';
+import { skillTool } from './skill.js';
 import type { Tool } from './types.js';
 
 export type { Tool } from './types.js';
@@ -25,4 +26,5 @@ export const tools: Tool[] = [
   listDirectoryTool,
   searchCodeTool,
   runCommandTool,
+  skillTool,
 ];

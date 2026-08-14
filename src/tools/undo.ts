@@ -35,12 +35,34 @@ export interface UndoEntry {
   at: number;
 }
 
-/** 撤销栈：会话级，写操作前 push，/undo 时 pop */
+/** 撤销栈：会话级，写操作前 push，/undo 时 pop；/redo 恢复最近一次撤销 */
 export class UndoStack {
   private entries: UndoEntry[] = [];
+  /** redo 栈：/undo 时捕获「撤销前」的文件状态（即本次写入后的状态），/redo pop 恢复 */
+  private redoEntries: UndoEntry[] = [];
 
   get size(): number {
     return this.entries.length;
+  }
+
+  /** redo 栈大小（/redo 命令判断是否有可重做） */
+  get redoSize(): number {
+    return this.redoEntries.length;
+  }
+
+  /**
+   * 捕获文件当前状态（redo 候选）：存在 → 记录内容；不存在（ENOENT）→ 记录「新建」标记。
+   * 大文件/目录/权限错误 → null（该文件不支持 redo）。
+   */
+  private async captureCurrent(filePath: string): Promise<UndoEntry | null> {
+    try {
+      const st = await stat(filePath);
+      if (!st.isFile() || st.size > SNAPSHOT_MAX_BYTES) return null;
+      return { path: filePath, existed: true, content: await readFile(filePath, 'utf8'), at: Date.now() };
+    } catch (e: any) {
+      if (e?.code === 'ENOENT') return { path: filePath, existed: false, content: '', at: Date.now() };
+      return null;
+    }
   }
 
   /** 当前栈内容（只读视图，测试/调试用） */
@@ -55,6 +77,7 @@ export class UndoStack {
    * 失败不记录，避免产生误导性的撤销条目（review 抓到的边界）。
    */
   async snapshotWrite(filePath: string): Promise<boolean> {
+    this.clearRedo(); // 新写入使 redo 历史失效（见 clearRedo 注释）
     const abs = resolvePath(filePath);
     let st: Awaited<ReturnType<typeof stat>> | null = null;
     try {
@@ -77,7 +100,54 @@ export class UndoStack {
     return true;
   }
 
-  /** pop 最近一次快照（无则 null） */
+  /**
+   * 记录一次写操作时清空 redo 栈——新的写入使「重做上次撤销」失去意义
+   * （否则 /undo 后继续写文件，/redo 会把新写入覆盖掉）。
+   */
+  private clearRedo(): void {
+    this.redoEntries.length = 0;
+  }
+
+  /**
+   * pop 最近一次快照供 /undo，同时把「撤销前」状态（当前文件内容）捕获进 redo 栈
+   * （/redo 恢复为撤销前的状态 = 本次写入后的内容）。返回快照（无则 null）。
+   */
+  async popForUndo(): Promise<UndoEntry | null> {
+    const e = this.entries.pop();
+    if (!e) return null;
+    const cur = await this.captureCurrent(e.path);
+    if (cur) this.redoEntries.push(cur);
+    return e;
+  }
+
+  /**
+   * pop 全部快照供 /undo all（**逆序**：最新的在前），同时逐个捕获 redo 候选
+   * （顺序与撤销相反，/redo all 时按原写入顺序恢复）。
+   */
+  async popAllForUndo(): Promise<UndoEntry[]> {
+    const entries = this.entries.splice(0);
+    const redo: UndoEntry[] = [];
+    for (const e of entries) {
+      const cur = await this.captureCurrent(e.path);
+      if (cur) redo.push(cur);
+    }
+    // entries 为写入顺序（旧→新）；popAllForUndo 返回逆序（新→旧）供撤销；
+    // redo 栈 push 逆序后的结果（新→旧），/redo all 时再 pop 得到旧→新恢复顺序
+    this.redoEntries.push(...redo.reverse());
+    return entries.reverse();
+  }
+
+  /** /redo：pop 最近一次撤销前的状态（无则 null） */
+  redo(): UndoEntry | null {
+    return this.redoEntries.pop() ?? null;
+  }
+
+  /** /redo all：pop 全部 redo 候选（逆序 = 恢复最早一次撤销开始） */
+  redoAll(): UndoEntry[] {
+    return this.redoEntries.splice(0).reverse();
+  }
+
+  /** pop 最近一次快照（同步版，兼容旧调用/测试；不做 redo 捕获） */
   pop(): UndoEntry | null {
     return this.entries.pop() ?? null;
   }

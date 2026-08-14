@@ -15,6 +15,10 @@ import type { TuiState } from './state.js';
  * 自动检测（OSC 10/11 查询），存于 state.themeMode，默认深色。
  */
 export interface TuiTheme {
+  /** 内容区背景（根 Box）：深色不设置（透终端底色），亮色白色——修复亮色模式界面整体仍是黑色 */
+  background?: string;
+  /** 输入框底色：dark 与灰块同色融合；light 白色（与内容背景一致，从灰块中浮出） */
+  inputBg: string;
   /** footer 灰色块 / 用户消息底色 */
   footerBg: string;
   /** 用户消息文字色 */
@@ -33,15 +37,27 @@ export interface TuiTheme {
   contentText: string;
   /** 内容区浅色文字（思考/meta/提示行：dark 走 dim 属性，light 显式深灰） */
   contentDim: string;
-  /** 命令联想浮层底色（独立下拉面板，与 footer 灰块区分） */
+  /** 命令联想/提及浮层底色（独立下拉面板，与 footer 灰块区分） */
   suggestBg: string;
-  /** 命令联想浮层普通项文字色（选中项用 accentBlue） */
+  /** 命令联想/提及浮层圆角边框色（面板整体有背景 + 圆角 12 风格） */
+  suggestBorder: string;
+  /** 命令联想/提及浮层普通项文字色（选中项用 accentBlue） */
   suggestText: string;
-  /** 工具卡片边框色：暗色下普通白色、亮色下灰色（用户要求无彩色边框） */
-  cardBorder: string;
+  /**
+   * 工具卡片块底色：代码执行等工具调用以「颜色背景区域块」显示（用户要求：
+   * 不用边框，用有颜色背景的块）。**超淡黄**（amber-50，两主题统一；用户要求
+   * 「使用超淡黄色作为背景」），块为**完整长方形**（无圆角缺角），文字统一深色。
+   */
+  cardBg: string;
+  /**
+   * 工具卡片块上的文字色（执行/结果/输出/提示等 dim 角色 + 命令行）：
+   * 黄底（超淡黄）上统一用深棕近黑，两主题一致——淡黄底上浅色字不可读。
+   */
+  cardDim: string;
 }
 
 const DARK_THEME: TuiTheme = {
+  inputBg: '#3f3f46', // 深色：输入框与灰色块同色融合（现状）
   footerBg: '#3f3f46',
   userText: '#e2e8f0',
   accentBlue: '#3b82f6',
@@ -52,11 +68,15 @@ const DARK_THEME: TuiTheme = {
   contentText: '#e2e8f0',
   contentDim: '#9ca3af',
   suggestBg: '#27272a', // 比 footer 深一档（zinc-800），浮层从灰块中浮出
+  suggestBorder: '#52525b', // zinc-600：圆角边框略亮于面板底，勾出圆角轮廓
   suggestText: '#e2e8f0',
-  cardBorder: '#e2e8f0', // 普通白色边框
+  cardBg: '#fefce8', // 工具卡片块底色：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
+  cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——淡黄底上浅色字不可读，统一深色
 };
 
 const LIGHT_THEME: TuiTheme = {
+  background: '#ffffff', // 内容区白色背景（修复亮色模式界面整体仍黑）
+  inputBg: '#ffffff', // 输入框白色（修复亮色模式 textfield 仍是灰块底色）
   footerBg: '#e4e4e7', // 淡灰（zinc-200）
   userText: '#27272a', // 深灰近黑（zinc-800）
   accentBlue: '#2563eb', // 稍深蓝，保证浅底对比度
@@ -67,8 +87,10 @@ const LIGHT_THEME: TuiTheme = {
   contentText: '#27272a', // 内容区文字改深色（修复浅底白字）
   contentDim: '#52525b', // zinc-600：思考/meta/提示在浅底上仍清晰
   suggestBg: '#ffffff', // 亮色下浮层用白底，与淡灰 footer 区分
+  suggestBorder: '#a1a1aa', // zinc-400：亮色下圆角边框用中灰
   suggestText: '#27272a',
-  cardBorder: '#71717a', // 亮色下灰色边框
+  cardBg: '#fefce8', // 工具卡片块底色：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
+  cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——与暗色一致
 };
 
 /** 判断主题是否为亮色（用于 dim 行显式取深色文字等分支） */

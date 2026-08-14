@@ -30,6 +30,7 @@ import {
   MEMORY_PREFIX,
   memoryMessage,
 } from './memory.js';
+import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
 
 export interface ContextOptions {
   /** 是否加载全局记忆 ~/.config/omni/AGENTS.md（跨项目共享；默认 true） */
@@ -44,6 +45,8 @@ export interface ContextOptions {
   summarizeWindow?: number;
   /** 是否预载任务文本中出现的相关文件（默认 true） */
   preloadFiles?: boolean;
+  /** 是否启用技能（SKILL.md）发现与注入（默认 true） */
+  skills?: boolean;
   /** 最多预载文件数（默认 5） */
   preloadMaxFiles?: number;
   /** 单文件预载字节上限（默认 30KB） */
@@ -238,6 +241,17 @@ export async function prepareContext(
   if (globalFile && !hasGlobal && messages.length > 0) {
     const mem = await loadGlobalMemory();
     if (mem) messages.unshift(globalMemoryMessage(mem));
+  }
+  // -1) 技能清单：跨会话共享（SKILL.md 已安装），首轮注入一次——
+  //     只列 name+description，模型需要时用 skill 工具按名加载全文（对标 opencode）。
+  //     注入顺序在全局记忆之后 → 排在记忆之前、紧跟 SYSTEM_PROMPT（技能是通用能力）。
+  const skillsFile = opts.skills !== false;
+  const hasSkills = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(SKILL_PREFIX)
+  );
+  if (skillsFile && !hasSkills && messages.length > 0) {
+    const skills = await discoverSkills();
+    if (skills.length > 0) messages.unshift(skillMessage(skills));
   }
   // 3) 长对话摘要压缩
   await summarizeContext(client, model, messages, opts);

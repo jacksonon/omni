@@ -16,6 +16,8 @@ export interface TokenUsage {
   prompt: number;
   completion: number;
   total: number;
+  /** 缓存命中 token 数（prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens；网关不支持时缺省） */
+  cached?: number;
 }
 
 export interface Output {
@@ -38,6 +40,12 @@ export interface Output {
   onAnswerEnd(): void;
   /** 一轮流式响应结束时的 token 用量（TUI footer 右下角累计展示；console 忽略） */
   onUsage(usage: TokenUsage): void;
+  /** 一次 Agent 回合开始（交互模式每轮用户提交 / 单次任务各 1 次；TUI footer 轮数统计用） */
+  onTurnStart?(): void;
+  /** 一次 LLM 流式请求完成（llmMs=请求墙钟毫秒；firstTokenMs=首个 chunk 延迟，失败/无正文为 null） */
+  onLlmLap?(llmMs: number, firstTokenMs: number | null): void;
+  /** 一轮的工具调用全部完成（toolsMs=该轮工具执行墙钟毫秒） */
+  onToolsLap?(toolsMs: number): void;
   /** 模型请求失败 */
   onRequestFailed(err: unknown): void;
   /** 思考内容落盘完成 */

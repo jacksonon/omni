@@ -15,30 +15,42 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { TextareaRenderable } from '@opentui/core';
+import { createClient, type ModelEndpoint } from '../client.js';
 import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
-import { appendSessionMessages, finalizeSession, persistableMessages } from '../agent/session.js';
+import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession } from '../agent/session.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
+import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
-import { handleMenuKey, runCommand } from './commands.js';
+import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
+import { persistStatuslineToConfig } from '../config/write.js';
+import { insertMention } from './mention.js';
+import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
-import type { ScrollAction, TuiState } from './state.js';
+import { pushCmdLine, pushLine, type ScrollAction, type TuiState } from './state.js';
 
 /**
- * 等待输入框下一次 Enter 提交，resolve 出输入内容。
+ * 等待输入框下一次 Enter 提交，resolve 出输入内容与提交模式。
  *
  * 多行 Textarea 的 Enter 由自定义 keyBinding 路由到 submit()，submit() 触发
  * onSubmit 回调（不清空内容）。这里设置一次性 onSubmit：提交后立即解除，
  * 从 plainText（buffer 全文本，含换行）读取输入。
+ *
+ * 模式（state.submitMode，keypress 在 Enter 时写入）：Enter = queue（空闲时
+ * 直接执行，运行中入待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer（空闲时
+ * 直接执行，运行中打断当前回合并插到待发送列表最前优先执行）。submit 回调消费后
+ * 重置为 queue。注意 macOS 上 Cmd 常被终端应用拦截，能到达终端的就是可用的修饰键。
  */
-function waitForSubmit(input: TextareaRenderable): Promise<string> {
+function waitForSubmit(input: TextareaRenderable, state: TuiState): Promise<{ text: string; mode: 'queue' | 'steer' }> {
   return new Promise((resolve) => {
     const handler = () => {
       input.onSubmit = undefined; // 一次性：本次提交消费后移除，避免重复触发
-      resolve(input.plainText);
+      const mode = state.submitMode;
+      state.submitMode = 'queue'; // 消费后重置（联想 Enter 等路径不经过这里，但每次 Enter 都会重写）
+      resolve({ text: input.plainText, mode });
     };
     input.onSubmit = handler;
   });
@@ -86,20 +98,56 @@ export async function runTuiInteractive(
 ): Promise<void> {
   const input = session.input;
   if (!input) return;
+  // 运行中打断（steer，Cmd/Ctrl+Enter）消息槽：运行中提交 steer 时写入本槽并 abort
+  // 当前流；loop 在流中断（AbortError）后经 takeInterrupt 取走、push 进 messages
+  // （作为当前轮的新 user 消息）并在**同一轮内继续**——模型直接回答打断消息，
+  // 不结束本轮（轮数不增、不闪「等待输入」）。interruptPending 为只读探测（区分
+  // abort 是打断还是取消：/stop、Esc 取消时槽为空 → 优雅结束本轮）。
+  // 回合自然结束时槽中残留的消息由 finally 转入待发送列表（不丢失）。
+  let interruptText: string | null = null;
+  runOpts.interruptPending = () => interruptText !== null;
+  runOpts.takeInterrupt = () => {
+    const t = interruptText;
+    interruptText = null;
+    return t;
+  };
   // 会话持久化：增量追加每轮新增消息。
   // savedCount 统计**可落盘**消息数（脚手架 system 消息不落盘，见 persistableMessages）：
   // · --continue/-r 恢复时历史已在文件里 → 从可落盘数起步，避免整段重复追加（review 抓到的 bug）；
   // · prepareContext 每轮可能 unshift 全局/项目记忆/预载 system 消息（不落盘）——按可落盘数
   //   切片不受下标偏移影响（否则恢复会话会把上轮回答重复写盘，实测抓到）
-  const sessionPath = runOpts.sessionPath;
+  // 会话文件路径取 runOpts.sessionPath（可变）：/resume、/session 恢复后会替换它，
+  // 之后的持久化必须落到**新**文件（否则继续的对话会写进旧的空占位会话，e2e 抓到）
   let savedCount = persistableMessages(messages).length;
   const persistTurn = async (): Promise<void> => {
-    if (!sessionPath) return;
+    if (!runOpts.sessionPath) return;
     const persistable = persistableMessages(messages);
     if (savedCount > persistable.length) savedCount = 0; // /clear 后上下文重置
     if (persistable.length <= savedCount) return;
-    await appendSessionMessages(sessionPath, persistable.slice(savedCount)).catch(() => {});
+    await appendSessionMessages(runOpts.sessionPath, persistable.slice(savedCount)).catch(() => {});
     savedCount = persistable.length;
+  };
+
+  // 恢复会话：替换 messages + 会话文件 + 重置落盘计数 + 把历史回放进对话流
+  // （/resume、/session <id>、/session 面板共用同一逻辑）
+  const restoreSession = (file: string, msgs: ChatCompletionMessageParam[]): void => {
+    const prevPath = runOpts.sessionPath;
+    messages.length = 0;
+    messages.push(...msgs);
+    runOpts.sessionPath = file;
+    savedCount = persistableMessages(messages).length; // 已落盘历史不重复追加
+    state.scrollTop = null;
+    // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
+    if (prevPath && prevPath !== file) void removeEmptySession(prevPath);
+    for (const m of msgs) {
+      if (m.role === 'user' && typeof m.content === 'string' && m.content) {
+        out.onUserMessage(m.content);
+      } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
+        out.onAnswer(m.content);
+        out.onAnswerEnd();
+      }
+    }
+    out.onTurnEnd();
   };
 
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
@@ -121,8 +169,87 @@ export async function runTuiInteractive(
     // preventDefault 阻止输入框处理——不会把方向键当光标移动、Enter 也不会误提交。
     if (state.menu) {
       if (handleMenuKey(key, state)) key.preventDefault();
+      // 菜单确认（Enter/数字）后：确认提示进面板，短暂停留后自动收起（无需按 Esc 关闭）
+      if (!state.menu && state.cmdPanel && state.cmdPanel.lines.length > 0) {
+        scheduleCmdPanelAutoClose(state, session);
+      }
       paintNow();
       return;
+    }
+    // 状态行设置面板（/settings statusline）：空格 勾选/取消 · ←/→ 排序 · ↑/↓ 移动高亮 ·
+    // Enter 保存生效 · Esc 取消。消费的按键 preventDefault（不进输入框）；Enter 保存后
+    // 确认进命令面板 → 短暂停留自动收起（执行型动作，无需按 Esc）。
+    if (state.settingsPanel) {
+      const handled = handleSettingsPanelKey(key, state);
+      if (handled) {
+        key.preventDefault();
+        if (!state.settingsPanel && state.cmdPanel && state.cmdPanel.lines.length > 0) {
+          scheduleCmdPanelAutoClose(state, session);
+        }
+      }
+      paintNow();
+      return;
+    }
+    // 命令输出面板（所有 / 命令的独立窗口）：Esc 关闭、↑/↓/PgUp/PgDn 滚动；
+    // **任意其它按键（含 Enter）关闭面板并放行给输入框**——继续输入/继续发送即收起，
+    // 无需专门按 Esc；Enter 放行后空输入提交 → 循环继续（/session 选完等场景少按一次）。
+    if (state.cmdPanel) {
+      if (key.name === 'escape' || key.name === 'esc') {
+        state.cmdPanel = null;
+        key.preventDefault();
+      } else if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+        state.cmdPanel = null; // 不 preventDefault：Enter 继续走输入框提交（空输入 → 循环继续）
+      } else if (key.name === 'up') {
+        state.cmdPanel.scroll -= 1;
+        key.preventDefault();
+      } else if (key.name === 'down') {
+        state.cmdPanel.scroll += 1;
+        key.preventDefault();
+      } else if (key.name === 'pageup') {
+        state.cmdPanel.scroll -= 10;
+        key.preventDefault();
+      } else if (key.name === 'pagedown') {
+        state.cmdPanel.scroll += 10;
+        key.preventDefault();
+      } else {
+        state.cmdPanel = null; // 其它按键：关闭面板并放行（继续输入即收起，按键进入输入框）
+      }
+      // 滚动位置由 cmdPanelRows 在渲染时 clamp 到合法区间（回写 panel.scroll）
+      paintNow();
+      return;
+    }
+    // 待发送列表选择入口：输入框为空且有待发送消息时，↑ 进入列表选择
+    //（否则 ↑ 是滚动——只有有待发送消息时让位给列表选择）
+    if (state.pendingSelected === -1 && state.pending.length > 0 && input.plainText === '' && key.name === 'up') {
+      selectLastPending(state);
+      key.preventDefault();
+      paintNow();
+      return;
+    }
+    // 待发送列表管理（pendingSelected >= 0 时）：↑/↓ 移动高亮（循环）、←/→ 排序、
+    // Enter 编辑（文本取回输入框，可修改后重新发送）、Backspace/Delete 删除、
+    // Esc 退出选择；其余按键退出选择并放行给输入框（非模态——继续输入即返回）。
+    if (state.pendingSelected >= 0) {
+      const r = handlePendingKey(key, state);
+      if (r) {
+        if (r.kind === 'edit') {
+          input.setText(r.text);
+          key.preventDefault(); // Enter 编辑：不放行给输入框（避免同时提交空输入）
+        } else if (r.kind === 'consumed') {
+          key.preventDefault();
+        }
+        paintNow();
+        if (r.kind === 'deselect') paintDeferred(); // 放行给输入框的按键会改内容 → 延迟重刷联想
+        return;
+      }
+    }
+    // 提交模式：Enter = queue（空闲直接执行 / 运行中入待发送列表末尾）；
+    // Cmd/Ctrl/Super/Option+Enter = steer（空闲直接执行 / 运行中打断当前回合并插到列表最前）。
+    // 注意：macOS 上 Cmd 常被终端应用拦截（key.super 也可能为空），所以只要
+    // meta/ctrl/super/option 任一修饰键命中都按 steer 处理——能到达终端的就是可用的。
+    // submit 回调消费后重置。
+    if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+      state.submitMode = key.meta || key.ctrl || key.super || key.option ? 'steer' : 'queue';
     }
     // 命令联想列表（输入以 / 开头时显示）：非模态——只有 ↑/↓/Tab/Enter/Esc 被消费，
     // 其它按键照常输入（列表在下次 paint 按最新文本过滤，互不影响）。
@@ -130,27 +257,89 @@ export async function runTuiInteractive(
     const sug = state.cmdSuggest;
     if (sug && sug.items.length > 0) {
       const sel = Math.min(sug.selected, sug.items.length - 1);
+      const win = Math.max(1, sug.window);
+      let consumed = false; // ↑/↓/Tab/Enter/Esc 消费按键；退格/普通字符等放行给输入框
       if (key.name === 'up') {
+        // ↑/↓ 循环移动高亮，并保持选中项在可见窗口内（超出窗口时滚动）——
+        // 全部命令都可到达（不再只循环可见的 9 条，用户反馈“超过一屏无法翻页”）
         sug.selected = (sel - 1 + sug.items.length) % sug.items.length;
-        key.preventDefault();
+        if (sug.selected < sug.top) sug.top = sug.selected;
+        else if (sug.selected >= sug.top + win) sug.top = sug.selected - win + 1; // 环绕回底部
+        consumed = true;
       } else if (key.name === 'down') {
         sug.selected = (sel + 1) % sug.items.length;
-        key.preventDefault();
+        if (sug.selected >= sug.top + win) sug.top = sug.selected - win + 1;
+        else if (sug.selected < sug.top) sug.top = sug.selected; // 环绕回顶部
+        consumed = true;
       } else if (key.name === 'tab') {
         // Tab：只填入命令（带尾空格让联想自动消失），用户可继续编辑后 Enter 执行
         input.setText(`/${sug.items[sel]} `);
         state.cmdSuggest = null;
-        key.preventDefault();
+        consumed = true;
       } else if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
         // Enter：直接执行高亮命令（填入后 submit，主循环 runCommand 分发）
         input.setText(`/${sug.items[sel]}`);
         state.cmdSuggest = null;
-        key.preventDefault();
+        consumed = true;
         input.submit();
       } else if (key.name === 'escape' || key.name === 'esc') {
         // 记录关闭时的输入文本：文本不变则保持隐藏（否则 repaintTree 会复活列表）
         state.cmdSuggest = null;
         state.cmdSuggestDismissedText = state.inputText;
+        consumed = true;
+      }
+      if (consumed) key.preventDefault(); // 消费按键不进入输入框（Enter 不误提交、↑↓ 不移动光标）
+      paintNow();
+      // 非消费按键（退格/普通字符）会修改输入框内容：当前帧 paintNow 时输入框 buffer
+      // 还没更新（全局 keypress 先于输入框执行），必须再延迟一帧按更新后的文本重刷联想
+      // ——否则删除 / 后菜单不消失、继续输入也不按新前缀过滤（用户报告/探针复现）
+      if (!consumed) paintDeferred();
+      return;
+    }
+    // @ 提及文件选择（输入含 @ 时显示）：非模态——↑/↓ 移动高亮、Tab/Enter 选中插入
+    // （目录保留 / 继续进入下一层浏览；文件插入后加空格结束提及）、Esc 关闭；
+    // 其余按键照常输入（列表在下次 paint 按最新文本过滤，互不影响）。
+    const men = state.mention;
+    if (men && men.items.length > 0) {
+      const sel = Math.min(men.selected, men.items.length - 1);
+      const win = Math.max(1, men.window);
+      let consumed = false;
+      if (key.name === 'up') {
+        men.selected = (sel - 1 + men.items.length) % men.items.length;
+        if (men.selected < men.top) men.top = men.selected;
+        else if (men.selected >= men.top + win) men.top = men.selected - win + 1;
+        consumed = true;
+      } else if (key.name === 'down') {
+        men.selected = (sel + 1) % men.items.length;
+        if (men.selected >= men.top + win) men.top = men.selected - win + 1;
+        else if (men.selected < men.top) men.top = men.selected;
+        consumed = true;
+      } else if (key.name === 'tab' || key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+        // Tab/Enter：选中插入（Enter 只插入不发送——用户可能还要继续输入/换行）
+        insertMention(input, men, sel);
+        consumed = true;
+      } else if (key.name === 'escape' || key.name === 'esc') {
+        // 记录关闭时的 @ 位置与查询：文本不变则保持隐藏（否则 repaintTree 会复活列表）
+        state.mention = null;
+        state.mentionDismissedKey = `${men.atIndex}:${men.query}`;
+        consumed = true;
+      }
+      if (consumed) key.preventDefault();
+      paintNow();
+      // 非消费按键同样延迟一帧重刷（@ 提及按最新文本过滤，见上）
+      if (!consumed) paintDeferred();
+      return;
+    }
+    // ESC 取消正在进行的对话（与 /stop 同语义）：前面的浮层分支（菜单/面板/联想/提及/
+    // 待发送选择）已各自消费自己的 Esc——能走到这里说明无任何浮层。审批卡片打开时 ESC
+    // 由 startTui 的审批 handler 先消费（拒绝审批并置位 approvalKeyJustConsumed），
+    // 这里跳过取消运行（拒绝审批 ≠ 取消对话）。
+    if ((key.name === 'escape' || key.name === 'esc') && state.running) {
+      if (state.approvalKeyJustConsumed) {
+        state.approvalKeyJustConsumed = false; // 该 ESC 已用于拒绝审批
+      } else {
+        state.cancelRun?.(); // 取消当前回合（loop 优雅结束本轮：已输出保留、半截消息不入上下文）
+        out.cancelVisuals(); // **立即**停右侧 loading + 状态栏「思考中/执行中」（不等 runAgent 返回）
         key.preventDefault();
       }
       paintNow();
@@ -172,33 +361,167 @@ export async function runTuiInteractive(
     input.focus();
     // 权限档位：初始取入口配置（runOpts.permission = cfg.permission），/permission 面板切换
     state.permission = runOpts.permission ?? state.permission;
+    // 思考级别：初始取入口配置（runOpts.reasoningEffort = cfg.reasoningEffort），/variants 面板切换
+    state.reasoningEffort = runOpts.reasoningEffort ?? state.reasoningEffort;
+    // 可用模型列表：顶层 model + config `models`（/model 面板列出）；当前模型初始取运行时
+    state.models = (runOpts.models ?? []).map((m) => m.name);
+    state.model = runOpts.modelRuntime?.model ?? model;
+    // 当前模型运行时（可变）：/model 切换时重建 client 并更新共享引用（子代理同步）
+    let currentClient: OpenAI = client;
+    let currentModel = state.model;
+    // 把端点设为当前模型：重建 client（不同端点不能复用旧 client）+ 更新共享引用——
+    // 主循环（每轮读 modelRuntime）与 delegate 子代理（闭包持有）同步生效
+    const applyEndpoint = (endpoint: ModelEndpoint): void => {
+      currentClient = createClient(endpoint, endpoint.apiKey ?? '');
+      currentModel = endpoint.name;
+      state.model = endpoint.name;
+      if (runOpts.modelRuntime) {
+        runOpts.modelRuntime.client = currentClient;
+        runOpts.modelRuntime.model = endpoint.name;
+      }
+    };
+    const syncModel = (): void => {
+      // 对比 state.model（/model 面板确认后变更）与当前运行时模型，变了才真正切换：
+      // 从 runOpts.models 找目标端点（baseURL/apiKey/userAgent 已按配置展开），重建 client
+      // 并更新 runOpts.modelRuntime——主循环（每轮读它）与 delegate 子代理（闭包持有）同步生效
+      const target = state.model;
+      if (!target || target === currentModel) return;
+      const endpoint = (runOpts.models ?? []).find((m) => m.name === target);
+      if (!endpoint) {
+        pushLine(state, { kind: 'warn', text: `模型「${target}」不在可用列表（config models 未配置该端点）` });
+        state.model = currentModel; // 还原面板高亮，避免每轮重复告警
+        return;
+      }
+      applyEndpoint(endpoint);
+    };
     let turn = 0; // 真实对话轮次（斜杠命令/空输入不计）
     for (;;) {
-      // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
-      if (!state.menu) {
-        out.onWaitForInput();
+      // /settings statusline 保存意图：应用已即时生效（state.statusline 更新，footer 统计行
+      // 立即按新配置重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）
+      if (state.statuslineSave) {
+        const order = state.statuslineSave;
+        state.statuslineSave = null;
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistStatuslineToConfig(order, cfg);
+          if (res.ok) {
+            pushCmdLine(state, { kind: 'meta', text: res.message }, '/settings statusline');
+          } else {
+            pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings statusline');
+          }
+          await session.paint();
+        }
+      }
+      // /session 面板确认：恢复所选会话（异步加载；每轮只处理一次，处理完清空意图）
+      if (state.sessionPick) {
+        const pick = state.sessionPick;
+        state.sessionPick = null;
+        const file = await findSessionById(pick);
+        if (!file) {
+          pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」不存在（/session 查看列表）` }, '/session');
+        } else {
+          const loaded = await loadSession(file);
+          if (!loaded) {
+            pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」加载失败` }, '/session');
+          } else {
+            restoreSession(file, loaded.messages);
+            // 恢复会话标题（若有）→ 终端窗口标题
+            if (loaded.meta.title) {
+              state.sessionTitle = loaded.meta.title;
+              setTerminalTitle(loaded.meta.title);
+            }
+            pushCmdLine(
+              state,
+              `已继续会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`,
+              '/session'
+            );
+          }
+        }
         await session.paint();
       }
-      const text = await waitForSubmit(input);
+      // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
+      // 待发送积压优先：回合结束后自动消费——steer（打断）消息插入时在最前、queue 追加在末尾，
+      // shift() 天然按 打断优先 → 排队顺序 发送；用户可在此之前用 ↑ 选中管理（排序/删除/编辑）
+      let text: string;
+      let submitMode: 'queue' | 'steer';
+      if (state.pending.length > 0) {
+        state.pendingSelected = -1; // 列表即将消费：清掉选择态（若用户在选中管理中，下一轮从头来）
+        const msg = state.pending.shift()!;
+        text = msg.text;
+        submitMode = msg.mode;
+      } else {
+        if (!state.menu) {
+          out.onWaitForInput();
+          await session.paint();
+        }
+        const r = await waitForSubmit(input, state);
+        text = r.text;
+        submitMode = r.mode;
+        // 提交后回到最新：新消息和后续回答应立即可见
+        state.scrollTop = null;
+        state.scrollIntent = null;
+        input.setText(''); // 多行 Textarea 的 value setter 不提交到 buffer，必须 setText 清空（同时复位自动增高）
+        await session.paint(); // 立即清掉输入框，避免残留文本影响阅读
+      }
       const cmd = text.trim();
-      // 提交后回到最新：新消息和后续回答应立即可见
-      state.scrollTop = null;
-      state.scrollIntent = null;
-      input.setText(''); // 多行 Textarea 的 value setter 不提交到 buffer，必须 setText 清空（同时复位自动增高）
-      await session.paint(); // 立即清掉输入框，避免残留文本影响阅读
-
       if (!cmd) continue;
+      // /model 面板/CLI 切换只改 state.model（意图），提交前先同步为真实运行时模型
+      syncModel();
       // 斜杠命令：注册表分发（/theme 打开面板、/exit 返回 'exit' 结束循环…）
       if (cmd.startsWith('/')) {
-        const ctx = { state, out, session, input, messages, client, model, undoStack: runOpts.undoStack };
+        const ctx = {
+          state, out, session, input, messages,
+          client: currentClient, model: currentModel,
+          models: state.models,
+          undoStack: runOpts.undoStack,
+          tools: runOpts.tools,
+          maxSubagentSteps: runOpts.maxSubagentSteps,
+          sessionPath: runOpts.sessionPath,
+          cfg: runOpts.cfg,
+          mcpServers: runOpts.mcpServers,
+          // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
+          onReconnectMcp: async () => {
+            closeMcpClients();
+            const mcp = await discoverMcpTools(runOpts.mcpServers);
+            runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
+          },
+          // /model <名称>：按名称从 runOpts.models 找端点切换（未注册则提示）
+          onSwitchModel: (name: string) => {
+            const endpoint = (runOpts.models ?? []).find((m) => m.name === name);
+            if (!endpoint) {
+              return `未知模型「${name}」——可用：${(runOpts.models ?? []).map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加）`;
+            }
+            applyEndpoint(endpoint);
+            return null;
+          },
+          // /model add：注册进运行时模型表（同名覆盖）+ 面板列表 + 切换
+          onAddModel: (endpoint: ModelEndpoint) => {
+            const list = runOpts.models ?? [];
+            const existing = list.find((m) => m.name === endpoint.name);
+            if (existing) Object.assign(existing, endpoint);
+            else runOpts.models = [...list, endpoint];
+            state.models = (runOpts.models ?? []).map((m) => m.name);
+            applyEndpoint(endpoint);
+            return null;
+          },
+          // /resume /session <id>：恢复会话（共用 restoreSession：替换 messages +
+          // 会话文件 + 重置落盘计数 + 把历史回放进对话流）
+          onResume: (file: string, msgs: ChatCompletionMessageParam[]) => {
+            restoreSession(file, msgs);
+          },
+        };
         const result = await runCommand(ctx, cmd);
         await session.paint();
         if (result === 'exit') {
           // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
           if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
-            await maybeWriteGlobalMemory(client, model, messages).catch(() => {});
+            await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
           }
-          if (sessionPath) await finalizeSession(sessionPath).catch(() => {}); // 刷新会话更新时间
+          if (runOpts.sessionPath) {
+            await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
+            // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
+            await removeEmptySession(runOpts.sessionPath).catch(() => {});
+          }
           break;
         }
         continue;
@@ -207,21 +530,88 @@ export async function runTuiInteractive(
       messages.push({ role: 'user', content: cmd });
       out.onUserMessage(cmd);
       // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context）
-      await prepareContext(client, model, messages, runOpts.context ?? {});
-      // Agent 运行期间 blur 输入框：防止运行中键入的内容混入下一轮输入
-      input.blur();
+      await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {});
+      // Agent 运行期间输入框**保持聚焦**（不 blur）：blur 会摘除 Textarea 的按键处理器
+      //（OpenTUI blur() 里 offInternal("keypress")），Enter/Cmd+Enter 到不了 onSubmit——
+      // queue/steer//stop 运行中提交全是死路径（旧 mockInput 探针没模拟 blur 才"通过"）。
+      // 运行中键入的内容经 onSubmit 分流进待发送列表/打断槽，不会混入下一轮输入。
       runOpts.planMode = state.planMode; // 每轮同步计划模式（/plan 切换即时生效）
       // 每轮同步权限档位：主循环按 runOpts.permission 新建 Safety；共用闸门（子代理）setTier 同步
       runOpts.permission = state.permission;
       runOpts.safetyGate?.setTier(state.permission);
-      await runAgent(client, model, messages, runOpts, out);
+      // 每轮同步思考级别（/variants 切换即时生效）：loop 请求带 reasoning_effort
+      runOpts.reasoningEffort = state.reasoningEffort || undefined;
+      // 每轮同步模型（/model 切换即时生效）：syncModel 里已重建 client 并更新 modelRuntime，
+      // runAgent 用 currentClient/currentModel 发起请求。
+      // 请求失败（网络/401/端点错误）时 runAgent 已在对话流提示并正常返回；这里再兜底
+      // 捕获意外异常——任何运行错误都只在对话流显示、不把整个 TUI 打崩（发消息闪退的根因）
+      // 取消支持：本轮创建 AbortController——/stop 命令、运行中 Ctrl+Enter（steer）、
+      // Esc → abort 中断流式响应（loop 优雅结束本轮；半截消息不入上下文）；运行结束（含
+      // 取消）后复位。**可重载**：steer 打断后 loop 换新信号继续本回合（旧信号已 abort，
+      // 不复位则后续请求立刻 AbortError），rearmAbort 回调由 loop 调用重新武装——
+      // cancelRun 始终 abort「当前」控制器（打断后的本回合仍可被 Esc//stop 取消）
+      const abortCtrl: { ctrl: AbortController | null } = { ctrl: null };
+      runOpts.rearmAbort = () => {
+        abortCtrl.ctrl = new AbortController();
+        runOpts.abortSignal = abortCtrl.ctrl.signal;
+      };
+      runOpts.rearmAbort();
+      state.running = true;
+      state.cancelRun = () => abortCtrl.ctrl?.abort();
+      out.startLoading(); // 会话进行中：统计行左侧 loading 一直转（Esc 取消/会话结束 stopLoading 消失）
+      // 运行中提交处理（Enter / Cmd|Ctrl+Enter / /stop 都经此分流）：
+      //   · Enter 且文本非空 → queue 入待发送列表（输入框正上方小视图，回合结束后按序发送）
+      //   · Cmd/Ctrl+Enter 且文本非空 → steer 打断当前回合（abort），插到列表最前优先执行
+      //   · 文本为 /stop → 停止当前对话（取消本轮，剩余待发送消息保留）
+      input.onSubmit = () => {
+        const t = input.plainText.trim();
+        const m = state.submitMode;
+        state.submitMode = 'queue';
+        if (m === 'steer') {
+          if (t) {
+            // 打断消息写入中断槽：loop 在流中断（AbortError）后经 takeInterrupt 取走，
+            // 插入当前轮（作为新的 user 消息）同一轮内继续——模型直接回答打断消息，
+            // 不结束本轮；回合自然结束时残留的消息由 finally 转入待发送列表
+            interruptText = t;
+            state.cancelRun?.(); // 打断当前回合（流中断后取走槽中的消息继续）
+          }
+          input.setText('');
+        } else if (t === '/stop') {
+          state.cancelRun?.();
+          input.setText('');
+        } else if (t) {
+          enqueuePending(state, 'queue', t); // 追加到待发送列表末尾（回合结束后按序发送）
+          input.setText('');
+        }
+      };
+      try {
+        await runAgent(currentClient, currentModel, messages, runOpts, out);
+      } catch (err) {
+        pushLine(state, {
+          kind: 'warn',
+          text: `运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`,
+        });
+      } finally {
+        state.running = false;
+        state.cancelRun = null;
+        runOpts.abortSignal = undefined;
+        runOpts.rearmAbort = undefined;
+        input.onSubmit = undefined; // 恢复：下次提交由 waitForSubmit 接管
+        out.stopLoading(); // 回合结束（含 Esc 取消）：loading 消失
+        // 回合已自然结束（abort 未生效/未打断流，如最终回答恰在打断前完成）：
+        // 中断槽残留的打断消息转入待发送列表（steer 插最前），下一轮正常发送——不丢消息
+        if (interruptText) {
+          enqueuePending(state, 'steer', interruptText);
+          interruptText = null;
+        }
+      }
       await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
       turn++;
       // 首轮对话结束后异步生成会话标题：独立轻量 LLM 调用，不阻塞主流程
       // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；
       // 失败静默，不打扰对话）
       if (turn === 1 && state.sessionTitle === null) {
-        void generateSessionTitle(client, model, messages).then((title) => {
+        void generateSessionTitle(currentClient, currentModel, messages).then((title) => {
           if (title && state.sessionTitle === null) {
             state.sessionTitle = title;
             setTerminalTitle(title);

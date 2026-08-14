@@ -10,8 +10,9 @@
  *   omni -m deepseek-chat "任务"   指定模型
  *   omni                          进入交互模式（/exit 退出，/help 查看帮助）
  */
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { createClient, type ModelEndpoint } from './client.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
 import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
@@ -24,7 +25,7 @@ import type { Output } from './output/types.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { tools } from './tools/index.js';
-import { discoverMcpTools } from './tools/mcp.js';
+import { closeMcpClients, discoverMcpTools } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { dim, red } from './ui.js';
 import { VERSION } from './version.js';
@@ -47,10 +48,15 @@ export interface RunContext {
  */
 export function prepareRun(overrides: ConfigOverrides): RunContext {
   const cfg = loadConfig(overrides);
-  if (!cfg.apiKey) {
+  // 默认模型（cfg.model）的端点配置：顶层缺省字段回退到 models.<model>（每模型独立
+  // 密钥/端点/UA 是合法用法——用户把密钥放在 models 里而不写顶层 apiKey 时，
+  // 不应报「未找到 API Key」闪退，从默认模型的端点配置解析即可）
+  const defModel = cfg.models?.[cfg.model];
+  const apiKey = defModel?.apiKey ?? cfg.apiKey;
+  if (!apiKey) {
     throw new Error(
       `未找到 API Key。设置方式：
-  · 配置文件 omni.json / omni.jsonc 的 "apiKey" 字段
+  · 配置文件 omni.json / omni.jsonc 的 "apiKey" 字段（或 models."${cfg.model}".apiKey）
   · 环境变量 OMNI_API_KEY（或 OPENAI_API_KEY）
 更多帮助见 omni --help`
     );
@@ -58,13 +64,15 @@ export function prepareRun(overrides: ConfigOverrides): RunContext {
 
   // timeout/maxRetries：端点不可达时快速失败（SDK 默认单请求超时 10 分钟 + 多次重试，会长时间无反馈）
   // defaultHeaders：部分网关 WAF 拦截 SDK 默认 UA，配置 userAgent 可绕过
-  const client = new OpenAI({
-    apiKey: cfg.apiKey,
-    baseURL: cfg.baseURL,
-    timeout: 60_000,
-    maxRetries: 1,
-    ...(cfg.userAgent ? { defaultHeaders: { 'user-agent': cfg.userAgent } } : {}),
-  });
+  const client = createClient(
+    {
+      name: cfg.model,
+      baseURL: defModel?.baseURL ?? cfg.baseURL,
+      apiKey,
+      userAgent: defModel?.userAgent ?? cfg.userAgent,
+    },
+    apiKey
+  );
   const messages: ChatCompletionMessageParam[] = [];
   const runOpts: RunOptions = { tools, stream: true, maxSteps: cfg.maxSteps, showThinking: cfg.showThinking };
   return { cfg, client, messages, runOpts };
@@ -93,6 +101,28 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     summarize: formatToolCall,
   });
   ctx.runOpts.permission = cfg.permission;
+  // 可用模型列表（顶层 model + config models 展开；/model 切换用）
+  // 默认模型端点同样优先取 models.<model>（与 prepareRun 的解析一致）
+  const defModel = cfg.models?.[cfg.model];
+  const modelEndpoints: ModelEndpoint[] = [
+    {
+      name: cfg.model,
+      baseURL: defModel?.baseURL ?? cfg.baseURL,
+      apiKey: defModel?.apiKey ?? cfg.apiKey,
+      userAgent: defModel?.userAgent ?? cfg.userAgent,
+    },
+    ...Object.entries(cfg.models ?? {}).map(([name, e]) => ({
+      name,
+      baseURL: e.baseURL ?? cfg.baseURL,
+      apiKey: e.apiKey ?? cfg.apiKey,
+      userAgent: e.userAgent ?? cfg.userAgent,
+    })),
+  ];
+  ctx.runOpts.models = modelEndpoints;
+  // 完整配置（/status /context /doctor /config 等命令读取；interactive 透传给 ctx）
+  ctx.runOpts.cfg = cfg;
+  // 当前模型运行时引用：/model 切换时重建 client 并更新 → 主循环与子代理（delegate）共用
+  ctx.runOpts.modelRuntime = { client, model: cfg.model };
   ctx.runOpts.auditLog = cfg.auditLog;
   ctx.runOpts.requestApproval = requestApproval;
   // 共用闸门（delegate 子代理用它）：/permission 切换时 setTier 同步，子代理与主循环权限一致
@@ -107,16 +137,26 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     preloadFiles: cfg.preloadFiles,
     preloadMaxFiles: cfg.preloadMaxFiles,
     preloadMaxBytes: cfg.preloadMaxBytes,
+    skills: cfg.skills,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ MCP 外部工具（失败只警告不阻塞）
   // /undo 撤销：先把静态工具表包装（write_file 执行前快照原内容进 UndoStack），
   // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
   const undoStack = new UndoStack();
-  const tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
+  let tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
+  // skills=false 时从工具链移除 skill 工具（模型不可见/不可调用）
+  if (cfg.skills === false) tracked = tracked.filter((t) => t.name !== 'skill');
   const toolchain = [...tracked];
   if (cfg.allowSubagents) {
-    toolchain.push(createDelegateTool({ client, model: cfg.model, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps }));
+    toolchain.push(createDelegateTool({ modelRuntime: ctx.runOpts.modelRuntime!, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps }));
   }
+  // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令
+  if (cfg.reasoningEffort) ctx.runOpts.reasoningEffort = cfg.reasoningEffort;
+  ctx.runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions;
+  ctx.runOpts.maxSubagentSteps = cfg.maxSubagentSteps;
+  // 基础工具链（静态 + delegate，不含 MCP）：/mcp 重连时以此为基底重建 tools
+  ctx.runOpts.baseTools = toolchain;
+  ctx.runOpts.mcpServers = cfg.mcpServers;
   const mcpTools = await discoverMcpTools(cfg.mcpServers);
   toolchain.push(...mcpTools);
   ctx.runOpts.tools = toolchain;

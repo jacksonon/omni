@@ -45,6 +45,62 @@ export interface RunOptions {
    * /permission 运行时切换档位时同步 setTier，让子代理与主循环权限一致。
    */
   safetyGate?: import('../safety/index.js').Safety;
+  /**
+   * 模型思考级别（reasoning_effort，OpenAI 系 low/medium/high）。
+   * /variants 命令切换；loop 请求带该参数（网关不认时自动回退不带）。
+   */
+  reasoningEffort?: string;
+  /**
+   * 取消信号（交互模式每轮创建，/stop / Esc / 运行中 Ctrl+Enter（steer）触发）：
+   * 中断当前流式响应。流中断后优雅结束本轮（已输出内容保留，半截 assistant 消息
+   * 不入上下文）；steer 打断时 loop 经 takeInterrupt 取走消息后**换新信号继续
+   * 本回合**（rearmAbort），交互层 cancelRun 始终 abort 最新信号。
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * 运行中打断（steer，Cmd/Ctrl+Enter）消息槽：交互层（TUI interactive）在运行中按
+   * 修饰键+Enter 时把消息写进槽并 abort 当前流；loop 在流中断（AbortError）后经
+   * takeInterrupt 取走消息、push 进 messages（作为当前轮的新 user 消息）并在
+   * **同一轮内继续**——模型直接回答打断消息，不结束本轮（轮数不增）。
+   * interruptPending 为只读探测（判断 abort 是打断还是取消：/stop、Esc 取消时
+   * 槽为空 → 优雅结束本轮）。回合自然结束时槽中残留的消息由交互层转入待发送
+   * 列表（steer 插最前，下一轮发送）——不丢失。console 端不设置（无打断入口）。
+   */
+  interruptPending?: () => boolean;
+  takeInterrupt?: () => string | null;
+  /**
+   * 换新取消信号回调（interactive 实现）：loop 消费打断消息后调用——旧信号已 abort，
+   * 不复位则同一轮内后续的 LLM 请求立刻抛 AbortError；换新后继续的本回合仍可被
+   * Esc / /stop 取消（交互层 cancelRun 指向最新控制器）。
+   */
+  rearmAbort?: () => void;
+  /** /variants 支持的思考级别选项（来自配置 reasoningEffortOptions） */
+  reasoningEffortOptions?: string[];
+  /** 子代理最大循环步数（/agents 展示用；attachRuntime 注入） */
+  maxSubagentSteps?: number;
+  /**
+   * 可用模型端点列表（顶层 model + config `models`；/model 切换用）。
+   * attachRuntime 从 cfg 展开注入；interactive 按名字找到目标端点重建 client。
+   */
+  models?: { name: string; baseURL?: string; apiKey?: string; userAgent?: string }[];
+  /**
+   * 当前模型运行时引用（主循环与 delegate 子代理共用）：
+   * /model 切换时重建 client 并更新此引用 → 子代理与主循环模型一致。
+   */
+  modelRuntime?: import('../client.js').ModelRuntime;
+  /**
+   * 非 MCP 的基础工具链（静态 + delegate；/mcp 重连时以此为基底重建 runOpts.tools）。
+   * attachRuntime 注入。
+   */
+  baseTools?: Tool[];
+  /**
+   * MCP 服务器配置（/mcp 命令列出/重连用；attachRuntime 从 cfg 注入）。
+   */
+  mcpServers?: Record<string, import('../tools/mcp.js').McpServerConfig>;
+  /**
+   * 完整配置对象（/status /context /doctor /config 等命令读取字段；attachRuntime 注入）。
+   */
+  cfg?: import('../config/index.js').OmniConfig;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */

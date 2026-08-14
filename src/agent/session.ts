@@ -12,14 +12,14 @@
  * 过滤：注入上下文的环境脚手架（[项目记忆 / [全局记忆 / [已按任务预载 的 system 消息）
  * 不落盘——它们随文件/配置变化，下次恢复时由 prepareContext 按最新内容重新注入。
  */
-import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /** 不落盘的上下文脚手架前缀（恢复时 prepareContext 会按最新文件重新注入） */
-const SKIP_PREFIXES = ['[项目记忆', '[全局记忆', '[已按任务预载'];
+const SKIP_PREFIXES = ['[项目记忆', '[全局记忆', '[已按任务预载', '[已发现技能'];
 
 /** 会话 meta（文件首行） */
 export interface SessionMeta {
@@ -29,6 +29,8 @@ export interface SessionMeta {
   model: string;
   created: number;
   updated: number;
+  /** 会话标题（/rename 设置；恢复时还原为终端窗口标题） */
+  title?: string;
 }
 
 /** 列表项 = meta + 文件路径 + 消息数 */
@@ -122,6 +124,7 @@ export async function finalizeSession(file: string): Promise<void> {
           model: parsed.model,
           created: parsed.created,
           updated: parsed.updated,
+          ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
         };
       }
     } catch {
@@ -130,6 +133,23 @@ export async function finalizeSession(file: string): Promise<void> {
     if (!meta) return;
     meta.updated = Date.now();
     await writeFile(file, JSON.stringify({ t: 'meta', ...meta }) + '\n' + raw.slice(nl + 1), 'utf8');
+  } catch {
+    // 静默失败
+  }
+}
+
+/** 更新会话标题（重写 meta 首行，保留其余字段与消息；/rename 命令用） */
+export async function updateSessionTitle(file: string, title: string): Promise<void> {
+  try {
+    if (!existsSync(file)) return;
+    const raw = await readFile(file, 'utf8');
+    const nl = raw.indexOf('\n');
+    if (nl < 0) return;
+    const first = raw.slice(0, nl);
+    const parsed = JSON.parse(first);
+    if (!parsed || parsed.t !== 'meta') return;
+    parsed.title = title;
+    await writeFile(file, JSON.stringify(parsed) + '\n' + raw.slice(nl + 1), 'utf8');
   } catch {
     // 静默失败
   }
@@ -159,6 +179,7 @@ export async function loadSession(
           model: parsed.model,
           created: parsed.created,
           updated: parsed.updated,
+          ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
         };
       } else if (parsed.t === 'm' && parsed.m && typeof parsed.m === 'object') {
         const m = parsed.m as ChatCompletionMessageParam;
@@ -195,17 +216,52 @@ export async function listSessions(project?: string): Promise<SessionInfo[]> {
   }
 }
 
+/**
+ * 若会话文件只有 meta 行（0 条消息——通常是进入交互模式时自动创建的占位文件），
+ * 删除它。用于 /resume、/session 恢复其它会话后清理被替换的空占位会话，
+ * 避免会话列表里残留孤儿。有消息的文件绝不删除。
+ */
+export async function removeEmptySession(file: string): Promise<void> {
+  try {
+    if (!existsSync(file)) return;
+    const loaded = await loadSession(file);
+    if (loaded && loaded.messages.length === 0) await rm(file, { force: true });
+  } catch {
+    // 静默失败（不打扰对话）
+  }
+}
+
+/** 从会话文件路径取会话 id（文件名主干，如 `20260812-...-abcd`） */
+export function sessionIdFromPath(file: string): string {
+  return path.basename(file).replace(/\.jsonl$/, '');
+}
+
 /** 最近一个会话（当前项目；无则 null） */
 export async function latestSession(project: string): Promise<SessionInfo | null> {
   const list = await listSessions(project);
   return list[0] ?? null;
 }
 
-/** 按 id 查找会话文件路径（id = 文件名主干，如 `20260812-...-abcd`）；找不到返回 null */
+/**
+ * 按完整 id 精确查找会话文件路径（id = 文件名主干，如 `20260812-...-abcd`）。
+ * 只做精确匹配（-r/--resume 等要求完整 id）；交互命令的模糊匹配用 findSessionCandidates。
+ */
 export async function findSessionById(id: string): Promise<string | null> {
   const list = await listSessions();
   const hit = list.find((s) => s.id === id);
   return hit?.path ?? null;
+}
+
+/**
+ * 查找会话候选：精确 id 优先，其次前缀匹配（用户只记得开头/后缀时也能恢复）。
+ * 返回全部命中（按 updated 倒序，最近在前）——调用方处理歧义（多个命中时列出候选），
+ * 而不是静默选一个（否则短前缀会继续到错误的会话，e2e 抓到）。
+ */
+export async function findSessionCandidates(id: string): Promise<SessionInfo[]> {
+  const list = await listSessions();
+  const exact = list.filter((s) => s.id === id);
+  if (exact.length > 0) return exact;
+  return list.filter((s) => s.id.startsWith(id)).sort((a, b) => b.updated - a.updated);
 }
 
 /** 把会话信息格式化成可读行（-l/--list-sessions 展示） */

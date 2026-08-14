@@ -12,6 +12,9 @@
   // API Key（更推荐用环境变量 OMNI_API_KEY，避免明文入库；如放这里请注意文件权限）
   "apiKey": "sk-你的密钥",
 
+  // 自定义 User-Agent（部分网关的 WAF 会拦截 SDK 默认 UA，可配置浏览器 UA 绕过）
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+
   // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
   "maxSteps": 50,
 
@@ -55,6 +58,31 @@
   "preloadFiles": true,
   "preloadMaxFiles": 5,        // 最多预载文件数
   "preloadMaxBytes": 30720,    // 单文件预载字节上限（30KB）
+
+  // 技能（Agent Skill / SKILL.md）：首轮把已发现技能清单注入上下文（默认 true），
+  // 模型用 skill 工具按需加载完整内容；/skill 命令列出/find 网络检索/add 安装
+  "skills": true,
+
+  // 模型思考级别（reasoning_effort，OpenAI 系 low/medium/high）：
+  // 不配置 = 请求不带该参数（用模型默认）；/variants 命令可切换
+  "reasoningEffort": "medium",
+  // /variants 支持的思考级别选项（可自行配置支持哪些）
+  "reasoningEffortOptions": ["low", "medium", "high"],
+
+  // 多模型端点（/model 命令切换）：不同模型可配不同 baseURL/apiKey/userAgent；
+  // 缺省字段回退到顶层对应字段；顶层 model 总是可用（默认模型）
+  // 也可以在交互模式用 /model add <名称> [--base-url] [--api-key] [--user-agent] 运行时添加并持久化
+  // （自动写入配置文件 models 字段；带注释的 JSONC 文件不自动改，需手动添加）
+  // 示例（智谱 + Moonshot 两个端点）:
+  // "models": {
+  //   "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
+  //   "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1", "apiKey": "sk-moonshot" }
+  // }
+
+  // ── TUI 底部状态行（输入区域下方的对话信息）──────────────
+  // 显示哪些段、什么顺序；/settings statusline 可视化配置（空格勾选、←/→ 排序、Enter 保存生效并写回此字段）
+  // 合法段：rounds（轮次/步数）· llm（LLM/工具耗时）· speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）；空数组 = 不显示
+  "statusline": ["rounds", "llm", "speed", "cache", "tokens"],
 
   // ── 子代理 ───────────────────────────────────────────────
   // delegate 工具：把独立子任务委托给子代理（隔离上下文；默认 true）

@@ -1,6 +1,6 @@
 {
   "name": "omni",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Omni — Agent 工程（终端型 AI 编程助手）",
   "type": "module",
   "bin": {
@@ -16,6 +16,9 @@
     "build": "npm run typecheck && tsc && npm run bundle",
     "start": "node dist/index.js",
     "bundle": "bun build ./src/index.ts --target=node --format=cjs --outfile=dist/omni.cjs",
+    "bundle:tui": "bun build ./src/tui-entry.ts --target=bun --outdir=packages/omni-tui/dist --banner '#!/usr/bin/env bun' --external '@opentui/core-*'",
+    "pack:tui": "bash scripts/pack-tui.sh",
+    "pack:tui:compile": "bash scripts/pack-tui.sh --compile",
     "compile": "bun build --compile ./src/tui-entry.ts --outfile=release/omni",
     "tui:snapshot": "bun run ./scripts/tui-snapshot.ts",
     "mock": "node scripts/mock-server.mjs",

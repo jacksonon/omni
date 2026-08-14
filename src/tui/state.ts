@@ -54,6 +54,16 @@ export interface TuiLine {
   card?: ToolCard;
 }
 
+/** 待发送消息类型：queue = 正常排队（Enter）；steer = 打断优先（Cmd/Ctrl/Option+Enter，插入最前） */
+export type PendingMode = 'queue' | 'steer';
+
+/** 待发送消息（输入框上方小视图展示；进入对话前可选中/移动/删除/编辑） */
+export interface PendingMessage {
+  id: number;
+  mode: PendingMode;
+  text: string;
+}
+
 /** 内容区滚动意图（一次性，由 computeRows 在下次重绘时消费） */
 export type ScrollAction = 'line-up' | 'line-down' | 'page-up' | 'page-down' | 'top' | 'bottom';
 
@@ -90,6 +100,51 @@ export interface TuiApproval {
 }
 
 /**
+ * 状态行设置面板（/settings statusline）：多选 + 排序编辑。
+ * 不同于单选面板（TuiMenu）——每项可勾选/取消（空格）、可排序（←/→）、
+ * Enter 保存并生效、Esc 取消。渲染复用菜单浮层（menuOverlay）。
+ */
+export interface StatuslinePanel {
+  /** 全部段（顺序即当前显示顺序）；enabled=false 的段不显示 */
+  items: { id: string; label: string; enabled: boolean }[];
+  /** 高亮项下标（↑/↓ 移动；空格勾选/取消；←/→ 排序） */
+  selected: number;
+}
+
+/**
+ * 会话运行统计（footer 统计行数据源）：
+ *   · turns —— 轮数（onTurnStart，交互每轮用户提交 / 单次任务各 1 次）
+ *   · steps —— 工具调用总次数（onToolStep）
+ *   · llmMs —— LLM 流式请求累计墙钟（onLlmLap）
+ *   · toolsMs —— 工具执行累计墙钟（onToolsLap）
+ *   · firstTokenSum / firstTokenCount —— 首 token 延迟累计（平均 = sum/count）
+ *   · cached —— 缓存命中 token 累计（onUsage；命中率 = cached / prompt）
+ */
+export interface SessionStats {
+  turns: number;
+  steps: number;
+  llmMs: number;
+  toolsMs: number;
+  firstTokenSum: number;
+  firstTokenCount: number;
+  cached: number;
+}
+
+/**
+ * 命令输出面板：**所有 / 命令的输出（含 /skill、/session、/status 等）统一进这个
+ * 独立浮层窗口，不进对话流（state.lines）**——用户要求「所有的 command 都是独立
+ * 窗口，不要影响对话流」。圆角方框 + 标题，内容超高时 ↑/↓ 滚动，Esc/Enter 关闭。
+ */
+export interface CmdPanel {
+  /** 面板标题（如 /skill、/session 20260813） */
+  title: string;
+  /** 输出行（纯文本；渲染层按面板宽折行 + 垂直滚动） */
+  lines: string[];
+  /** 滚动位置（渲染层 clamp 到合法区间） */
+  scroll: number;
+}
+
+/**
  * 斜杠命令联想列表（输入框内容以 / 开头时显示在输入框上方）。
  *
  * 非模态：用户可继续输入（列表按最新文本过滤，无匹配自动隐藏）；
@@ -99,10 +154,36 @@ export interface TuiApproval {
 export interface CmdSuggestion {
   /** / 后面的已输入部分（用于过滤） */
   query: string;
-  /** 匹配的命令名（name 与 aliases） */
+  /** 全部匹配的命令名（name 与 aliases；**不再截断**——↑/↓ 可滚动到全部，渲染层只显示窗口） */
   items: string[];
+  /** 可见窗口首项下标（滚动位置；选中项始终在窗口内） */
+  top: number;
+  /** 当前高亮下标（0..items.length-1） */
+  selected: number;
+  /** 可见窗口行数（repaint 按高度预算计算；interactive 滚动用） */
+  window: number;
+}
+
+/**
+ * @ 提及文件选择列表（输入框内容含 @ 时显示在输入框上方，与 / 命令联想共用浮层）。
+ *
+ * 非模态：可继续输入（列表按光标前最后一个 @ 后的文本过滤，无匹配自动隐藏）；
+ * ↑/↓ 移动高亮、Tab/Enter 选中插入、Esc 关闭；目录以 / 结尾（选中后保留 / 继续
+ * 进入下一层浏览），文件插入后加空格结束提及。
+ */
+export interface MentionSuggestion {
+  /** @ 后的查询（过滤用；可含 / 进入子目录，如 src/ma → src/ 下 ma 前缀） */
+  query: string;
+  /** @ 在输入文本中的起始下标（插入时替换 @query 整段） */
+  atIndex: number;
+  /** 全部匹配的文件/目录路径（目录以 / 结尾；含目录前缀；**不截断**——↑/↓ 可滚动） */
+  items: string[];
+  /** 可见窗口首项下标（滚动位置；选中项始终在窗口内） */
+  top: number;
   /** 当前高亮下标 */
   selected: number;
+  /** 可见窗口行数（repaint 按高度预算计算；interactive 滚动用） */
+  window: number;
 }
 
 export interface TuiState {
@@ -121,6 +202,14 @@ export interface TuiState {
    */
   /** spinner 帧索引（-1 = 不显示） */
   spinnerIndex: number;
+  /**
+   * 统计行左侧 loading（会话进行中一直转；Esc 取消/会话结束消失）：
+   * loading = 是否显示；loadingIndex = 当前帧（-1 = 隐藏）。由 TuiOutput
+   * 的 startLoading/stopLoading 维护（独立于状态栏 spinner——流式期间
+   * spinnerIndex 会被置 -1，loading 不受影响）。
+   */
+  loading: boolean;
+  loadingIndex: number;
   /** 是否正在流式生成回答（显示光标在末尾） */
   generating: boolean;
   /**
@@ -140,6 +229,11 @@ export interface TuiState {
   /** 当前工作目录（footer 左下角显示，超长中段省略） */
   cwd: string;
   /**
+   * 可用模型名列表（顶层 model + config `models`；/model 面板列出）。
+   * 由 interactive 从 runOpts.models 初始化；/model 切换时 state.model 变更。
+   */
+  models: string[];
+  /**
    * 会话标题（首轮对话结束后由模型自动概括生成，设为**终端窗口/标签页标题**
    * （setTerminalTitle，OSC 0），不显示在信息流里；null = 尚未生成/生成失败）。
    * 会话级状态，/clear 不清除；渲染层不读它，仅 interactive.ts 作「生成一次」的守卫。
@@ -147,6 +241,11 @@ export interface TuiState {
   sessionTitle: string | null;
   /** 会话累计 token 用量（footer 右下角显示，来自每次响应的 usage） */
   tokens: TokenUsage;
+  /**
+   * 会话运行统计（footer 统计行：轮次/步数/LLM 与工具耗时/首 token/速率/缓存命中）。
+   * 由 TuiOutput 按事件累加（onTurnStart/onLlmLap/onToolsLap/onToolStep/onUsage）。
+   */
+  stats: SessionStats;
   /**
    * 终端主题设置（system/light/dark，/theme 可切换）：
    * system 时按 detectedTheme（终端实测）取色。
@@ -156,8 +255,40 @@ export interface TuiState {
   detectedTheme: 'dark' | 'light';
   /** 当前打开的命令面板（null = 无面板；打开时键盘事件由面板消费） */
   menu: TuiMenu | null;
+  /**
+   * 状态行设置面板（/settings statusline；null = 无）。与 menu 互斥（同用菜单浮层）；
+   * 打开时键盘事件由 handleSettingsPanelKey 消费（interactive.ts 先于输入框拦截）。
+   */
+  settingsPanel: StatuslinePanel | null;
+  /**
+   * 底部状态行（输入区域下方的对话信息）显示哪些段、什么顺序：段 id 数组
+   * （rounds/llm/speed/cache/tokens）。来自配置 statusline（tui-entry 初始化）；
+   * /settings statusline 保存后立即生效（buildFooterStats 按它拼行）。空数组 = 不显示。
+   */
+  statusline: string[];
+  /**
+   * 待持久化的状态行段顺序（/settings statusline Enter 保存时写入，interactive 每轮
+   * 消费并写入配置文件——应用已即时生效，这里只负责落盘；与 sessionPick 同模式）。
+   */
+  statuslineSave: string[] | null;
+  /**
+   * 命令输出面板（所有 / 命令的输出窗口；null = 无）。
+   * 独立浮层（绝对定位居中），不占内容流——命令输出不再写进对话流（用户要求）。
+   * 打开时键盘事件由面板消费（↑/↓ 滚动、Esc/Enter 关闭）。
+   */
+  cmdPanel: CmdPanel | null;
   /** 命令联想列表（null = 不显示；paint 时按输入框文本刷新） */
   cmdSuggest: CmdSuggestion | null;
+  /**
+   * @ 提及文件选择列表（null = 不显示；paint 时按光标前最后一个 @ 后的文本刷新）。
+   * 与命令联想互斥（/ 开头显示命令联想，否则含 @ 时显示提及）；共用同一个浮层。
+   */
+  mention: MentionSuggestion | null;
+  /**
+   * 用户按 Esc 关闭提及时的「atIndex:query」键（非 null = 保持隐藏）。
+   * 文本变化（atIndex/query 改变）→ 提及恢复；同文本重绘不复活（与命令联想同理）。
+   */
+  mentionDismissedKey: string | null;
   /**
    * 计划模式（/plan 切换）：只读调研，不修改文件。
    * 会话级状态（/clear 不清除）；footer 模型行显示「模型 X · 计划模式」；
@@ -169,6 +300,19 @@ export interface TuiState {
    * 会话级状态；interactive 每轮同步进 runOpts.permission 并 setTier 到共用闸门。
    */
   permission: PermissionTier;
+  /**
+   * 当前模型思考级别（/variants 切换；reasoning_effort，如 low/medium/high）。
+   * 会话级状态；interactive 每轮同步进 runOpts.reasoningEffort（loop 请求带上）。
+   */
+  reasoningEffort: string;
+  /** /variants 面板支持的思考级别选项（来自配置 reasoningEffortOptions） */
+  reasoningEffortOptions: string[];
+  /**
+   * /session 面板确认的会话 id（TUI 面板选择后只记录意图，interactive 每轮
+   * 异步加载并恢复该会话——confirmMenu 是纯 state 操作拿不到回调，与 /model 同模式）。
+   * 非 null 时 interactive 在处理完恢复后置 null。
+   */
+  sessionPick: string | null;
   /** 输入框当前文本（repaintTree 同步，buildBody/联想共用） */
   inputText: string;
   /**
@@ -179,6 +323,38 @@ export interface TuiState {
   cmdSuggestDismissedText: string | null;
   /** 工具调用审批卡片（安全护栏）：非空时内容流末尾渲染审批卡（y 批准 / n 拒绝 / 点击左右半区） */
   approval: TuiApproval | null;
+  /**
+   * 审批卡片刚消费了一次 Esc（startTui 审批按键 handler 置位：Esc = 拒绝审批）。
+   * interactive 的 Esc=取消运行分支读它跳过取消（拒绝审批 ≠ 取消对话），读后复位。
+   * 审批 handler 先于 interactive 的 keypress 订阅执行（注册顺序），故能可靠传递。
+   */
+  approvalKeyJustConsumed: boolean;
+  /**
+   * Agent 正在运行（runAgent 执行中）。interactive 在每轮 runAgent 前后维护。
+   * 运行中提交的消息进入待发送列表 pending（Enter=queue 追加末尾 / Cmd|Ctrl+Enter=steer 插最前）。
+   */
+  running: boolean;
+  /**
+   * 取消回调（interactive 注册：abort 当前流式响应；/stop 命令与运行中 Ctrl+Enter 调用；
+   * 运行结束后置 null）。放 state 上让命令层无需反向依赖 interactive 即可取消。
+   */
+  cancelRun: (() => void) | null;
+  /**
+   * 待发送消息（运行中提交，显示在输入框正上方小视图——与灰色块一起钉在视口底部）：
+   * 顺序即发送顺序——steer（打断）消息在插入时放最前（unshift），queue 追加在末尾，
+   * 回合结束后 interactive 按 shift() 消费（打断优先）。每条带 mode 徽标（· queue / ⚡ steer）；
+   * 用户在消息进入对话前可用 ↑/↓ 选中、←/→ 排序、Backspace/Delete 删除、Enter 编辑。
+   */
+  pending: PendingMessage[];
+  /** 待发送列表中高亮的消息下标（-1 = 无，输入框为焦点；点击/↑ 进入选择） */
+  pendingSelected: number;
+  /** 待发送消息 id 递增（编辑替换时保持稳定身份） */
+  pendingSeq: number;
+  /**
+   * 本次提交的模式：keypress 检测 Enter（queue）/ Cmd|Ctrl|Option+Enter（steer）写入，
+   * submit 回调消费后重置为 queue。运行中提交处理据此分流。
+   */
+  submitMode: 'queue' | 'steer';
   /**
    * 审批结果回调（TuiOutput.requestApproval 注入；渲染层/按键层调用后由
    * TuiOutput 置 null）。放 state 上让 startTui（鼠标）与 interactive（按键）
@@ -196,29 +372,68 @@ export function createTuiState(): TuiState {
     scrollTop: null,
     scrollIntent: null,
     spinnerIndex: -1,
+    loading: false,
+    loadingIndex: -1,
     generating: false,
     thinkingExpanded: true,
     expandedThinking: new Set(),
     inputLines: 1,
     cwd: process.cwd(),
+    models: [],
     sessionTitle: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
+    stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, cached: 0 },
     themeMode: 'system',
     detectedTheme: 'dark',
     menu: null,
+    settingsPanel: null,
+    statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
+    statuslineSave: null,
+    cmdPanel: null,
     cmdSuggest: null,
+    mention: null,
+    mentionDismissedKey: null,
     planMode: false,
     permission: 'safe',
+    reasoningEffort: '',
+    reasoningEffortOptions: ['low', 'medium', 'high'],
+    sessionPick: null,
     inputText: '',
     cmdSuggestDismissedText: null,
     approval: null,
+    approvalKeyJustConsumed: false,
     approvalResolve: null,
+    running: false,
+    cancelRun: null,
+    pending: [],
+    pendingSelected: -1,
+    pendingSeq: 0,
+    submitMode: 'queue',
   };
 }
 
 /** 追加一个段落 */
 export function pushLine(state: TuiState, line: TuiLine): void {
   state.lines.push(line);
+}
+
+/**
+ * 打开命令面板（runCommand 分发前调用，设定标题；面板打开后命令输出用 pushCmdLine 追加）。
+ * 覆盖已有面板（新一轮命令重置输出）。
+ */
+export function openCmdPanel(state: TuiState, title: string): void {
+  state.cmdPanel = { title, lines: [], scroll: 0 };
+}
+
+/**
+ * 追加一行到命令面板（不存在则创建，标题默认「命令」）。
+ * 命令输出统一走这里——**不进对话流**（用户要求所有 command 独立窗口）。
+ * 兼容传 TuiLine（只取 text；kind 颜色在面板里不区分，统一面板样式）。
+ */
+export function pushCmdLine(state: TuiState, line: TuiLine | string, title?: string): void {
+  const text = typeof line === 'string' ? line : line.text;
+  if (!state.cmdPanel) state.cmdPanel = { title: title ?? '命令', lines: [], scroll: 0 };
+  state.cmdPanel.lines.push(text);
 }
 
 /** 若最后一段 kind 相同则追加文本，否则新起一段（用于流式内容累积） */

@@ -82,6 +82,8 @@ async function run(): Promise<void> {
   const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
   if (!ok) return;
   const state = createTuiState();
+  // 底部状态行（输入区域下方）段配置来自 statusline 配置字段（/settings statusline 可改并持久化）
+  if (Array.isArray(cfg.statusline)) state.statusline = cfg.statusline;
   const session = await startTui(state, { withInput: !singleTask });
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
@@ -107,7 +109,12 @@ async function run(): Promise<void> {
       output.onUserMessage(singleTask);
       messages.push({ role: 'user', content: singleTask });
       await prepareContext(client, cfg.model, messages, runOpts.context ?? {});
-      await runAgent(client, cfg.model, messages, runOpts, output);
+      output.startLoading(); // 会话进行中：统计行左侧 loading 一直转
+      try {
+        await runAgent(client, cfg.model, messages, runOpts, output);
+      } finally {
+        output.stopLoading(); // 会话结束：loading 消失
+      }
       output.onTurnEnd();
     } else {
       await runTuiInteractive(client, cfg.model, messages, runOpts, output, session, state);

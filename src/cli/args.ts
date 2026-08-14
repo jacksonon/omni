@@ -71,7 +71,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 export function printHelp(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
-  omni                进入交互模式（/exit 退出；/init [--global] 生成项目/全局记忆；/plan 计划模式；/permission 安全权限；/undo 撤销本次会话的文件修改；/help 查看帮助）
+  omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/compact 压缩上下文；/status 状态；/context 上下文用量；/session 会话管理（列出/继续当前目录历史会话）；/resume 恢复会话；/export 导出；/diff 查看改动；/review 审查；/mcp MCP 管理；/skill 技能；/doctor 诊断；/help 帮助）
 
 会话持久化（跨进程恢复对话）：
   omni --continue "继续任务"      恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
@@ -95,7 +95,11 @@ export function printHelp(): void {
 配置字段：
   { "model": "deepseek-chat", "baseURL": "https://api.deepseek.com/v1",
     "apiKey": "sk-xxx", "maxSteps": 20,
-    "showThinking": true }    // 默认展示思考过程；false 关闭（仍落盘 .omni/last-thinking.md）
+    "showThinking": true,       // 默认展示思考过程；false 关闭（仍落盘 .omni/last-thinking.md）
+    "reasoningEffort": "medium", // 思考级别（/variants 切换；不配置则不传 reasoning_effort）
+    "models": {                  // 多模型端点（/model 切换；缺省字段回退顶层 baseURL/apiKey；
+      "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" } //   /model add 命令可运行时添加并持久化）
+    } }
 
 示例：cp omni.example.jsonc omni.json 后按需修改。`);
 }

@@ -7,15 +7,15 @@
  *
  * 防递归：本工具从子代理可用工具列表中剔除（subagent 内看不到 delegate）。
  */
-import type OpenAI from 'openai';
 import { runSubagent } from '../agent/subagent.js';
+import type { ModelRuntime } from '../client.js';
 import type { Safety } from '../safety/index.js';
 import { truncate } from './util.js';
 import type { Tool } from './types.js';
 
 export interface DelegateToolOptions {
-  client: OpenAI;
-  model: string;
+  /** 当前模型运行时引用（与主循环共用）：/model 切换后子代理自动用新模型/端点 */
+  modelRuntime: ModelRuntime;
   /** 子代理可用工具（内部会剔除 delegate 本身） */
   tools: Tool[];
   /** 安全护栏（与主代理同一实例） */
@@ -43,7 +43,8 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
     async execute(args) {
       const task = String(args.task ?? '').trim();
       if (!task) return '错误：delegate 需要 task 参数（子任务描述）';
-      const answer = await runSubagent(opts.client, opts.model, task, {
+      // 运行时读取当前模型（/model 切换后子代理自动跟随，不需要重建工具）
+      const answer = await runSubagent(opts.modelRuntime.client, opts.modelRuntime.model, task, {
         tools: subTools,
         gate: opts.gate,
         maxSteps: opts.maxSteps,

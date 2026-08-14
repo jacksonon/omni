@@ -43,6 +43,22 @@ export interface OmniConfig {
   summarizeWindow: number;
   /** 是否预载任务文本中出现的相关文件（默认 true） */
   preloadFiles: boolean;
+  /** 是否启用技能（SKILL.md）发现与 skill 工具（默认 true） */
+  skills: boolean;
+  /**
+   * 当前模型思考级别（reasoning_effort，OpenAI 系 low/medium/high；
+   * 不配置则不带该参数——部分网关（DeepSeek 等）不认会回退不带）。
+   * /variants 命令可切换；TUI 面板选项来自 reasoningEffortOptions。
+   */
+  reasoningEffort?: string;
+  /** /variants 支持的思考级别选项（默认 low/medium/high，可自行配置支持哪些） */
+  reasoningEffortOptions: string[];
+  /**
+   * 多模型配置：{ 模型名: { baseURL?, apiKey?, userAgent? } }（/model 切换）。
+   * 每个模型可有自己的端点/密钥/UA；缺省字段回退到顶层 baseURL/apiKey/userAgent。
+   * 顶层 `model` 为默认模型（总是可用）。
+   */
+  models?: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string }>;
   /** 最多预载文件数（默认 5） */
   preloadMaxFiles: number;
   /** 单文件预载字节上限（默认 30KB） */
@@ -51,6 +67,13 @@ export interface OmniConfig {
   allowSubagents: boolean;
   /** 子代理最大循环步数（默认 10） */
   maxSubagentSteps: number;
+  /**
+   * TUI 底部状态行（输入区域下方的对话信息）显示哪些段、按什么顺序：
+   * 段 id 数组，如 ['rounds','llm','speed','cache','tokens']；空数组 = 不显示状态行。
+   * /settings statusline 可视化配置（空格勾选、←/→ 排序、Enter 保存生效并持久化）。
+   * 合法 id：rounds（轮次/步数）· llm（LLM/工具耗时）· speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）。
+   */
+  statusline: string[];
   /** MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
@@ -79,10 +102,13 @@ const DEFAULTS = {
   summarizeAt: 40,
   summarizeWindow: 8,
   preloadFiles: true,
+  skills: true,
+  reasoningEffortOptions: ['low', 'medium', 'high'],
   preloadMaxFiles: 5,
   preloadMaxBytes: 30 * 1024,
   allowSubagents: true,
   maxSubagentSteps: 10,
+  statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
 };
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -124,6 +150,27 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.summarizeWindow = Math.max(2, Math.floor(data.summarizeWindow));
   }
   if (typeof data.preloadFiles === 'boolean') cfg.preloadFiles = data.preloadFiles;
+  if (typeof data.skills === 'boolean') cfg.skills = data.skills;
+  if (typeof data.reasoningEffort === 'string' && data.reasoningEffort.trim()) {
+    cfg.reasoningEffort = data.reasoningEffort.trim();
+  }
+  if (data.models && typeof data.models === 'object' && !Array.isArray(data.models)) {
+    const models: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string }> = {};
+    for (const [name, v] of Object.entries(data.models as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue;
+      const e = v as Record<string, unknown>;
+      models[name] = {
+        ...(typeof e.baseURL === 'string' ? { baseURL: e.baseURL } : {}),
+        ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey } : {}),
+        ...(typeof e.userAgent === 'string' ? { userAgent: e.userAgent } : {}),
+      };
+    }
+    if (Object.keys(models).length > 0) cfg.models = models;
+  }
+  if (Array.isArray(data.reasoningEffortOptions)) {
+    const arr = (data.reasoningEffortOptions as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim());
+    if (arr.length > 0) cfg.reasoningEffortOptions = arr;
+  }
   if (typeof data.preloadMaxFiles === 'number' && Number.isFinite(data.preloadMaxFiles)) {
     cfg.preloadMaxFiles = Math.max(0, Math.floor(data.preloadMaxFiles));
   }
@@ -133,6 +180,14 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.allowSubagents === 'boolean') cfg.allowSubagents = data.allowSubagents;
   if (typeof data.maxSubagentSteps === 'number' && Number.isFinite(data.maxSubagentSteps)) {
     cfg.maxSubagentSteps = Math.max(1, Math.floor(data.maxSubagentSteps));
+  }
+  // 状态行段配置：只保留合法 id（非法/未知 id 丢弃，避免渲染层找不到段）；
+  // 空数组 = 不显示状态行（用户全部取消勾选）；未配置保持默认全段
+  if (Array.isArray(data.statusline)) {
+    const arr = (data.statusline as unknown[])
+      .filter((x): x is string => typeof x === 'string')
+      .filter((x) => ['rounds', 'llm', 'speed', 'cache', 'tokens'].includes(x));
+    cfg.statusline = arr;
   }
   if (data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)) {
     const servers: Record<string, McpServerConfig> = {};

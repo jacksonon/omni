@@ -99,6 +99,11 @@ export interface ToolCardView {
   expanded: boolean;
   /** 工具返回的字符数（执行缩略行显示，如 `✓ 执行成功 · 14 字符`） */
   chars?: number;
+  /**
+   * 当前 spinner 动画帧（工具执行中由 TUI 传入，如 ⠋⠙⠹…；缺省回退 ⏳）。
+   * 让执行中行显示动画 loading 而非静态文本（用户要求）。
+   */
+  spinner?: string;
 }
 
 /**
@@ -163,18 +168,18 @@ export function wrapText(text: string, width: number): string[] {
 }
 
 /**
- * 工具卡片文本（圆角方框），**无标题行、无特殊颜色**（用户要求：不需要「执行命令」
- * 这类标题文字，也不需要彩色边框——普通白色边框，暗色下白 / 亮色下灰，由主题
- * `cardBorder` 决定）。每行带角色（role），TUI/console 按角色着色：
+ * 工具卡片文本（**颜色背景块**，不再用 ╭─╮│╰╯ 边框——用户要求「代码执行使用
+ * 有颜色背景区域的块，而不是用一个边框」）。每行带角色（role），TUI 按角色着色：
  *
- * 收起（默认）：╭───────────────╮
- *             │ $ echo mock-ok│  ← cmd 命令（加粗，与执行/结果区分）
- *             │ ✓ 执行成功    │  ← exec 执行缩略（dim）
- *             │ 退出码: 0     │  ← result 结果缩略（dim）
- *             ╰───────────────╯
+ * 收起（默认）：┌─────────────────┐ ← 整块 cardBg 背景色填充（顶/底空白行撑垂直边距）
+ *             │ $ echo mock-ok  │    cmd 命令（加粗，与执行/结果区分）
+ *             │ ✓ 执行成功      │    exec 执行缩略（dim）
+ *             │ 退出码: 0       │    result 结果缩略（dim）
+ *             └─────────────────┘
  *
  * 展开：命令 + 分隔线 + 完整输出 + 「▾ 点击收起」；running 态：命令 + 「⏳ 执行中…」。
- * 每行恰好 1 个终端行（内容先折行再包边），TUI 行数预算精确成立。
+ * 每行恰好 1 个终端行（内容先折行再补齐宽度），整块被背景色填满，TUI 行数预算不变。
+ * console 端仍用增量方框（cardContentLine/cardSepLine/cardBottomLine），不在此处。
  */
 export type ToolCardRole = 'top' | 'cmd' | 'exec' | 'result' | 'sep' | 'out' | 'hint' | 'bottom';
 
@@ -222,42 +227,46 @@ function padInner(text: string, width: number): string {
 }
 
 export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCardLine[] {
-  const inner = cardInnerWidth(contentWidth); // 两侧 │ 之间的宽度
+  const inner = cardInnerWidth(contentWidth); // 块内文本区宽度（内容折行宽度）
   const lines: ToolCardLine[] = [];
 
-  lines.push({ text: `╭${'─'.repeat(inner)}╮`, role: 'top' });
+  // 块式卡片（无边框字符）：顶/底为空白行（撑出垂直边距），内容行补齐到内容宽度
+  // ——整块被背景色填满成「颜色背景区域块」（用户要求）。每行总宽恒为 contentWidth。
+  lines.push({ text: ' '.repeat(Math.max(1, contentWidth)), role: 'top' });
 
-  // 第一行：调用了哪个命令（折行；内容文本区为 inner-1，行总宽保持 contentWidth）
+  // 第一行：调用了哪个命令（折行；块内文本区为 inner-1，行总宽保持 contentWidth）。
+  // 内容行统一加 1 列左侧留白（样式优化：文字不贴色块左缘，与圆角/用户消息气泡对齐）
   for (const seg of wrapText(card.summary, inner - 1)) {
-    lines.push({ text: cardContentLine(seg, inner), role: 'cmd' });
+    lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'cmd' });
   }
 
   if (card.status === 'running') {
-    // 执行中：命令 + ⏳（结果未到，无结果缩略行）
-    lines.push({ text: cardContentLine('⏳ 执行中…', inner), role: 'exec' });
+    // 执行中：命令 + 动画 loading（spinner 帧由 TUI 每 200ms 刷新；无帧时回退 ⏳），
+    // 结果未到，无结果缩略行
+    lines.push({ text: padInner(` ${card.spinner ?? '⏳'} 执行中…`, contentWidth), role: 'exec' });
   } else if (card.expanded) {
     // 展开态：分隔线 + 完整输出 + 收起提示
-    lines.push({ text: cardSepLine(inner), role: 'sep' });
+    lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
     const out = card.output.length ? card.output : ['（无输出）'];
     for (const raw of out) {
-      for (const seg of wrapText(raw, inner - 1)) lines.push({ text: cardContentLine(seg, inner), role: 'out' });
+      for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
     }
-    lines.push({ text: cardContentLine('▾ 点击收起', inner), role: 'hint' });
+    lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
   } else {
     // 收起态：第二行执行缩略、第三行结果缩略
     const execText =
       card.status === 'ok'
         ? `✓ 执行成功${card.chars != null ? ` · ${card.chars} 字符` : ''}`
         : '✗ 执行失败';
-    lines.push({ text: cardContentLine(execText, inner), role: 'exec' });
+    lines.push({ text: padInner(` ${execText}`, contentWidth), role: 'exec' });
     const first = card.output[0];
     lines.push({
-      text: cardContentLine(first ? truncateToWidth(first, inner - 1) : '（无输出）', inner),
+      text: padInner(` ${first ? truncateToWidth(first, inner - 1) : '（无输出）'}`, contentWidth),
       role: 'result',
     });
   }
 
-  lines.push({ text: cardBottomLine(inner), role: 'bottom' });
+  lines.push({ text: ' '.repeat(Math.max(1, contentWidth)), role: 'bottom' });
   return lines;
 }
 

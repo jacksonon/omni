@@ -45,6 +45,8 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     const parsed = JSON.parse(body);
     const messages = parsed.messages ?? [];
+    // 请求里的模型名（/model 切换 e2e：非默认 mock 时在回答里带 [模型 X] 标记）
+    const modelName = typeof parsed.model === 'string' ? parsed.model : 'mock';
     const wantUsage = parsed.stream_options?.include_usage === true;
     // 上下文管理：长对话摘要压缩是独立请求（system 提示词以「把以下 Agent 对话压缩」开头）
     const wantSummary =
@@ -60,6 +62,9 @@ const server = http.createServer((req, res) => {
     // 会话结束自动写入全局记忆（system 提示词以「你是记忆整理员」开头）
     const wantMemoryExtract =
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是记忆整理员');
+    // /review 代码审查（system 提示词以「你是资深代码审查员」开头）
+    const wantReview =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是资深代码审查员');
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
     // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）；
@@ -146,6 +151,31 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (wantReview) {
+      // /review 请求：返回固定审查意见（review e2e 验证）
+      sendChunk({
+        id: 'mock-review',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content:
+                '## 审查结果（mock）\n\n- ✅ typecheck 通过\n- ✅ 改动范围清晰，无明显的 bug 或安全问题\n- 💡 建议：补充注释说明新逻辑的边界情况',
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-review-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
     if (wantMemoryExtract) {
       // 会话结束自动写入：返回固定偏好条目（autoMemory e2e 验证——追加进全局记忆文件）
       sendChunk({
@@ -218,18 +248,25 @@ const server = http.createServer((req, res) => {
     }
 
     // MOCK_STREAM=1：把 reasoning/content 拆成小块、间隔 20ms 逐字发送，
-    // 制造与真实模型一致的成百上千次流式重绘
+    // 制造与真实模型一致的成百上千次流式重绘。
+    // MOCK_SLOW_FIRST=1：首 chunk 前延迟 2s（模拟慢思考/首 token 长延迟——取消在
+    // create 挂起阶段必须立即生效，不能等首 chunk）；MOCK_SLOW_GAP=1：reasoning
+    // 中段插入 2s 停顿（模拟思考中长间隔——取消不能等下一个 chunk）
     if (STREAM_MODE) {
       const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+      const SLOW_FIRST = process.env.MOCK_SLOW_FIRST === '1';
+      const SLOW_GAP = process.env.MOCK_SLOW_GAP === '1';
       const streamDelta = async (pieces, makeDelta) => {
-        for (const piece of pieces) {
+        for (let i = 0; i < pieces.length; i++) {
+          if (SLOW_FIRST && i === 0) await delay(2000);
+          if (SLOW_GAP && i === Math.floor(pieces.length / 2)) await delay(2000);
           await delay(20);
           sendChunk({
             id: 'mock-stream',
             object: 'chat.completion.chunk',
             created: Date.now(),
             model: 'mock',
-            choices: [{ index: 0, delta: makeDelta(piece), finish_reason: null }],
+            choices: [{ index: 0, delta: makeDelta(pieces[i]), finish_reason: null }],
           });
         }
       };
@@ -265,7 +302,7 @@ const server = http.createServer((req, res) => {
             role: 'assistant',
             reasoning_content: p,
           }));
-          await streamDelta(chars(MARKDOWN_ANSWER), (p) => ({ role: 'assistant', content: p }));
+          await streamDelta(chars(MARKDOWN_ANSWER + (modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '')), (p) => ({ role: 'assistant', content: p }));
         }
         sendChunk(usageChunk('mock-done'));
         res.write('data: [DONE]\n\n');
@@ -337,7 +374,7 @@ const server = http.createServer((req, res) => {
         choices: [
           {
             index: 0,
-            delta: { role: 'assistant', content: MARKDOWN_ANSWER },
+            delta: { role: 'assistant', content: MARKDOWN_ANSWER + (modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '') },
             finish_reason: null,
           },
         ],

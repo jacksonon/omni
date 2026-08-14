@@ -131,6 +131,15 @@ export class McpClient {
   }
 }
 
+// 存活 MCP 客户端：模块级跟踪（进程退出统一 kill；/mcp 重连时 close 旧进程）
+const activeClients: McpClient[] = [];
+let exitHandlerRegistered = false;
+
+/** 关闭全部 MCP 客户端（/mcp 重连前调用；进程退出由模块级 handler 统一处理） */
+export function closeMcpClients(): void {
+  for (const c of activeClients.splice(0)) c.close();
+}
+
 /** 从配置发现 MCP 工具：逐 server 握手 → tools/list → 包装成 Tool（名称加 server 前缀） */
 export async function discoverMcpTools(servers?: Record<string, McpServerConfig>): Promise<Tool[]> {
   if (!servers || Object.keys(servers).length === 0) return [];
@@ -161,11 +170,11 @@ export async function discoverMcpTools(servers?: Record<string, McpServerConfig>
       );
     }
   }
-  if (clients.length > 0) {
-    // 进程退出时 kill MCP 子进程（CLI 生命周期内常驻）
-    process.on('exit', () => {
-      for (const c of clients) c.close();
-    });
+  activeClients.push(...clients);
+  if (clients.length > 0 && !exitHandlerRegistered) {
+    exitHandlerRegistered = true;
+    // 进程退出时 kill MCP 子进程（CLI 生命周期内常驻；模块级只注册一次，重连不叠加）
+    process.on('exit', closeMcpClients);
   }
   return out;
 }

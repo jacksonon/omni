@@ -1,0 +1,25 @@
+{
+  "name": "omni-tui",
+  "version": "0.3.0",
+  "description": "Omni — TUI 全屏终端界面版（需 bun 运行时；npm 官方 omni 包为 Node console 版，此包为 TUI 版）",
+  "type": "module",
+  "bin": {
+    "omni": "dist/tui-entry.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "bun": ">=1.3"
+  },
+  "optionalDependencies": {
+    "@opentui/core-darwin-arm64": "0.5.1",
+    "@opentui/core-darwin-x64": "0.5.1",
+    "@opentui/core-linux-arm64": "0.5.1",
+    "@opentui/core-linux-arm64-musl": "0.5.1",
+    "@opentui/core-linux-x64": "0.5.1",
+    "@opentui/core-linux-x64-musl": "0.5.1",
+    "@opentui/core-win32-arm64": "0.5.1",
+    "@opentui/core-win32-x64": "0.5.1"
+  }
+}
