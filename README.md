@@ -4,12 +4,12 @@
 
 **An agent engineering project** — a terminal-based AI coding assistant.
 
-Currently at the **MVP+ stage**: single-agent loop + 8 tools + safety guardrails + context management + subagents/parallel tools + MCP external tools, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
+Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ delegate subagents + MCP external tools) + safety guardrails + context management + memory system/session persistence/skills, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
 
 ## Features
 
 - **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)
-- **8 tools**: `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + `delegate` (subagent) + `mcp_*` (MCP external tools)
+- **8 tools (6 base + 2 injected)**: base `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools)
 - **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation + approval UI + audit log
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`

@@ -4,12 +4,12 @@
 
 **Agent 工程**（终端型 AI 编程助手）。
 
-当前处于 **MVP+ 阶段**：单 Agent 循环 + 5 个基础工具 + 安全护栏 + 上下文管理 + 子代理/并行工具 + MCP 外部工具，无框架依赖（裸 OpenAI SDK + 主循环），并带一个全屏 TUI 界面。
+当前处于 **Beta 阶段（功能完备）**：单 Agent 循环 + 6 个基础工具（+ delegate 子代理 + MCP 外部工具）+ 安全护栏 + 上下文管理 + 记忆系统/会话持久化/技能系统，无框架依赖（裸 OpenAI SDK + 主循环），并带一个全屏 TUI 界面。
 
 ## 特性
 
 - **Agent 主循环**：流式调用 LLM → 工具调用（并行执行）→ 执行 → 结果回传，支持自我纠错（工具失败信息回传由模型自行修正）
-- **8 个工具**：`read_file` / `write_file` / `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）+ `delegate`（子代理）+ `mcp_*`（MCP 外部工具）
+- **8 个工具（6 基础 + 2 注入）**：基础 `read_file` / `write_file` / `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）+ 运行时注入 `delegate`（子代理）+ `mcp_*`（MCP 外部工具）
 - **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
