@@ -145,7 +145,7 @@ jobs:
         run: |
           ls -la ./release-assets
 
-      - name: Publish main package to npm (omnicode)
+      - name: Publish main package to npm (omni-cli)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
