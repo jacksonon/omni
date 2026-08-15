@@ -1,13 +1,13 @@
-# @rightai/omni
+# @right-ai/omni
 
 **Omni — Agent 工程**（终端型 AI 编程助手）。
 
-`npm install -g @rightai/omni` 一条命令安装，自带**全屏 TUI**（原生二进制，npm 按平台自动选择）。
+`npm install -g @right-ai/omni` 一条命令安装，自带**全屏 TUI**（原生二进制，npm 按平台自动选择）。
 
 ## 安装
 
 ```bash
-npm install -g @rightai/omni
+npm install -g @right-ai/omni
 ```
 
 支持的平台：macOS（arm64/x64）、Linux（x64/arm64）、Windows（x64）。
