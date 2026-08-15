@@ -1,6 +1,6 @@
 {
   "name": "omnicode-linux-arm64",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "description": "omnicode 原生二进制（Linux arm64，含 TUI）",
   "license": "MIT",
   "os": ["linux"],

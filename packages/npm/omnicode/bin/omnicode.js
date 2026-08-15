@@ -5,7 +5,8 @@
 const { spawnSync } = require('child_process');
 const { platform, arch } = process;
 
-const pkgName = `omnicode-${platform}-${arch}`;
+const pkgName =
+  platform === 'win32' ? '@omnicode/win32-x64' : `omnicode-${platform}-${arch}`;
 const binName = platform === 'win32' ? 'omnicode.exe' : 'omnicode';
 
 let binPath;
