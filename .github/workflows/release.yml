@@ -94,8 +94,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # 版本与根 package.json 同步
+          # 版本与根 package.json 同步（export 后 node -e 才能读到）
           VER=$(node -p "require('./package.json').version")
+          export VER
           node -e "const fs=require('fs');const f='packages/npm/${{ matrix.npmPkg }}/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.VER;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n');" 
           # 二进制入位（bin/ 目录为空目录不入 git，checkout 后需重建）
           if [ "${{ runner.os }}" = "Windows" ]; then BIN=release/omni.exe; else BIN=release/omni; fi
@@ -150,6 +151,7 @@ jobs:
         run: |
           # 版本 + optionalDependencies 与根 package.json 同步（须在所有平台子包发布成功后）
           VER=$(node -p "require('./package.json').version")
+          export VER
           node -e "
             const fs=require('fs');
             const f='packages/npm/omnicode/package.json';
