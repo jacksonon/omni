@@ -395,6 +395,19 @@ export async function runTuiInteractive(
       applyEndpoint(endpoint);
     };
     let turn = 0; // 真实对话轮次（斜杠命令/空输入不计）
+    // 运行中输入 /exit：runCommand 返回 'exit' 后标记，当前回合结束即统一清理退出
+    let exitRequested = false;
+    // 会话结束清理（/exit 与运行中 /exit 共用）：autoMemory 偏好提取 + 会话 finalize + 空占位删除
+    const exitSession = async (): Promise<void> => {
+      if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
+        await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+      }
+      if (runOpts.sessionPath) {
+        await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
+        // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
+        await removeEmptySession(runOpts.sessionPath).catch(() => {});
+      }
+    };
     for (;;) {
       // /settings statusline 保存意图：应用已即时生效（state.statusline 更新，footer 统计行
       // 立即按新配置重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）
@@ -467,61 +480,54 @@ export async function runTuiInteractive(
       if (!cmd) continue;
       // /model 面板/CLI 切换只改 state.model（意图），提交前先同步为真实运行时模型
       syncModel();
+      // 命令执行上下文：空闲分发（本迭代顶部）与运行中分发（onSubmit 里输 / 命令）共用
+      const ctx = {
+        state, out, session, input, messages,
+        client: currentClient, model: currentModel,
+        models: state.models,
+        undoStack: runOpts.undoStack,
+        tools: runOpts.tools,
+        maxSubagentSteps: runOpts.maxSubagentSteps,
+        sessionPath: runOpts.sessionPath,
+        cfg: runOpts.cfg,
+        mcpServers: runOpts.mcpServers,
+        // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
+        onReconnectMcp: async () => {
+          closeMcpClients();
+          const mcp = await discoverMcpTools(runOpts.mcpServers);
+          runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
+        },
+        // /model <名称>：按名称从 runOpts.models 找端点切换（未注册则提示）
+        onSwitchModel: (name: string) => {
+          const endpoint = (runOpts.models ?? []).find((m) => m.name === name);
+          if (!endpoint) {
+            return `未知模型「${name}」——可用：${(runOpts.models ?? []).map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加）`;
+          }
+          applyEndpoint(endpoint);
+          return null;
+        },
+        // /model add：注册进运行时模型表（同名覆盖）+ 面板列表 + 切换
+        onAddModel: (endpoint: ModelEndpoint) => {
+          const list = runOpts.models ?? [];
+          const existing = list.find((m) => m.name === endpoint.name);
+          if (existing) Object.assign(existing, endpoint);
+          else runOpts.models = [...list, endpoint];
+          state.models = (runOpts.models ?? []).map((m) => m.name);
+          applyEndpoint(endpoint);
+          return null;
+        },
+        // /resume /session <id>：恢复会话（共用 restoreSession：替换 messages +
+        // 会话文件 + 重置落盘计数 + 把历史回放进对话流）
+        onResume: (file: string, msgs: ChatCompletionMessageParam[]) => {
+          restoreSession(file, msgs);
+        },
+      };
       // 斜杠命令：注册表分发（/theme 打开面板、/exit 返回 'exit' 结束循环…）
       if (cmd.startsWith('/')) {
-        const ctx = {
-          state, out, session, input, messages,
-          client: currentClient, model: currentModel,
-          models: state.models,
-          undoStack: runOpts.undoStack,
-          tools: runOpts.tools,
-          maxSubagentSteps: runOpts.maxSubagentSteps,
-          sessionPath: runOpts.sessionPath,
-          cfg: runOpts.cfg,
-          mcpServers: runOpts.mcpServers,
-          // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
-          onReconnectMcp: async () => {
-            closeMcpClients();
-            const mcp = await discoverMcpTools(runOpts.mcpServers);
-            runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
-          },
-          // /model <名称>：按名称从 runOpts.models 找端点切换（未注册则提示）
-          onSwitchModel: (name: string) => {
-            const endpoint = (runOpts.models ?? []).find((m) => m.name === name);
-            if (!endpoint) {
-              return `未知模型「${name}」——可用：${(runOpts.models ?? []).map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加）`;
-            }
-            applyEndpoint(endpoint);
-            return null;
-          },
-          // /model add：注册进运行时模型表（同名覆盖）+ 面板列表 + 切换
-          onAddModel: (endpoint: ModelEndpoint) => {
-            const list = runOpts.models ?? [];
-            const existing = list.find((m) => m.name === endpoint.name);
-            if (existing) Object.assign(existing, endpoint);
-            else runOpts.models = [...list, endpoint];
-            state.models = (runOpts.models ?? []).map((m) => m.name);
-            applyEndpoint(endpoint);
-            return null;
-          },
-          // /resume /session <id>：恢复会话（共用 restoreSession：替换 messages +
-          // 会话文件 + 重置落盘计数 + 把历史回放进对话流）
-          onResume: (file: string, msgs: ChatCompletionMessageParam[]) => {
-            restoreSession(file, msgs);
-          },
-        };
         const result = await runCommand(ctx, cmd);
         await session.paint();
         if (result === 'exit') {
-          // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
-          if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
-            await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
-          }
-          if (runOpts.sessionPath) {
-            await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
-            // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
-            await removeEmptySession(runOpts.sessionPath).catch(() => {});
-          }
+          await exitSession();
           break;
         }
         continue;
@@ -579,6 +585,24 @@ export async function runTuiInteractive(
         } else if (t === '/stop') {
           state.cancelRun?.();
           input.setText('');
+        } else if (t.startsWith('/')) {
+          // 运行中输入 / 命令：**立即分发执行**（/theme 打开菜单、/undo 回滚等），
+          // 不进待发送列表——此前所有命令（除 /stop）都被当普通消息排队，
+          // 要等当前回合 + 前面排队消息全部结束才执行（用户报告）。异步分发不阻塞
+          // 当前回合；/exit 返回 'exit' → 标记退出意图，回合结束后统一清理退出
+          input.setText('');
+          void (async () => {
+            try {
+              const result = await runCommand(ctx, t);
+              await session.paint();
+              if (result === 'exit') exitRequested = true;
+            } catch (err) {
+              pushLine(state, {
+                kind: 'warn',
+                text: `命令执行出错：${(err as Error)?.message ?? String(err)}`,
+              });
+            }
+          })();
         } else if (t) {
           enqueuePending(state, 'queue', t); // 追加到待发送列表末尾（回合结束后按序发送）
           input.setText('');
@@ -604,6 +628,11 @@ export async function runTuiInteractive(
           enqueuePending(state, 'steer', interruptText);
           interruptText = null;
         }
+      }
+      // 运行中输入 /exit：回合结束后退出（与空闲 /exit 同一清理路径）
+      if (exitRequested) {
+        await exitSession();
+        break;
       }
       await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
       turn++;

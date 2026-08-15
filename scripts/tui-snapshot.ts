@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { countDiffLines, sideBySideDiff, toolCardLines } from '../src/output/format.js';
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
 import { gateTool } from '../src/safety/policy.js';
 import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
   }
   // 新卡片：无工具名标题（去掉「查看目录」），收起态 = 命令(📁 .) + 执行缩略(✓ 执行成功 · 42 字符) + 结果缩略(输出首行)
   const checks1 = ['你是谁？', '📁 .', '执行成功 · 42 字符', '55 个文件/目录', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', '模型 mock', '0 轮 · 0 步'];
-  // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带 cardBg 背景（宽度不一致
+  // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
   const cardRows1 = rows1w.filter((r) => r.cardId === 1);
@@ -78,17 +79,18 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 1 卡片行宽错误: w=${visualWidth(r.text)} text=${JSON.stringify(r.text)}`);
       process.exit(1);
     }
-    // 块式卡片每行至少一个 chunk 带 cardBg 底色（超淡黄 #fefce8）
-    if (!r.chunks || !r.chunks.some((c) => c.bg === '#fefce8')) {
-      console.error(`✗ 场景 1 卡片行缺少 cardBg 底色: ${JSON.stringify(r.chunks)}`);
+    // 块式卡片每行至少一个 chunk 带状态底色（卡片为 ok → 淡绿 #dcfce7，用户要求
+    // 「执行成功使用淡绿色背景」；失败/执行中分别淡红/超淡黄）
+    if (!r.chunks || !r.chunks.some((c) => c.bg === '#dcfce7')) {
+      console.error(`✗ 场景 1 卡片行缺少状态底色: ${JSON.stringify(r.chunks)}`);
       process.exit(1);
     }
   }
-  // 完整长方形（用户要求「不要缺角」）：顶/底留白行整行 cardBg 填满——单 chunk、
+  // 完整长方形（用户要求「不要缺角」）：顶/底留白行整行状态底色填满——单 chunk、
   // 无透明角；不再是「左 1 透明 + 中间 + 右 1 透明」的圆角三 chunk 结构
   const topRow1 = cardRows1.find((r) => r.chunks?.length === 1);
-  if (!topRow1 || topRow1.chunks![0].bg !== '#fefce8') {
-    console.error(`✗ 场景 1 卡片顶/底行应整行 cardBg 填满（完整长方形，无缺角）: ${JSON.stringify(topRow1?.chunks)}`);
+  if (!topRow1 || topRow1.chunks![0].bg !== '#dcfce7') {
+    console.error(`✗ 场景 1 卡片顶/底行应整行状态底色填满（完整长方形，无缺角）: ${JSON.stringify(topRow1?.chunks)}`);
     process.exit(1);
   }
   if (cardRows1.some((r) => r.chunks?.length === 3 && r.chunks[0].bg === undefined)) {
@@ -155,16 +157,16 @@ async function main(): Promise<void> {
   await t3.renderOnce();
   pushLine(s3, {
     kind: 'tool',
-    text: '📄 AGENTS.md',
-    card: { id: 2, name: 'read_file', summary: '📄 AGENTS.md', status: 'running', output: [], expanded: false },
+    text: '→ Read AGENTS.md',
+    card: { id: 2, name: 'read_file', summary: '→ Read AGENTS.md', status: 'running', output: [], expanded: false },
   });
   repaintTree(t3.renderer, tree3, s3, { withInput: true });
   await t3.renderOnce();
   const frame3 = t3.captureCharFrame();
   console.log('=== 场景 3：增量重绘 ===');
   console.log(frame3);
-  if (!frame3.includes('📄 AGENTS.md') || !frame3.includes('⏳ 执行中') || frame3.includes('读取文件')) {
-    console.error('✗ 场景 3 未显示新增工具卡片或仍显示旧标题（repaintTree 未生效）');
+  if (!frame3.includes('→ Read AGENTS.md') || !frame3.includes('⏳ 执行中') || frame3.includes('📄')) {
+    console.error('✗ 场景 3 未显示新增工具卡片或仍显示旧摘要格式（repaintTree 未生效）');
     process.exit(1);
   }
   // 执行中动画：spinnerIndex ≥ 0 时卡片执行中行显示 spinner 帧（不再是静态 ⏳）；
@@ -221,8 +223,9 @@ async function main(): Promise<void> {
   const frame4 = t4.captureCharFrame();
   console.log('=== 场景 4：TuiOutput 事件驱动 + flush（卡片收起态）===');
   console.log(frame4);
-  // 收起态：命令 + 执行缩略（✓ 执行成功 · 14 字符）+ 结果缩略（输出首行 退出码: 0）；无标题、无点击展开
-  const checks4 = ['你是谁？', '任务完成 ✅', 'mock', '正在分析任务', '$ echo mock-ok', '执行成功 · 14 字符', '退出码: 0'];
+  // 收起态：命令 + 执行缩略（✓ 执行成功 · 14 字符）+ 结果缩略（首个非「退出码: 0」输出行
+  // ——退出码 0 不再展示，用户要求；完整结果仍回传模型）；无标题、无点击展开
+  const checks4 = ['你是谁？', '任务完成 ✅', 'mock', '正在分析任务', '$ echo mock-ok', '执行成功 · 14 字符', 'echo 输出内容'];
   const missing4 = checks4.filter((c) => !frame4.includes(c));
   if (missing4.length) {
     console.error(`✗ 场景 4 缺少: ${missing4.join(', ')}（flush 或卡片未生效）`);
@@ -234,9 +237,9 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  // 收起态：结果缩略只取输出首行，第二行输出（echo 输出内容）不得泄漏
-  if (frame4.includes('echo 输出内容')) {
-    console.error('✗ 场景 4 收起态卡片泄漏了输出第二行');
+  // 退出码 0 行（输出首行）不得泄漏进收起态摘要（用户要求「不显示退出码 0」）
+  if (frame4.includes('退出码: 0')) {
+    console.error('✗ 场景 4 收起态卡片仍显示退出码: 0（已过滤）');
     process.exit(1);
   }
   // 生成结束：光标应消失；等待输入：状态栏应空白（输入框占位符已提示）
@@ -259,10 +262,15 @@ async function main(): Promise<void> {
   const frame4b = t4.captureCharFrame();
   console.log('=== 场景 4b：展开卡片（模拟点击）===');
   console.log(frame4b);
-  const checks4b = ['退出码: 0', 'echo 输出内容', '点击收起'];
+  // 展开态：输出预览进入卡片（退出码: 0 行同样过滤，只显示真实输出）
+  const checks4b = ['echo 输出内容', '点击收起'];
   const missing4b = checks4b.filter((c) => !frame4b.includes(c));
   if (missing4b.length) {
     console.error(`✗ 场景 4b 展开后缺少输出: ${missing4b.join(', ')}`);
+    process.exit(1);
+  }
+  if (frame4b.includes('退出码: 0')) {
+    console.error('✗ 场景 4b 展开后仍显示退出码: 0（已过滤）');
     process.exit(1);
   }
   console.log('✓ 场景 4 通过：flush() 上屏 + 卡片收起（命令/执行/结果缩略）→ 展开后完整输出正确显示');
@@ -586,8 +594,9 @@ async function main(): Promise<void> {
   const r12 = await render(s12);
   console.log('=== 场景 12：多行命令摘要卡片（换行折叠 + 色块完整）===');
   console.log(r12.frame);
-  if (!r12.frame.includes('退出码: 0') || !r12.frame.includes('sunny') || !r12.frame.includes('点击收起')) {
-    console.error('✗ 场景 12 展开态输出缺失');
+  // 展开态输出：退出码: 0 行已过滤（用户要求不显示），真实输出 sunny 保留
+  if (!r12.frame.includes('sunny') || !r12.frame.includes('点击收起') || r12.frame.includes('退出码: 0')) {
+    console.error('✗ 场景 12 展开态输出缺失或仍显示退出码: 0');
     process.exit(1);
   }
   console.log('✓ 场景 12 通过：多行命令折叠为单行摘要 + 卡片色块完整不乱码');
@@ -733,13 +742,13 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 16 亮色主题 footer 底色错误: ${JSON.stringify(bgInts(tree16.footerBox?.backgroundColor))}（应 [228,228,231]）`);
     process.exit(1);
   }
-  // 亮色修复：内容区根背景 = 白（不再是黑色）、输入框 = 白（不再是灰块底色）
+  // 亮色修复：内容区根背景 = 白（不再是黑色）、输入框与灰块同色（用户要求去掉白色背景）
   if (JSON.stringify(bgInts(tree16.root.backgroundColor)) !== JSON.stringify([255, 255, 255])) {
     console.error(`✗ 场景 16 亮色主题内容区根背景未变白: ${JSON.stringify(bgInts(tree16.root.backgroundColor))}（应 [255,255,255]）`);
     process.exit(1);
   }
-  if (!tree16.input || JSON.stringify(bgInts(tree16.input.backgroundColor)) !== JSON.stringify([255, 255, 255])) {
-    console.error('✗ 场景 16 亮色主题输入框底色未变白（应 [255,255,255]，不再是灰块底色）');
+  if (!tree16.input || JSON.stringify(bgInts(tree16.input.backgroundColor)) !== JSON.stringify([228, 228, 231])) {
+    console.error('✗ 场景 16 亮色主题输入框底色未与灰块同色（应 [228,228,231] 同 footerBg，不再是白色）');
     process.exit(1);
   }
   if (!tree16.queueBox) {
@@ -3787,6 +3796,191 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 40 通过：待发送管理（steer 插最前/↑↓ 循环/←→ 排序/Enter 编辑/Backspace 删除/Esc 与普通键退出/徽标渲染/命中区域/消费顺序）');
+
+  // 场景 41：read_file opencode 风格 + 并行多读合并 + write_file diff 展示
+  // —— read_file 收起态只一行 `→ Read 路径`（无执行/结果缩略行）；并行多读合并成
+  // `→ Read N files`（点击展开逐条 ⤷）；write_file 收起态 = 命令 + 执行缩略 + 改动摘要
+  // （新增文件·全文 N 行 / 修改·+A −D 行），展开 = 新增文件全文（逐行绿）/ 修改左右对比
+  // （左原右新、删除红新增绿、│ 分隔）
+  console.log('=== 场景 41：read_file 一行式 + 多读合并 + write_file diff ===');
+
+  // a) countDiffLines / sideBySideDiff 单元断言（LCS 行对齐：替换配对、纯新增/删除）
+  {
+    const st = countDiffLines('a\nb\nc', 'a\nx\nc\nd');
+    if (st.add !== 2 || st.rem !== 1) {
+      console.error(`✗ 场景 41 countDiffLines 统计错误: ${JSON.stringify(st)}`);
+      process.exit(1);
+    }
+    const { rows, truncated } = sideBySideDiff('a\nb\nc', 'a\nx\nc\nd', 8, 8);
+    if (truncated || rows.length !== 4) {
+      console.error(`✗ 场景 41 sideBySideDiff 行数错误: ${rows.length} truncated=${truncated}`);
+      process.exit(1);
+    }
+    // 行序：= a / 替换 b→x（rem|add 配对同一行）/ = c / 纯新增 d
+    const kinds = rows.map((r) => `${r.lk}${r.rk}`);
+    if (kinds.join(',') !== 'ctxctx,remadd,ctxctx,ctxadd') {
+      console.error(`✗ 场景 41 sideBySideDiff 对齐错误: ${kinds.join(',')}`);
+      process.exit(1);
+    }
+    if (!rows[1].left.includes('b') || !rows[1].right.includes('x')) {
+      console.error(`✗ 场景 41 替换行配对错误: ${JSON.stringify(rows[1])}`);
+      process.exit(1);
+    }
+    // 两半列宽补齐：左/右文本与列宽一致（│ 对齐依赖）
+    for (const r of rows) {
+      if (r.left.length !== 8 || r.right.length !== 8) {
+        console.error(`✗ 场景 41 diff 半列未按列宽补齐: ${JSON.stringify(r)}`);
+        process.exit(1);
+      }
+    }
+  }
+
+  // b) read_file 收起态：只一行 `→ Read 路径`（top/cmd/bottom，无执行/结果缩略行）
+  {
+    const lines = toolCardLines(
+      { name: 'read_file', summary: '→ Read AGENTS.md', status: 'ok', output: ['内容首行'], expanded: false, chars: 12, paths: ['AGENTS.md'] },
+      60
+    );
+    const roles = lines.map((l) => l.role);
+    if (roles.join(',') !== 'top,cmd,bottom') {
+      console.error(`✗ 场景 41 read 收起态应只有 top/cmd/bottom: ${roles.join(',')}`);
+      process.exit(1);
+    }
+    if (!lines[1].text.includes('→ Read AGENTS.md') || lines.some((l) => l.text.includes('执行成功'))) {
+      console.error(`✗ 场景 41 read 收起态应显示 → Read 路径且无执行缩略行: ${lines.map((l) => l.text).join('|')}`);
+      process.exit(1);
+    }
+  }
+
+  // c) 合并多读展开：⤷ 路径逐条 + 输出预览 + 收起提示
+  {
+    const lines = toolCardLines(
+      { name: 'read_file', summary: '→ Read 2 files', status: 'ok', output: ['内容首行'], expanded: true, chars: 12, paths: ['a.ts', 'b.ts'] },
+      60
+    );
+    const text = lines.map((l) => l.text).join('\n');
+    if (
+      !text.includes('→ Read 2 files') ||
+      !text.includes('⤷ a.ts') ||
+      !text.includes('⤷ b.ts') ||
+      !text.includes('内容首行') ||
+      !text.includes('点击收起')
+    ) {
+      console.error('✗ 场景 41 合并多读展开缺路径/预览/收起提示');
+      console.log(text);
+      process.exit(1);
+    }
+    for (const ln of lines) {
+      if (visualWidth(ln.text) !== 60) {
+        console.error(`✗ 场景 41 多读展开行宽错误: w=${visualWidth(ln.text)} ${JSON.stringify(ln.text)}`);
+        process.exit(1);
+      }
+    }
+  }
+
+  // d) write_file 新建：收起态改动摘要（新增文件·全文 N 行）；展开 = 全文逐行 add（绿）
+  {
+    const card = {
+      name: 'write_file',
+      summary: '✏️ new.txt',
+      status: 'ok',
+      output: [],
+      expanded: false,
+      chars: 5,
+      diff: { path: 'new.txt', original: null, content: 'line1\nline2' },
+    };
+    const collapsed = toolCardLines(card, 60);
+    if (!collapsed.some((l) => l.text.includes('新增文件 · 全文 2 行'))) {
+      console.error(`✗ 场景 41 新建收起态缺改动摘要: ${collapsed.map((l) => l.text).join('|')}`);
+      process.exit(1);
+    }
+    const expanded = toolCardLines({ ...card, expanded: true }, 60);
+    const diffRows = expanded.filter((l) => l.role === 'diff');
+    if (diffRows.length !== 2 || !diffRows.every((l) => l.diffRole === 'add')) {
+      console.error('✗ 场景 41 新建展开态应全文逐行 diffRole=add');
+      process.exit(1);
+    }
+  }
+
+  // e) write_file 修改：收起态 +A −D 摘要；展开左右对比（rem/add 半列 + │ 分隔）
+  {
+    const card = {
+      name: 'write_file',
+      summary: '✏️ old.txt',
+      status: 'ok',
+      output: [],
+      expanded: false,
+      chars: 8,
+      diff: { path: 'old.txt', original: 'a\nb\nc', content: 'a\nx\nc\nd' },
+    };
+    const collapsed = toolCardLines(card, 60);
+    if (!collapsed.some((l) => l.text.includes('修改 · +2 −1 行'))) {
+      console.error(`✗ 场景 41 修改收起态缺 +A −D 摘要: ${collapsed.map((l) => l.text).join('|')}`);
+      process.exit(1);
+    }
+    const expanded = toolCardLines({ ...card, expanded: true }, 60);
+    const dr = expanded.filter((l) => l.diff !== undefined);
+    if (dr.length !== 4) {
+      console.error(`✗ 场景 41 修改展开 diff 行数错误: ${dr.length}`);
+      console.log(expanded.map((l) => `${l.role} ${JSON.stringify(l.text)}`).join('\n'));
+      process.exit(1);
+    }
+    const repl = dr[1];
+    if (repl.diff!.lk !== 'rem' || repl.diff!.rk !== 'add') {
+      console.error('✗ 场景 41 替换行左右半类型错误');
+      process.exit(1);
+    }
+    if (!repl.text.includes('│')) {
+      console.error('✗ 场景 41 diff 行缺 │ 分隔');
+      process.exit(1);
+    }
+  }
+
+  // f) 渲染级（buildBody 真实路径）：diff 行逐 chunk 着色——替换行左红右绿、
+  // 中间 │ 分隔、整行宽度 == 内容宽；新建全文行整行绿
+  {
+    const s41 = createTuiState();
+    s41.version = '0.1.0';
+    s41.model = 'mock';
+    pushLine(s41, {
+      kind: 'tool',
+      text: '✏️ old.txt',
+      card: {
+        id: 41,
+        name: 'write_file',
+        summary: '✏️ old.txt',
+        status: 'ok',
+        output: [],
+        expanded: true,
+        chars: 8,
+        diff: { path: 'old.txt', original: 'a\nb\nc', content: 'a\nx\nc\nd' },
+      },
+    });
+    const rows41 = buildBody(s41, 60);
+    const diffRows41 = rows41.filter((r) => r.cardId === 41 && r.chunks && r.chunks.length === 3);
+    if (diffRows41.length !== 4) {
+      console.error(`✗ 场景 41 渲染 diff 行数错误: ${diffRows41.length}`);
+      process.exit(1);
+    }
+    // 替换行（第 2 条）：左 chunk 红 fg（diffRem）、右 chunk 绿 fg（diffAdd）
+    const replR = diffRows41[1];
+    if (replR.chunks![0].fg !== '#b91c1c' || replR.chunks![2].fg !== '#15803d') {
+      console.error(`✗ 场景 41 替换行左红右绿缺失: ${JSON.stringify(replR.chunks!.map((c) => c.fg))}`);
+      process.exit(1);
+    }
+    // 未改动行：左右都取 cardDim（非红非绿）
+    if (diffRows41[0].chunks![0].fg === '#b91c1c' || diffRows41[0].chunks![0].fg === '#15803d') {
+      console.error(`✗ 场景 41 未改动行误着色: ${JSON.stringify(diffRows41[0].chunks!.map((c) => c.fg))}`);
+      process.exit(1);
+    }
+    for (const r of diffRows41) {
+      if (visualWidth(r.text) !== 60) {
+        console.error(`✗ 场景 41 渲染 diff 行宽错误: w=${visualWidth(r.text)} ${JSON.stringify(r.text)}`);
+        process.exit(1);
+      }
+    }
+  }
+  console.log('✓ 场景 41 通过：read_file 一行式/多读合并/新建全文/write diff 左右对比（LCS 对齐 + 逐 chunk 红绿着色）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

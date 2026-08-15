@@ -17,7 +17,7 @@ import type { TuiState } from './state.js';
 export interface TuiTheme {
   /** 内容区背景（根 Box）：深色不设置（透终端底色），亮色白色——修复亮色模式界面整体仍是黑色 */
   background?: string;
-  /** 输入框底色：dark 与灰块同色融合；light 白色（与内容背景一致，从灰块中浮出） */
+  /** 输入框底色：与灰块同色融合（深色 #3f3f46 / 亮色 #e4e4e7，用户要求亮色下去掉白色背景） */
   inputBg: string;
   /** footer 灰色块 / 用户消息底色 */
   footerBg: string;
@@ -44,9 +44,9 @@ export interface TuiTheme {
   /** 命令联想/提及浮层普通项文字色（选中项用 accentBlue） */
   suggestText: string;
   /**
-   * 工具卡片块底色：代码执行等工具调用以「颜色背景区域块」显示（用户要求：
-   * 不用边框，用有颜色背景的块）。**超淡黄**（amber-50，两主题统一；用户要求
-   * 「使用超淡黄色作为背景」），块为**完整长方形**（无圆角缺角），文字统一深色。
+   * 工具卡片块底色（执行中/进行中）：**超淡黄**（amber-50，两主题统一）。
+   * 结果到达后按状态换底色——成功 → 淡绿（cardOkBg）、失败 → 淡红（cardErrBg）；
+   * 块为**完整长方形**（无圆角缺角），文字统一深色。
    */
   cardBg: string;
   /**
@@ -54,6 +54,18 @@ export interface TuiTheme {
    * 黄底（超淡黄）上统一用深棕近黑，两主题一致——淡黄底上浅色字不可读。
    */
   cardDim: string;
+  /** 工具执行成功卡片块底色：**淡绿**（green-100，两主题统一）——用户要求「执行成功使用淡绿色背景」 */
+  cardOkBg: string;
+  /** 成功卡片文字色：绿底上统一深绿（green-900）——淡绿底上浅色字不可读 */
+  cardOkDim: string;
+  /** 工具执行失败卡片块底色：**淡红**（red-100，两主题统一）——用户要求「执行异常显示淡红色背景」 */
+  cardErrBg: string;
+  /** 失败卡片文字色：红底上统一深红（red-900）——淡红底上浅色字不可读 */
+  cardErrDim: string;
+  /** diff 新增行文字色（write_file 左右对比右列 / 新增文件全文）：深绿（green-700，两主题统一，淡底上可读） */
+  diffAdd: string;
+  /** diff 删除行文字色（write_file 左右对比左列）：深红（red-700，两主题统一，淡底上可读） */
+  diffRem: string;
 }
 
 const DARK_THEME: TuiTheme = {
@@ -70,13 +82,19 @@ const DARK_THEME: TuiTheme = {
   suggestBg: '#27272a', // 比 footer 深一档（zinc-800），浮层从灰块中浮出
   suggestBorder: '#52525b', // zinc-600：圆角边框略亮于面板底，勾出圆角轮廓
   suggestText: '#e2e8f0',
-  cardBg: '#fefce8', // 工具卡片块底色：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
+  cardBg: '#fefce8', // 工具卡片块底色（执行中）：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
   cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——淡黄底上浅色字不可读，统一深色
+  cardOkBg: '#dcfce7', // 执行成功：**淡绿**（green-100）——用户要求「执行成功使用淡绿色背景」，两主题统一
+  cardOkDim: '#14532d', // 绿底上的文字：深绿（green-900）——淡绿底上浅色字不可读
+  cardErrBg: '#fee2e2', // 执行失败：**淡红**（red-100）——用户要求「执行异常显示淡红色背景」，两主题统一
+  cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——淡红底上浅色字不可读
+  diffAdd: '#15803d', // diff 新增（green-700）：淡绿/淡黄/淡红底上都可读，两主题统一
+  diffRem: '#b91c1c', // diff 删除（red-700）：淡绿/淡黄/淡红底上都可读，两主题统一
 };
 
 const LIGHT_THEME: TuiTheme = {
   background: '#ffffff', // 内容区白色背景（修复亮色模式界面整体仍黑）
-  inputBg: '#ffffff', // 输入框白色（修复亮色模式 textfield 仍是灰块底色）
+  inputBg: '#e4e4e7', // 与灰块同色（用户要求去掉输入框白色背景，与灰色块融为一体）
   footerBg: '#e4e4e7', // 淡灰（zinc-200）
   userText: '#27272a', // 深灰近黑（zinc-800）
   accentBlue: '#2563eb', // 稍深蓝，保证浅底对比度
@@ -89,8 +107,14 @@ const LIGHT_THEME: TuiTheme = {
   suggestBg: '#ffffff', // 亮色下浮层用白底，与淡灰 footer 区分
   suggestBorder: '#a1a1aa', // zinc-400：亮色下圆角边框用中灰
   suggestText: '#27272a',
-  cardBg: '#fefce8', // 工具卡片块底色：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
+  cardBg: '#fefce8', // 工具卡片块底色（执行中）：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
   cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——与暗色一致
+  cardOkBg: '#dcfce7', // 执行成功：**淡绿**（green-100）——两主题统一
+  cardOkDim: '#14532d', // 绿底上的文字：深绿（green-900）——与暗色一致
+  cardErrBg: '#fee2e2', // 执行失败：**淡红**（red-100）——两主题统一
+  cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——与暗色一致
+  diffAdd: '#15803d', // diff 新增（green-700）——两主题统一
+  diffRem: '#b91c1c', // diff 删除（red-700）——两主题统一
 };
 
 /** 判断主题是否为亮色（用于 dim 行显式取深色文字等分支） */

@@ -12,12 +12,14 @@ import {
   cardTitleLine,
   toolCardLines,
   wrapText,
+  type DiffHalfKind,
+  type ToolCardLine,
   type ToolCardRole,
 } from '../output/format.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
 import { CONTENT_PAD, STREAM_CURSOR, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
-import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState } from './state.js';
+import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
 
 /** 行样式（对应 createTextAttributes 的字段） */
 export interface RowStyle {
@@ -58,47 +60,87 @@ export interface Row {
   approvalId?: number;
 }
 
-/** 工具卡片的行样式：命令加粗深色、执行/结果/分隔/输出/提示深棕；顶/底为空白留白行 */
-function toolRowStyle(role: ToolCardRole, theme: TuiTheme): RowStyle {
+/**
+ * 工具卡片块底色 + 文字色：按执行状态取色——成功 → 淡绿底深绿字、
+ * 失败 → 淡红底深红字、执行中 → 超淡黄底深棕字（用户要求「执行成功淡绿色背景，
+ * 执行异常淡红色背景」；两主题统一）。
+ */
+function toolCardColors(status: ToolStatus, theme: TuiTheme): { bg: string; dim: string } {
+  if (status === 'ok') return { bg: theme.cardOkBg, dim: theme.cardOkDim };
+  if (status === 'err') return { bg: theme.cardErrBg, dim: theme.cardErrDim };
+  return { bg: theme.cardBg, dim: theme.cardDim };
+}
+
+/** 工具卡片的行样式：命令加粗深色、执行/结果/分隔/输出/提示深色；顶/底为空白留白行 */
+function toolRowStyle(role: ToolCardRole, status: ToolStatus, theme: TuiTheme): RowStyle {
+  const { dim } = toolCardColors(status, theme);
   switch (role) {
     case 'top':
     case 'bottom':
       // 顶/底留白行：只有底色（块式卡片的垂直边距），无文字样式
       return {};
     case 'cmd':
-      // 第一行命令：加粗 + 黄底深字（淡黄底上默认白字/黑字都不可读，统一深棕）
-      return { bold: true, fg: theme.cardDim };
+      // 第一行命令：加粗 + 状态色深字（淡底上默认白字/黑字都不可读，统一深色）
+      return { bold: true, fg: dim };
     case 'exec':
     case 'result':
     case 'sep':
     case 'out':
     case 'hint':
-      // 黄底深字：统一深棕（amber-900）——淡黄底上浅色字不可读
-      return { fg: theme.cardDim };
+      // 状态色深字：与底色（淡绿/淡红/淡黄）协调
+      return { fg: dim };
+    case 'diff':
+      // diff 行颜色按半列/整行在 toolCardRow 里逐 chunk 指定（红=删除、绿=新增）
+      return {};
     default:
       return {};
   }
 }
 
 /**
- * 工具卡片行（块式）：不再用 ╭─╮│╰╯ 边框——整行以 cardBg 背景色填充成色块
- * （用户要求「代码执行使用有颜色背景区域的块，而不是用一个边框」），文字按角色
- * 着色（命令加粗、执行/结果/输出卡专属深色）。每行已由 toolCardLines 补齐到内容宽度，
- * 背景色填满整行，多行拼成完整色块。
+ * 工具卡片行（块式）：不再用 ╭─╮│╰╯ 边框——整行以状态底色（成功淡绿/失败淡红/
+ * 执行中超淡黄）填充成色块（用户要求「代码执行使用有颜色背景区域的块，而不是用
+ * 一个边框」），文字按角色着色（命令加粗、执行/结果/输出状态色深字）。每行已由
+ * toolCardLines 补齐到内容宽度，背景色填满整行，多行拼成完整色块。
  *
- * **完整长方形**（用户要求「不要缺角」）：顶/底留白行也整行 cardBg 填满——
+ * **完整长方形**（用户要求「不要缺角」）：顶/底留白行也整行状态底色填满——
  * 不再是左右角透明的圆角块，四角直角、无缺口。
+ *
+ * diff 行（write_file 左右对比）：按 ToolCardLine.diff 的左右两半**逐 chunk 着色**
+ * ——删除半列红、新增半列绿、未改动半列状态深字，中间 `│` 分隔；整行色（新增
+ * 文件全文，diffRole='add'）整行绿色。
  */
-function toolCardRow(text: string, role: ToolCardRole, theme: TuiTheme): Row {
-  const contentStyle = toolRowStyle(role, theme);
-  if (role === 'top' || role === 'bottom') {
-    // 完整长方形：整行 cardBg 填满（text 为全空格，长度 == 列数），无透明角
-    const w = Math.max(3, text.length);
-    const chunks: MdChunk[] = [{ text: ' '.repeat(w), bg: theme.cardBg }];
-    return { text, style: {}, chunks };
+function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme): Row {
+  const { bg } = toolCardColors(status, theme);
+  if (line.role === 'top' || line.role === 'bottom') {
+    // 完整长方形：整行状态底色填满（text 为全空格，长度 == 列数），无透明角
+    const w = Math.max(3, line.text.length);
+    const chunks: MdChunk[] = [{ text: ' '.repeat(w), bg }];
+    return { text: line.text, style: {}, chunks };
   }
-  const chunks: MdChunk[] = [{ text, ...contentStyle, bg: theme.cardBg }];
-  return { text, style: {}, chunks };
+  if (line.diff) {
+    // 左右对比：左半（删除红/未改动深色）+ `│` 分隔 + 右半（新增绿/未改动深色）
+    const { left, lk, right, rk } = line.diff;
+    const halfStyle = (k: DiffHalfKind): RowStyle =>
+      k === 'rem' ? { fg: theme.diffRem } : k === 'add' ? { fg: theme.diffAdd } : { fg: theme.cardDim };
+    const lc = halfStyle(lk);
+    const rc = halfStyle(rk);
+    const chunks: MdChunk[] = [
+      { text: ` ${left}`, ...lc, bg },
+      { text: '│', fg: theme.cardDim, bg },
+      { text: right, ...rc, bg },
+    ];
+    return { text: line.text, style: {}, chunks };
+  }
+  if (line.diffRole) {
+    // 整行 diff 色（新增文件全文：绿色）
+    const fg = line.diffRole === 'add' ? theme.diffAdd : theme.diffRem;
+    const chunks: MdChunk[] = [{ text: line.text, fg, bg }];
+    return { text: line.text, style: {}, chunks };
+  }
+  const contentStyle = toolRowStyle(line.role, status, theme);
+  const chunks: MdChunk[] = [{ text: line.text, ...contentStyle, bg }];
+  return { text: line.text, style: {}, chunks };
 }
 
 /**
@@ -259,7 +301,7 @@ export function buildBody(state: TuiState, width: number): Row[] {
         state.spinnerIndex >= 0 ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length] : undefined;
       const lines = toolCardLines({ ...line.card, spinner }, width);
       for (const l of lines) {
-        body.push({ ...toolCardRow(l.text, l.role, theme), cardId: line.card.id });
+        body.push({ ...toolCardRow(l, line.card.status, theme), cardId: line.card.id });
       }
       continue;
     }

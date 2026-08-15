@@ -16,6 +16,9 @@ const STREAM_MODE = process.env.MOCK_STREAM === '1';
 const MOCK_WRITE = process.env.MOCK_WRITE === '1';
 // MOCK_DANGEROUS=1 时第一轮发危险命令 run_command（full 直通 / safe 审批 e2e 验证）
 const MOCK_DANGEROUS = process.env.MOCK_DANGEROUS === '1';
+// MOCK_MULTIREAD=1 时第一轮**并行发 3 个 read_file 调用**（TUI 多读合并展示 e2e 验证：
+// `→ Read 3 files` 一张卡、点击展开逐条 ⤷）
+const MOCK_MULTIREAD = process.env.MOCK_MULTIREAD === '1';
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -75,6 +78,14 @@ const server = http.createServer((req, res) => {
       : MOCK_DANGEROUS
         ? { name: 'run_command', arguments: '{"command":"git push origin main"}' }
         : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
+    // 第一轮的完整 tool_calls 数组：MOCK_MULTIREAD=1 时并行 3 个 read_file（其余单调用）
+    const firstToolCalls = MOCK_MULTIREAD
+      ? [
+          { index: 0, id: 'call_mock_0', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'AGENTS.md' }) } },
+          { index: 1, id: 'call_mock_1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'README.md' }) } },
+          { index: 2, id: 'call_mock_2', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'package.json' }) } },
+        ]
+      : [{ index: 0, id: 'call_mock', type: 'function', function: firstToolCall }];
     // 计划模式（/plan）：loop 按 planMode 过滤后请求的 tools 里没有 run_command →
     // 直接返回一份「实施计划」回答（不发起工具调用），验证只读工具链 e2e
     const planMode =
@@ -284,14 +295,7 @@ const server = http.createServer((req, res) => {
                 index: 0,
                 delta: {
                   role: 'assistant',
-                  tool_calls: [
-                    {
-                      index: 0,
-                      id: 'call_mock',
-                      type: 'function',
-                      function: firstToolCall,
-                    },
-                  ],
+                  tool_calls: firstToolCalls,
                 },
                 finish_reason: null,
               },
@@ -336,16 +340,10 @@ const server = http.createServer((req, res) => {
         model: 'mock',
         choices: [
           {
-            index: 0,              delta: {
+            index: 0,
+            delta: {
               role: 'assistant',
-              tool_calls: [
-                {
-                  index: 0,
-                  id: 'call_mock',
-                  type: 'function',
-                  function: firstToolCall,
-                },
-              ],
+              tool_calls: firstToolCalls,
             },
             finish_reason: null,
           },

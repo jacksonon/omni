@@ -242,7 +242,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
       flexGrow: 1,
       textColor: theme.inputText,
       placeholderColor: theme.placeholder,
-      backgroundColor: theme.inputBg, // 输入框底色：dark 与灰块同色融合；light 白色（从灰块中浮出）
+      backgroundColor: theme.inputBg, // 输入框底色：与灰块同色融合（亮色下用户要求去掉白色背景）
       keyBindings: [
         { name: 'return', action: 'submit' },
         { name: 'kpenter', action: 'submit' },

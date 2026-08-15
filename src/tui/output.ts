@@ -5,7 +5,7 @@
  */
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
-import type { Output, TokenUsage } from '../output/types.js';
+import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
@@ -228,14 +228,40 @@ export class TuiOutput implements Output {
     // TUI 中思考已完整展示，无需落盘提示
   }
 
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void {
+  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>): void {
     // 步数统计：每次工具调用 +1（footer 统计行）
     this.state.stats.steps += 1;
+    // read_file 并行多读**合并成一张卡片**（对标 opencode 的 `→ Read N files`，点击
+    // 展开逐条）：同一响应（onToolStep 连续触发、上一张卡片仍在执行中）的多读只更新
+    // 已有卡片的路径列表与标题，不新建卡片——卡片行数不被并行读刷屏
+    const path = args && typeof args.path === 'string' ? args.path : '';
+    if (name === 'read_file' && path) {
+      const last = this.state.lines[this.state.lines.length - 1];
+      if (last?.kind === 'tool' && last.card?.status === 'running' && last.card.name === 'read_file') {
+        const paths = last.card.paths ? [...last.card.paths] : [];
+        if (!paths.includes(path)) paths.push(path);
+        last.card.paths = paths;
+        last.card.summary = `→ Read ${paths.length} files`;
+        this.state.spinnerIndex = 0;
+        this.state.status = `${SPINNER_FRAMES[0]} 执行中…`;
+        this.startSpinner('执行中…');
+        this.schedulePaint();
+        return;
+      }
+    }
     // 工具调用画成卡片（kind='tool'）：标题 + 摘要；完成后收起、点击展开
     pushLine(this.state, {
       kind: 'tool',
       text: argsPreview,
-      card: { id: ++this.toolSeq, name, summary: argsPreview, status: 'running', output: [], expanded: false },
+      card: {
+        id: ++this.toolSeq,
+        name,
+        summary: argsPreview,
+        status: 'running',
+        output: [],
+        expanded: false,
+        paths: name === 'read_file' && path ? [path] : undefined,
+      },
     });
     // 工具执行中：启动 spinner 动画（卡片执行中行 + 状态栏都是动画 loading，
     // 而不是静态「⏳ 执行中…」——用户要求）；并行工具多次 onToolStep 幂等（startSpinner 重置定时器）
@@ -245,14 +271,16 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
-  onToolResult(ok: boolean, chars: number, preview?: string[]): void {
-    // 找到最近一个执行中的卡片，填入结果（默认收起，点击展开看输出）
+  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
+    // 找到最近一个执行中的卡片，填入结果（默认收起，点击展开看输出）；
+    // 并行多读合并后只剩一张卡片：多次 onToolResult 中首个填结果，其余无执行中卡片自然跳过
     for (let i = this.state.lines.length - 1; i >= 0; i--) {
       const l = this.state.lines[i];
       if (l.kind === 'tool' && l.card?.status === 'running') {
         l.card.status = ok ? 'ok' : 'err';
         l.card.output = preview ?? [];
         l.card.chars = chars;
+        if (detail) l.card.diff = detail.diff ?? null;
         break;
       }
     }

@@ -1,205 +1,207 @@
 # Omni
 
-**Agent 工程**（终端型 AI 编程助手）。
+[English](README.md) | [中文](README.zh-CN.md)
 
-当前处于 **MVP+ 阶段**：单 Agent 循环 + 5 个基础工具 + 安全护栏 + 上下文管理 + 子代理/并行工具 + MCP 外部工具，无框架依赖（裸 OpenAI SDK + 主循环），并带一个全屏 TUI 界面。
+**An agent engineering project** — a terminal-based AI coding assistant.
 
-## 特性
+Currently at the **MVP+ stage**: single-agent loop + 8 tools + safety guardrails + context management + subagents/parallel tools + MCP external tools, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
 
-- **Agent 主循环**：流式调用 LLM → 工具调用（并行执行）→ 执行 → 结果回传，支持自我纠错（工具失败信息回传由模型自行修正）
-- **8 个工具**：`read_file` / `write_file` / `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）+ `delegate`（子代理）+ `mcp_*`（MCP 外部工具）
-- **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
-- **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
-- **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
-- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、25 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
-- **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单，模型用 `skill` 工具按需加载；`/skill` 命令列出 / `find <词>` 网络检索 skills.sh / `add` 安装
-- **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目 / `/init --global` 全局一键生成，会话结束自动提取新偏好写入全局记忆（偏好去重/矛盾合并）
-- **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
-- **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
-- **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
-- **四种产物**：单文件 JS 包（`dist/omni.cjs`，console 版）、原生二进制（`release/omni`，TUI 版）、console npm 包（`omni-<版本>.tgz`）、TUI npm 包（`omni-tui-<版本>.tgz`，需 bun）；GitHub Actions 打 tag 自动构建发布
+## Features
 
-## 快速开始
+- **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)
+- **8 tools**: `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + `delegate` (subagent) + `mcp_*` (MCP external tools)
+- **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation + approval UI + audit log
+- **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
+- **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
+- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 25+ `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/config etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
+- **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn, and the model loads full content on demand via the `skill` tool; `/skill` lists / `find <term>` searches skills.sh online / `add` installs
+- **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global one-shot generation, session-end auto-extraction of new preferences into global memory (with dedup/conflict merging)
+- **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk)
+- **Swappable backends**: `OMNI_BASE_URL` is compatible with any OpenAI-protocol service (OpenAI / DeepSeek / Zhipu / Moonshot / Grok etc.)
+- **Layered config**: defaults → global config → project config → custom config → env vars → CLI args (JSONC with comments)
+- **Four build artifacts**: single-file JS bundle (`dist/omni.cjs`, console), native binary (`release/omni`, TUI), console npm package (`omni-<version>.tgz`), TUI npm package (`omni-tui-<version>.tgz`, requires bun); GitHub Actions builds and publishes automatically on tag push
 
-### 方式一：npm 全局安装（console 版，需 Node ≥ 18）
+## Quick Start
+
+### Option 1: npm global install (console, requires Node ≥ 18)
 
 ```bash
-npm install -g omni-0.4.0.tgz   # 或发布后 npm install -g omni
-omni "帮我看看这个目录的结构"
+npm install -g omni-0.4.0.tgz   # or after publish: npm install -g omni
+omni "show me the structure of this directory"
 ```
 
-### 方式二：TUI 版 npm 包安装（需 bun ≥ 1.3）
+### Option 2: TUI npm package install (requires bun ≥ 1.3)
 
-官方 `omni` npm 包运行在 Node 上，无法包含 TUI（OpenTUI 依赖 bun 原生 FFI）。全屏 TUI 由独立包 `omni-tui` 分发（bin 同为 `omni`，打包时原生库外置，安装时按平台经 `optionalDependencies` 自动装上对应 `@opentui/core-*` 变体）：
+The official `omni` npm package runs on Node and cannot include the TUI (OpenTUI depends on bun's native FFI). The full-screen TUI ships as a separate package `omni-tui` (same `omni` bin; native libs are externalized at bundle time and auto-installed per-platform via `optionalDependencies` on the matching `@opentui/core-*` variant):
 
 ```bash
 npm install -g ./omni-tui-0.4.0.tgz
-omni "帮我看看这个目录的结构"     # 真实 TTY 下自动进入全屏 TUI（单任务）
-omni                            # 交互式多轮对话
+omni "show me the structure of this directory"  # enters full-screen TUI automatically on a real TTY (single task)
+omni                                            # interactive multi-turn conversation
 ```
 
-> ⚠️ `omni-tui` 与 `omni` 的 bin 同名，安装前先 `npm uninstall -g omni`。
+> ⚠️ `omni-tui` and `omni` share the same bin name — run `npm uninstall -g omni` first.
 
-### 方式三：开发运行（需 Node ≥ 18）
+### Option 3: development run (requires Node ≥ 18)
 
 ```bash
 npm install
-npm run dev -- "列出当前目录的文件"
+npm run dev -- "list the files in the current directory"
 ```
 
-### 方式四：TUI 开发运行（需 bun）
+### Option 4: TUI development run (requires bun)
 
 ```bash
-npm run dev:tui -- "任务描述"     # 单任务
-npm run dev:tui                   # 交互式多轮对话
+npm run dev:tui -- "task description"  # single task
+npm run dev:tui                        # interactive multi-turn conversation
 ```
 
-### 配置 API Key
+### Configure the API Key
 
 ```bash
 export OMNI_API_KEY=sk-xxx
-export OMNI_BASE_URL=https://api.deepseek.com/v1   # 可选，默认 OpenAI
-export OMNI_MODEL=deepseek-chat                     # 可选
+export OMNI_BASE_URL=https://api.deepseek.com/v1   # optional, defaults to OpenAI
+export OMNI_MODEL=deepseek-chat                     # optional
 ```
 
-或复制 `omni.example.jsonc` 为 `omni.json` 按需修改（⚠️ 项目配置已 gitignore，避免 API Key 明文入库）。
+Or copy `omni.example.jsonc` to `omni.json` and edit as needed (⚠️ the project config is gitignored to keep API keys out of the repo).
 
-## 配置
+## Configuration
 
-支持 JSON / JSONC（带注释）。优先级（低 → 高）：
+Supports JSON / JSONC (with comments). Precedence (low → high):
 
 ```
-默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数
+defaults → global config → project config → custom config → env vars → CLI args
 ```
 
-| 层级 | 位置 | 说明 |
+| Layer | Location | Description |
 |---|---|---|
-| 全局配置 | `~/.config/omni/omni.json` | 用户级默认（尊重 `XDG_CONFIG_HOME`） |
-| 项目配置 | `omni.json` / `omni.jsonc` | 从当前目录向上找，最近的生效 |
-| 自定义配置 | `OMNI_CONFIG` 或 `--config <路径>` | 显式指定 |
-| 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | 覆盖配置文件 |
-| CLI 参数 | `-m, --model <名称>` | 最高优先级 |
+| Global config | `~/.config/omni/omni.json` | Per-user defaults (respects `XDG_CONFIG_HOME`) |
+| Project config | `omni.json` / `omni.jsonc` | Searched upward from the current directory; nearest wins |
+| Custom config | `OMNI_CONFIG` or `--config <path>` | Explicitly specified |
+| Env vars | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | Override config files |
+| CLI args | `-m, --model <name>` | Highest precedence |
 
-常用环境变量：`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体；`OMNI_SHOW_THINKING=0` 关闭终端思考显示（仍落盘）。
+Useful env vars: `OMNI_DEBUG=1` prints the full request body sent to the LLM; `OMNI_SHOW_THINKING=0` hides thinking from the terminal (still saved to disk).
 
-配置字段（示例见 `omni.example.jsonc`）：
+Config fields (see `omni.example.jsonc` for a full example):
 
 ```jsonc
 {
-  "model": "deepseek-chat",              // 模型名（默认 gpt-4o-mini）
-  "baseURL": "https://api.deepseek.com/v1", // OpenAI 兼容 API 地址
-  "apiKey": "sk-xxx",                    // 更推荐用环境变量 OMNI_API_KEY
-  "userAgent": "Mozilla/5.0 …",          // 自定义 UA（部分网关 WAF 拦截 SDK 默认 UA 时可配置）
-  "maxSteps": 50,                        // Agent 最大循环步数（防死循环兜底）
-  "showThinking": true,                  // 展示思考过程（仍落盘）
-  "permission": "safe",                  // 安全护栏：full / safe（默认）/ ask / read
-  "auditLog": true,                      // 写审计日志（默认 true）
-  "agentsFile": true,                    // 项目记忆 AGENTS.md：每次会话首轮自动加载（默认 true）
-  "globalAgentsFile": true,              // 全局记忆 ~/.config/omni/AGENTS.md：跨项目偏好，级联在项目记忆之前
-  "autoMemory": true,                    // 会话结束时把新表达的偏好自动追加进全局记忆
-  "summarizeAt": 40,                     // 长对话摘要压缩阈值（0 = 关闭）
-  "preloadFiles": true,                  // 预载任务相关文件（默认 true）
-  "allowSubagents": true,                // 启用子代理（默认 true）
-  "maxSubagentSteps": 10,                // 子代理最大循环步数（默认 10）
-  "skills": true,                        // 技能（SKILL.md）发现与 skill 工具（默认 true）
-  "reasoningEffort": "medium",            // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
-  "reasoningEffortOptions": ["low", "medium", "high"], // /variants 支持的思考级别选项（可自定义）
-  "models": {                           // 多模型端点（/model 切换/添加）：不同模型可配不同 baseURL/apiKey/userAgent；缺省字段回退顶层；/model add 可运行时添加并持久化
+  "model": "deepseek-chat",              // model name (default gpt-4o-mini)
+  "baseURL": "https://api.deepseek.com/v1", // OpenAI-compatible API URL
+  "apiKey": "sk-xxx",                    // prefer the OMNI_API_KEY env var
+  "userAgent": "Mozilla/5.0 …",          // custom UA (some gateways WAF-block the SDK default UA)
+  "maxSteps": 50,                        // max agent loop steps (dead-loop guard)
+  "showThinking": true,                  // show thinking (still saved to disk)
+  "permission": "safe",                  // safety tier: full / safe (default) / ask / read
+  "auditLog": true,                      // write audit log (default true)
+  "agentsFile": true,                    // project memory AGENTS.md: auto-loaded on the first turn (default true)
+  "globalAgentsFile": true,              // global memory ~/.config/omni/AGENTS.md: cross-project prefs, cascaded before project memory
+  "autoMemory": true,                    // append newly expressed preferences to global memory at session end
+  "summarizeAt": 40,                     // long-conversation summarization threshold (0 = off)
+  "preloadFiles": true,                  // preload files relevant to the task (default true)
+  "allowSubagents": true,                // enable subagents (default true)
+  "maxSubagentSteps": 10,                // max subagent loop steps (default 10)
+  "skills": true,                        // skill (SKILL.md) discovery and the skill tool (default true)
+  "reasoningEffort": "medium",            // current reasoning level (reasoning_effort; unset = not sent, model default)
+  "reasoningEffortOptions": ["low", "medium", "high"], // options supported by /variants (customizable)
+  "models": {                           // multi-model endpoints (/model switch/add): per-model baseURL/apiKey/userAgent; missing fields fall back to top level; /model add adds at runtime and persists
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
   },
-  "mcpServers": {                        // MCP 外部工具：{ 名称: { command, args?, env? } }
+  "mcpServers": {                        // MCP external tools: { name: { command, args?, env? } }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   }
 }
 ```
 
-## 架构
+## Architecture
 
 ```
 src/
-  index.ts              # CLI 入口：参数 → 配置 → 客户端 → 单次/交互
-  main.ts               # attachRuntime：Safety 闸门 + MCP 工具发现 + delegate 注入 + 上下文准备
-  client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用
-  ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
-  version.ts            # 版本号常量
-  cli/                  # 参数解析 / banner / 交互模式（25 个 / 命令）
+  index.ts              # CLI entry: args → config → client → single-shot/interactive
+  main.ts               # attachRuntime: Safety gate + MCP tool discovery + delegate injection + context preparation
+  client.ts             # OpenAI client factory: created per "model endpoint" (/model rebuilds on endpoint switch) + shared ModelRuntime
+  ui.ts                 # terminal UI: ANSI colors, TTY detection, spinner, window title
+  version.ts            # version constant
+  cli/                  # arg parsing / banner / interactive mode (25+ / commands)
   agent/
-    loop.ts             # Agent 主循环：流式调 LLM → 并行工具调用 → 执行 → 回传
-    thinking.ts         # 思考过程：流式显示 / 落盘
-    messages.ts         # 消息组装：assistant 消息构造、工具参数解析
-    context.ts          # 上下文管理：相关文件预载 + 长对话摘要压缩（保留脚手架）+ 记忆注入
-    memory.ts           # 记忆系统：全局/项目记忆级联发现、加载、截断 + 会话结束自动提取写入（去重/矛盾合并）
-    init.ts             # /init [--global]：扫描项目/全局环境 → LLM 生成 AGENTS.md
-    session.ts          # 会话持久化：JSONL 落盘 + 列表/恢复（--continue / -r / -l / /resume）
-    report.ts           # 会话状态/上下文用量/导出/诊断/配置路径共享逻辑（/status /context /export /doctor /config）
-    review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    skill.ts            # 技能系统：SKILL.md 发现 / frontmatter 解析 / 按名加载 / npx skills CLI
-    subagent.ts         # 子代理：隔离上下文嵌套循环（共用 Safety 闸门）
-    title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
-  safety/               # 安全护栏：权限分级（policy）/ 审批 / 审计日志（audit）
-  tools/                # 工具注册表：5 基础工具 + skill 静态注册；delegate / mcp_* 运行时注入
-    undo.ts             # /undo 文件撤销：write_file 快照 + 恢复 + redo 重做栈
-  output/               # 输出层：console / TUI 共用格式化（format.ts 工具卡片、types.ts 接口）
-  config/               # 分层合并 / JSONC 解析 / 配置发现
-  tui/                  # 命令式渲染的全屏 TUI（state / render / rows / layout / theme / width / markdown / commands / interactive / output / crashlog）
+    loop.ts             # agent main loop: stream LLM → parallel tool calls → execute → feed back
+    thinking.ts         # thinking: streaming display / save to disk
+    messages.ts         # message assembly: assistant message construction, tool arg parsing
+    context.ts          # context management: file preload + summarization (scaffolding preserved) + memory injection
+    memory.ts           # memory system: global/project memory cascade discovery, loading, truncation + session-end auto-extraction (dedup/conflict merging)
+    init.ts             # /init [--global]: scan project/global env → LLM generates AGENTS.md
+    session.ts          # session persistence: JSONL + list/restore (--continue / -r / -l / /resume)
+    report.ts           # shared logic for session status/context usage/export/diagnostics/config paths (/status /context /export /doctor /config)
+    review.ts           # code review (/review): typecheck + git diff → LLM review
+    skill.ts            # skill system: SKILL.md discovery / frontmatter parsing / load-by-name / npx skills CLI
+    subagent.ts         # subagents: isolated-context nested loop (shared Safety gate)
+    title.ts            # session title: generated async after the first turn, set as terminal window title
+  safety/               # safety guardrails: permission tiers (policy) / approval / audit log (audit)
+  tools/                # tool registry: 5 base tools + skill static; delegate / mcp_* injected at runtime
+    undo.ts             # /undo file undo: write_file snapshots + restore + redo stack
+  output/               # output layer: console / TUI shared formatting (format.ts tool cards, types.ts interface)
+  config/               # layered merging / JSONC parsing / config discovery
+  tui/                  # imperative-rendered full-screen TUI (state / render / rows / layout / theme / width / markdown / commands / interactive / output / crashlog)
 scripts/
-  mock-server.mjs       # 本地 mock OpenAI API（无 Key 端到端测试，含标题/摘要/usage 分支）
-  mock-mcp.mjs          # mock MCP 服务器（stdio JSON-RPC）
-  tui-snapshot.ts       # TUI 快照验证（内存渲染断言）
-  pack-tui.sh           # 一键打包 TUI：版本同步 + bundle + npm pack（--compile 额外出原生二进制）
-  eval/                 # 评估任务集 + 运行器（mock 离线 / 真实 API）
+  mock-server.mjs       # local mock OpenAI API (keyless end-to-end tests; title/summary/usage branches)
+  mock-mcp.mjs          # mock MCP server (stdio JSON-RPC)
+  tui-snapshot.ts       # TUI snapshot tests (in-memory render assertions)
+  pack-tui.sh           # one-click TUI packaging: version sync + bundle + npm pack (--compile also builds the native binary)
+  eval/                 # eval task sets + runner (mock offline / real API)
 packages/
-  omni-tui/             # TUI npm 包：bundle 产物 + package.json（bin: omni，@opentui/core 平台原生库走 optionalDependencies）
+  omni-tui/             # TUI npm package: bundle output + package.json (bin: omni, @opentui/core platform libs via optionalDependencies)
 ```
 
-核心循环：
+Core loop:
 
 ```
 for step in 1..maxSteps:
-  1. 流式调用 LLM（携带全部历史消息 + 系统提示词）
-  2. 无工具调用 → 输出最终回答，结束
-  3. 有工具调用 → 解析 JSON 参数 → 并行执行（每个调用先过 Safety 闸门）
-  4. 结果以 role=tool 回传 → 回到 1
+  1. Stream the LLM (with full message history + system prompt)
+  2. No tool calls → output the final answer, done
+  3. Tool calls → parse JSON args → execute in parallel (each call passes the Safety gate)
+  4. Feed results back as role=tool → back to 1
 ```
 
-关键机制：自我纠错、工具结果 8000 字符截断（提示模型定向读取）、安全护栏（权限分级 + 审批 + 审计）、并行工具执行、子代理隔离上下文、`maxSteps` 防死循环。
+Key mechanisms: self-correction, 8000-char tool-result truncation (model is told to read targeted ranges), safety guardrails (permission tiers + approval + audit), parallel tool execution, isolated subagent contexts, `maxSteps` dead-loop guard.
 
-## 开发
+## Development
 
 ```bash
-npm run dev -- "<任务>"       # 开发运行（tsx）
-npm run typecheck             # TypeScript 类型检查
-npm run build                 # typecheck + tsc 编译 + bun 打包单文件
-npm run mock                  # 本地 mock API 服务器（端口 8787，无 Key 验证）
-npm run dev:tui -- "<任务>"    # TUI 全屏模式（bun + 真实 TTY）
-npm run tui:snapshot          # TUI 快照验证（内存渲染断言）
-npm run bundle:tui            # 打包 TUI bundle（产物 packages/omni-tui/dist/）
-npm run pack:tui              # 一键打包 TUI npm 包（版本同步 + bundle + npm pack → omni-tui-<版本>.tgz）
-npm run pack:tui:compile      # 一键打包 + 原生二进制（release/omni，零依赖）
-npm run eval                  # 评估：真实 API 跑任务集 + 完成率报告
-npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
+npm run dev -- "<task>"       # dev run (tsx)
+npm run typecheck             # TypeScript type checking
+npm run build                 # typecheck + tsc compile + bun single-file bundle
+npm run mock                  # local mock API server (port 8787, keyless validation)
+npm run dev:tui -- "<task>"    # full-screen TUI mode (bun + real TTY)
+npm run tui:snapshot          # TUI snapshot tests (in-memory render assertions)
+npm run bundle:tui            # bundle the TUI (output: packages/omni-tui/dist/)
+npm run pack:tui              # one-click TUI npm package (version sync + bundle + npm pack → omni-tui-<version>.tgz)
+npm run pack:tui:compile      # one-click package + native binary (release/omni, zero deps)
+npm run eval                  # eval: real API task suite + completion report
+npm run eval:mock             # eval: offline mock (deterministic, CI-friendly)
 ```
 
-打包需 bun：`npm run bundle`（单文件 JS）、`npm run compile`（原生二进制）、`npm pack`（console npm 包）、`npm run pack:tui`（TUI npm 包一键打包——自动把 `packages/omni-tui/package.json` 版本同步到根版本、清理旧 bundle、平台原生库经 `optionalDependencies` 自动安装）。推送 `v*` tag 后 GitHub Actions 自动构建发布（附 Linux 二进制 + npm 包）。
+Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (native binary), `npm pack` (console npm package), `npm run pack:tui` (TUI npm package — auto-syncs `packages/omni-tui/package.json` version to the root version, cleans old bundles, platform libs auto-installed via `optionalDependencies`). Pushing a `v*` tag triggers the GitHub Actions build & release (Linux binary + npm package attached).
 
-## 路线图
+## Roadmap
 
-- [x] MVP：Agent 循环 + 5 基础工具 + mock 端到端测试
-- [x] 上下文管理：工具结果截断 → 消息摘要压缩 → 相关文件选择性加载
-- [x] 安全护栏：危险命令确认、权限分级、审计日志
-- [x] 评估体系：自建任务集 + 完成率统计（mock 离线可进 CI）
-- [x] MCP 接入（外部工具生态）
-- [x] 子代理（subagent）与并行工具执行
-- [x] **记忆系统**：全局记忆 + 项目记忆级联加载（`/init` 项目 / `/init --global` 全局 / 会话结束自动写入 + 偏好去重/矛盾合并）
-- [x] **会话持久化**：交互对话 JSONL 落盘 + `--continue` / `-r <id>` / `-l` 跨进程恢复
-- [x] **/plan 计划模式**：只读工具过滤 + 输出实施计划，确认后再执行
-- [x] **/undo 文件撤销**：write_file 自动快照 + `/undo` / `/undo all` 回滚本次会话修改
-- [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换，子代理同步
-- [x] **技能系统（Agent Skill / SKILL.md）**：自动发现 + 清单注入 + `skill` 工具按需加载 + `/skill` 命令（列出 / find 网络检索 / add 安装），对标 opencode
-- [x] **更多交互命令**：`/compact` 手动压缩上下文 · `/agents` 查看子代理配置 · `/review` 代码审查（typecheck + git diff → LLM）· `/variants` 切换模型思考级别（reasoning_effort）· `/model` 切换/添加模型（config `models` 可配多端点，切换时重建客户端，子代理同步；`/model add <名称> [--base-url] [--api-key]` 运行时添加并持久化到配置文件）· `/status` 会话状态 · `/context` 上下文用量 · `/export` 导出 Markdown · `/config` 查看配置 · `/mcp` 管理 MCP 服务器（reconnect）· `/diff` 查看改动 · `/rename` 会话改名（meta 落盘）· `/resume` 恢复历史会话 · `/redo` 重做撤销 · `/doctor` 环境诊断
-- [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
+- [x] MVP: agent loop + 5 base tools + mock end-to-end tests
+- [x] Context management: tool-result truncation → message summarization → relevant-file selective loading
+- [x] Safety guardrails: dangerous-command confirmation, permission tiers, audit log
+- [x] Eval system: custom task suite + completion-rate report (offline mock is CI-friendly)
+- [x] MCP integration (external tool ecosystem)
+- [x] Subagents and parallel tool execution
+- [x] **Memory system**: global + project memory cascade (`/init` project / `/init --global` global / session-end auto-write with dedup/conflict merging)
+- [x] **Session persistence**: interactive JSONL on disk + `--continue` / `-r <id>` / `-l` cross-process restore
+- [x] **/plan plan mode**: read-only tool filtering + implementation plan output, execute only after confirmation
+- [x] **/undo file undo**: automatic write_file snapshots + `/undo` / `/undo all` rollback for the session
+- [x] **/permission runtime permission switch**: low=read-only / medium=safe ask-on-danger (default) / high=ask everything / full=pass-through — TUI panel + CLI arg instant switching, subagents stay in sync
+- [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection + `skill` tool on-demand loading + `/skill` command (list / find online / add), aligned with opencode
+- [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
+- [ ] Advanced: SWE-bench eval, MCP resources/prompts protocol, memory progressive disclosure/TTL, nested AGENTS.md
 
-## 技术栈
+## Tech Stack
 
-TypeScript strict · ESM（NodeNext）· 裸 openai SDK · @opentui/core（命令式渲染）· 无框架依赖
+TypeScript strict · ESM (NodeNext) · bare openai SDK · @opentui/core (imperative rendering) · zero framework dependencies

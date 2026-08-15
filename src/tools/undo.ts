@@ -71,6 +71,18 @@ export class UndoStack {
   }
 
   /**
+   * 最近一次写入某文件的快照（write_file diff 展示用：取「写入前」内容；
+   * 无记录返回 null）。路径相对 cwd 解析，与 snapshotWrite 同一规范化。
+   */
+  latestFor(filePath: string): UndoEntry | null {
+    const abs = resolvePath(filePath);
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (this.entries[i].path === abs) return this.entries[i];
+    }
+    return null;
+  }
+
+  /**
    * 记录一次写操作前的快照（path 相对 cwd 解析）。
    * 返回 false = 未记录（文件过大 / 是目录 / 读取失败——该文件不支持撤销）。
    * 注意：只有 ENOENT（确实不存在）才记录「新建」；权限错误/目录等其它 stat

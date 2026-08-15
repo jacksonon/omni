@@ -6,6 +6,7 @@
  */
 import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
+import type { WriteDiff } from '../output/format.js';
 
 /** spinner 动画帧（braille 点阵） */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -36,7 +37,7 @@ export type ToolStatus = 'running' | 'ok' | 'err';
 export interface ToolCard {
   id: number;
   name: string;
-  /** 人类可读摘要（如 `$ echo mock-ok`） */
+  /** 人类可读摘要（如 `$ echo mock-ok` / `→ Read 路径`） */
   summary: string;
   status: ToolStatus;
   /** 输出预览行（previewOutput 前 5 行） */
@@ -45,6 +46,10 @@ export interface ToolCard {
   expanded: boolean;
   /** 工具返回的字符数（收起态执行缩略行显示） */
   chars?: number;
+  /** read_file：并行多读合并的路径列表（>1 时标题 `→ Read N files`，展开逐条 ⤷） */
+  paths?: string[];
+  /** write_file 写入前后对比（新增=original null / 修改=左右对比；无对比数据为 null） */
+  diff?: WriteDiff | null;
 }
 
 export interface TuiLine {

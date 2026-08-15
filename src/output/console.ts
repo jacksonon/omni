@@ -16,8 +16,8 @@ import type { ThinkingDisplay } from '../agent/types.js';
 import { createThinkingDisplay } from '../agent/thinking.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import { createSpinner, dim, isTTY, red, yellow, type Spinner } from '../ui.js';
-import { cardBottomLine, cardContentLine, cardSepLine, wrapText } from './format.js';
-import type { Output, TokenUsage } from './types.js';
+import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, isExitCodeZeroLine, wrapText } from './format.js';
+import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
 export interface ConsoleOutputOptions {
   /** 是否展示思考过程（来自配置 showThinking） */
@@ -84,7 +84,7 @@ export class ConsoleOutput implements Output {
     return Math.max(2, cols - 6); // 左缩进 2 + 两侧边框 2×2
   }
 
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void {
+  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, _args?: Record<string, unknown>): void {
     if (!this.opts.stream) return;
     const inner = this.termInner();
     this.boxInner = inner;
@@ -99,7 +99,7 @@ export class ConsoleOutput implements Output {
     }
   }
 
-  onToolResult(ok: boolean, chars: number, preview?: string[]): void {
+  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
     if (!this.opts.stream) return;
     const inner = this.boxInner ?? this.termInner();
     this.boxInner = null;
@@ -114,8 +114,21 @@ export class ConsoleOutput implements Output {
       for (const seg of wrapText(stepCmd, inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
     }
     console.log(`  ${dim(cardContentLine(ok ? `✓ 执行成功 · ${chars} 字符` : '✗ 执行失败', inner))}`);
+    // write_file：改动摘要行（新增 N 行 / 修改 +A −D 行；细节对比见 TUI 卡片展开）
+    if (detail?.diff) {
+      const d = detail.diff;
+      const line =
+        d.original === null
+          ? `新增文件 · 全文 ${d.content.split('\n').length} 行`
+          : (() => {
+              const st = countDiffLines(d.original, d.content);
+              return `修改 · +${st.add} −${st.rem} 行`;
+            })();
+      console.log(`  ${dim(cardContentLine(line, inner))}`);
+    }
     console.log(`  ${dim(cardSepLine(inner))}`);
-    for (const line of preview ?? []) {
+    // 展示层过滤「退出码: 0」行（成功已由 ✓ 传达，用户要求不显示；完整结果仍回传模型）
+    for (const line of (preview ?? []).filter((l) => !isExitCodeZeroLine(l))) {
       for (const seg of wrapText(line, inner - 1)) console.log(`  ${dim(cardContentLine(seg, inner))}`);
     }
     console.log(`  ${cardBottomLine(inner)}`);

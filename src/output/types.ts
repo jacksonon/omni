@@ -10,6 +10,7 @@
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
+import type { WriteDiff } from './format.js';
 
 /** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
 export interface TokenUsage {
@@ -18,6 +19,12 @@ export interface TokenUsage {
   total: number;
   /** 缓存命中 token 数（prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens；网关不支持时缺省） */
   cached?: number;
+}
+
+/** 工具执行完成的展示补充数据（工具卡片 diff 展示用；缺省 undefined = 无补充） */
+export interface ToolResultDetail {
+  /** write_file 写入前后对比（original=null = 本次会话新建文件） */
+  diff?: WriteDiff | null;
 }
 
 export interface Output {
@@ -51,9 +58,15 @@ export interface Output {
   /** 思考内容落盘完成 */
   onThinkingSaved(len: number, file: string | null): void;
   /** 一次工具调用开始（argsPreview 为 formatToolCall 的人类可读摘要，非裸 JSON） */
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string): void;
-  /** 一次工具执行完成（ok=是否成功；preview 为输出前几行，可空） */
-  onToolResult(ok: boolean, chars: number, preview?: string[]): void;
+  onToolStep(
+    step: number,
+    maxSteps: number,
+    name: string,
+    argsPreview: string,
+    args?: Record<string, unknown>
+  ): void;
+  /** 一次工具执行完成（ok=是否成功；preview 为输出前几行，可空；detail 为展示用补充数据） */
+  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void;
   /**
    * 工具调用审批（安全护栏，权限分级需要确认时调用）：返回 true = 允许执行。
    * 实现方负责 UI——console 用 readline 询问、TUI 用审批卡片（y/n 或鼠标左右半区）；

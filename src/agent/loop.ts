@@ -18,7 +18,7 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { formatToolCall, previewOutput } from '../output/format.js';
-import type { Output } from '../output/types.js';
+import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
@@ -373,7 +373,7 @@ export async function runAgent(
             if (!parsed.ok) {
               return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
             }
-            output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args));
+            output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args);
             // 安全护栏过闸：拒绝 → 结果回传模型（自我纠错）；需要审批 → 用户决定
             const gate = await safety.gate(tool, parsed.args);
             let result: string;
@@ -387,8 +387,23 @@ export async function runAgent(
                 result = `执行失败：${err?.message ?? err}`;
               }
             }
-            // 预览只取前几行（终端展示用），完整结果仍回传给模型
-            output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result));
+            // 预览只取前几行（终端展示用），完整结果仍回传给模型；
+            // write_file 附带写入前后对比（original 取自 UndoStack 执行前快照——execute
+            // 前已 snapshotWrite，此处读栈取「写入前」内容；新建文件 original=null）
+            let detail: ToolResultDetail | undefined;
+            if (tool.name === 'write_file') {
+              const snap = opts.undoStack?.latestFor(String(parsed.args.path ?? ''));
+              if (snap) {
+                detail = {
+                  diff: {
+                    path: String(parsed.args.path ?? ''),
+                    original: snap.existed ? snap.content : null,
+                    content: String(parsed.args.content ?? ''),
+                  },
+                };
+              }
+            }
+            output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail);
             return result;
           })
         ),
