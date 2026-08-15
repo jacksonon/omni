@@ -1,13 +1,13 @@
-# omni-cli
+# @rightai/omni
 
 **Omni — Agent 工程**（终端型 AI 编程助手）。
 
-`npm install -g omni-cli` 一条命令安装，自带**全屏 TUI**（原生二进制，npm 按平台自动选择）。
+`npm install -g @rightai/omni` 一条命令安装，自带**全屏 TUI**（原生二进制，npm 按平台自动选择）。
 
 ## 安装
 
 ```bash
-npm install -g omni-cli
+npm install -g @rightai/omni
 ```
 
 支持的平台：macOS（arm64/x64）、Linux（x64/arm64）、Windows（x64）。
@@ -15,9 +15,9 @@ npm install -g omni-cli
 ## 使用
 
 ```bash
-omni-cli "<任务>"      # 单次任务（流式思考 + 工具调用）
-omni-cli               # 交互模式（全屏 TUI，多轮对话）
-omni-cli --help        # 帮助
+omni "<任务>"      # 单次任务（流式思考 + 工具调用）
+omni               # 交互模式（全屏 TUI，多轮对话）
+omni --help        # 帮助
 ```
 
 ## 特性
