@@ -97,8 +97,9 @@ jobs:
           # 版本与根 package.json 同步
           VER=$(node -p "require('./package.json').version")
           node -e "const fs=require('fs');const f='packages/npm/${{ matrix.npmPkg }}/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.VER;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n');" 
-          # 二进制入位
+          # 二进制入位（bin/ 目录为空目录不入 git，checkout 后需重建）
           if [ "${{ runner.os }}" = "Windows" ]; then BIN=release/omni.exe; else BIN=release/omni; fi
+          mkdir -p "packages/npm/${{ matrix.npmPkg }}/bin"
           cp "$BIN" "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
           chmod +x "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
           cd "packages/npm/${{ matrix.npmPkg }}"
