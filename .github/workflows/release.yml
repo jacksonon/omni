@@ -1,5 +1,5 @@
 # Release — 打 tag 自动构建并发布
-# 触发：推送任意 v* tag（如 v0.2.0）→ 构建 → 生成 Release（tgz + 原生二进制）
+# 触发：推送任意 v* tag（如 v0.2.0）→ 三平台矩阵构建 → 生成 Release（tgz + 各平台原生二进制）
 name: Release
 
 on:
@@ -11,8 +11,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: omni-linux-x64
+            musl: '@opentui/core-linux-x64-musl'
+          - os: ubuntu-24.04-arm
+            artifact: omni-linux-arm64
+            musl: '@opentui/core-linux-arm64-musl'
+          - os: macos-15
+            artifact: omni-darwin-arm64
+          - os: macos-15-intel
+            artifact: omni-darwin-x64
+          - os: windows-latest
+            artifact: omni-win32-x64.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,33 +47,68 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck + build (dist/omni.cjs)
+      - name: Install musl variants (linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # bun 静态解析 @opentui/core 的 chunk-bun 按 libc 分支的 import：
+          # 需同时提供 gnu + musl 原生包，否则编译报 Could not resolve musl。
+          # npm 默认拒绝跨 libc 安装，用 --force --no-save 绕过（不影响 package.json/lock）。
+          MUSL_VER=$(node -p "require('./node_modules/@opentui/core/package.json').version")
+          npm i --force --no-save "${{ matrix.musl }}@${MUSL_VER}"
+
+      - name: Typecheck + build console bundle (linux-x64 only)
+        if: matrix.artifact == 'omni-linux-x64'
+        shell: bash
         run: npm run build
 
       - name: Compile native binary (release/omni)
-        run: |
-          # bun 静态解析 @opentui/core 的 chunk-bun 按 libc 分支的 import：
-          # 需同时提供 gnu + musl 原生包，否则 linux 下编译报 Could not resolve musl。
-          # npm 默认拒绝跨 libc 安装，用 --force --no-save 绕过（不影响 package.json/lock）。
-          MUSL_VER=$(node -p "require('./node_modules/@opentui/core/package.json').version")
-          npm i --force --no-save "@opentui/core-linux-x64-musl@${MUSL_VER}"
-          npm run compile
+        shell: bash
+        run: npm run compile
 
-      - name: Verify artifacts
+      - name: Verify artifact + rename
+        shell: bash
         run: |
-          test -s dist/omni.cjs && echo "dist/omni.cjs OK ($(wc -c < dist/omni.cjs) bytes)"
-          test -x release/omni && echo "release/omni OK ($(wc -c < release/omni) bytes)"
-          cp release/omni omni-linux-x64
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=release/omni.exe
+          else
+            BIN=release/omni
+          fi
+          test -s "$BIN" && echo "$BIN OK ($(wc -c < "$BIN") bytes)"
+          cp "$BIN" "${{ matrix.artifact }}"
 
-      - name: npm pack (omni-<version>.tgz)
+      - name: npm pack (omni-<version>.tgz, linux-x64 only)
+        if: matrix.artifact == 'omni-linux-x64'
+        shell: bash
         run: |
           mkdir -p dist-pkg
           npm pack --pack-destination ./dist-pkg
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            dist-pkg/*.tgz
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-assets
+          merge-multiple: true
+
+      - name: Verify artifacts
+        run: |
+          ls -la ./release-assets
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist-pkg/*.tgz
-            omni-linux-x64
+          files: ./release-assets/**
           generate_release_notes: true
