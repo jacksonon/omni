@@ -1,5 +1,5 @@
 {
-  "name": "@omnicode/win32-x64",
+  "name": "@agentomni/win32-x64",
   "version": "0.5.3",
   "description": "omnicode 原生二进制（Windows x64，含 TUI）",
   "license": "MIT",
