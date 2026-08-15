@@ -1,0 +1,10 @@
+# 各平台原生二进制（发布时由 CI/脚本编译或下载装入，不入库）
+*/bin/omnicode
+*/bin/omnicode.exe
+
+# gh release download 下载的临时二进制
+omni-darwin-*
+omni-linux-*
+omni-win32-*
+
+*.tgz

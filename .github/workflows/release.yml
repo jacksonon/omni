@@ -1,5 +1,6 @@
 # Release — 打 tag 自动构建并发布
-# 触发：推送任意 v* tag（如 v0.2.0）→ 三平台矩阵构建 → 生成 Release（tgz + 各平台原生二进制）
+# 触发：推送任意 v* tag → 三平台矩阵构建 → 生成 GitHub Release（tgz + 各平台原生二进制）
+#      + npm 自动发布（omnicode 主包 + 5 平台子包，需仓库配置 NPM_TOKEN secret）
 name: Release
 
 on:
@@ -19,15 +20,25 @@ jobs:
           - os: ubuntu-latest
             artifact: omni-linux-x64
             musl: '@opentui/core-linux-x64-musl'
+            npmPkg: omnicode-linux-x64
+            binName: omnicode
           - os: ubuntu-24.04-arm
             artifact: omni-linux-arm64
             musl: '@opentui/core-linux-arm64-musl'
+            npmPkg: omnicode-linux-arm64
+            binName: omnicode
           - os: macos-15
             artifact: omni-darwin-arm64
+            npmPkg: omnicode-darwin-arm64
+            binName: omnicode
           - os: macos-15-intel
             artifact: omni-darwin-x64
+            npmPkg: omnicode-darwin-x64
+            binName: omnicode
           - os: windows-latest
             artifact: omni-win32-x64.exe
+            npmPkg: omnicode-win32-x64
+            binName: omnicode.exe
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -37,6 +48,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Setup Bun
@@ -77,6 +89,21 @@ jobs:
           test -s "$BIN" && echo "$BIN OK ($(wc -c < "$BIN") bytes)"
           cp "$BIN" "${{ matrix.artifact }}"
 
+      - name: Publish platform package to npm (${{ matrix.npmPkg }})
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # 版本与根 package.json 同步
+          VER=$(node -p "require('./package.json').version")
+          node -e "const fs=require('fs');const f='packages/npm/${{ matrix.npmPkg }}/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.VER;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n');" 
+          # 二进制入位
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=release/omni.exe; else BIN=release/omni; fi
+          cp "$BIN" "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
+          chmod +x "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
+          cd "packages/npm/${{ matrix.npmPkg }}"
+          npm publish --registry=https://registry.npmjs.org --access public
+
       - name: npm pack (omni-<version>.tgz, linux-x64 only)
         if: matrix.artifact == 'omni-linux-x64'
         shell: bash
@@ -97,6 +124,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -106,6 +142,23 @@ jobs:
       - name: Verify artifacts
         run: |
           ls -la ./release-assets
+
+      - name: Publish main package to npm (omnicode)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # 版本 + optionalDependencies 与根 package.json 同步（须在所有平台子包发布成功后）
+          VER=$(node -p "require('./package.json').version")
+          node -e "
+            const fs=require('fs');
+            const f='packages/npm/omnicode/package.json';
+            const p=JSON.parse(fs.readFileSync(f));
+            p.version=process.env.VER;
+            for (const k of Object.keys(p.optionalDependencies)) p.optionalDependencies[k]=process.env.VER;
+            fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n');
+          "
+          cd packages/npm/omnicode
+          npm publish --registry=https://registry.npmjs.org --access public
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

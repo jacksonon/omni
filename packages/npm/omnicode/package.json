@@ -1,0 +1,30 @@
+{
+  "name": "omnicode",
+  "version": "0.5.1",
+  "description": "Omni — Agent 工程（终端型 AI 编程助手）：流式 Agent 主循环 + 6 基础工具 + 安全护栏 + 上下文管理 + 记忆/会话/技能 + 全屏 TUI",
+  "license": "MIT",
+  "bin": {
+    "omnicode": "bin/omnicode.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "omnicode-darwin-arm64": "0.5.1",
+    "omnicode-darwin-x64": "0.5.1",
+    "omnicode-linux-x64": "0.5.1",
+    "omnicode-linux-arm64": "0.5.1",
+    "omnicode-win32-x64": "0.5.1"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "cli",
+    "coding-assistant",
+    "terminal",
+    "tui"
+  ]
+}

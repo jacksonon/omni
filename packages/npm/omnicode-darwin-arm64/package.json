@@ -1,0 +1,9 @@
+{
+  "name": "omnicode-darwin-arm64",
+  "version": "0.5.1",
+  "description": "omnicode 原生二进制（macOS arm64，含 TUI）",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/"]
+}
