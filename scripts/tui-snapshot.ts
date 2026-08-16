@@ -5038,16 +5038,52 @@ async function main(): Promise<void> {
       s45.ask = null; // 模拟 TuiOutput 的 resolver（真实链路里它清 ask + 播放下一条）
     };
     const t45 = await createTestRenderer({ width: 80, height: 24 });
-    mountTree(t45.renderer, s45, { withInput: true });
-    const tree45 = t45.renderer as unknown as { root: { onKeyPress: (k: unknown) => void } };
+    const tree45 = mountTree(t45.renderer, s45, { withInput: true });
     // 直接调 render.ts 导出的按键处理（快照复用真实代码路径——与 startTui 注册的同一函数）
     const { onAskKeyPress } = await import('../src/tui/render.js');
     const key45 = (name: string) => ({ name, preventDefault: () => {} }) as never;
-    onAskKeyPress(key45('a'), s45, tree45 as never, () => {});
+    onAskKeyPress(key45('a'), s45, tree45, () => {});
     if ((resolved as { choice: string } | null)?.choice !== '一' || s45.ask !== null) {
       console.error(`✗ 场景 45 字母 a 未选中选项: ${JSON.stringify(resolved)}`);
       process.exit(1);
     }
+    // 数字键 1-6：输入框空时按 2 → 选项二（与 A-D 标签对应，自定义输入可避开头数字）
+    s45.ask = { question: 'q', options: ['一', '二', '三'] };
+    resolved = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null;
+    };
+    onAskKeyPress(key45('2'), s45, tree45, () => {});
+    if ((resolved as { choice: string } | null)?.choice !== '二') {
+      console.error(`✗ 场景 45 数字键 2 未选选项二: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 输入框有内容 = 自定义输入中：a-d/数字键放行（打字优先——自定义文本里的 a/b/c/d
+    // 不被选项键吞掉，「无法键入消息」修复）；放行 = 不 resolve + 不 preventDefault
+    //（字符插入由 OpenTUI 输入框处理，快照只验证按键层不消费）
+    s45.ask = { question: 'q', options: ['一', '二', '三'] };
+    resolved = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null;
+    };
+    tree45.input!.setText('x');
+    let prevented = false;
+    const key45b = (name: string) => ({ name, preventDefault: () => { prevented = true; } }) as never;
+    onAskKeyPress(key45b('a'), s45, tree45, () => {});
+    onAskKeyPress(key45b('d'), s45, tree45, () => {});
+    if (resolved !== 'pending' || !s45.ask || prevented) {
+      console.error(`✗ 场景 45 输入框有内容时 a-d 应放行（不消费不 resolve）: ${JSON.stringify({ resolved, ask: s45.ask, prevented })}`);
+      process.exit(1);
+    }
+    // 输入框有内容时 Esc 仍消费（取消提问 ≠ 取消运行）
+    onAskKeyPress(key45b('escape'), s45, tree45, () => {});
+    if (resolved !== null || !s45.askKeyJustConsumed) {
+      console.error(`✗ 场景 45 输入框有内容时 Esc 应取消提问: ${JSON.stringify({ resolved, consumed: s45.askKeyJustConsumed })}`);
+      process.exit(1);
+    }
+    tree45.input!.setText('');
     // 重新打开 + Esc 取消
     s45.ask = { question: 'q2', options: ['x', 'y'] };
     resolved = 'pending';

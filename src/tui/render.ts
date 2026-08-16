@@ -1303,17 +1303,26 @@ export function handleTuiMouseEvent(
 
 /**
  * ask_user 提问面板按键（导出供快照复用同一真实代码路径；startTui 注册）：
- * A-D 字母选对应选项、Esc 取消（置 askKeyJustConsumed——interactive 据此跳过
- * 取消运行）；面板未打开时无操作。消费的按键 preventDefault（不进入输入框）。
+ * 输入框为空时 **A-D 字母或 1-6 数字**选对应选项、Esc 取消（置 askKeyJustConsumed——
+ * interactive 据此跳过取消运行）；**输入框有内容 = 用户正在输入自定义答案——字母/
+ * 数字键全部放行**（不拦截，否则自定义文本里的 a/b/c/d 或数字会被选项键吞掉）。
+ * 消费的按键 preventDefault（不进入输入框）。
  */
 export function onAskKeyPress(
   key: TuiKey,
   state: TuiState,
-  _tree: TuiTree,
+  tree: TuiTree,
   paint: () => void
 ): void {
   if (!state.ask) return;
-  const idx = /^[a-z]$/i.test(key.name ?? '') ? key.name!.toLowerCase().charCodeAt(0) - 97 : -1;
+  // 输入框有内容：字母/数字键放行给输入框（自定义输入优先——选项键只对空输入框生效）
+  if (tree?.input && tree.input.plainText.length > 0 && /^[a-z0-9]$/i.test(key.name ?? '')) {
+    return;
+  }
+  const n = key.name ?? '';
+  let idx = -1;
+  if (/^[a-z]$/i.test(n)) idx = n.toLowerCase().charCodeAt(0) - 97;
+  else if (/^[1-6]$/.test(n)) idx = Number(n) - 1; // 数字键 1-6 与 A-F 标签对应（1=A）
   if (idx >= 0 && idx < state.ask.options.length) {
     state.askResolve?.({ choice: state.ask.options[idx]!, custom: false });
     key.preventDefault();
