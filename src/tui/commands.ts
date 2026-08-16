@@ -48,10 +48,11 @@ import type { McpServerConfig } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
 import { parseModelAddArgs, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
-import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS } from './layout.js';
+import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
 import { setTerminalTitle } from '../ui.js';
 import { openCmdPanel, pushCmdLine, type StatuslinePanel, type TuiState, type TuiThemeMode } from './state.js';
+import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
 
 /** 命令执行上下文（interactive.ts 组装） */
 export interface TuiCommandContext {
@@ -135,6 +136,8 @@ export type TuiCommandResult = 'exit' | void;
 export interface TuiCommand {
   name: string;
   description: string;
+  /** 英文描述（/settings 语言切换后联想列表按界面语言取 description/descriptionEn） */
+  descriptionEn?: string;
   /** 额外别名（如 /quit） */
   aliases?: string[];
   /**
@@ -204,16 +207,19 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'theme',
     description: '切换主题（亮色 / 深色 / 跟随系统）',
+    descriptionEn: 'Switch theme (light / dark / system)',
     run: (ctx) => openThemeMenu(ctx.state),
   },
   {
     name: 'permission',
     description: '切换安全权限（低=只读 / 中=标准 / 高=谨慎 / 全量=直通）',
+    descriptionEn: 'Switch security level (read / safe / ask / full)',
     run: (ctx) => openPermissionMenu(ctx.state),
   },
   {
     name: 'plan',
     description: '切换计划模式（只读调研，不修改文件）',
+    descriptionEn: 'Toggle plan mode (read-only research)',
     run: (ctx) => {
       // 会话级开关：只对模型暴露只读工具（read_file/list_directory/search_code）+ 系统提示
       // 追加只读说明（loop 读 runOpts.planMode；interactive 每轮从 state 同步）。
@@ -224,6 +230,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'thinking',
     description: '展开 / 折叠全部思考过程',
+    descriptionEn: 'Expand / collapse all thinking',
     run: (ctx) => {
       // 全局开关：buildBody 渲染时读取——展开=每个思考段落显示 `- thinking` 头行
       // （含思考时间）+ 内容（默认）；折叠=每个段落压成一行 `+ thinking`。
@@ -238,6 +245,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'tokens',
     description: '显示 / 隐藏当次 token 使用统计（输入/输出/缓存，点击展开逐次明细）',
+    descriptionEn: 'Show / hide per-turn token usage (click to expand)',
     run: (ctx) => {
       // 会话级开关：buildBody 渲染时按 showTokens 过滤 tokens 行——关闭后历史与新轮的
       // 统计都不显示（数据保留在 state.lines，重新打开即恢复）；onTurnEnd 仍收集数据。
@@ -249,25 +257,13 @@ export const TUI_COMMANDS: TuiCommand[] = [
     name: 'exit',
     aliases: ['quit'],
     description: '退出 TUI',
+    descriptionEn: 'Quit TUI',
     run: () => 'exit', // 返回信号：interactive.ts break 循环，tui-entry 的 finally 统一 stop 会话
-  },
-  {
-    name: 'stop',
-    description: '停止当前正在进行的对话（运行中输入 /stop 同样生效；排队消息保留）',
-    autoClose: true, // 动作 + 确认：执行完自动收起（无需按 Esc）
-    run: (ctx) => {
-      if (ctx.state.running) {
-        ctx.state.cancelRun?.(); // abort 当前流式响应（loop 优雅结束本轮）
-        ctx.out.cancelVisuals?.(); // 立即停右侧 loading + 状态栏 spinner/文案（同 Esc 取消）
-        pushCmdLine(ctx.state, '已请求停止当前对话（运行中提交的排队消息将按序继续执行）', '/stop');
-      } else {
-        pushCmdLine(ctx.state, '当前没有运行中的任务', '/stop');
-      }
-    },
   },
   {
     name: 'clear',
     description: '清空对话上下文',
+    descriptionEn: 'Clear conversation context',
     run: (ctx) => {
       ctx.messages.length = 0;
       ctx.out.clearScrollback();
@@ -276,6 +272,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'undo',
     description: '撤销本次会话的 write_file 修改（all = 全部撤销）',
+    descriptionEn: 'Undo write_file changes (all = undo all)',
     autoClose: true,
     run: async (ctx) => {
       // /undo：pop 最近一次写操作快照并恢复文件（新建文件则删除）；
@@ -311,6 +308,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'init',
     description: '扫描项目并生成 AGENTS.md 项目记忆文件（--global 生成全局记忆）',
+    descriptionEn: 'Generate AGENTS.md project memory (--global for global)',
     autoClose: true,
     run: async (ctx) => {
       // /init：定位项目根 → 扫描结构 → LLM 生成 AGENTS.md → 写入（已存在不覆盖）
@@ -363,6 +361,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'skill',
     description: '技能管理：列出已发现 / find <词> 网络检索 / add <repo> [--skill <名>] 安装',
+    descriptionEn: 'Skill manager: list / find <query> / add <repo> [--skill <name>]',
     run: async (ctx) => {
       // /skill：列出已发现的技能（.opencode/.claude/.agents/skills 下的 SKILL.md）；
       // /skill find <query>：走 npx skills find 网络检索 skills.sh（安装提示随结果输出）；
@@ -455,6 +454,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'compact',
     description: '手动压缩上下文（把旧消息合并为摘要，保留最近几轮原文）',
+    descriptionEn: 'Compress context manually (summarize old messages)',
     autoClose: true,
     run: async (ctx) => {
       // /compact：手动触发长对话摘要压缩——把旧消息压成一条 system 摘要（保留最近
@@ -483,6 +483,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'agents',
     description: '查看子代理配置（模型 / 步骤上限 / 可用工具）',
+    descriptionEn: 'View subagent config (model / max steps / tools)',
     run: (ctx) => {
       // /agents：展示当前子代理（delegate）配置——是否启用、模型、步骤上限、
       // 子代理可用工具。只读查看，不改变任何配置。
@@ -502,6 +503,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'review',
     description: '审查代码改动（typecheck + git diff → LLM 审查）',
+    descriptionEn: 'Review code changes (typecheck + git diff → LLM)',
     run: async (ctx) => {
       // /review：对工作区改动做代码审查——先跑 typecheck（项目自带脚本），
       // 再收集 git diff，喂给一次独立 LLM 调用输出问题与建议（不进入 messages 历史）。
@@ -544,29 +546,37 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'variants',
     description: '切换模型思考级别（reasoning_effort；选项来自配置 reasoningEffortOptions）',
+    descriptionEn: 'Switch reasoning effort (options from config)',
     run: (ctx) => openVariantsMenu(ctx.state),
   },
   {
     name: 'settings',
-    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · Enter 保存生效）',
+    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · Enter 保存生效；/settings language 切换界面语言）',
+    descriptionEn: 'Settings (/settings statusline · /settings language)',
     run: (ctx) => {
       // /settings：列出可用设置项（面板选择后打开对应设置编辑器）；
-      // /settings statusline：直接打开底部状态行编辑器（多选 + 排序面板）
+      // /settings statusline：直接打开底部状态行编辑器（多选 + 排序面板）；
+      // /settings language：直接打开语言面板
       const args = (ctx.args ?? '').trim();
       if (/^statusline(?:\s|$)/.test(args)) {
         openStatuslinePanel(ctx.state);
+        return;
+      }
+      if (/^language(?:\s|$)/.test(args)) {
+        openLanguageMenu(ctx.state);
         return;
       }
       if (!args) {
         openSettingsMenu(ctx.state);
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：statusline 底部状态行）` });
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：statusline 底部状态行 · language 界面语言）` });
     },
   },
   {
     name: 'model',
     description: '切换/添加模型（/model 面板 · /model <名称> 切换 · /model add <名称> [--base-url] [--api-key] [--user-agent] 添加并持久化）',
+    descriptionEn: 'Switch/add model (/model panel · /model <name> · /model add <name> [...])',
     autoClose: true, // 面板路径空输出自动收起；add/<名称> 切换为动作 → 执行完自动收起
     run: (ctx) => {
       // /model：打开切换面板（↑↓/数字 + Enter）
@@ -621,6 +631,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'status',
     description: '查看当前会话状态（模型/权限/token/会话）',
+    descriptionEn: 'View session status (model/permission/tokens/session)',
     run: (ctx) => {
       for (const line of statusReport({
         model: ctx.model ?? ctx.state.model,
@@ -636,6 +647,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'context',
     description: '查看上下文用量（消息数/token 估算/已加载脚手架）',
+    descriptionEn: 'View context usage (messages/token estimate/scaffolds)',
     run: (ctx) => {
       const summarizeAt = ctx.cfg?.summarizeAt ?? 40;
       for (const line of contextReport(ctx.messages, summarizeAt)) pushCmdLine(ctx.state, { kind: 'meta', text: line });
@@ -644,6 +656,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'export',
     description: '把当前会话导出为 Markdown 文件（.omni/）',
+    descriptionEn: 'Export session to Markdown (.omni/)',
     autoClose: true,
     run: (ctx) => {
       const file = exportSession(ctx.messages, process.cwd());
@@ -656,6 +669,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'config',
     description: '查看/打开配置文件（TUI 下只显示路径，外部编辑后重启生效）',
+    descriptionEn: 'View config files (paths; edit externally, restart to apply)',
     run: (ctx) => {
       if (!ctx.cfg) {
         pushCmdLine(ctx.state, { kind: 'warn', text: '配置信息不可用' });
@@ -672,6 +686,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'mcp',
     description: '管理 MCP 服务器（列出已发现工具 / reconnect 重连）',
+    descriptionEn: 'Manage MCP servers (list tools / reconnect)',
     run: async (ctx) => {
       const servers = ctx.mcpServers ?? {};
       const names = Object.keys(servers);
@@ -708,6 +723,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'diff',
     description: '查看最近修改（git diff 未提交改动）',
+    descriptionEn: 'View uncommitted changes (git diff)',
     run: async (ctx) => {
       pushCmdLine(ctx.state, { kind: 'meta', text: '正在收集 git diff…' });
       await ctx.session.paint().catch(() => {});
@@ -729,6 +745,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'rename',
     description: '重命名会话标题（/rename <标题>，显示为终端窗口标题）',
+    descriptionEn: 'Rename session title (/rename <title>)',
     autoClose: true,
     run: (ctx) => {
       const title = (ctx.args ?? '').trim();
@@ -749,6 +766,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'resume',
     description: '恢复历史会话（无参列出 / resume <id> 恢复）',
+    descriptionEn: 'Resume a past session (no arg: list / resume <id>)',
     run: async (ctx) => {
       const id = (ctx.args ?? '').trim();
       if (!id) {
@@ -784,6 +802,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'session',
     description: '会话管理：列出/继续当前目录的历史会话（/session all 全部 · /session <id> 直接继续）',
+    descriptionEn: 'Session manager: list/continue sessions in cwd (/session all · <id>)',
     run: async (ctx) => {
       const arg = (ctx.args ?? '').trim();
       // /session <id>：加载历史会话并继续（支持 id 前缀匹配；ctx.onResume 由 interactive 组装：
@@ -838,6 +857,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'redo',
     description: '重做上次撤销（all = 全部重做）',
+    descriptionEn: 'Redo last undo (all = redo all)',
     autoClose: true,
     run: async (ctx) => {
       const stack = ctx.undoStack;
@@ -866,6 +886,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'doctor',
     description: '环境诊断（Node/Bun/API 连通性/配置健康检查）',
+    descriptionEn: 'Environment diagnostics (Node/Bun/API/config)',
     run: async (ctx) => {
       if (!ctx.cfg) {
         pushCmdLine(ctx.state, { kind: 'warn', text: '配置信息不可用' });
@@ -879,7 +900,16 @@ export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'help',
     description: '显示帮助',
-    run: (ctx) => ctx.out.showHelp(),
+    descriptionEn: 'Show help',
+    // 帮助文本输出到**命令面板**（独立窗口，不混进对话流——用户要求所有命令输出
+    // 弹窗展示；runCommand 已打开 /help 面板，这里只追加内容，按界面语言本地化）
+    run: (ctx) => {
+      const lang = ctx.state.language;
+      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.intro') }, '/help');
+      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.commands') }, '/help');
+      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/help');
+      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.more') }, '/help');
+    },
   },
 ];
 
@@ -919,6 +949,12 @@ export const PERMISSION_OPTIONS: { label: string; value: PermissionTier }[] = [
   { label: '全量（直通）', value: 'full' },
 ];
 
+/** 菜单选项 label 按界面语言取（value 对应 i18n key `menu.<kind>.<value>`；无对应 key 回退原 label） */
+function menuLabel(state: TuiState, kind: string, opt: { label: string; value: string }): string {
+  const s = t(state.language, `menu.${kind}.${opt.value}`);
+  return s === `menu.${kind}.${opt.value}` ? opt.label : s;
+}
+
 /** 打开主题面板：高亮当前生效项，供 ↑/↓/数字 + Enter/Esc 操作 */
 export function openThemeMenu(state: TuiState): void {
   // 面板是绝对定位浮层（menuOverlay），不依赖内容滚动位置，无需调整 scrollTop
@@ -929,12 +965,12 @@ export function openThemeMenu(state: TuiState): void {
   );
   state.menu = {
     id: 'theme',
-    title: '主题',
-    options: THEME_OPTIONS,
+    title: t(state.language, 'menu.theme.title'),
+    options: THEME_OPTIONS.map((o) => ({ label: menuLabel(state, 'theme', o), value: o.value })),
     selectedIndex: idx,
     currentValue: current,
   };
-  state.status = '主题：↑/↓ 或数字选择 · Enter 确认 · Esc 取消';
+  state.status = t(state.language, 'menu.theme.status');
 }
 
 /**
@@ -979,12 +1015,12 @@ export function openPermissionMenu(state: TuiState): void {
   const idx = Math.max(0, PERMISSION_OPTIONS.findIndex((o) => o.value === current));
   state.menu = {
     id: 'permission',
-    title: '安全权限',
-    options: PERMISSION_OPTIONS,
+    title: t(state.language, 'menu.permission.title'),
+    options: PERMISSION_OPTIONS.map((o) => ({ label: menuLabel(state, 'permission', o), value: o.value })),
     selectedIndex: idx,
     currentValue: current,
   };
-  state.status = '安全权限：↑/↓ 或数字选择 · Enter 确认 · Esc 取消';
+  state.status = t(state.language, 'menu.permission.status');
 }
 
 /**
@@ -1015,7 +1051,7 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
   }
   state.menu = {
     id: 'session',
-    title: '会话（当前目录）',
+    title: t(state.language, 'menu.session.title'),
     options: shown.map((s) => ({
       label: `${s.title || s.id.slice(0, 16)} · ${s.messages} 条 · ${s.model}`,
       value: s.id,
@@ -1023,7 +1059,7 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
     selectedIndex: 0,
     currentValue: '',
   };
-  state.status = '会话：↑/↓ 或数字选择 · Enter 恢复 · Esc 取消（/session <id> 直接继续）';
+  state.status = t(state.language, 'menu.session.status');
 }
 
 /** 打开模型切换面板（/model）：列出可用模型，高亮当前；↑/↓/数字 + Enter/Esc 操作 */
@@ -1036,12 +1072,12 @@ export function openModelMenu(state: TuiState, models: string[] = state.models):
   const idx = Math.max(0, options.findIndex((o) => o.value === current));
   state.menu = {
     id: 'model',
-    title: '模型',
+    title: t(state.language, 'menu.model.title'),
     options,
     selectedIndex: idx,
     currentValue: current,
   };
-  state.status = '模型：↑/↓ 或数字选择 · Enter 确认 · Esc 取消';
+  state.status = t(state.language, 'menu.model.status');
 }
 
 /** 打开思考级别面板（/variants）：高亮当前级别，供 ↑/↓/数字 + Enter/Esc 操作 */
@@ -1054,24 +1090,39 @@ export function openVariantsMenu(state: TuiState): void {
   const idx = Math.max(0, options.findIndex((o) => o.value === current));
   state.menu = {
     id: 'variants',
-    title: '思考级别',
+    title: t(state.language, 'menu.variants.title'),
     options,
     selectedIndex: idx,
     currentValue: current,
   };
-  state.status = '思考级别：↑/↓ 或数字选择 · Enter 确认 · Esc 取消';
+  state.status = t(state.language, 'menu.variants.status');
 }
 
-/** 打开设置菜单（/settings）：列出可用设置项（当前只有 statusline），选择后打开对应编辑器 */
+/** 打开设置菜单（/settings）：列出可用设置项，选择后打开对应编辑器 */
 export function openSettingsMenu(state: TuiState): void {
   state.menu = {
     id: 'settings',
-    title: '设置',
-    options: [{ label: '状态行（底部对话信息）', value: 'statusline' }],
+    title: t(state.language, 'menu.settings.title'),
+    options: [
+      { label: t(state.language, 'settings.statusline'), value: 'statusline' },
+      { label: t(state.language, 'settings.language'), value: 'language' },
+    ],
     selectedIndex: 0,
     currentValue: '',
   };
-  state.status = '设置：↑/↓ 选择 · Enter 打开 · Esc 取消（/settings <名称> 直接进入）';
+  state.status = t(state.language, 'menu.settings.status');
+}
+
+/** 打开语言面板（/settings language 或设置菜单选择语言）：中文 / English，Enter 确认即切换 */
+export function openLanguageMenu(state: TuiState): void {
+  state.menu = {
+    id: 'language',
+    title: t(state.language, 'menu.language.title'),
+    options: TUI_LANGS.map((lg) => ({ label: TUI_LANG_LABELS[lg], value: lg })),
+    selectedIndex: Math.max(0, TUI_LANGS.indexOf(state.language)),
+    currentValue: state.language,
+  };
+  state.status = t(state.language, 'menu.language.status');
 }
 
 /**
@@ -1081,11 +1132,18 @@ export function openSettingsMenu(state: TuiState): void {
  */
 export function openStatuslinePanel(state: TuiState): void {
   const order = state.statusline && state.statusline.length > 0 ? state.statusline : STATUSLINE_DEFAULT;
+  const en = state.language === 'en';
   state.settingsPanel = {
-    items: STATUSLINE_SEGMENTS.map((sg) => ({ id: sg.id, label: sg.label, enabled: order.includes(sg.id) })),
+    items: STATUSLINE_SEGMENTS.map((sg) => ({
+      id: sg.id,
+      label: en ? sg.labelEn : sg.label,
+      enabled: order.includes(sg.id),
+    })),
     selected: 0,
   };
-  state.status = '状态行：空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消';
+  state.status = en
+    ? 'Status line: Space toggle · ←/→ reorder · Enter save · Esc cancel'
+    : '状态行：空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消';
 }
 
 /** 交换数组中两个下标（状态行排序用） */
@@ -1154,13 +1212,16 @@ export function saveStatusline(state: TuiState): void {
   state.statuslineSave = [...state.statusline]; // 待落盘意图（interactive 消费）
   state.settingsPanel = null;
   state.status = '';
+  const en = state.language === 'en';
   if (state.statusline.length === 0) {
-    pushCmdLine(state, { kind: 'meta', text: '已保存状态行（全部段已取消 → 底部不显示统计信息）' }, '/settings statusline');
+    pushCmdLine(state, { kind: 'meta', text: en ? 'Status line saved (all segments off → hidden)' : '已保存状态行（全部段已取消 → 底部不显示统计信息）' }, '/settings statusline');
   } else {
     const labels = state.statusline
-      .map((id) => STATUSLINE_SEGMENTS.find((sg) => sg.id === id)?.label ?? id)
+      .map((id) => STATUSLINE_SEGMENTS.find((sg) => sg.id === id))
+      .filter((sg): sg is StatuslineSegment => !!sg)
+      .map((sg) => (en ? sg.labelEn : sg.label))
       .join(' · ');
-    pushCmdLine(state, { kind: 'meta', text: `已保存状态行（${state.statusline.length} 项）：${labels}` }, '/settings statusline');
+    pushCmdLine(state, { kind: 'meta', text: en ? `Status line saved (${state.statusline.length} items): ${labels}` : `已保存状态行（${state.statusline.length} 项）：${labels}` }, '/settings statusline');
   }
 }
 
@@ -1176,33 +1237,50 @@ function confirmMenu(state: TuiState): void {
   if (!menu) return;
   const opt = menu.options[menu.selectedIndex];
   const label = opt.label;
+  const lang = state.language;
   if (menu.id === 'theme') {
     state.themeMode = opt.value as TuiThemeMode;
-    pushCmdLine(state, { kind: 'meta', text: `已切换主题 → ${label}` }, '/theme');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.theme', { label }) }, '/theme');
   } else if (menu.id === 'permission') {
     // 切换权限档位：interactive 每轮把 state.permission 同步进 runOpts.permission
     // 并 setTier 到共用闸门（子代理同步）；meta 提示当前档位语义
     state.permission = opt.value as PermissionTier;
-    pushCmdLine(state, { kind: 'meta', text: `已切换安全权限 → ${label}` }, '/permission');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.permission', { label }) }, '/permission');
   } else if (menu.id === 'variants') {
     // 切换思考级别：interactive 每轮把 state.reasoningEffort 同步进 runOpts.reasoningEffort
     // （loop 请求带 reasoning_effort 参数；网关不认自动回退不带）
     state.reasoningEffort = opt.value;
-    pushCmdLine(state, { kind: 'meta', text: `已切换思考级别 → ${label}` }, '/variants');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.variants', { label }) }, '/variants');
   } else if (menu.id === 'model') {
     // 切换模型：交给 interactive 的 switchModel 回调（重建 client + 更新 modelRuntime）。
     // confirmMenu 是纯 state 操作拿不到回调——这里只记录意图，interactive 每轮
     // 对比 state.model 与运行时模型，变了才真正切换（见 interactive.ts syncModel）。
     state.model = opt.value;
-    pushCmdLine(state, { kind: 'meta', text: `已切换模型 → ${label}` }, '/model');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.model', { label }) }, '/model');
   } else if (menu.id === 'session') {
     // 恢复会话：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
     // （state.sessionPick = 会话 id），interactive 每轮异步加载并恢复（见 interactive.ts）。
     state.sessionPick = opt.value;
-    pushCmdLine(state, { kind: 'meta', text: `已选择会话 → ${label}（加载中…）` }, '/session');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.session', { label }) }, '/session');
   } else if (menu.id === 'settings') {
     // 设置菜单：选择后打开对应设置编辑器（纯 state 操作，直接转换——statusline 面板）
     if (opt.value === 'statusline') openStatuslinePanel(state);
+    else if (opt.value === 'language') openLanguageMenu(state);
+    // 语言面板已接管（menu 指向新面板，旧 settings 菜单不再关闭——返回避免误关）
+    if (state.menu === menu) return;
+    state.menu = null;
+    state.status = '';
+    return;
+  } else if (menu.id === 'language') {
+    // 切换界面语言：立即生效（state.language 驱动全部界面 chrome 重绘），
+    // 记录待持久化意图（interactive 每轮写入配置文件 language 字段）
+    const next = opt.value === 'zh' || opt.value === 'en' ? opt.value : 'zh';
+    state.language = next;
+    state.languageSave = next;
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.language', { label }) }, '/settings language');
+    state.menu = null;
+    state.status = '';
+    return;
   }
   state.menu = null;
   // 设置编辑器已接管状态栏提示（openStatuslinePanel 设置了操作说明），不再清空；

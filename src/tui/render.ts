@@ -32,7 +32,7 @@
  * 灰块 = 圆角边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4）。模型行（**左对齐**
  * ——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
- *（插入最前，打断当前回合优先执行）；/stop 停止当前对话。待发送小视图显示在**灰色块正上方**
+ *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
  *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/⚡）；
  * 可 ↑/↓ 选中、←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc/继续输入退出。
  * 发送/取消按钮已移除（TUI 无点击交互）。
@@ -58,6 +58,7 @@ import {
 import type { RenderContext } from '@opentui/core';
 import { commandSuggestions, findCommand } from './commands.js';
 import { logCrash } from './crashlog.js';
+import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
@@ -240,7 +241,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     input = new TextareaRenderable(ctx, {
       // 占位符必须单行内放得下：多行输入框高度预算按 inputLines（内容行数）计算，
       // 占位符若折行会让输入框实际高度超预算、把内容区挤出（见 computeRows 注释）。
-      placeholder: '输入消息，Enter 发送；Shift+Enter 换行',
+      placeholder: t(state.language, 'input.placeholder'), // mount 时按当前语言取（切语言后重启生效，见 AGENTS.md 第一百一十五次）
       minHeight: 1,
       maxHeight: 5,
       flexGrow: 1,
@@ -271,7 +272,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     contentCol.add(input);
 
     // 模型行（输入框下方，灰色块内，**左对齐**——用户要求从右侧移到左侧显示）：
-    // 模型 + 思考强度（淡色）。发送/取消按钮已移除（TUI 无点击交互，改用 /stop
+    // 模型 + 思考强度（淡色）。发送/取消按钮已移除（TUI 无点击交互，改用 Esc 取消
     // 命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
@@ -625,10 +626,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 模型行（输入框下方，灰色块内，左对齐）：模型 + 思考强度（淡色；用户要求移到左侧）
   // 计划模式（/plan）：模型行追加常驻指示「· 计划模式」——用户随时知道自己处于只读调研态
   if (tree.footerModel) {
-    tree.footerModel.content = state.planMode ? `模型 ${state.model} · 计划模式` : `模型 ${state.model}`;
+    const lang = state.language;
+    tree.footerModel.content = state.planMode
+      ? `${tf(lang, 'footer.model', { model: state.model })}${t(lang, 'footer.planMode')}`
+      : tf(lang, 'footer.model', { model: state.model });
   }
   if (tree.footerEffort) {
-    tree.footerEffort.content = state.reasoningEffort ? `· 思考 ${state.reasoningEffort}` : '';
+    tree.footerEffort.content = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
   }
   // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ⚡M 打断）」+ 每条消息带
   // queue/steer 徽标（· 普通排队 / ⚡ 打断优先）+ 选中高亮（› 青色加粗）。
@@ -643,7 +647,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const steerCount = state.pending.filter((m) => m.mode === 'steer').length;
       const c = tree.queueCells[idx++]!;
       c.visible = true;
-      c.content = `⏳ 待发送（${pendingCount}${steerCount > 0 ? ` · ⚡ ${steerCount} 打断` : ''}）`;
+      const lang = state.language;
+      c.content = tf(lang, 'pending.title', {
+        q: pendingCount,
+        s: steerCount > 0 ? tf(lang, 'pending.steer', { s: steerCount }) : '',
+      });
       for (let i = 0; i < pendingVisibleMsgs; i++) {
         const m = state.pending[i]!;
         const t = m.text.replace(/\s+/g, ' ').trim();
@@ -668,7 +676,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (pendingCount > 4) {
         const c2 = tree.queueCells[idx++]!;
         c2.visible = true;
-        c2.content = `  · 还有 ${pendingCount - 4} 条…`;
+        c2.content = tf(state.language, 'pending.more', { n: pendingCount - 4 });
       }
     }
     // 未用的池细胞必须隐藏——否则仍占布局行（7 个细胞占 7 行而非 5 行），
@@ -766,7 +774,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.content = new StyledText([
           {
             __isChunk: true as const,
-            text: `  ${isTop ? '↑' : '↓'} 还有 ${n} 个（↑/↓ 滚动）`,
+            text: tf(state.language, 'suggest.hint', { arrow: isTop ? '↑' : '↓', n }),
             fg: parseColor(theme.suggestText),
             attributes: 0,
           },
@@ -778,10 +786,15 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
     cell.visible = true;
     const selected = itemIdx === picker.selected;
-    // 命令联想：/名称 描述；@ 提及：📁 目录 / 📄 文件 + 路径（目录以 / 结尾，可继续进入）
+    // 命令联想：/名称 描述（按界面语言取 description/descriptionEn）；@ 提及：📁 目录 / 📄 文件 + 路径（目录以 / 结尾，可继续进入）
     const body = men
       ? `${picker.items[itemIdx].endsWith('/') ? '📁 ' : '📄 '}${picker.items[itemIdx]}`
-      : `/${picker.items[itemIdx]}  ${findCommand(picker.items[itemIdx])?.description ?? ''}`;
+      : (() => {
+          const cmd = findCommand(picker.items[itemIdx]);
+          const lang = state.language;
+          const desc = lang === 'en' && cmd?.descriptionEn ? cmd.descriptionEn : cmd?.description ?? '';
+          return `/${picker.items[itemIdx]}  ${desc}`;
+        })();
     const cut = fitCount(body, (width ?? 80) - CONTENT_PAD);
     const text = `${selected ? '› ' : '  '}${cut >= body.length ? body : `${body.slice(0, cut)}…`}`;
     try {
@@ -808,7 +821,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.menuOverlay.visible = false;
     } else {
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 44);
-      const panelRows = menu ? menuPanelRows(menu, panelW) : settingsPanelRows(settings!, panelW);
+      const panelRows = menu ? menuPanelRows(menu, panelW, state.language) : settingsPanelRows(settings!, panelW, state.language);
       tree.menuOverlay.visible = true;
       tree.menuOverlay.top = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
       tree.menuOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
@@ -836,7 +849,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.cmdPanelOverlay.visible = false;
     } else {
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 72);
-      const panelRows = cmdPanelRows(panel, panelW, height ?? 24);
+      const panelRows = cmdPanelRows(panel, panelW, height ?? 24, state.language);
       tree.cmdPanelOverlay.visible = true;
       tree.cmdPanelOverlay.top = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
       tree.cmdPanelOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));

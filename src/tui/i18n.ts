@@ -1,0 +1,191 @@
+/**
+ * TUI 本地化：界面 chrome 字符串的中英文字典（/settings 语言切换，默认中文）。
+ *
+ * 设计：
+ *   · `t(lang, key)` 取字符串（缺失回退中文，再缺失回退 key 本身——新 key 忘配不炸）；
+ *   · `tf(lang, key, vars)` 取字符串并做 `{var}` 插值；
+ *   · 命令面板的具体输出（/status 列表、/session 列表等命令结果内容）暂保持中文，
+ *     只本地化界面 chrome（菜单/状态栏/footer/待发送/联想/审批卡/help/tokens 模块等）——
+ *     见 AGENTS.md 演进日志第一百一十五次。
+ */
+
+/** 支持的界面语言 */
+export type TuiLang = 'zh' | 'en';
+
+/** 全部支持的语言（/settings 语言面板按此列出） */
+export const TUI_LANGS: TuiLang[] = ['zh', 'en'];
+
+/** 语言选项显示名（用其自身语言——中文 / English，用户不切换语言也能认出目标语言） */
+export const TUI_LANG_LABELS: Record<TuiLang, string> = { zh: '中文', en: 'English' };
+
+const ZH: Record<string, string> = {
+  // footer 统计行段（layout.ts STATUSLINE_SEGMENTS：label 面板显示名 / build 段文本）
+  'statusline.rounds.label': '轮次/步数',
+  'statusline.rounds': '{turns} 轮 · {steps} 步',
+  'statusline.llm.label': 'LLM/工具耗时',
+  'statusline.llm': 'LLM {llm} · 工具调用 {tools}',
+  'statusline.speed.label': '首token/速率',
+  'statusline.speed': '首 token 平均 {avg}s · {rate} tok/s',
+  'statusline.cache.label': '缓存命中',
+  'statusline.cache': '缓存命中 {pct}%',
+  'statusline.tokens.label': '输入/输出',
+  'statusline.tokens': '输入 {in} tok · 输出 {out} tok',
+
+  // 内容区（rows.ts）
+  'tokens.summary': '⚡ {n} 次 LLM 请求 · 输入 {in} · 输出 {out} · 缓存 {cached}',
+  'tokens.item': '  - LLM 请求：输入 {in} · 输出 {out} · 缓存 {cached}',
+  'scroll.topHint': '↑ 上方还有 {n} 行 · 滚轮/PgUp 上滚',
+  'scroll.backHint': '↑ 已上滚 {n} 行 · 共 {total} 行 · End 回到最新',
+  'menu.hint': '↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'cmdpanel.hint': '↑↓ 滚动 · Esc 关闭（还有 {n} 行）',
+  'cmdpanel.close': 'Esc 关闭',
+  'cmdpanel.none': '（无输出）',
+  'approval.hint': '[y] 批准    [n] 拒绝（Enter/Esc 同）',
+  'settings.title': '设置：状态行',
+  'settings.hint': '空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消',
+
+  // 输入区 / footer（render.ts）
+  'input.placeholder': '输入消息，Enter 发送；Shift+Enter 换行',
+  'footer.model': '模型 {model}',
+  'footer.planMode': ' · 计划模式',
+  'footer.effort': ' · 思考 {effort}',
+  'pending.title': '⏳ 待发送（{q}{s}）',
+  'pending.steer': ' · ⚡ {s} 打断',
+  'pending.more': '  · 还有 {n} 条…',
+  'suggest.hint': '  {arrow} 还有 {n} 个（↑/↓ 滚动）',
+
+  // 状态栏 / 帮助（output.ts）
+  'status.ready': '模型 {model} · 就绪',
+  'status.requestFailed': '请求失败',
+  'status.aborted': '已中止',
+  'status.approval': '等待审批：{tool}',
+  'help.title': '帮助',
+  'help.intro': '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。',
+  'help.commands': '/theme 主题（亮/暗/跟随系统） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /init [--global] 生成项目/全局记忆 · /exit 退出 · /clear 清空上下文 · /help 显示帮助',
+  'help.scroll': '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部',
+  'help.more': '完整命令参考：omni --help（控制台）',
+
+  // 菜单（commands.ts）
+  'menu.theme.title': '主题',
+  'menu.theme.status': '主题：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.theme.system': '跟随系统',
+  'menu.theme.light': '亮色',
+  'menu.theme.dark': '深色',
+  'menu.permission.title': '安全权限',
+  'menu.permission.status': '安全权限：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.permission.read': '低（只读）',
+  'menu.permission.safe': '中（标准）',
+  'menu.permission.ask': '高（谨慎）',
+  'menu.permission.full': '全量（直通）',
+  'menu.variants.title': '思考级别',
+  'menu.variants.status': '思考级别：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.model.title': '模型',
+  'menu.model.status': '模型：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.session.title': '会话',
+  'menu.session.status': '会话：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.settings.title': '设置',
+  'menu.settings.status': '设置：↑/↓ 选择 · Enter 打开 · Esc 取消（/settings <名称> 直接进入）',
+  'settings.statusline': '状态行（底部对话信息）',
+  'settings.language': '语言',
+  'menu.language.title': '语言',
+  'menu.language.status': '语言：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'confirm.theme': '已切换主题 → {label}',
+  'confirm.permission': '已切换安全权限 → {label}',
+  'confirm.variants': '已切换思考级别 → {label}',
+  'confirm.model': '已切换模型 → {label}',
+  'confirm.session': '已选择会话 → {label}（加载中…）',
+  'confirm.language': '已切换语言 → {label}（界面即时切换，配置已保存）',
+};
+
+const EN: Record<string, string> = {
+  'statusline.rounds.label': 'Rounds/Steps',
+  'statusline.rounds': '{turns} turns · {steps} steps',
+  'statusline.llm.label': 'LLM/Tools',
+  'statusline.llm': 'LLM {llm} · Tools {tools}',
+  'statusline.speed.label': 'First token/Rate',
+  'statusline.speed': 'First token avg {avg}s · {rate} tok/s',
+  'statusline.cache.label': 'Cache hit',
+  'statusline.cache': 'Cache hit {pct}%',
+  'statusline.tokens.label': 'In/Out',
+  'statusline.tokens': 'In {in} tok · Out {out} tok',
+
+  'tokens.summary': '⚡ {n} LLM requests · In {in} · Out {out} · Cached {cached}',
+  'tokens.item': '  - LLM request: In {in} · Out {out} · Cached {cached}',
+  'scroll.topHint': '↑ {n} more lines above · Scroll/PgUp up',
+  'scroll.backHint': '↑ Scrolled up {n} · {total} total · End to bottom',
+  'menu.hint': '↑/↓ or number · Enter confirm · Esc cancel',
+  'cmdpanel.hint': '↑↓ scroll · Esc close ({n} more)',
+  'cmdpanel.close': 'Esc close',
+  'cmdpanel.none': '(no output)',
+  'approval.hint': '[y] Approve    [n] Reject (Enter/Esc same)',
+  'settings.title': 'Settings: Status line',
+  'settings.hint': 'Space toggle · ←/→ reorder · Enter save · Esc cancel',
+
+  'input.placeholder': 'Type a message, Enter to send; Shift+Enter for newline',
+  'footer.model': 'Model {model}',
+  'footer.planMode': ' · Plan mode',
+  'footer.effort': ' · Thinking {effort}',
+  'pending.title': '⏳ Pending ({q}{s})',
+  'pending.steer': ' · ⚡ {s} steer',
+  'pending.more': '  · {n} more…',
+  'suggest.hint': '  {arrow} {n} more (↑/↓ scroll)',
+
+  'status.ready': 'Model {model} · Ready',
+  'status.requestFailed': 'Request failed',
+  'status.aborted': 'Aborted',
+  'status.approval': 'Waiting for approval: {tool}',
+  'help.title': 'Help',
+  'help.intro': 'Type a message to chat, Enter to send; Shift+Enter for newline (needs terminal modifier support; auto-grows for multi-line).',
+  'help.commands': '/theme theme (light/dark/system) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /init [--global] generate AGENTS.md · /exit quit · /clear clear context · /help help',
+  'help.scroll': 'Scroll: mouse wheel / PgUp/PgDn pages · Ctrl+U/Ctrl+D pages (empty input) · ↑/↓ per line (empty input) · End to bottom',
+  'help.more': 'Full command list: omni --help (console)',
+
+  'menu.theme.title': 'Theme',
+  'menu.theme.status': 'Theme: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.theme.system': 'System',
+  'menu.theme.light': 'Light',
+  'menu.theme.dark': 'Dark',
+  'menu.permission.title': 'Security',
+  'menu.permission.status': 'Security: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.permission.read': 'Read (read-only)',
+  'menu.permission.safe': 'Safe (default)',
+  'menu.permission.ask': 'Ask (all commands)',
+  'menu.permission.full': 'Full (no checks)',
+  'menu.variants.title': 'Thinking level',
+  'menu.variants.status': 'Thinking level: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.model.title': 'Model',
+  'menu.model.status': 'Model: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.session.title': 'Sessions',
+  'menu.session.status': 'Sessions: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.settings.title': 'Settings',
+  'menu.settings.status': 'Settings: ↑/↓ select · Enter open · Esc cancel (/settings <name> direct)',
+  'settings.statusline': 'Status line (footer stats)',
+  'settings.language': 'Language',
+  'menu.language.title': 'Language',
+  'menu.language.status': 'Language: ↑/↓ or number · Enter confirm · Esc cancel',
+  'confirm.theme': 'Theme switched → {label}',
+  'confirm.permission': 'Security switched → {label}',
+  'confirm.variants': 'Thinking level switched → {label}',
+  'confirm.model': 'Model switched → {label}',
+  'confirm.session': 'Session selected → {label} (loading…)',
+  'confirm.language': 'Language switched → {label} (applied now, config saved)',
+};
+
+/** 取字符串（en 缺失回退 zh，再缺失回退 key——新 key 忘配不炸） */
+export function t(lang: TuiLang, key: string): string {
+  if (lang === 'en') {
+    const v = EN[key];
+    if (v !== undefined) return v;
+  }
+  const z = ZH[key];
+  return z !== undefined ? z : key;
+}
+
+/** 取字符串并做 `{var}` 插值（未出现的变量原样保留，调用方保证传全） */
+export function tf(lang: TuiLang, key: string, vars: Record<string, string | number>): string {
+  let s = t(lang, key);
+  for (const [k, v] of Object.entries(vars)) {
+    s = s.replaceAll(`{${k}}`, String(v));
+  }
+  return s;
+}

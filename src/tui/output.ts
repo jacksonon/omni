@@ -9,7 +9,8 @@ import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
-import { appendLine, clearLines, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
+import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
+import { t, tf } from './i18n.js';
 
 const NOOP_THINKING: ThinkingDisplay = {
   get shown() {
@@ -144,7 +145,7 @@ export class TuiOutput implements Output {
   }
 
   /**
-   * 取消当前回合的视觉反馈（右侧 loading + 状态栏 spinner/文案）——Esc //stop
+   * 取消当前回合的视觉反馈（右侧 loading + 状态栏 spinner/文案）——Esc 取消
    * 取消时**同步立即**调用（不等 runAgent 返回：逐 chunk abort 至多延迟一个 chunk
    * 间隔，期间 loading 不立即停、「思考中」残留会让用户以为取消没生效——用户反馈）。
    */
@@ -212,7 +213,7 @@ export class TuiOutput implements Output {
   banner(cfg: OmniConfig, _toolNames?: string[]): void {
     this.state.version = VERSION;
     this.state.model = cfg.model;
-    this.state.status = `模型 ${cfg.model} · 就绪`;
+    this.state.status = tf(this.state.language, 'status.ready', { model: cfg.model });
     this.schedulePaint();
   }
 
@@ -286,8 +287,9 @@ export class TuiOutput implements Output {
   onRequestFailed(err: unknown): void {
     this.stopSpinner();
     this.state.spinnerIndex = -1;
-    this.state.status = '请求失败';
-    pushLine(this.state, { kind: 'warn', text: `请求失败：${(err as Error)?.message ?? String(err)}` });
+    const lang = this.state.language;
+    this.state.status = t(lang, 'status.requestFailed');
+    pushLine(this.state, { kind: 'warn', text: `${t(lang, 'status.requestFailed')}：${(err as Error)?.message ?? String(err)}` });
     this.schedulePaint();
   }
 
@@ -364,7 +366,7 @@ export class TuiOutput implements Output {
 
   onMaxSteps(max: number): void {
     pushLine(this.state, { kind: 'warn', text: `⚠️ 已达到最大步数（${max}），任务可能未完成` });
-    this.state.status = '已中止';
+    this.state.status = t(this.state.language, 'status.aborted');
     this.schedulePaint();
   }
 
@@ -394,7 +396,7 @@ export class TuiOutput implements Output {
       this.schedulePaint();
       this.showNextApproval(); // 串行：处理队列里的下一条
     };
-    this.state.status = `等待审批：${next.req.tool}`;
+    this.state.status = tf(this.state.language, 'status.approval', { tool: next.req.tool });
     this.schedulePaint();
   }
 
@@ -438,11 +440,14 @@ export class TuiOutput implements Output {
   }
 
   showHelp(): void {
-    pushLine(this.state, { kind: 'task', text: '帮助' });
-    pushLine(this.state, { kind: 'meta', text: '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。' });
-    pushLine(this.state, { kind: 'meta', text: '/theme 主题（亮/暗/跟随系统） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /init [--global] 生成项目/全局记忆 · /exit 退出 · /clear 清空上下文 · /help 显示帮助' });
-    pushLine(this.state, { kind: 'meta', text: '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部' });
-    pushLine(this.state, { kind: 'meta', text: '完整命令参考：omni --help（控制台）' });
+    // 帮助文本输出到**命令面板**（独立窗口）——不混进对话流（用户要求所有命令输出
+    // 弹窗展示；commands.ts 的 /help 命令同此实现，接口保留供 console/兼容调用）
+    const lang = this.state.language;
+    openCmdPanel(this.state, '/help');
+    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.intro') }, '/help');
+    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.commands') }, '/help');
+    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/help');
+    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.more') }, '/help');
     this.schedulePaint();
   }
 }

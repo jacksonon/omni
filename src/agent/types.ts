@@ -51,7 +51,7 @@ export interface RunOptions {
    */
   reasoningEffort?: string;
   /**
-   * 取消信号（交互模式每轮创建，/stop / Esc / 运行中 Ctrl+Enter（steer）触发）：
+   * 取消信号（交互模式每轮创建，Esc / 运行中 Ctrl+Enter（steer）触发）：
    * 中断当前流式响应。流中断后优雅结束本轮（已输出内容保留，半截 assistant 消息
    * 不入上下文）；steer 打断时 loop 经 takeInterrupt 取走消息后**换新信号继续
    * 本回合**（rearmAbort），交互层 cancelRun 始终 abort 最新信号。
@@ -62,7 +62,7 @@ export interface RunOptions {
    * 修饰键+Enter 时把消息写进槽并 abort 当前流；loop 在流中断（AbortError）后经
    * takeInterrupt 取走消息、push 进 messages（作为当前轮的新 user 消息）并在
    * **同一轮内继续**——模型直接回答打断消息，不结束本轮（轮数不增）。
-   * interruptPending 为只读探测（判断 abort 是打断还是取消：/stop、Esc 取消时
+   * interruptPending 为只读探测（判断 abort 是打断还是取消：Esc 取消时
    * 槽为空 → 优雅结束本轮）。回合自然结束时槽中残留的消息由交互层转入待发送
    * 列表（steer 插最前，下一轮发送）——不丢失。console 端不设置（无打断入口）。
    */
@@ -71,7 +71,7 @@ export interface RunOptions {
   /**
    * 换新取消信号回调（interactive 实现）：loop 消费打断消息后调用——旧信号已 abort，
    * 不复位则同一轮内后续的 LLM 请求立刻抛 AbortError；换新后继续的本回合仍可被
-   * Esc / /stop 取消（交互层 cancelRun 指向最新控制器）。
+   * Esc 取消（交互层 cancelRun 指向最新控制器）。
    */
   rearmAbort?: () => void;
   /** /variants 支持的思考级别选项（来自配置 reasoningEffortOptions） */

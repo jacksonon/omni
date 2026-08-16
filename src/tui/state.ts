@@ -7,6 +7,7 @@
 import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
 import type { WriteDiff } from '../output/format.js';
+import type { TuiLang } from './i18n.js';
 
 /** spinner 动画帧（braille 点阵） */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -308,6 +309,16 @@ export interface TuiState {
    */
   statuslineSave: string[] | null;
   /**
+   * 界面语言（/settings 语言面板切换；来自配置 language，tui-entry 初始化）。
+   * 切换后界面 chrome 即时按新语言重绘（rows/render/output/commands 全部经 t()/tf()）。
+   */
+  language: TuiLang;
+  /**
+   * 待持久化的语言（/settings 语言面板 Enter 保存时写入，interactive 每轮消费并
+   * 写入配置文件——应用已即时生效，这里只负责落盘；与 statuslineSave 同模式）。
+   */
+  languageSave: TuiLang | null;
+  /**
    * 命令输出面板（所有 / 命令的输出窗口；null = 无）。
    * 独立浮层（绝对定位居中），不占内容流——命令输出不再写进对话流（用户要求）。
    * 打开时键盘事件由面板消费（↑/↓ 滚动、Esc/Enter 关闭）。
@@ -371,7 +382,7 @@ export interface TuiState {
    */
   running: boolean;
   /**
-   * 取消回调（interactive 注册：abort 当前流式响应；/stop 命令与运行中 Ctrl+Enter 调用；
+   * 取消回调（interactive 注册：abort 当前流式响应；Esc 取消与运行中 Ctrl+Enter（steer）调用；
    * 运行结束后置 null）。放 state 上让命令层无需反向依赖 interactive 即可取消。
    */
   cancelRun: (() => void) | null;
@@ -427,6 +438,8 @@ export function createTuiState(): TuiState {
     settingsPanel: null,
     statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
     statuslineSave: null,
+    language: 'zh',
+    languageSave: null,
     cmdPanel: null,
     cmdSuggest: null,
     mention: null,

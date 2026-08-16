@@ -17,6 +17,7 @@ import {
   type ToolCardRole,
 } from '../output/format.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
+import { t, tf, type TuiLang } from './i18n.js';
 import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
@@ -156,7 +157,7 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme): R
  *   │ ↑/↓ 选择 · Enter 确认 · Esc 取消 │
  *   ╰───────────────────╯
  */
-export function menuPanelRows(menu: TuiMenu, contentWidth: number): Row[] {
+export function menuPanelRows(menu: TuiMenu, contentWidth: number, lang: TuiLang = 'zh'): Row[] {
   const inner = cardInnerWidth(contentWidth);
   const rows: Row[] = [{ text: cardTitleLine(menu.title, '', inner), style: { fg: 'cyan' } }];
   menu.options.forEach((opt, i) => {
@@ -167,7 +168,7 @@ export function menuPanelRows(menu: TuiMenu, contentWidth: number): Row[] {
       style: i === menu.selectedIndex ? { fg: 'cyan', bold: true } : {},
     });
   });
-  rows.push({ text: cardContentLine('↑/↓ 或数字选择 · Enter 确认 · Esc 取消', inner), style: { dim: true } });
+  rows.push({ text: cardContentLine(t(lang, 'menu.hint'), inner), style: { dim: true } });
   rows.push({ text: cardBottomLine(inner), style: { dim: true } });
   return rows;
 }
@@ -177,7 +178,7 @@ export function menuPanelRows(menu: TuiMenu, contentWidth: number): Row[] {
  * 内容行按面板宽折行（每行恰好 1 个终端行，边框不被撑破），超高时垂直滚动
  * （panel.scroll 由交互层 ↑/↓ 调整，这里 clamp 到合法区间并回写）。
  */
-export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeight: number): Row[] {
+export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeight: number, lang: TuiLang = 'zh'): Row[] {
   const inner = cardInnerWidth(contentWidth);
   // 可见主体行数：视口减标题 1 + 提示 1 + 底边 1（面板居中，上下留白）
   const maxVisible = Math.max(2, viewportHeight - 6);
@@ -191,11 +192,11 @@ export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeig
   panel.scroll = scroll;
   const visible = body.slice(scroll, scroll + maxVisible);
   const rows: Row[] = [{ text: cardTitleLine(panel.title, '', inner), style: { fg: 'cyan' } }];
-  if (visible.length === 0) rows.push({ text: cardContentLine('（无输出）', inner), style: { dim: true } });
+  if (visible.length === 0) rows.push({ text: cardContentLine(t(lang, 'cmdpanel.none'), inner), style: { dim: true } });
   for (const t of visible) rows.push({ text: cardContentLine(t, inner), style: {} });
   const remain = total - (scroll + maxVisible);
   rows.push({
-    text: cardContentLine(remain > 0 ? `↑↓ 滚动 · Esc 关闭（还有 ${remain} 行）` : 'Esc 关闭', inner),
+    text: cardContentLine(remain > 0 ? tf(lang, 'cmdpanel.hint', { n: remain }) : t(lang, 'cmdpanel.close'), inner),
     style: { dim: true },
   });
   rows.push({ text: cardBottomLine(inner), style: { dim: true } });
@@ -210,7 +211,8 @@ export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeig
  */
 export function approvalPanelRows(
   approval: { tool: string; summary: string; reason: string },
-  contentWidth: number
+  contentWidth: number,
+  lang: TuiLang = 'zh'
 ): Row[] {
   const inner = cardInnerWidth(contentWidth);
   const rows: Row[] = [{ text: `╭${'─'.repeat(inner)}╮`, style: { fg: 'yellow' } }];
@@ -218,7 +220,7 @@ export function approvalPanelRows(
   rows.push({ text: cardContentLine(approval.summary, inner), style: { dim: true } });
   rows.push({ text: cardContentLine(`原因：${approval.reason}`, inner), style: { dim: true } });
   rows.push({
-    text: cardContentLine('[y] 批准    [n] 拒绝（Enter/Esc 同）', inner),
+    text: cardContentLine(t(lang, 'approval.hint'), inner),
     style: { bold: true },
   });
   rows.push({ text: cardBottomLine(inner), style: { fg: 'yellow' } });
@@ -230,9 +232,9 @@ export function approvalPanelRows(
  * 与菜单面板（menuPanelRows）同款边框结构，渲染在菜单浮层（menuOverlay）里——
  * 独立于会话流。高亮项 › 青色加粗；勾选 ✓ / 未勾选 ☐；←/→ 调整顺序。
  */
-export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number): Row[] {
+export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number, lang: TuiLang = 'zh'): Row[] {
   const inner = cardInnerWidth(contentWidth);
-  const rows: Row[] = [{ text: cardTitleLine('设置：状态行', '', inner), style: { fg: 'cyan' } }];
+  const rows: Row[] = [{ text: cardTitleLine(t(lang, 'settings.title'), '', inner), style: { fg: 'cyan' } }];
   for (let i = 0; i < panel.items.length; i++) {
     const it = panel.items[i]!;
     const cursor = i === panel.selected ? '› ' : '  ';
@@ -243,7 +245,7 @@ export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number):
     });
   }
   rows.push({
-    text: cardContentLine('空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消', inner),
+    text: cardContentLine(t(lang, 'settings.hint'), inner),
     style: { dim: true },
   });
   rows.push({ text: cardBottomLine(inner), style: { dim: true } });
@@ -347,8 +349,14 @@ export function buildBody(state: TuiState, width: number): Row[] {
         { prompt: 0, completion: 0, cached: 0 }
       );
       const fmt = (n: number): string => formatCompact(n);
+      const lang = state.language;
       body.push({
-        text: `⚡ ${usages.length} 次 LLM 请求 · 输入 ${fmt(sum.prompt)} · 输出 ${fmt(sum.completion)} · 缓存 ${fmt(sum.cached)}`,
+        text: tf(lang, 'tokens.summary', {
+          n: usages.length,
+          in: fmt(sum.prompt),
+          out: fmt(sum.completion),
+          cached: fmt(sum.cached),
+        }),
         style: { dim: true },
         tokensIdx: li,
       });
@@ -359,7 +367,11 @@ export function buildBody(state: TuiState, width: number): Row[] {
         for (let i = 0; i < usages.length; i++) {
           const u = usages[i]!;
           body.push({
-            text: `  - LLM 请求：输入 ${fmt(u.prompt)} · 输出 ${fmt(u.completion)} · 缓存 ${fmt(u.cached ?? 0)}`,
+            text: tf(lang, 'tokens.item', {
+              in: fmt(u.prompt),
+              out: fmt(u.completion),
+              cached: fmt(u.cached ?? 0),
+            }),
             style: { dim: true },
             tokensIdx: li,
           });
@@ -415,7 +427,7 @@ export function buildBody(state: TuiState, width: number): Row[] {
   }
   // 工具调用审批卡片（安全护栏）：state.approval 非空时追加在内容流末尾（独立卡片）
   if (state.approval) {
-    for (const r of approvalPanelRows(state.approval, width)) {
+    for (const r of approvalPanelRows(state.approval, width, state.language)) {
       body.push({ ...r, approvalId: 1 });
     }
   }
@@ -515,7 +527,7 @@ export function computeRows(
     const contentCap = Math.max(1, cap - 1);
     const visible = body.slice(total - contentCap);
     visible.unshift({
-      text: `↑ 上方还有 ${total - contentCap} 行 · 滚轮/PgUp 上滚`,
+      text: tf(state.language, 'scroll.topHint', { n: total - contentCap }),
       style: { dim: true },
     });
     return visible;
@@ -532,7 +544,7 @@ export function computeRows(
   }
   const visible = body.slice(top, top + contentCap);
   visible.push({
-    text: `↑ 已上滚 ${total - top - contentCap} 行 · 共 ${total} 行 · End 回到最新`,
+    text: tf(state.language, 'scroll.backHint', { n: total - top - contentCap, total }),
     style: { dim: true },
   });
   return visible;

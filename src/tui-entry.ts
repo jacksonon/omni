@@ -84,6 +84,8 @@ async function run(): Promise<void> {
   const state = createTuiState();
   // 底部状态行（输入区域下方）段配置来自 statusline 配置字段（/settings statusline 可改并持久化）
   if (Array.isArray(cfg.statusline)) state.statusline = cfg.statusline;
+  // 界面语言（/settings 语言面板可改并持久化；应用层已校验 zh/en）
+  state.language = cfg.language === 'en' ? 'en' : 'zh';
   const session = await startTui(state, { withInput: !singleTask });
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);

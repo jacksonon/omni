@@ -871,7 +871,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 15 灰块边框色与背景色不一致（应同色形成圆角视觉）');
     process.exit(1);
   }
-  // b) 发送按钮已移除（TUI 无点击交互，/stop 命令 + Enter 排队 + Cmd/Ctrl+Enter steer 替代）；
+  // b) 发送按钮已移除（TUI 无点击交互，Esc 取消 + Enter 排队 + Cmd/Ctrl+Enter steer 替代）；
   //    模型行保留：模型 + 思考强度（未设置不显示）
   if (!tree15.footerModel || !JSON.stringify(tree15.footerModel.content).includes('模型 mock')) {
     console.error('✗ 场景 15 模型行缺失');
@@ -1068,7 +1068,7 @@ async function main(): Promise<void> {
     console.log(frame15b);
     process.exit(1);
   }
-  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（/stop+排队替代）+ 模型/思考强度行 + 待发送区渲染（⏳ 待发送/queue·steer⚡ 徽标/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
+  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（Esc 取消+排队替代）+ 模型/思考强度行 + 待发送区渲染（⏳ 待发送/queue·steer⚡ 徽标/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
 
   // 场景 17：/theme 命令面板 —— openThemeMenu 打开面板 + handleMenuKey 选择/确认/取消 + 渲染
   const { closeMenu, handleMenuKey, openThemeMenu } = await import('../src/tui/commands.js');
@@ -1326,12 +1326,12 @@ async function main(): Promise<void> {
   const t19 = await createTestRenderer({ width: 64, height: 20 });
   const tree19 = mountTree(t19.renderer, s19, { withInput: true });
   await t19.renderOnce();
-  // a) 输入 '/' → 联想列出全部命令（items 全量 29 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
+  // a) 输入 '/' → 联想列出全部命令（items 全量 28 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 29 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 29、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 28 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 28、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1401,8 +1401,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 5 条（theme/permission/plan/thinking/tokens）+ 底部「↓ 还有 24 个」提示行
-  const checks19 = ['/theme', '切换主题', '/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/tokens', '显示 / 隐藏当次 token 使用统计', '/exit', '退出 TUI', '↓ 还有 23 个'];
+  // 紧凑窗口：只显示前 5 条（theme/permission/plan/thinking/tokens）+ 底部「↓ 还有 22 个」提示行
+  const checks19 = ['/theme', '切换主题', '/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/tokens', '显示 / 隐藏当次 token 使用统计', '/exit', '退出 TUI', '↓ 还有 22 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1414,7 +1414,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/stop', '/undo', '/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/doctor', '/help']) {
+  for (const hidden of ['/undo', '/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/doctor', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1482,9 +1482,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = settings/model/status/context/export/config；上下各一条提示行（↑ 15 个 · ↓ 8 个，29 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 8 个') || frame19s.includes('/theme')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 8 个」、无 /theme）');
+  // items[15..20] = model/status/context/export/config/mcp；上下各一条提示行（↑ 15 个 · ↓ 7 个，28 条命令）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 7 个') || frame19s.includes('/theme')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 7 个」、无 /theme）');
     process.exit(1);
   }
   if (!frame19s.includes('/status') || !frame19s.includes('/context') || !frame19s.includes('/export')) {
@@ -3599,7 +3599,7 @@ async function main(): Promise<void> {
   console.log('=== 场景 38：执行型命令面板自动收起 ===');
   const cmd38 = await import('../src/tui/commands.js');
   // a) autoClose 标记：执行型（动作+确认）置位；列表型（需阅读输出）不置位
-  const autoCloseNames = ['stop', 'undo', 'redo', 'init', 'compact', 'rename', 'export', 'model'];
+  const autoCloseNames = ['undo', 'redo', 'init', 'compact', 'rename', 'export', 'model'];
   const listingNames = ['status', 'help', 'context', 'agents', 'diff', 'config', 'review', 'doctor', 'skill', 'mcp', 'resume', 'session', 'theme', 'permission', 'variants'];
   const missingAuto38 = autoCloseNames.filter((n) => !cmd38.findCommand(n)?.autoClose);
   if (missingAuto38.length) {
@@ -3654,11 +3654,11 @@ async function main(): Promise<void> {
     console.error('✗ 场景 38 空面板不应调度');
     process.exit(1);
   }
-  // d) runCommand 接线：执行型命令（/stop）跑完后面板立即存在（1.5s 后自动收起，这里只验证不提前关）
+  // d) runCommand 接线：执行型命令（/undo）跑完后面板立即存在（1.5s 后自动收起，这里只验证不提前关）
   const s38e = createTuiState();
-  await cmd38.runCommand({ state: s38e, out: {}, session: { paint: () => {} }, input: {}, messages: [] } as never, '/stop');
-  if (!s38e.cmdPanel || !s38e.cmdPanel.lines.some((l) => String(l).includes('当前没有运行中的任务'))) {
-    console.error(`✗ 场景 38 /stop 面板未显示: ${JSON.stringify(s38e.cmdPanel?.lines)}`);
+  await cmd38.runCommand({ state: s38e, out: {}, session: { paint: () => {} }, input: {}, messages: [] } as never, '/undo');
+  if (!s38e.cmdPanel || !s38e.cmdPanel.lines.some((l) => String(l).includes('没有可撤销'))) {
+    console.error(`✗ 场景 38 /undo 面板未显示: ${JSON.stringify(s38e.cmdPanel?.lines)}`);
     process.exit(1);
   }
   console.log('✓ 场景 38 通过：执行型命令 autoClose 标记 + 自动收起（身份/无会话/空面板边界）');
@@ -4272,6 +4272,157 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 42 通过：当次 token 统计（收起汇总/点击展开逐次明细/往返切换//tokens 开关）');
+
+  // 场景 43：/settings language 语言切换 + 界面 chrome 本地化（footer/菜单/面板/联想/tokens/状态栏）
+  const { t: ti18n, tf: tfi18n } = await import('../src/tui/i18n.js');
+  const { buildFooterStats } = await import('../src/tui/layout.js');
+  const { findCommand: findCommand43, handleMenuKey: handleMenuKey43, openLanguageMenu, openPermissionMenu: openPermissionMenu43, openSettingsMenu } = await import('../src/tui/commands.js');
+  const { approvalPanelRows, cmdPanelRows, menuPanelRows, settingsPanelRows } = await import('../src/tui/rows.js');
+  const { persistLanguageToConfig } = await import('../src/config/write.js');
+  // a) i18n 字典：中英对照 + 缺失回退（都缺 → key 本身）
+  if (ti18n('zh', 'menu.hint') !== '↑/↓ 或数字选择 · Enter 确认 · Esc 取消' || ti18n('en', 'menu.hint') !== '↑/↓ or number · Enter confirm · Esc cancel') {
+    console.error(`✗ 场景 43 i18n menu.hint 中英不符: ${JSON.stringify([ti18n('zh', 'menu.hint'), ti18n('en', 'menu.hint')])}`);
+    process.exit(1);
+  }
+  if (tfi18n('en', 'tokens.summary', { n: 3, in: '1.8K', out: '600', cached: '1.1K' }) !== '⚡ 3 LLM requests · In 1.8K · Out 600 · Cached 1.1K') {
+    console.error('✗ 场景 43 tokens.summary 英文插值错误');
+    process.exit(1);
+  }
+  if (ti18n('en', 'no.such.key') !== 'no.such.key') {
+    console.error('✗ 场景 43 缺失 key 未回退 key 本身');
+    process.exit(1);
+  }
+  // b) footer 统计行按语言：buildFooterStats 读 state.language 选 build/buildEn
+  const s43f = createTuiState();
+  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, cached: 900 };
+  s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
+  s43f.statusline = ['rounds', 'llm'];
+  const zhLine43 = buildFooterStats(s43f);
+  if (!zhLine43.includes('1 轮 · 2 步') || !zhLine43.includes('工具调用')) {
+    console.error(`✗ 场景 43 中文统计行错误: ${zhLine43}`);
+    process.exit(1);
+  }
+  s43f.language = 'en';
+  const enLine43 = buildFooterStats(s43f);
+  if (!enLine43.includes('1 turns · 2 steps') || !enLine43.includes('Tools') || zhLine43 === enLine43) {
+    console.error(`✗ 场景 43 英文统计行错误: ${enLine43}`);
+    process.exit(1);
+  }
+  // c) 设置菜单含语言项 + 打开语言面板：高亮当前语言
+  const s43 = createTuiState();
+  openSettingsMenu(s43);
+  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 2 || s43.menu.options[1]?.value !== 'language') {
+    console.error(`✗ 场景 43 设置菜单缺语言项: ${JSON.stringify(s43.menu)}`);
+    process.exit(1);
+  }
+  openLanguageMenu(s43);
+  if (!s43.menu || s43.menu.id !== 'language' || s43.menu.options.length !== 2 || s43.menu.selectedIndex !== 0 || s43.menu.options[1]?.label !== 'English') {
+    console.error(`✗ 场景 43 语言面板错误: ${JSON.stringify(s43.menu)}`);
+    process.exit(1);
+  }
+  // d) 数字 2 确认 → 切到英文 + languageSave + confirm 消息（面板）；再切回中文
+  handleMenuKey43(key('2'), s43);
+  if (s43.language !== 'en' || s43.languageSave !== 'en' || s43.menu !== null) {
+    console.error(`✗ 场景 43 语言切换未生效: ${JSON.stringify({ language: s43.language, languageSave: s43.languageSave, menu: s43.menu })}`);
+    process.exit(1);
+  }
+  if (!s43.cmdPanel?.lines.some((l) => l.includes('已切换语言 → English'))) {
+    console.error('✗ 场景 43 缺 confirm 消息（面板）');
+    process.exit(1);
+  }
+  openLanguageMenu(s43);
+  if (s43.menu?.selectedIndex !== 1) {
+    console.error(`✗ 场景 43 语言面板未高亮当前语言: ${s43.menu?.selectedIndex}`);
+    process.exit(1);
+  }
+  handleMenuKey43(key('up'), s43);
+  handleMenuKey43(key('return'), s43);
+  if (s43.language !== 'zh' || s43.languageSave !== 'zh') {
+    console.error('✗ 场景 43 切回中文失败');
+    process.exit(1);
+  }
+  // e) 英文菜单渲染：permission 面板（en）→ menuPanelRows 英文标题/选项/hint
+  const s43e = createTuiState();
+  s43e.version = '0.1.0';
+  s43e.model = 'mock';
+  s43e.language = 'en';
+  openPermissionMenu43(s43e);
+  const texts43e = menuPanelRows(s43e.menu!, 44, 'en')
+    .map((r) => r.text)
+    .join('\n');
+  for (const want of ['Security', 'Read (read-only)', 'Safe (default)', 'Ask (all commands)', 'Full (no checks)', 'Enter confirm', 'Esc cancel']) {
+    if (!texts43e.includes(want)) {
+      console.error(`✗ 场景 43 英文权限菜单缺: ${want}\n${texts43e}`);
+      process.exit(1);
+    }
+  }
+  // f) 命令面板/审批卡/设置面板英文提示（lang 参数）
+  const cRows43 = cmdPanelRows({ title: 'test', lines: ['l1', 'l2', 'l3'], scroll: 0 }, 60, 20, 'en');
+  if (!cRows43[cRows43.length - 2]!.text.includes('Esc close')) {
+    console.error('✗ 场景 43 cmdPanelRows 英文提示错误');
+    process.exit(1);
+  }
+  const aRows43 = approvalPanelRows({ tool: 'run_command', summary: 's', reason: 'r' }, 44, 'en');
+  if (!aRows43.some((r) => r.text.includes('[y] Approve'))) {
+    console.error('✗ 场景 43 approvalPanelRows 英文提示错误');
+    process.exit(1);
+  }
+  const stRows43 = settingsPanelRows({ items: [{ id: 'rounds', label: 'Rounds/Steps', enabled: true }], selected: 0 }, 44, 'en');
+  if (!stRows43.some((r) => r.text.includes('Settings: Status line')) || !stRows43.some((r) => r.text.includes('Space toggle'))) {
+    console.error('✗ 场景 43 settingsPanelRows 英文错误');
+    process.exit(1);
+  }
+  // g) 联想 descriptionEn：28 条命令都配了英文描述（英文模式渲染层取 descriptionEn）
+  const themeCmd43 = findCommand43('theme');
+  if (!themeCmd43?.descriptionEn || themeCmd43.descriptionEn !== 'Switch theme (light / dark / system)') {
+    console.error('✗ 场景 43 theme 命令缺 descriptionEn');
+    process.exit(1);
+  }
+  if (!themeCmd43.description.includes('切换主题')) {
+    console.error('✗ 场景 43 theme 命令 description 应为中文');
+    process.exit(1);
+  }
+  // h) buildBody tokens 英文：language=en 时 tokens 模块英文
+  const s43t = createTuiState();
+  s43t.language = 'en';
+  pushLine(s43t, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
+  const rows43t = buildBody(s43t, 60);
+  if (!rows43t.some((r) => r.text.includes('⚡ 1 LLM requests · In 1.3K'))) {
+    console.error(`✗ 场景 43 tokens 英文渲染错误: ${rows43t.map((r) => r.text).join('|')}`);
+    process.exit(1);
+  }
+  // i) persistLanguageToConfig 落盘（纯 JSON 配置文件追加 language 字段，保留其余字段）
+  const tmp43 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-lang-'));
+  const json43 = path.join(tmp43, 'omni.json');
+  fs.writeFileSync(json43, JSON.stringify({ model: 'a', statusline: ['rounds'] }));
+  const res43 = persistLanguageToConfig('en', { sources: [json43] } as never);
+  if (!res43.ok || res43.file !== json43) {
+    console.error(`✗ 场景 43 语言落盘失败: ${JSON.stringify(res43)}`);
+    process.exit(1);
+  }
+  const written43 = JSON.parse(fs.readFileSync(json43, 'utf8'));
+  if (written43.language !== 'en' || written43.model !== 'a' || written43.statusline.length !== 1) {
+    console.error(`✗ 场景 43 落盘内容错误: ${JSON.stringify(written43)}`);
+    process.exit(1);
+  }
+  // j) 端到端渲染帧：en 语言下 footer 模型行英文 + placeholder 英文（mount 时按语言取）
+  const s43r = createTuiState();
+  s43r.version = '0.1.0';
+  s43r.model = 'mock';
+  s43r.language = 'en';
+  const t43 = await createTestRenderer({ width: 64, height: 20 });
+  const tree43 = mountTree(t43.renderer, s43r, { withInput: true });
+  await t43.renderOnce();
+  const frame43 = t43.captureCharFrame();
+  if (!frame43.includes('Model mock')) {
+    console.error('✗ 场景 43 英文 footer 模型行缺失: ' + frame43.split('\n').filter((l) => l.includes('Model')).join('|'));
+    process.exit(1);
+  }
+  if (!frame43.includes('Type a message')) {
+    console.error('✗ 场景 43 英文 placeholder 缺失');
+    process.exit(1);
+  }
+  console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

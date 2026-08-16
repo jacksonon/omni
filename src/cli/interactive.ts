@@ -135,12 +135,6 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/stop') {
-      // CLI 交互模式下 Agent 运行期间输入被阻塞（readline 未挂起），无法在运行中输入 /stop；
-      // 需要中断时按 Ctrl+C（进程级中断）。此处仅为命令完整性提示。
-      console.log(dim('当前没有运行中的任务（运行中如需中断请按 Ctrl+C）'));
-      continue;
-    }
     if (cmd === '/permission' || cmd.startsWith('/permission ')) {
       // /permission：显示当前档位；/permission 低|中|高|全量（或 read|safe|ask|full）切换
       const want = cmd.slice('/permission'.length).trim();

@@ -40,12 +40,15 @@ export function formatToolDur(ms: number): string {
 
 /**
  * 状态行段（footer 统计行的可配置单元）：id 是配置/持久化键（/settings statusline
- * 按 id 勾选与排序），label 是面板显示名，build 生成该段文本（不含 `| ` 分隔）。
+ * 按 id 勾选与排序），label/labelEn 是面板显示名（中/英），build/buildEn 生成该段
+ * 文本（不含 `| ` 分隔；按界面语言 state.language 选择——/settings 语言切换即时生效）。
  */
 export interface StatuslineSegment {
   id: string;
   label: string;
+  labelEn: string;
   build(s: SessionStats, t: TokenUsage): string;
+  buildEn(s: SessionStats, t: TokenUsage): string;
 }
 
 /** 全部可用状态行段（顺序 = 默认显示顺序） */
@@ -53,31 +56,45 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
   {
     id: 'rounds',
     label: '轮次/步数',
+    labelEn: 'Rounds/Steps',
     build: (s) => `${s.turns} 轮 · ${s.steps} 步`,
+    buildEn: (s) => `${s.turns} turns · ${s.steps} steps`,
   },
   {
     id: 'llm',
     label: 'LLM/工具耗时',
+    labelEn: 'LLM/Tools',
     build: (s) => `LLM ${formatDuration(s.llmMs)} · 工具调用 ${formatToolDur(s.toolsMs)}`,
+    buildEn: (s) => `LLM ${formatDuration(s.llmMs)} · Tools ${formatToolDur(s.toolsMs)}`,
   },
   {
     id: 'speed',
     label: '首token/速率',
+    labelEn: 'First token/Rate',
     build: (s, t) => {
       const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
       const rate = s.llmMs > 0 ? Math.round(t.completion / (s.llmMs / 1000)) : 0;
       return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
+    buildEn: (s, t) => {
+      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
+      const rate = s.llmMs > 0 ? Math.round(t.completion / (s.llmMs / 1000)) : 0;
+      return `First token avg ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+    },
   },
   {
     id: 'cache',
     label: '缓存命中',
+    labelEn: 'Cache hit',
     build: (s, t) => `缓存命中 ${t.prompt > 0 ? Math.round((s.cached / t.prompt) * 100) : 0}%`,
+    buildEn: (s, t) => `Cache hit ${t.prompt > 0 ? Math.round((s.cached / t.prompt) * 100) : 0}%`,
   },
   {
     id: 'tokens',
     label: '输入/输出',
+    labelEn: 'In/Out',
     build: (_s, t) => `输入 ${formatCompact(t.prompt)} tok · 输出 ${formatCompact(t.completion)} tok`,
+    buildEn: (_s, t) => `In ${formatCompact(t.prompt)} tok · Out ${formatCompact(t.completion)} tok`,
   },
 ];
 
@@ -93,10 +110,11 @@ export const STATUSLINE_DEFAULT: string[] = STATUSLINE_SEGMENTS.map((sg) => sg.i
  */
 export function buildFooterStats(state: TuiState): string {
   const order = state.statusline ?? STATUSLINE_DEFAULT;
+  const en = state.language === 'en';
   const segs = order
     .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
     .filter((x): x is StatuslineSegment => !!x)
-    .map((sg) => sg.build(state.stats, state.tokens));
+    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens) : sg.build(state.stats, state.tokens)));
   return segs.join('| ');
 }
 

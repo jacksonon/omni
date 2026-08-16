@@ -74,6 +74,12 @@ export interface OmniConfig {
    * 合法 id：rounds（轮次/步数）· llm（LLM/工具耗时）· speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）。
    */
   statusline: string[];
+  /**
+   * TUI 界面语言：'zh' 中文（默认） / 'en' 英文。
+   * /settings 语言面板切换并持久化；界面 chrome（菜单/状态栏/footer/待发送/审批卡等）
+   * 即时切换，命令面板的具体输出内容（/status 列表等）暂保持中文。
+   */
+  language: 'zh' | 'en';
   /** MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
@@ -109,6 +115,7 @@ const DEFAULTS = {
   allowSubagents: true,
   maxSubagentSteps: 10,
   statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
+  language: 'zh' as 'zh' | 'en',
 };
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -189,6 +196,8 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
       .filter((x) => ['rounds', 'llm', 'speed', 'cache', 'tokens'].includes(x));
     cfg.statusline = arr;
   }
+  // 界面语言：只认 zh/en，其余回退默认中文
+  if (data.language === 'zh' || data.language === 'en') cfg.language = data.language;
   if (data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)) {
     const servers: Record<string, McpServerConfig> = {};
     for (const [name, v] of Object.entries(data.mcpServers as Record<string, unknown>)) {

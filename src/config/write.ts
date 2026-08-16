@@ -164,3 +164,25 @@ export function persistStatuslineToConfig(order: string[], cfg: OmniConfig): Per
   }
   return { ok: true, file: res.file, message: `已保存状态行配置 → ${res.file}（重启后同样生效）` };
 }
+
+/**
+ * 把界面语言写入配置文件的 language 字段（/settings 语言面板 Enter 保存持久化）。
+ * 应用已即时生效（state.language 更新，界面 chrome 按新语言重绘），这里只落盘供下次会话加载。
+ */
+export function persistLanguageToConfig(lang: string, cfg: OmniConfig): PersistModelResult {
+  const res = loadConfigObject(cfg);
+  if (!res.ok) {
+    return { ok: false, file: null, message: `${res.message}（language 字段手动添加："${lang}"）` };
+  }
+  res.obj.language = lang;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（language 字段手动添加："${lang}"）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已保存语言配置 → ${res.file}（重启后同样生效）` };
+}

@@ -25,7 +25,7 @@ import type { RunOptions } from '../agent/types.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
-import { persistStatuslineToConfig } from '../config/write.js';
+import { persistLanguageToConfig, persistStatuslineToConfig } from '../config/write.js';
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import type { TuiOutput } from './output.js';
@@ -102,7 +102,7 @@ export async function runTuiInteractive(
   // 当前流；loop 在流中断（AbortError）后经 takeInterrupt 取走、push 进 messages
   // （作为当前轮的新 user 消息）并在**同一轮内继续**——模型直接回答打断消息，
   // 不结束本轮（轮数不增、不闪「等待输入」）。interruptPending 为只读探测（区分
-  // abort 是打断还是取消：/stop、Esc 取消时槽为空 → 优雅结束本轮）。
+  // abort 是打断还是取消：Esc 取消时槽为空 → 优雅结束本轮）。
   // 回合自然结束时槽中残留的消息由 finally 转入待发送列表（不丢失）。
   let interruptText: string | null = null;
   runOpts.interruptPending = () => interruptText !== null;
@@ -330,7 +330,7 @@ export async function runTuiInteractive(
       if (!consumed) paintDeferred();
       return;
     }
-    // ESC 取消正在进行的对话（与 /stop 同语义）：前面的浮层分支（菜单/面板/联想/提及/
+    // ESC 取消正在进行的对话（同取消语义）：前面的浮层分支（菜单/面板/联想/提及/
     // 待发送选择）已各自消费自己的 Esc——能走到这里说明无任何浮层。审批卡片打开时 ESC
     // 由 startTui 的审批 handler 先消费（拒绝审批并置位 approvalKeyJustConsumed），
     // 这里跳过取消运行（拒绝审批 ≠ 取消对话）。
@@ -421,6 +421,22 @@ export async function runTuiInteractive(
             pushCmdLine(state, { kind: 'meta', text: res.message }, '/settings statusline');
           } else {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings statusline');
+          }
+          await session.paint();
+        }
+      }
+      // /settings 语言保存意图：界面已即时生效（state.language 更新，全部界面 chrome
+      // 按新语言重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）
+      if (state.languageSave) {
+        const lang = state.languageSave;
+        state.languageSave = null;
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistLanguageToConfig(lang, cfg);
+          if (res.ok) {
+            pushCmdLine(state, { kind: 'meta', text: res.message }, '/settings language');
+          } else {
+            pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings language');
           }
           await session.paint();
         }
@@ -539,7 +555,7 @@ export async function runTuiInteractive(
       await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {});
       // Agent 运行期间输入框**保持聚焦**（不 blur）：blur 会摘除 Textarea 的按键处理器
       //（OpenTUI blur() 里 offInternal("keypress")），Enter/Cmd+Enter 到不了 onSubmit——
-      // queue/steer//stop 运行中提交全是死路径（旧 mockInput 探针没模拟 blur 才"通过"）。
+      // queue/steer 运行中提交全是死路径（旧 mockInput 探针没模拟 blur 才"通过"）。
       // 运行中键入的内容经 onSubmit 分流进待发送列表/打断槽，不会混入下一轮输入。
       runOpts.planMode = state.planMode; // 每轮同步计划模式（/plan 切换即时生效）
       // 每轮同步权限档位：主循环按 runOpts.permission 新建 Safety；共用闸门（子代理）setTier 同步
@@ -551,11 +567,11 @@ export async function runTuiInteractive(
       // runAgent 用 currentClient/currentModel 发起请求。
       // 请求失败（网络/401/端点错误）时 runAgent 已在对话流提示并正常返回；这里再兜底
       // 捕获意外异常——任何运行错误都只在对话流显示、不把整个 TUI 打崩（发消息闪退的根因）
-      // 取消支持：本轮创建 AbortController——/stop 命令、运行中 Ctrl+Enter（steer）、
+      // 取消支持：本轮创建 AbortController——Esc 取消、运行中 Ctrl+Enter（steer）、
       // Esc → abort 中断流式响应（loop 优雅结束本轮；半截消息不入上下文）；运行结束（含
       // 取消）后复位。**可重载**：steer 打断后 loop 换新信号继续本回合（旧信号已 abort，
       // 不复位则后续请求立刻 AbortError），rearmAbort 回调由 loop 调用重新武装——
-      // cancelRun 始终 abort「当前」控制器（打断后的本回合仍可被 Esc//stop 取消）
+      // cancelRun 始终 abort「当前」控制器（打断后的本回合仍可被 Esc 取消）
       const abortCtrl: { ctrl: AbortController | null } = { ctrl: null };
       runOpts.rearmAbort = () => {
         abortCtrl.ctrl = new AbortController();
@@ -565,10 +581,9 @@ export async function runTuiInteractive(
       state.running = true;
       state.cancelRun = () => abortCtrl.ctrl?.abort();
       out.startLoading(); // 会话进行中：统计行左侧 loading 一直转（Esc 取消/会话结束 stopLoading 消失）
-      // 运行中提交处理（Enter / Cmd|Ctrl+Enter / /stop 都经此分流）：
+      // 运行中提交处理（Enter / Cmd|Ctrl+Enter 都经此分流）：
       //   · Enter 且文本非空 → queue 入待发送列表（输入框正上方小视图，回合结束后按序发送）
       //   · Cmd/Ctrl+Enter 且文本非空 → steer 打断当前回合（abort），插到列表最前优先执行
-      //   · 文本为 /stop → 停止当前对话（取消本轮，剩余待发送消息保留）
       input.onSubmit = () => {
         const t = input.plainText.trim();
         const m = state.submitMode;
@@ -582,12 +597,9 @@ export async function runTuiInteractive(
             state.cancelRun?.(); // 打断当前回合（流中断后取走槽中的消息继续）
           }
           input.setText('');
-        } else if (t === '/stop') {
-          state.cancelRun?.();
-          input.setText('');
         } else if (t.startsWith('/')) {
           // 运行中输入 / 命令：**立即分发执行**（/theme 打开菜单、/undo 回滚等），
-          // 不进待发送列表——此前所有命令（除 /stop）都被当普通消息排队，
+          // 不进待发送列表——此前所有命令都被当普通消息排队，
           // 要等当前回合 + 前面排队消息全部结束才执行（用户报告）。异步分发不阻塞
           // 当前回合；/exit 返回 'exit' → 标记退出意图，回合结束后统一清理退出
           input.setText('');
