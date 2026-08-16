@@ -1263,13 +1263,16 @@ export function confirmMenu(state: TuiState): void {
     state.sessionPick = opt.value;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.session', { label }) }, '/session');
   } else if (menu.id === 'settings') {
-    // 设置菜单：选择后打开对应设置编辑器（纯 state 操作，直接转换——statusline 面板）
-    if (opt.value === 'statusline') openStatuslinePanel(state);
-    else if (opt.value === 'language') openLanguageMenu(state);
-    // 语言面板已接管（menu 指向新面板，旧 settings 菜单不再关闭——返回避免误关）
-    if (state.menu === menu) return;
-    state.menu = null;
-    state.status = '';
+    // 设置菜单：选择后打开对应设置编辑器。
+    // statusline → settingsPanel 接管（关闭设置菜单；状态栏提示由 openStatuslinePanel 设置，不清空）；
+    // language → menu 直接转换为语言面板（新面板接管，不关闭——否则语言面板闪现即关，
+    // 用户反馈「单独点击语言没反应」的根因）
+    if (opt.value === 'statusline') {
+      openStatuslinePanel(state);
+      state.menu = null;
+    } else if (opt.value === 'language') {
+      openLanguageMenu(state);
+    }
     return;
   } else if (menu.id === 'language') {
     // 切换界面语言：立即生效（state.language 驱动全部界面 chrome 重绘），

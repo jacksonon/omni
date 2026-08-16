@@ -4477,6 +4477,45 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 菜单点击未切换主题: ${s43.themeMode}`);
     process.exit(1);
   }
+  // m) 设置菜单点击转换链路（此前快照只测 openLanguageMenu/openStatuslinePanel 直达路径，
+  //    未测 settings 菜单点击——用户反馈「点状态行没反应/点语言打开状态行操作页」的盲区）：
+  //    点「状态行」→ settingsPanel 接管（设置菜单关闭）；点「语言」→ menu 转换为语言面板
+  //    （不误关）；语言面板内再点击切换生效
+  const { openSettingsMenu: openSettingsMenu43 } = await import('../src/tui/commands.js');
+  openSettingsMenu43(s43); // 当前语言 en：菜单标题/选项应为英文
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43d = (tree43.menuOverlay!.top ?? 0) as number;
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, -1, -1])) {
+    console.error(`✗ 场景 43 设置菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
+    process.exit(1);
+  }
+  // 点「状态行」（top+1）→ 设置菜单关闭 + settingsPanel 打开
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43d + 1 }, tree43, s43, 64, noopPaint);
+  if (s43.menu !== null || s43.settingsPanel === null || s43.settingsPanel.items.length !== 5) {
+    console.error(`✗ 场景 43 点状态行未打开状态行编辑器: ${JSON.stringify({ menu: s43.menu, items: s43.settingsPanel?.items.length })}`);
+    process.exit(1);
+  }
+  // 点「语言」（重新打开设置菜单，top+2）→ menu 转换为语言面板（不误关）
+  s43.settingsPanel = null;
+  openSettingsMenu43(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43e = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43e + 2 }, tree43, s43, 64, noopPaint);
+  if (s43.menu === null || s43.menu.id !== 'language') {
+    console.error(`✗ 场景 43 点语言未转换到语言面板: ${JSON.stringify(s43.menu)}`);
+    process.exit(1);
+  }
+  // 语言面板内点「中文」（top+1，当前 en 高亮 English）→ 切换回 zh
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43f = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43f + 1 }, tree43, s43, 64, noopPaint);
+  if (s43.language !== 'zh' || s43.menu !== null) {
+    console.error(`✗ 场景 43 语言面板内点击未切换: ${JSON.stringify({ language: s43.language, menu: s43.menu })}`);
+    process.exit(1);
+  }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
