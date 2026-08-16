@@ -138,7 +138,7 @@ export interface TuiTree {
   /** 思考强度（`· 思考 medium`，淡色；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
   footerTokens: TextRenderable | null;
-  /** 输入区域右侧 loading（灰色块内右缘，与模型行对齐；会话进行中转，Esc/会话结束消失） */
+  /** loading（模型行内、模型文本右面；会话进行中转，Esc/会话结束消失） */
   footerLoading: TextRenderable | null;
   /** loading 右侧的「esc」取消提示（淡色；跟随 loading 显示/隐藏） */
   footerEsc: TextRenderable | null;
@@ -274,8 +274,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     contentCol.add(input);
 
     // 模型行（输入框下方，灰色块内，**左对齐**——用户要求从右侧移到左侧显示）：
-    // 模型 + 思考强度（淡色）。发送/取消按钮已移除（TUI 无点击交互，改用 Esc 取消
-    // 命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
+    // 模型 + 思考强度（淡色）+ **loading/esc 跟在左侧现有文本右面**（用户要求——
+    // 不再钉在灰块右缘，紧跟 `模型 X · 思考 medium` 之后）。发送/取消按钮已移除
+    //（TUI 无点击交互，改用 Esc 取消命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
       justifyContent: 'flex-start',
@@ -288,32 +289,29 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerEffort.fg = parseColor(theme.footerDim); // 思考强度用稍淡的颜色
     modelRow.add(footerModel);
     modelRow.add(footerEffort);
-    contentCol.add(modelRow);
-
-    // **右侧 loading**（用户要求「显示在输入区域右侧，和模型 id 那一行对齐」）：
-    // 灰色块内右缘（contentCol 之后），marginTop:auto 吸收上方空间把它推到灰块
-    // 最内底行——即模型行（contentCol 底部一行）同一行；会话进行中转圈
-    //（state.loading + loadingIndex），Esc/会话结束 stopLoading 消失。
+    // loading（用户要求「显示在输入区域右侧，和模型 id 那一行对齐」——现在直接在
+    // 模型行内、模型文本右面）：会话进行中转圈（state.loading + loadingIndex），
+    // Esc/会话结束 stopLoading 消失
     footerLoading = new TextRenderable(ctx, {
       content: '',
       wrapMode: 'none',
       marginLeft: 1,
-      marginTop: 'auto',
     });
     footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
     // loading 右侧「esc」取消提示（用户要求「loading 按钮右侧增加 esc 文本」）：
-    // 淡色小字，同款 marginTop auto 与模型行对齐；跟随 loading 显示/隐藏
+    // 淡色小字；跟随 loading 显示/隐藏
     footerEsc = new TextRenderable(ctx, {
       content: '',
       wrapMode: 'none',
       marginLeft: 1,
-      marginTop: 'auto',
       attributes: createTextAttributes({ dim: true }),
     });
     footerEsc.fg = parseColor(theme.footerDim);
+    modelRow.add(footerLoading);
+    modelRow.add(footerEsc);
+    contentCol.add(modelRow);
+
     footerBox.add(contentCol);
-    footerBox.add(footerLoading); // 在 contentCol 之后 → 灰块右缘
-    footerBox.add(footerEsc); // loading 右侧
   }
 
   // 子节点顺序：内容行（动态）→ 状态栏 → 灰色块（marginTop:auto 钉底）→ 统计行。
@@ -700,7 +698,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2);
     tree.footerTokens.content = fitFooterStats(buildFooterStats(state), inner);
   }
-  // 右侧 loading（灰色块内右缘、与模型行对齐）：会话进行中显示旋转帧，
+  // loading（模型行内、模型文本右面）：会话进行中显示旋转帧，
   // Esc/会话结束（state.loading=false）清空；右侧「esc」提示跟随显示/隐藏
   if (tree.footerLoading) {
     tree.footerLoading.content =
