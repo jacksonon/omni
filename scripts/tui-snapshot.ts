@@ -15,7 +15,7 @@ import { countDiffLines, sideBySideDiff, toolCardLines } from '../src/output/for
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
 import { gateTool } from '../src/safety/policy.js';
 import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
-import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect } from '../src/tui/render.js';
+import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect, type TuiSession } from '../src/tui/render.js';
 import { buildBody } from '../src/tui/rows.js';
 import { enqueuePending, handlePendingKey, movePending, removePending } from '../src/tui/pending.js';
 import { SPINNER_FRAMES, createTuiState, pushCmdLine, pushLine, type TuiState } from '../src/tui/state.js';
@@ -55,10 +55,10 @@ async function render(state: TuiState, height = 20): Promise<{ t: TestRendererSe
 
 async function main(): Promise<void> {
   // 场景 1：少量内容，全部可见（含用户消息 + 输入框 + 状态栏）；
-  // 视口 24 行（16px 圆角灰块 +2 行边框后 20 行放不下全部 10 行内容）
+  // 视口 25 行（思考模块展开态 +1 头行、16px 圆角灰块 +2 行边框后放不下全部内容）
   const s1 = createTuiState();
   fill(s1, 0);
-  const r1 = await render(s1, 24);
+  const r1 = await render(s1, 25);
   console.log('=== 场景 1：基础布局（输入框模式）===');
   console.log(r1.frame);
 
@@ -67,8 +67,9 @@ async function main(): Promise<void> {
     console.error('✗ 场景 1 仍显示根边框或 Omni 标题（已移除）');
     process.exit(1);
   }
-  // 新卡片：无工具名标题（去掉「查看目录」），收起态 = 命令(📁 .) + 执行缩略(✓ 执行成功 · 42 字符) + 结果缩略(输出首行)
-  const checks1 = ['你是谁？', '📁 .', '执行成功 · 42 字符', '55 个文件/目录', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', '模型 mock', '0 轮 · 0 步'];
+  // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
+  // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
+  const checks1 = ['你是谁？', '📁 .', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', '模型 mock', '0 轮 · 0 步'];
   // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
@@ -123,6 +124,13 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
+  // 收起态只显示命令：执行缩略/结果首行都不显示（用户要求「执行的结果等点击展开才显示」）
+  for (const hidden of ['执行成功', '55 个文件/目录']) {
+    if (r1.frame.includes(hidden)) {
+      console.error(`✗ 场景 1 收起态仍显示结果/执行缩略: ${hidden}`);
+      process.exit(1);
+    }
+  }
   // 收起态：结果缩略只取输出首行，第二行输出不得泄漏到帧里
   if (r1.frame.includes('AGENTS.md 的完整内容')) {
     console.error('✗ 场景 1 收起态卡片泄漏了输出第二行');
@@ -165,8 +173,10 @@ async function main(): Promise<void> {
   const frame3 = t3.captureCharFrame();
   console.log('=== 场景 3：增量重绘 ===');
   console.log(frame3);
-  if (!frame3.includes('→ Read AGENTS.md') || !frame3.includes('⏳ 执行中') || frame3.includes('📄')) {
-    console.error('✗ 场景 3 未显示新增工具卡片或仍显示旧摘要格式（repaintTree 未生效）');
+  // 执行中卡片只显示 loading（spinner 帧/⏳ 回退），**不含「执行中…」文字**（用户要求
+  // 「不需要显示文字，显示一个执行中 loading 即可」）；spinnerIndex=-1 时回退 ⏳
+  if (!frame3.includes('→ Read AGENTS.md') || !frame3.includes('⏳') || frame3.includes('📄') || frame3.includes('执行中')) {
+    console.error('✗ 场景 3 未显示新增工具卡片或执行中行含文字（应仅 ⏳ loading，无执行中文字）');
     process.exit(1);
   }
   // 执行中动画：spinnerIndex ≥ 0 时卡片执行中行显示 spinner 帧（不再是静态 ⏳）；
@@ -175,11 +185,12 @@ async function main(): Promise<void> {
   repaintTree(t3.renderer, tree3, s3, { withInput: true });
   await t3.renderOnce();
   const frame3spin = t3.captureCharFrame();
-  if (!frame3spin.split('\n').some((l) => l.includes('⠸ 执行中')) || frame3spin.split('\n').some((l) => l.includes('⏳ 执行中'))) {
-    console.error('✗ 场景 3 执行中卡片未显示 spinner 动画帧（应 ⠸ 执行中，无静态 ⏳）');
+  const spinRow3 = frame3spin.split('\n').find((l) => l.includes('⠸'));
+  if (!spinRow3 || spinRow3.includes('执行中') || frame3spin.split('\n').some((l) => l.includes('⏳'))) {
+    console.error('✗ 场景 3 执行中卡片未显示 spinner 动画帧（应仅 ⠸ loading，无执行中文字/静态 ⏳）');
     process.exit(1);
   }
-  console.log('✓ 场景 3 通过：状态变更后 repaintTree 正确更新渲染树（新增无标题卡片开框渲染 + 执行中 spinner 动画帧）');
+  console.log('✓ 场景 3 通过：状态变更后 repaintTree 正确更新渲染树（新增无标题卡片开框渲染 + 执行中仅 loading 无文字）');
 
   // 场景 4：TuiOutput 事件流 + flush() —— 验证最终状态在退出前上屏
   // （30ms 节流窗口内的最后一帧若不 flush 会丢失，这是 exit 前的关键修复）
@@ -200,7 +211,19 @@ async function main(): Promise<void> {
   out.onUserMessage('你是谁？');
   out.banner({ model: 'mock' } as never);
   out.onRound(0, 50);
+  // 真实循环：收到消息 onRound 立即预建 thinking 模块头行（用户要求，不等流式 chunk）；
+  // 本轮无实际思考（模型直接回答）→ 内容到达时 finishThinking 移除空模块
+  const preThink4 = s4.lines.filter((l) => l.kind === 'thinking');
+  if (preThink4.length !== 1 || preThink4[0]!.thinkingRunning !== true || preThink4[0]!.text !== '') {
+    console.error('✗ 场景 4 onRound 未立即预建 thinking 模块（空内容 running）');
+    process.exit(1);
+  }
   out.onStreamStart();
+  out.thinking.finish(); // 内容到达 → finishThinking（空内容 → 移除空模块）
+  if (s4.lines.some((l) => l.kind === 'thinking')) {
+    console.error('✗ 场景 4 无实际思考的空 thinking 模块未被移除');
+    process.exit(1);
+  }
   out.onAnswer('正在分析任务…');
   // 生成中：光标应显示在输出文本末尾，状态栏无“生成中…/思考中…”文案
   await out.flush();
@@ -223,17 +246,17 @@ async function main(): Promise<void> {
   const frame4 = t4.captureCharFrame();
   console.log('=== 场景 4：TuiOutput 事件驱动 + flush（卡片收起态）===');
   console.log(frame4);
-  // 收起态：命令 + 执行缩略（✓ 执行成功 · 14 字符）+ 结果缩略（首个非「退出码: 0」输出行
-  // ——退出码 0 不再展示，用户要求；完整结果仍回传模型）；无标题、无点击展开
-  const checks4 = ['你是谁？', '任务完成 ✅', 'mock', '正在分析任务', '$ echo mock-ok', '执行成功 · 14 字符', 'echo 输出内容'];
+  // 收起态：**只显示完整的执行命令**（$ echo mock-ok）——执行结果/输出点击展开才显示
+  //（用户要求），无执行缩略/结果缩略/点击展开提示；退出码 0 行本就不过滤进卡片
+  const checks4 = ['你是谁？', '任务完成 ✅', 'mock', '正在分析任务', '$ echo mock-ok'];
   const missing4 = checks4.filter((c) => !frame4.includes(c));
   if (missing4.length) {
     console.error(`✗ 场景 4 缺少: ${missing4.join(', ')}（flush 或卡片未生效）`);
     process.exit(1);
   }
-  for (const old of ['执行命令', '点击展开']) {
+  for (const old of ['执行命令', '点击展开', '执行成功', 'echo 输出内容']) {
     if (frame4.includes(old)) {
-      console.error(`✗ 场景 4 仍显示旧卡片文案: ${old}`);
+      console.error(`✗ 场景 4 收起态仍显示旧文案/结果: ${old}`);
       process.exit(1);
     }
   }
@@ -347,7 +370,7 @@ async function main(): Promise<void> {
   const s7 = createTuiState();
   fill(s7, 40);
   s7.scrollTop = 0; // 回滚到最早的内容
-  const r7 = await render(s7);
+  const r7 = await render(s7, 21); // 思考头行 +1 行后 21 行才容得下 📁 .（scrollTop=0 窗 cap-1）
   console.log('=== 场景 7：上滚回看历史（scrollTop=0）===');
   console.log(r7.frame);
   const checks7 = ['你是谁？', '📁 .', '已上滚'];
@@ -483,11 +506,11 @@ async function main(): Promise<void> {
   const s11 = createTuiState();
   fill(s11, 0);
   const rows11 = computeRows(s11, { height: 20, width: 64 }, { withInput: true });
-  // 与 repaintTree 相同逻辑重建 cardRects（无边框布局：内容行 i → 0-based 鼠标事件坐标 y = i）
+  // 与 repaintTree 相同逻辑重建 cardRects（根 paddingY:1：内容行 i → 事件 y = i + 1）
   const rects11 = new Map<number, CardRect>();
   rows11.forEach((r, i) => {
     if (r.cardId !== undefined) {
-      const y2 = i;
+      const y2 = i + 1;
       const rect = rects11.get(r.cardId);
       if (rect) rect.bottom = y2;
       else rects11.set(r.cardId, { top: y2, bottom: y2 });
@@ -503,7 +526,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 11 未找到卡片数据');
     process.exit(1);
   }
-  const y11 = cardIdx11; // 卡片首行的 0-based 鼠标事件坐标（无边框布局 y = i）
+  const y11 = cardIdx11 + 1; // 卡片首行的 0-based 鼠标事件坐标（根 paddingY:1 → y = i + 1）
   if (card11.expanded) {
     console.error('✗ 场景 11 初始应为收起态');
     process.exit(1);
@@ -574,9 +597,9 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 12 摘要内容丢失: ${cardLines.map((l) => l.text).join('|')}`);
     process.exit(1);
   }
-  // 收起态结构：top → cmd → exec（执行成功）→ result（无输出）→ bottom
+  // 收起态结构：top → cmd（完整命令，折行）→ bottom（用户要求只显示执行命令）
   const roles12 = cardLines.map((l) => l.role);
-  const expectRoles12 = ['top', 'cmd', 'cmd', 'exec', 'result', 'bottom'];
+  const expectRoles12 = ['top', 'cmd', 'cmd', 'bottom'];
   if (JSON.stringify(roles12) !== JSON.stringify(expectRoles12)) {
     console.error(`✗ 场景 12 收起态角色结构异常: ${JSON.stringify(roles12)}`);
     process.exit(1);
@@ -1230,7 +1253,8 @@ async function main(): Promise<void> {
   s18b.status = '任务完成';
   const rows18b = computeRows(s18b, { height: 20, width: 64 }, { withInput: true });
   const userIdx18 = rows18b.findIndex((r) => r.text.includes('你好'));
-  const thinkIdx18 = rows18b.findIndex((r) => r.text.includes('思考中'));
+  // 思考模块展开态 = `- thinking` 头行 + 内容（用户要求）——间距以**头行**为思考起点
+  const thinkIdx18 = rows18b.findIndex((r) => r.text.trim().startsWith('- thinking'));
   if (userIdx18 < 0 || thinkIdx18 < 0 || thinkIdx18 - userIdx18 !== 2) {
     console.error(`✗ 场景 18 用户消息与思考之间缺空行（thinkIdx=${thinkIdx18} userIdx=${userIdx18}，应差 2）`);
     process.exit(1);
@@ -1239,13 +1263,14 @@ async function main(): Promise<void> {
     console.error('✗ 场景 18 用户消息后的间距行不是空白行');
     process.exit(1);
   }
-  // d) 思考与回答间距：thinking 行后紧跟 1 行空行，再是 answer（不再贴在一起）
+  // d) 思考内容与回答间距：思考**内容行**后紧跟 1 行空行，再是 answer（不再贴在一起）
+  const thinkContentIdx18 = rows18b.findIndex((r) => r.text.includes('思考中'));
   const ansIdx18 = rows18b.findIndex((r) => r.text.includes('回答'));
-  if (ansIdx18 < 0 || ansIdx18 - thinkIdx18 !== 2) {
-    console.error(`✗ 场景 18 思考与回答之间缺空行（ansIdx=${ansIdx18} thinkIdx=${thinkIdx18}，应差 2）`);
+  if (ansIdx18 < 0 || ansIdx18 - thinkContentIdx18 !== 2) {
+    console.error(`✗ 场景 18 思考与回答之间缺空行（ansIdx=${ansIdx18} thinkIdx=${thinkContentIdx18}，应差 2）`);
     process.exit(1);
   }
-  if (rows18b[thinkIdx18 + 1].text !== '' || rows18b[thinkIdx18 + 1].chunks) {
+  if (rows18b[thinkContentIdx18 + 1].text !== '' || rows18b[thinkContentIdx18 + 1].chunks) {
     console.error('✗ 场景 18 思考后的间距行不是空白行');
     process.exit(1);
   }
@@ -1266,20 +1291,24 @@ async function main(): Promise<void> {
   const rows18c = buildBody(s18c, 64);
   const thinkIdx18c = rows18c.findIndex((r) => r.text.includes('思考中'));
   const cardIdx18c = rows18c.findIndex((r) => r.text.includes('$ echo ok'));
-  const resultIdx18c = rows18c.findIndex((r) => r.text.includes('无输出'));
+  // 卡片底行 = 最后一行带 cardId 的行（收起态无 result 行，卡片 = top/cmd/bottom）
+  const cardBottomIdx18c = rows18c.map((r) => r.cardId).lastIndexOf(1);
   const think2Idx18c = rows18c.findIndex((r) => r.text.includes('继续思考'));
   const ansIdx18c = rows18c.findIndex((r) => r.text.includes('回答'));
-  if (thinkIdx18c < 0 || cardIdx18c < 0 || cardIdx18c - thinkIdx18c !== 4) {
-    console.error(`✗ 场景 18 thinking↔卡片间距异常（应 2 行空白+顶留白 = 差 4，实际 ${cardIdx18c - thinkIdx18c}）`);
+  if (thinkIdx18c < 0 || cardIdx18c < 0 || cardIdx18c - thinkIdx18c !== 3) {
+    // 1 行空白 + 卡片顶留白 + 命令行 = 差 3（用户反馈「命令执行的块区域和下面的文字
+    // 距离太远」，thinking↔卡片统一收为 1 行间距）
+    console.error(`✗ 场景 18 thinking↔卡片间距异常（应 1 行空白+顶留白 = 差 3，实际 ${cardIdx18c - thinkIdx18c}）`);
     console.log(rows18c.map((r) => r.text).join('\n'));
     process.exit(1);
   }
-  if (rows18c[thinkIdx18c + 1].text !== '' || rows18c[thinkIdx18c + 2].text !== '') {
-    console.error('✗ 场景 18 thinking 后的 2 行间距应为空白行');
+  if (rows18c[thinkIdx18c + 1].text !== '') {
+    console.error('✗ 场景 18 thinking 后的间距行应为空白行');
     process.exit(1);
   }
-  if (think2Idx18c - resultIdx18c !== 4) {
-    console.error(`✗ 场景 18 卡片↔thinking 间距异常（应底留白+2 行空白 = 差 4，实际 ${think2Idx18c - resultIdx18c}）`);
+  if (think2Idx18c - cardBottomIdx18c !== 3) {
+    // 卡片底行 + 1 行空白 + `- thinking` 头行 + 内容 = 差 3（收起态卡片 = top/cmd/bottom）
+    console.error(`✗ 场景 18 卡片↔thinking 间距异常（应底留白+1 行空白+头行 = 差 3，实际 ${think2Idx18c - cardBottomIdx18c}）`);
     process.exit(1);
   }
   if (ansIdx18c - think2Idx18c !== 2) {
@@ -1297,12 +1326,12 @@ async function main(): Promise<void> {
   const t19 = await createTestRenderer({ width: 64, height: 20 });
   const tree19 = mountTree(t19.renderer, s19, { withInput: true });
   await t19.renderOnce();
-  // a) 输入 '/' → 联想列出全部命令（items 全量 28 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
+  // a) 输入 '/' → 联想列出全部命令（items 全量 29 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 28 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 28、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 29 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 29、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1372,8 +1401,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 5 条（theme/permission/plan/thinking/exit）+ 底部「↓ 还有 23 个」提示行
-  const checks19 = ['/theme', '切换主题', '/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '↓ 还有 22 个'];
+  // 紧凑窗口：只显示前 5 条（theme/permission/plan/thinking/tokens）+ 底部「↓ 还有 24 个」提示行
+  const checks19 = ['/theme', '切换主题', '/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/tokens', '显示 / 隐藏当次 token 使用统计', '/exit', '退出 TUI', '↓ 还有 23 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1385,7 +1414,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/undo', '/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/doctor', '/help']) {
+  for (const hidden of ['/stop', '/undo', '/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/doctor', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1453,13 +1482,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = model/status/context/export/config/mcp；上下各一条提示行（↑ 15 个 · ↓ 7 个，28 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 7 个') || frame19s.includes('/theme')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 7 个」、无 /theme）');
+  // items[15..20] = settings/model/status/context/export/config；上下各一条提示行（↑ 15 个 · ↓ 8 个，29 条命令）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 8 个') || frame19s.includes('/theme')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 8 个」、无 /theme）');
     process.exit(1);
   }
-  if (!frame19s.includes('/status') || !frame19s.includes('/context') || !frame19s.includes('/mcp')) {
-    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /status /context /mcp 等）');
+  if (!frame19s.includes('/status') || !frame19s.includes('/context') || !frame19s.includes('/export')) {
+    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /status /context /export 等）');
     process.exit(1);
   }
   console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/圆角浮层/不挤动内容区）');
@@ -1547,16 +1576,70 @@ async function main(): Promise<void> {
   s21.version = '0.1.0';
   s21.model = 'mock';
   pushLine(s21, { kind: 'user', text: '你好' });
-  pushLine(s21, { kind: 'thinking', text: '第一段思考内容\n第二行细节\n第三行结论' });
-  pushLine(s21, { kind: 'thinking', text: '第二轮思考' });
+  pushLine(s21, { kind: 'thinking', text: '第一段思考内容\n第二行细节\n第三行结论', thinkingMs: 3200 });
+  pushLine(s21, { kind: 'thinking', text: '第二轮思考', thinkingMs: 1500 });
   pushLine(s21, { kind: 'answer', text: '最终回答' });
   s21.status = '任务完成';
-  // a) 默认展开：两个思考段落的全文都可见（当前行为不变）
+  // a) 默认展开：每个思考段落 = `- thinking` 头行（含思考时间 · 3.2s）+ 全文
+  //    （用户要求「展示时显示 - thinking + 思考时间 + 思考内容」）
   const rows21 = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
   const thinkFull21 = rows21.filter((r) => r.text.includes('第一段思考内容') || r.text.includes('第二轮思考'));
   if (thinkFull21.length !== 2) {
     console.error(`✗ 场景 21 默认未展开思考全文: ${JSON.stringify(thinkFull21)}`);
     process.exit(1);
+  }
+  const headerRows21 = rows21.filter((r) => r.text.trim().startsWith('- thinking'));
+  if (headerRows21.length !== 2 || !rows21.some((r) => r.text.includes('- thinking · 3.2s')) || !rows21.some((r) => r.text.includes('- thinking · 1.5s'))) {
+    console.error(`✗ 场景 21 展开态缺 - thinking 头行/思考时间: ${JSON.stringify(headerRows21.map((r) => r.text))}`);
+    process.exit(1);
+  }
+  // a2) **思考中头行 = loading + thinking + 实时耗时**（用户要求）：thinkingRunning=true
+  //     时前缀为 spinner 帧（随 spinnerIndex 变化）；思考完（false）前缀变 `-`。
+  const s21a2 = createTuiState();
+  s21a2.version = '0.1.0';
+  s21a2.model = 'mock';
+  pushLine(s21a2, { kind: 'thinking', text: '正在思考', thinkingRunning: true, thinkingMs: 1200 });
+  s21a2.spinnerIndex = 3;
+  const rows21a2 = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
+  const runHead21 = rows21a2.find((r) => r.text.includes('thinking'));
+  if (!runHead21 || !runHead21.text.startsWith('⠸ thinking · 1.2s')) {
+    console.error(`✗ 场景 21 思考中头行应为 loading+thinking+time（⠸ thinking · 1.2s）: ${JSON.stringify(runHead21?.text)}`);
+    process.exit(1);
+  }
+  s21a2.lines[0]!.thinkingRunning = false; // 思考完 → 前缀变 `-`
+  const rows21a2b = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
+  const doneHead21 = rows21a2b.find((r) => r.text.includes('thinking'));
+  if (!doneHead21 || !doneHead21.text.startsWith('- thinking · 1.2s')) {
+    console.error(`✗ 场景 21 思考完头行应为 - thinking · time: ${JSON.stringify(doneHead21?.text)}`);
+    process.exit(1);
+  }
+  // a3) **收到消息开始思考（onRound）立即显示 thinking 模块**（用户要求「接收到消息开始
+  //     thinking 的时候就要显示，而不是收到流式返回才开始」）：onRound 预建空内容
+  //     running 行 → 头行 `⠋ thinking · 0.0s`（无内容行）；无实际思考 finish 移除空模块
+  {
+    const { TuiOutput } = await import('../src/tui/output.js');
+    const s21a3 = createTuiState();
+    s21a3.version = '0.1.0';
+    s21a3.model = 'mock';
+    const fakeS3 = { paint: async () => {}, stop: async () => {}, input: null, onKeyPress: () => () => {} };
+    const out3 = new TuiOutput(s21a3, { showThinking: true }, fakeS3 as never);
+    out3.onRound(0, 50);
+    const tl3 = s21a3.lines.filter((l) => l.kind === 'thinking');
+    if (tl3.length !== 1 || tl3[0]!.thinkingRunning !== true || tl3[0]!.text !== '') {
+      console.error('✗ 场景 21 onRound 未立即预建 thinking 模块');
+      process.exit(1);
+    }
+    const rows21a3 = computeRows(s21a3, { height: 20, width: 64 }, { withInput: true });
+    const head3 = rows21a3.find((r) => r.text.includes('thinking'));
+    if (!head3 || !head3.text.includes('thinking') || rows21a3.some((r) => r.thinkingIdx !== undefined && r.text !== '' && !r.text.includes('thinking'))) {
+      console.error(`✗ 场景 21 onRound 后应只显示头行（无空内容行）: ${JSON.stringify(rows21a3.map((r) => r.text))}`);
+      process.exit(1);
+    }
+    out3.thinking.finish(); // 无实际思考 → 移除空模块
+    if (s21a3.lines.some((l) => l.kind === 'thinking')) {
+      console.error('✗ 场景 21 无思考内容的空模块未被移除');
+      process.exit(1);
+    }
   }
   // b) 折叠：每个思考段落压成一行 `+ thinking`（+ 表示可展开；无行数/点击展开提示），全文隐藏
   s21.thinkingExpanded = false;
@@ -1620,12 +1703,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // e) 折叠态下**单独展开某条思考**（点击摘要切换）：expandedThinking 集合驱动
-  //    构造 thinkingRects（与 repaintTree 相同逻辑：可见行 i → 思考行下标）
+  //    构造 thinkingRects（与 repaintTree 相同逻辑：可见行 i → 事件 y = i + 1，
+  //    根 paddingY:1 下移一行）
   const { hitTestThinking } = await import('../src/tui/render.js');
   const buildRects21 = (rowsArr: Row[]): Map<number, number> => {
     const m = new Map<number, number>();
     rowsArr.forEach((r, i) => {
-      if (r.thinkingIdx !== undefined) m.set(i, r.thinkingIdx);
+      if (r.thinkingIdx !== undefined) m.set(i + 1, r.thinkingIdx);
     });
     return m;
   };
@@ -1640,7 +1724,7 @@ async function main(): Promise<void> {
   }
   // 点击第 1 条摘要（thinkingIdx=1）→ 只展开该条：全文可见、第 2 条仍折叠
   const sum1Row21 = rows21e.findIndex((r) => r.thinkingIdx === 1);
-  if (sum1Row21 < 0 || !hitTestThinking(s21, rects21e, sum1Row21) || !s21.expandedThinking.has(1)) {
+  if (sum1Row21 < 0 || !hitTestThinking(s21, rects21e, sum1Row21 + 1) || !s21.expandedThinking.has(1)) {
     console.error(`✗ 场景 21 点击折叠摘要未单独展开（sum1Row=${sum1Row21}）`);
     process.exit(1);
   }
@@ -1649,8 +1733,8 @@ async function main(): Promise<void> {
     console.error('✗ 场景 21 单独展开后内容错误（应只展开第 1 条）');
     process.exit(1);
   }
-  // 展开态：第 1 条带 `- thinking` 头行（- 表示可收起），其余仍 + thinking 摘要
-  if (!rows21f.some((r) => r.text.trim() === '- thinking')) {
+  // 展开态：第 1 条带 `- thinking` 头行（含思考时间；- 表示可收起），其余仍 + thinking 摘要
+  if (!rows21f.some((r) => r.text.trim().startsWith('- thinking'))) {
     console.error('✗ 场景 21 展开态缺 - thinking 头行');
     process.exit(1);
   }
@@ -1662,16 +1746,16 @@ async function main(): Promise<void> {
   // 展开后的行也带 thinkingIdx：再点击该行 → 收起（回到摘要）
   const rects21f = buildRects21(rows21f);
   const expRow21 = rows21f.findIndex((r) => r.text.includes('第一段思考内容'));
-  if (expRow21 < 0 || rects21f.get(expRow21) !== 1) {
+  if (expRow21 < 0 || rects21f.get(expRow21 + 1) !== 1) {
     console.error(`✗ 场景 21 展开行未带 thinkingIdx: ${JSON.stringify([...rects21f])}`);
     process.exit(1);
   }
-  if (!hitTestThinking(s21, rects21f, expRow21) || s21.expandedThinking.has(1)) {
+  if (!hitTestThinking(s21, rects21f, expRow21 + 1) || s21.expandedThinking.has(1)) {
     console.error('✗ 场景 21 点击展开行未收起');
     process.exit(1);
   }
   const rows21g = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
-  if (rows21g.some((r) => r.text.includes('第一段思考内容')) || rows21g.filter((r) => r.text.trim() === '+ thinking').length !== 2 || rows21g.some((r) => r.text.trim() === '- thinking')) {
+  if (rows21g.some((r) => r.text.includes('第一段思考内容')) || rows21g.filter((r) => r.text.trim() === '+ thinking').length !== 2 || rows21g.some((r) => r.text.trim().startsWith('- thinking'))) {
     console.error('✗ 场景 21 收起后未恢复两条 + thinking 摘要');
     process.exit(1);
   }
@@ -1681,21 +1765,56 @@ async function main(): Promise<void> {
     console.error('✗ 场景 21 空白区域误命中思考行');
     process.exit(1);
   }
-  // /thinking 命令切换时清空单独展开标记（fakeCtx21 的 state = s21c）
+  // /thinking 命令切换时清空单独展开/收起标记（fakeCtx21 的 state = s21c）
   s21c.expandedThinking.add(1);
+  s21c.collapsedThinking.add(2);
   await runCommand(fakeCtx21 as never, '/thinking');
-  if (s21c.thinkingExpanded !== false || s21c.expandedThinking.size !== 0) {
-    console.error('✗ 场景 21 /thinking 未清空单独展开标记');
+  if (s21c.thinkingExpanded !== false || s21c.expandedThinking.size !== 0 || s21c.collapsedThinking.size !== 0) {
+    console.error('✗ 场景 21 /thinking 未清空单独展开/收起标记');
     process.exit(1);
   }
   // 再折叠后展开：全文恢复可见
   s21.thinkingExpanded = true;
+  s21.collapsedThinking.clear();
   const rows21d = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
   if (!rows21d.some((r) => r.text.includes('第一段思考内容')) || rows21d.some((r) => r.text.trim() === '+ thinking')) {
     console.error('✗ 场景 21 重新展开后思考全文未恢复');
     process.exit(1);
   }
-  console.log('✓ 场景 21 通过：/thinking 全局展开/折叠 + 折叠态点击单独展开/收起（+ thinking / - thinking 头行，无行数/提示文案）');
+  // f) **展开态下点击收起/展开某条思考**（用户要求「思考模块支持点击展开、收起」）：
+  //    展开态（thinkingExpanded=true）点某条 `- thinking` 头行或内容 → 该条收起
+  //    （collapsedThinking）；再点 `+ thinking` → 重新展开。
+  const rows21h = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
+  const rects21h = buildRects21(rows21h);
+  const contentRow21h = rows21h.findIndex((r) => r.text.includes('第一段思考内容'));
+  const headerRow21h = rows21h.findIndex((r) => r.text.includes('- thinking · 3.2s'));
+  if (contentRow21h < 0 || headerRow21h < 0 || rects21h.get(contentRow21h + 1) !== 1 || rects21h.get(headerRow21h + 1) !== 1) {
+    console.error(`✗ 场景 21 展开态思考行未带 thinkingIdx: ${JSON.stringify([...rects21h])}`);
+    process.exit(1);
+  }
+  // 点头行 → 收起第 1 条（collapsedThinking 记录；第 2 条不受影响）
+  if (!hitTestThinking(s21, rects21h, headerRow21h + 1) || !s21.collapsedThinking.has(1) || s21.collapsedThinking.has(2)) {
+    console.error('✗ 场景 21 展开态点头行未单独收起');
+    process.exit(1);
+  }
+  const rows21i = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
+  if (rows21i.some((r) => r.text.includes('第一段思考内容')) || !rows21i.some((r) => r.text.includes('第二轮思考')) || rows21i.filter((r) => r.text.trim() === '+ thinking').length !== 1) {
+    console.error('✗ 场景 21 收起后第 1 条应只剩 + thinking、第 2 条仍展开');
+    process.exit(1);
+  }
+  // 再点 `+ thinking` → 重新展开该条
+  const rects21i = buildRects21(rows21i);
+  const sumRow21i = rows21i.findIndex((r) => r.text.trim() === '+ thinking');
+  if (sumRow21i < 0 || !hitTestThinking(s21, rects21i, sumRow21i + 1) || s21.collapsedThinking.has(1)) {
+    console.error('✗ 场景 21 展开态点 + thinking 未重新展开');
+    process.exit(1);
+  }
+  const rows21j = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
+  if (!rows21j.some((r) => r.text.includes('第一段思考内容')) || rows21j.some((r) => r.text.trim() === '+ thinking')) {
+    console.error('✗ 场景 21 重新展开后思考全文未恢复');
+    process.exit(1);
+  }
+  console.log('✓ 场景 21 通过：/thinking 全局展开/折叠 + 点击单条展开/收起（展开 = - thinking · 思考时间 + 内容 / 收起 = + thinking，双向点击切换）');
 
   // 场景 22：工具审批卡片（安全护栏）——渲染 + 点击命中判定
   console.log('=== 场景 22：工具审批卡片 ===');
@@ -3799,8 +3918,8 @@ async function main(): Promise<void> {
 
   // 场景 41：read_file opencode 风格 + 并行多读合并 + write_file diff 展示
   // —— read_file 收起态只一行 `→ Read 路径`（无执行/结果缩略行）；并行多读合并成
-  // `→ Read N files`（点击展开逐条 ⤷）；write_file 收起态 = 命令 + 执行缩略 + 改动摘要
-  // （新增文件·全文 N 行 / 修改·+A −D 行），展开 = 新增文件全文（逐行绿）/ 修改左右对比
+  // `→ Read N files`（点击展开逐条 ⤷）；write_file 收起态**只显示命令**（改动摘要/
+  // 对比点展开才显示——用户要求），展开 = 新增文件全文（逐行绿）/ 修改左右对比
   // （左原右新、删除红新增绿、│ 分隔）
   console.log('=== 场景 41：read_file 一行式 + 多读合并 + write_file diff ===');
 
@@ -3890,8 +4009,9 @@ async function main(): Promise<void> {
       diff: { path: 'new.txt', original: null, content: 'line1\nline2' },
     };
     const collapsed = toolCardLines(card, 60);
-    if (!collapsed.some((l) => l.text.includes('新增文件 · 全文 2 行'))) {
-      console.error(`✗ 场景 41 新建收起态缺改动摘要: ${collapsed.map((l) => l.text).join('|')}`);
+    const roles = collapsed.map((l) => l.role);
+    if (roles.join(',') !== 'top,cmd,bottom' || !collapsed.some((l) => l.text.includes('✏️ new.txt')) || collapsed.some((l) => l.text.includes('新增文件'))) {
+      console.error(`✗ 场景 41 新建收起态应只显示命令: ${collapsed.map((l) => l.text).join('|')}`);
       process.exit(1);
     }
     const expanded = toolCardLines({ ...card, expanded: true }, 60);
@@ -3914,8 +4034,8 @@ async function main(): Promise<void> {
       diff: { path: 'old.txt', original: 'a\nb\nc', content: 'a\nx\nc\nd' },
     };
     const collapsed = toolCardLines(card, 60);
-    if (!collapsed.some((l) => l.text.includes('修改 · +2 −1 行'))) {
-      console.error(`✗ 场景 41 修改收起态缺 +A −D 摘要: ${collapsed.map((l) => l.text).join('|')}`);
+    if (collapsed.map((l) => l.role).join(',') !== 'top,cmd,bottom' || collapsed.some((l) => l.text.includes('修改 ·'))) {
+      console.error(`✗ 场景 41 修改收起态应只显示命令: ${collapsed.map((l) => l.text).join('|')}`);
       process.exit(1);
     }
     const expanded = toolCardLines({ ...card, expanded: true }, 60);
@@ -3981,6 +4101,160 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 41 通过：read_file 一行式/多读合并/新建全文/write diff 左右对比（LCS 对齐 + 逐 chunk 红绿着色）');
+
+  // 场景 42：当次 token 使用统计模块（/tokens）
+  // —— 每一次发送消息、返回消息结束后，插入当次 token 统计：输入/输出/缓存。
+  // 默认收起显示汇总；点开显示每次 LLM 请求的明细（一行一条，加起来 = 汇总）；
+  // /tokens 命令控制是否展示（关闭时历史与新轮都不显示，数据保留重开恢复）。
+  console.log('=== 场景 42：当次 token 统计模块（/tokens）===');
+  const { TuiOutput: TuiOutput42 } = await import('../src/tui/output.js');
+  const { hitTestTokens } = await import('../src/tui/rows.js');
+  const s42 = createTuiState();
+  s42.version = '0.1.0';
+  s42.model = 'mock';
+  const t42 = await createTestRenderer({ width: 64, height: 20 });
+  const tree42 = mountTree(t42.renderer, s42, { withInput: true });
+  await t42.renderOnce();
+  const sess42: TuiSession = {
+    paint: async () => {
+      repaintTree(t42.renderer, tree42, s42, { withInput: true });
+      await t42.renderOnce();
+    },
+    stop: async () => {},
+    input: null,
+    onKeyPress: () => () => {},
+  };
+  const out42 = new TuiOutput42(s42, { showThinking: true }, sess42);
+  // a) 一轮完整事件流：用户消息 → 轮开始（重置收集）→ 3 次 LLM 请求（多步工具调用
+  //    每步各一次）→ 回答 → 轮结束 → 插入 tokens 模块（默认收起 = 只显示汇总）
+  out42.onUserMessage('统计一下 token');
+  out42.onTurnStart();
+  out42.onUsage({ prompt: 1300, completion: 350, total: 1650, cached: 1000 });
+  out42.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
+  out42.onUsage({ prompt: 200, completion: 100, total: 300, cached: 50 });
+  out42.onAnswer('统计结果如上。');
+  out42.onAnswerEnd();
+  out42.onTurnEnd();
+  await out42.flush();
+  const tokLines42 = s42.lines.filter((l) => l.kind === 'tokens');
+  if (tokLines42.length !== 1 || !tokLines42[0]!.tokens || tokLines42[0]!.tokens.usages.length !== 3 || tokLines42[0]!.tokens.expanded !== false) {
+    console.error(`✗ 场景 42 轮结束未插入收起态 tokens 模块: ${JSON.stringify(tokLines42.map((l) => l.tokens))}`);
+    process.exit(1);
+  }
+  // b) 收起态渲染：一行汇总 `⚡ 输入 1.8K · 输出 600 · 缓存 1.1K`（1300+300+200 / 350+150+100 / 1000+30+50）
+  const frame42a = t42.captureCharFrame();
+  if (!frame42a.includes('⚡ 输入 1.8K · 输出 600 · 缓存 1.1K')) {
+    console.error(`✗ 场景 42 收起态汇总行缺失: ${frame42a.split('\n').filter((l) => l.includes('⚡')).join('|')}`);
+    process.exit(1);
+  }
+  // 收起态不显示逐次明细
+  if (frame42a.includes('输入 1300') || frame42a.includes('输入 300')) {
+    console.error('✗ 场景 42 收起态不应显示逐次明细');
+    process.exit(1);
+  }
+  // c) 点击汇总行 → 展开：每次 LLM 请求一行明细（输入/输出/缓存，加起来 = 汇总）
+  const { hitTestApproval: hta42, hitTestCard: htc42, hitTestThinking: htt42 } = await import('../src/tui/render.js');
+  (tree42.root as unknown as { onMouseEvent?: (e: unknown) => void }).onMouseEvent = (e: unknown) => {
+    const ev = e as { type?: string; button?: number; x?: number; y?: number };
+    if (ev.type === 'down' && ev.button === 0 && typeof ev.y === 'number') {
+      if (hta42(s42, tree42.approvalRect, ev.y)) {
+        void sess42.paint();
+        return;
+      }
+      const picker = s42.cmdSuggest ?? s42.mention;
+      if (picker && tree42.suggestRect && tree42.input) {
+        void sess42.paint();
+        return;
+      }
+      if (s42.pending.length > 0 && tree42.pendingRects.get(ev.y) !== undefined) {
+        void sess42.paint();
+        return;
+      }
+      if (htt42(s42, tree42.thinkingRects, ev.y)) void sess42.paint();
+      else if (hitTestTokens(s42, tree42.tokensRects, ev.y)) void sess42.paint();
+      else if (htc42(s42, tree42.cardRects, ev.y)) void sess42.paint();
+    }
+  };
+  const tokY42 = [...tree42.tokensRects.keys()][0];
+  if (tokY42 === undefined) {
+    console.error('✗ 场景 42 tokensRects 未记录汇总行');
+    process.exit(1);
+  }
+  await t42.mockMouse.click(10, tokY42);
+  await sess42.paint();
+  if (!tokLines42[0]!.tokens!.expanded) {
+    console.error('✗ 场景 42 点击汇总行未展开');
+    process.exit(1);
+  }
+  const frame42b = t42.captureCharFrame();
+  const detail42 = frame42b.split('\n').filter((l) => l.includes('⚡ 输入') || /^\s+- 输入/.test(l));
+  if (detail42.length !== 4) {
+    console.error(`✗ 场景 42 展开后明细行数错误（应 1 汇总 + 3 明细 = 4 行）: ${JSON.stringify(detail42)}`);
+    process.exit(1);
+  }
+  for (const want of ['- 输入 1.3K · 输出 350 · 缓存 1.0K', '- 输入 300 · 输出 150 · 缓存 30', '- 输入 200 · 输出 100 · 缓存 50']) {
+    if (!frame42b.includes(want)) {
+      console.error(`✗ 场景 42 展开明细缺失: ${want}`);
+      process.exit(1);
+    }
+  }
+  // 汇总行与回答文本之间应有 1 行空白间距（tokens 是独立组，other→tokens 切换插 1 行）
+  const frame42Lines = frame42b.split('\n');
+  const sum42Row = frame42Lines.findIndex((l) => l.includes('⚡ 输入'));
+  if (sum42Row < 2 || frame42Lines[sum42Row - 1]!.trim() !== '' || !frame42Lines[sum42Row - 2]!.includes('统计结果如上')) {
+    console.error('✗ 场景 42 汇总行上方缺少间距（应紧邻的回答文本后留 1 行空白）');
+    process.exit(1);
+  }
+  // d) 再点击 → 收起（往返）
+  await t42.mockMouse.click(10, tokY42);
+  await sess42.paint();
+  if (tokLines42[0]!.tokens!.expanded) {
+    console.error('✗ 场景 42 再次点击未收起');
+    process.exit(1);
+  }
+  const frame42c = t42.captureCharFrame();
+  if (frame42c.includes('- 输入 1.3K')) {
+    console.error('✗ 场景 42 收起后明细仍显示');
+    process.exit(1);
+  }
+  // e) /tokens 命令：切换显示开关（关闭时 tokens 行不渲染、数据保留；再开恢复）
+  const s42t = createTuiState();
+  pushLine(s42t, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
+  const rows42on = computeRows(s42t, { height: 20, width: 64 }, { withInput: true });
+  if (!rows42on.some((r) => r.text.includes('⚡ 输入'))) {
+    console.error('✗ 场景 42 showTokens=true 应渲染 tokens 行');
+    process.exit(1);
+  }
+  const s42off = createTuiState();
+  s42off.showTokens = false;
+  pushLine(s42off, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
+  const rows42off = computeRows(s42off, { height: 20, width: 64 }, { withInput: true });
+  if (rows42off.some((r) => r.text.includes('⚡ 输入'))) {
+    console.error('✗ 场景 42 showTokens=false 不应渲染 tokens 行');
+    process.exit(1);
+  }
+  if (s42off.lines.some((l) => l.kind === 'tokens') !== true) {
+    console.error('✗ 场景 42 关闭时数据应保留在 state.lines');
+    process.exit(1);
+  }
+  // /tokens 命令分发：切换 showTokens
+  const { runCommand: runCmd42 } = await import('../src/tui/commands.js');
+  const s42c = createTuiState();
+  if (s42c.showTokens !== true) {
+    console.error('✗ 场景 42 showTokens 默认应为 true');
+    process.exit(1);
+  }
+  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/tokens');
+  if (s42c.showTokens !== false) {
+    console.error('✗ 场景 42 /tokens 未关闭 showTokens');
+    process.exit(1);
+  }
+  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/tokens');
+  if (s42c.showTokens !== true) {
+    console.error('✗ 场景 42 /tokens 未重新打开 showTokens');
+    process.exit(1);
+  }
+  console.log('✓ 场景 42 通过：当次 token 统计（收起汇总/点击展开逐次明细/往返切换//tokens 开关）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

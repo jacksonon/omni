@@ -69,6 +69,7 @@ import {
   hitTestApproval,
   hitTestCard,
   hitTestThinking,
+  hitTestTokens,
   menuPanelRows,
   settingsPanelRows,
   type CardRect,
@@ -83,6 +84,7 @@ export {
   hitTestApproval,
   hitTestCard,
   hitTestThinking,
+  hitTestTokens,
   menuPanelRows,
   rowStyle,
   type CardRect,
@@ -148,6 +150,8 @@ export interface TuiTree {
   cardRects: Map<number, CardRect>;
   /** 每次重绘刷新：思考折叠摘要/单独展开行的屏幕 y → state.lines 下标（点击单独展开/收起） */
   thinkingRects: Map<number, number>;
+  /** 每次重绘刷新：token 统计模块行的屏幕 y → state.lines 下标（点击展开/收起汇总明细） */
+  tokensRects: Map<number, number>;
   /** 每次重绘刷新：审批卡片本次可见的屏幕 y 范围（点击批准/拒绝用；无审批为 null） */
   approvalRect: { top: number; bottom: number } | null;
   /** 命令联想 / @ 提及列表（独立浮层：圆角方框 + 背景，绝对定位悬停在输入框上方，不占内容流；非模态） */
@@ -309,11 +313,15 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerBox.add(footerEsc); // loading 右侧
   }
 
-  // 子节点顺序：内容行（动态）→ 状态栏 → 灰色块（marginTop:auto 钉底）→ 统计行
+  // 子节点顺序：内容行（动态）→ 状态栏 → 灰色块（marginTop:auto 钉底）→ 统计行。
+  // 状态栏 marginTop:1 —— 与内容区之间留 1 行间距（用户反馈「工具执行之后如果有
+  // 执行中、思考中（状态栏 ⠋ 文案），要和工具执行的区域有一点间隔，现在贴在一起了」
+  // ——内容不满屏时状态栏紧贴最后一行内容（如工具卡片），加间距后不再紧贴）。
   const status = new TextRenderable(ctx, {
     content: '',
     attributes: createTextAttributes({ dim: true }),
     wrapMode: 'none',
+    marginTop: 1,
   });
   root.add(status);
 
@@ -419,6 +427,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     pendingRects: new Map(),
     cardRects: new Map(),
     thinkingRects: new Map(),
+    tokensRects: new Map(),
     approvalRect: null,
     suggestBox,
     suggestCells,
@@ -685,8 +694,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.footerEsc.content = state.loading ? 'esc' : '';
   }
   // 视口过小时隐藏状态栏，优先保证底部完整可见
-  //（交互模式需 11 行：灰色块 7（圆角边框 2 + paddingY 2 + 输入 1 + 间距 1 + 模型 1）+ 统计行 1 + 状态栏 1 + 内边距 2；单任务模式仅需 3 行）
-  tree.status.visible = opts?.withInput ? height >= 9 : height >= 3;
+  //（交互模式需 12 行：灰色块 5（圆角边框 2 + 输入 1 + 间距 1 + 模型 1）+ 统计行 2（间距 1 + 行 1）+ 状态栏 2（间距 1 + 行 1）+ 内边距 2；
+  //  单任务模式仅需 4 行——状态栏 2 + 内边距 2）
+  tree.status.visible = opts?.withInput ? height >= 10 : height >= 4;
   tree.status.content = state.status;
 
   // 联想/提及列表内容（/ 命令联想：› /theme 描述；@ 提及：📁/📄 + 路径）。
@@ -854,10 +864,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.cells.push(cell);
     tree.root.insertBefore(cell, anchor);
   }
-  // 刷新卡片/思考/审批命中区域：内容行 i 的鼠标事件坐标 y = i（0-based；无边框，屏幕行 1+i 减 1）。
-  // 供点击 handler 把点击坐标映射回卡片/思考行/审批卡（见 startTui、CardRect、hitTestThinking 注释）。
+  // 刷新卡片/思考/审批命中区域。**坐标语义（探针实测）**：根 Box 有 paddingY:1，
+  // 内容行 i 渲染在屏幕帧第 i+1 行（0-based 帧行）；终端上报 SGR wireY = 1-based
+  // 行号，OpenTUI 解析后事件 y = wireY - 1 = 帧行。因此**事件 y = i + 1**——
+  // rect 必须按事件坐标登记（旧实现用 i，与真实事件 y 差 1：单行收起模块
+  //（+ thinking / ⚡ 汇总）唯一一行永远点不中，需点别处触发重绘后恰巧命中）。
   tree.cardRects.clear();
   tree.thinkingRects.clear();
+  tree.tokensRects.clear();
   tree.approvalRect = null;
   for (let i = 0; i < tree.cells.length; i++) {
     const cell = tree.cells[i];
@@ -876,18 +890,20 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         logCrash('repaint-row', e);
       }
     }
+    const y = i + 1; // 内容行 i → 事件 y（根 paddingY:1 下移一行，见上注释）
     const cardId = rows[i].cardId;
     if (cardId !== undefined) {
-      const y = i;
       const rect = tree.cardRects.get(cardId);
       if (rect) rect.bottom = y;
       else tree.cardRects.set(cardId, { top: y, bottom: y });
     }
     const thinkingIdx = rows[i].thinkingIdx;
-    if (thinkingIdx !== undefined) tree.thinkingRects.set(i, thinkingIdx);
+    if (thinkingIdx !== undefined) tree.thinkingRects.set(y, thinkingIdx);
+    const tokensIdx = rows[i].tokensIdx;
+    if (tokensIdx !== undefined) tree.tokensRects.set(y, tokensIdx);
     if (rows[i].approvalId !== undefined) {
-      if (tree.approvalRect) tree.approvalRect.bottom = i;
-      else tree.approvalRect = { top: i, bottom: i };
+      if (tree.approvalRect) tree.approvalRect.bottom = y;
+      else tree.approvalRect = { top: y, bottom: y };
     }
   }
   // 待发送消息行的点击区域：底部固定块（待发送区 + 灰色块）被 marginTop:auto 钉在视口
@@ -1014,7 +1030,8 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
     // ② 命令联想浮层：点击某项 → 填入该命令（等同 Tab，可继续编辑后 Enter 执行）；
     //    浮层区域内的点击不穿透到下层内容（避免误触被遮挡的工具卡片）；
     // ③ 思考折叠态：点击某条折叠摘要 → 单独展开该条思考（再次点击收起）；
-    // ④ 命中工具卡片 → 切换展开/收起。
+    // ④ token 统计模块：点击展开/收起汇总明细；
+    // ⑤ 命中工具卡片 → 切换展开/收起。
     // 坐标语义：MouseEvent.y 为 0-based（实测 SGR y 减 1）；repaintTree 已把
     // 每个可见卡片/思考行按事件坐标登记（内容行 i → y = i）。
     if (e.type === 'down' && e.button === 0 && typeof e.y === 'number') {
@@ -1056,7 +1073,10 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
           return;
         }
       }
+      // ④ 思考模块 / token 统计模块：点击切换展开/收起；
+      // ⑤ 命中工具卡片 → 切换展开/收起。
       if (hitTestThinking(state, tree.thinkingRects, e.y)) void paint();
+      else if (hitTestTokens(state, tree.tokensRects, e.y)) void paint();
       else if (hitTestCard(state, tree.cardRects, e.y)) void paint();
     }
   };

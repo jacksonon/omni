@@ -33,32 +33,87 @@ export class TuiOutput implements Output {
       this.thinking = NOOP_THINKING;
       return;
     }
-    let shown = false;
     const self = this; // thinking 对象方法里的 this 指向 thinking 本身，用闭包引用外层实例
     this.thinking = {
       get shown() {
-        return shown;
+        return self.thinkingShown;
+      },
+      start: () => {
+        // 收到消息/新一轮思考开始：**立即创建 thinking 模块头行**（loading + thinking +
+        // 实时耗时）——不等首个流式 chunk（用户要求「接收到消息开始 thinking 的时候就要
+        // 显示 thinking，而不是收到流式返回才开始」）。内容为空只显示头行，chunk 到达后
+        // appendLine 累积进同一行；若本轮无实际思考（finish 时仍为空）自动移除空模块。
+        if (self.thinkingShown) return; // 防御：已在显示不重复建行
+        self.thinkingShown = true;
+        self.thinkingStart = Date.now();
+        self.thinkingLineIdx = self.state.lines.length; // pushLine 追加到末尾
+        pushLine(self.state, { kind: 'thinking', text: '', thinkingRunning: true, thinkingMs: 0 });
+        self.schedulePaint();
       },
       write: (piece: string) => {
-        if (!shown) {
-          shown = true;
-          pushLine(self.state, { kind: 'thinking', text: piece });
+        if (!self.thinkingShown) {
+          // 兜底（onRound 未预建，如直接 write 的路径）：按旧逻辑首 chunk 建行
+          self.thinkingShown = true;
+          self.thinkingStart = Date.now();
+          self.thinkingLineIdx = self.state.lines.length;
+          pushLine(self.state, { kind: 'thinking', text: piece, thinkingRunning: true });
         } else {
           appendLine(self.state, 'thinking', piece);
         }
+        self.refreshThinkingMs(); // 实时耗时
         self.schedulePaint();
       },
       finish: () => {
-        shown = false;
+        // 思考区结束：写回最终耗时 + 清 running——头行从 `⠋ thinking · 实时耗时`
+        // 变为 `- thinking · 耗时`（用户要求「思考完则显示为 - thinking + time」）。
+        // 期间只有 appendLine 累积本段文本（无新行插入），下标保持有效。
+        if (self.thinkingShown) {
+          const li = self.state.lines[self.thinkingLineIdx];
+          if (li && li.kind === 'thinking') {
+            if (li.text === '') {
+              // 本轮没有实际思考内容（模型直接回答/调工具）：移除预建的空模块，
+              // 不残留 `- thinking · 0.0s` 空壳（此时该行必为最后一行，splice 安全）。
+              // 同步清掉该下标的单独展开/收起标记——模块已移除，残留的旧下标会在
+              // 后续思考模块占用同一下标时误伤（用户点击的收起态错位到新模块上）
+              self.state.collapsedThinking.delete(self.thinkingLineIdx);
+              self.state.expandedThinking.delete(self.thinkingLineIdx);
+              self.state.lines.splice(self.thinkingLineIdx, 1);
+            } else {
+              li.thinkingMs = Date.now() - self.thinkingStart;
+              li.thinkingRunning = false;
+            }
+          }
+        }
+        self.thinkingShown = false;
+        self.thinkingStart = 0;
+        self.thinkingLineIdx = -1;
         self.schedulePaint();
       },
     };
   }
 
+  /** 思考区生命周期（thinking 模块）：正在流式思考 + 起始时间 + 行下标。onRound
+   *  预建头行（用户要求收到消息即显示 thinking），spinner 定时器每 200ms 刷新头行
+   *  实时耗时（含首 chunk 前的等待期）。 */
+  private thinkingShown = false;
+  private thinkingStart = 0;
+  private thinkingLineIdx = -1;
+  /** 当次对话轮（onTurnStart → onTurnEnd）内每次 LLM 请求的 token 用量（onUsage 按
+   *  请求顺序收集；onTurnEnd 组装成 tokens 模块插入对话流——收起=汇总/展开=逐次明细） */
+  private turnUsages: TokenUsage[] = [];
+
+  /** 更新当前流式思考行的实时耗时（头行 `· N.Ns`；spinner 定时器每 200ms + write 时调用） */
+  private refreshThinkingMs(): void {
+    if (!this.thinkingShown || this.thinkingLineIdx < 0) return;
+    const li = this.state.lines[this.thinkingLineIdx];
+    if (li && li.kind === 'thinking') li.thinkingMs = Date.now() - this.thinkingStart;
+  }
+
   /** spinner 定时器（200ms 间隔循环动画帧） */
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  /** 当前 spinner 状态栏文案后缀（思考中 / 执行中…；startSpinner 设置） */
-  private spinnerLabel = '思考中';
+  /** 当前 spinner 状态栏文案后缀（现在恒为空——思考/执行阶段状态栏都不写文案，
+   *  只靠 spinnerIndex 推进卡片/头行 loading 帧；startSpinner 设置） */
+  private spinnerLabel = '';
   /** 统计行左侧 loading 定时器（200ms 一帧；独立于状态栏 spinner——流式期间
    * spinnerIndex 会被置 -1 但 loading 不受影响，会话进行中一直转） */
   private loadingTimer: ReturnType<typeof setInterval> | null = null;
@@ -116,18 +171,22 @@ export class TuiOutput implements Output {
    * 确保 30ms 窗口内未渲染的最终状态（如“任务完成”）上屏。
    */
   /**
-   * 启动 spinner 动画（200ms 一帧）：推进 spinnerIndex + 更新状态栏文案
-   * （`${帧} ${label}`）。思考阶段 label=思考中；工具执行阶段 label=执行中…——
-   * 两者共用同一套帧，卡片执行中行也从 spinnerIndex 取当前帧（动画 loading）。
+   * 启动 spinner 动画（200ms 一帧）：推进 spinnerIndex（思考头行/工具卡片取当前帧）。
+   * 思考与工具执行阶段都传 label=''——**状态栏不再写「思考中/执行中」文案**（用户要求
+   * 不再依赖这一类文本，状态由思考头行 ⠋ thinking · 耗时 与卡片 loading 直观表达）；
+   * label 非空的分支保留（未来若有需要显示文案的 spinner 场景可直接用）。
    */
-  private startSpinner(label = '思考中'): void {
+  private startSpinner(label = ''): void {
     this.spinnerLabel = label;
     this.stopSpinner();
     this.spinnerTimer = setInterval(() => {
       if (this.state.spinnerIndex >= 0) {
         this.state.spinnerIndex = (this.state.spinnerIndex + 1) % SPINNER_FRAMES.length;
-        const f = SPINNER_FRAMES[this.state.spinnerIndex];
-        this.state.status = `${f} ${this.spinnerLabel}`;
+        this.refreshThinkingMs(); // 思考头行实时耗时随帧刷新（含首 chunk 前的等待期）
+        if (this.spinnerLabel) {
+          const f = SPINNER_FRAMES[this.state.spinnerIndex];
+          this.state.status = `${f} ${this.spinnerLabel}`;
+        }
         this.schedulePaint();
       }
     }, 200);
@@ -159,12 +218,17 @@ export class TuiOutput implements Output {
 
   private toolSeq = 0;
 
-  onRound(step: number, maxSteps: number): void {
+  onRound(_step: number, _maxSteps: number): void {
+    // 新一轮 LLM 请求（思考阶段）开始：启动 spinner 动画——**只推进 spinnerIndex 驱动
+    // 思考模块头行的 loading 帧**，状态栏不再写「思考中」文案（用户要求「不再依赖思考中/
+    // 执行中这一类文本」——思考状态由头行 ⠋ thinking · 耗时 直观表达）。
     this.state.spinnerIndex = 0;
     this.state.generating = false;
-    const f = SPINNER_FRAMES[0];
-    this.state.status = `${f} 思考中`;
-    this.startSpinner('思考中');
+    this.state.status = ''; // 思考中不显示状态栏文案
+    this.startSpinner('');
+    // 收到消息开始思考：**立即显示 thinking 模块头行**（loading + thinking + 实时耗时），
+    // 不等首个流式 chunk（用户要求「接收到消息开始 thinking 的时候就要显示 thinking」）
+    this.thinking.start?.();
     this.schedulePaint();
   }
 
@@ -192,12 +256,15 @@ export class TuiOutput implements Output {
     this.state.tokens.completion += usage.completion;
     this.state.tokens.total += usage.total;
     this.state.stats.cached += usage.cached ?? 0;
+    // 当次统计：按请求顺序收集（一轮可能多次 LLM 请求——多步工具调用每步各一次）
+    this.turnUsages.push(usage);
     this.schedulePaint();
   }
 
   onTurnStart(): void {
     // 轮数：交互模式每轮用户提交 / 单次任务各 1 次（runAgent 开头触发）
     this.state.stats.turns += 1;
+    this.turnUsages = []; // 新一轮：重置当次 token 收集
     this.schedulePaint();
   }
 
@@ -243,8 +310,8 @@ export class TuiOutput implements Output {
         last.card.paths = paths;
         last.card.summary = `→ Read ${paths.length} files`;
         this.state.spinnerIndex = 0;
-        this.state.status = `${SPINNER_FRAMES[0]} 执行中…`;
-        this.startSpinner('执行中…');
+        this.state.status = ''; // 执行中不显示状态栏文案（下方「执行中」不需要显示——用户要求）
+        this.startSpinner('');
         this.schedulePaint();
         return;
       }
@@ -263,11 +330,12 @@ export class TuiOutput implements Output {
         paths: name === 'read_file' && path ? [path] : undefined,
       },
     });
-    // 工具执行中：启动 spinner 动画（卡片执行中行 + 状态栏都是动画 loading，
-    // 而不是静态「⏳ 执行中…」——用户要求）；并行工具多次 onToolStep 幂等（startSpinner 重置定时器）
+    // 工具执行中：启动 spinner 动画（**卡片执行中行**显示动画 loading——用户要求；状态栏
+    // 不再显示「执行中…」——下方执行中不需要显示，用户要求）。并行工具多次 onToolStep
+    // 幂等（startSpinner 重置定时器）；spinnerIndex 推进驱动卡片帧，status 留空
     this.state.spinnerIndex = 0;
-    this.state.status = `${SPINNER_FRAMES[0]} 执行中…`;
-    this.startSpinner('执行中…');
+    this.state.status = ''; // 执行中不显示状态栏文案
+    this.startSpinner('');
     this.schedulePaint();
   }
 
@@ -342,6 +410,18 @@ export class TuiOutput implements Output {
     this.stopSpinner();
     this.state.spinnerIndex = -1;
     this.state.status = '';
+    // 当次 token 使用统计（用户要求「每一次发送消息、返回消息结束后，增加当次 token
+    // 使用统计。输入多少、输出、缓存」）：默认收起显示汇总，点击展开看每次 LLM 请求的
+    // 明细（输入/输出/缓存，一行一条，加起来 = 汇总）。/tokens 关闭时不插入（数据
+    // 仍从 onUsage 收集，重新打开后后续轮次恢复显示）
+    if (this.state.showTokens && this.turnUsages.length > 0) {
+      pushLine(this.state, {
+        kind: 'tokens',
+        text: '',
+        tokens: { usages: [...this.turnUsages], expanded: false },
+      });
+    }
+    this.turnUsages = [];
     pushLine(this.state, { kind: 'meta', text: '' });
     this.schedulePaint();
   }

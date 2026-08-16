@@ -17,7 +17,7 @@ import {
   type ToolCardRole,
 } from '../output/format.js';
 import { markdownToRows, type MdChunk } from './markdown.js';
-import { CONTENT_PAD, STREAM_CURSOR, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
+import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
 
@@ -33,6 +33,7 @@ export interface RowStyle {
 export function rowStyle(kind: TuiLineKind): RowStyle {
   switch (kind) {
     case 'thinking':
+    case 'tokens':
       return { dim: true };
     case 'warn':
       return { fg: 'yellow' };
@@ -56,6 +57,8 @@ export interface Row {
   cardId?: number;
   /** 所属思考行的下标（折叠态下可点击单独展开/收起；非思考行为 undefined） */
   thinkingIdx?: number;
+  /** 所属 token 统计模块的行下标（tokens 行点击展开/收起；非 tokens 行为 undefined） */
+  tokensIdx?: number;
   /** 审批卡片的 id（state.approval；点击「批准/拒绝」区域用） */
   approvalId?: number;
 }
@@ -255,25 +258,27 @@ export function buildBody(state: TuiState, width: number): Row[] {
   // （setTerminalTitle，见 interactive.ts），保持对话流纯净。
   // 内容组间距：thinking / tool（工具卡片）/ other 三类内容组之间留空行。
   //（用户反馈「工具区域附近的思考或回答不要紧贴」）：工具卡片上方/下方与思考、回答
-  // 之间都插空行；连续 thinking 段落、连续工具卡片（并行调用属同一区域）之间不加；
-  // 已有空行不重复插（如 user 消息自带尾随空行）；**卡片顶/底留白行是卡片的一部分**
-  //（cardId 非空，带底色），不视为分隔空行——切出工具区域时仍要插真正的空行。
-  // **thinking ↔ 工具卡片之间留 2 行**（用户要求「loading思考中 和 tool 工具调用的
-  // 黄色区域，需要一个合理的间距」——思考内容与黄色卡片视觉上分隔更明显），
-  // 其余组间切换（tool↔回答、thinking↔回答等）留 1 行。
-  let prevGroup: 'thinking' | 'tool' | 'other' | null = null;
+  // 之间都插空行；连续 thinking 段落之间不加；**每次工具执行之间也留 1 行间距**（用户
+  // 反馈「每一次工具执行彼此不要合在一起」——同一轮并行调用各自成卡、不同轮多次调用
+  // 的卡片不再紧贴，见下方 tool 分支的 cardId 判定）；已有空行不重复插（如 user 消息
+  // 自带尾随空行）；**卡片顶/底留白行是卡片的一部分**（cardId 非空，带底色），不视为
+  // 分隔空行——切出工具区域时仍要插真正的空行。
+  // **所有组间切换统一留 1 行**（含 thinking ↔ 工具卡片——用户反馈「命令执行的块区域和
+  // 下面的文字距离太远了」：此前 thinking↔tool 双向 2 行 + 卡片顶/底留白，卡片与下方
+  // 思考/回答之间视觉间隔过大，统一收为 1 行）。
+  // token 统计模块是独立组（tokens）：回答文本 → 统计模块之间插 1 行间距（用户反馈
+  //「token 统计显示位置需要和回答中文本有一点间距，目前贴到一起了」）。
+  let prevGroup: 'thinking' | 'tool' | 'tokens' | 'other' | null = null;
   const isRealBlank = (r: Row): boolean => r.text === '' && r.cardId === undefined;
   const pushGap = (rows: number): void => {
     for (let i = 0; i < rows; i++) body.push({ text: '', style: {} });
   };
   for (let li = 0; li < state.lines.length; li++) {
     const line = state.lines[li];
-    const group: 'thinking' | 'tool' | 'other' =
-      line.kind === 'thinking' ? 'thinking' : line.kind === 'tool' ? 'tool' : 'other';
+    const group: 'thinking' | 'tool' | 'tokens' | 'other' =
+      line.kind === 'thinking' ? 'thinking' : line.kind === 'tool' ? 'tool' : line.kind === 'tokens' ? 'tokens' : 'other';
     if (group !== prevGroup && body.length > 0 && !isRealBlank(body[body.length - 1])) {
-      const thinkingTool =
-        (prevGroup === 'thinking' && group === 'tool') || (prevGroup === 'tool' && group === 'thinking');
-      pushGap(thinkingTool ? 2 : 1);
+      pushGap(1);
     }
     prevGroup = group;
     if (line.kind === 'answer') {
@@ -293,9 +298,18 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'tool' && line.card) {
+      // 每次工具执行之间留 1 行间距：连续工具卡片（同一轮并行调用各自成卡、不同轮多次
+      // 调用）彼此不再紧贴——用户要求「每一次工具执行彼此不要合在一起」。判定锚点是
+      // 上一行是否属于另一张卡片（工具卡片的顶/底留白行也带 cardId，天然可判）：
+      // cardId 非空且与当前卡不同才插空行——并行多读合并成的同一张卡不重复插，
+      // 卡片与思考/回答/用户消息之间的间距已由上方组间距逻辑处理，这里不掺和。
+      const lastRow = body[body.length - 1];
+      if (lastRow && lastRow.cardId !== undefined && lastRow.cardId !== line.card.id) {
+        pushGap(1);
+      }
       // 工具调用卡片：颜色背景块（命令/执行缩略/结果缩略），收起/展开由
       // card.expanded 决定（点击切换）。执行中（status=running）时把当前 spinner
-      // 帧传进卡片——执行中行显示动画 loading 而非静态「⏳ 执行中…」（用户要求）；
+      // 帧传进卡片——执行中行只显示动画 loading、**无「执行中…」文字**（用户要求）；
       // 帧由 TuiOutput 的 200ms 定时器推进，无动画（spinnerIndex=-1）时缺省 ⏳。
       const spinner =
         state.spinnerIndex >= 0 ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length] : undefined;
@@ -315,22 +329,73 @@ export function buildBody(state: TuiState, width: number): Row[] {
       body.push({ text: '', style: {} });
       continue;
     }
-    if (line.kind === 'thinking' && !state.thinkingExpanded) {
-      // /thinking 折叠态：每个思考段落压成一行 `+ thinking`（+ 表示可点击展开）；
-      // 在 expandedThinking 集合里的行**单独展开**：`- thinking` 头行 + 完整文本
-      // （- 表示可点击收起）。全部带 thinkingIdx，点击即切换。
-      if (state.expandedThinking.has(li)) {
-        // 单独展开的这条：`- thinking` 头行 + 完整文本，每行都带 thinkingIdx（点击可收起）
-        body.push({ text: '- thinking', style: { dim: true }, thinkingIdx: li });
-        for (const seg of line.text.split('\n')) {
-          body.push(...wrapRow({ text: seg, style: rowStyle(line.kind), thinkingIdx: li }, width));
+    if (line.kind === 'tokens' && line.tokens) {
+      // 当次 token 使用统计模块（**可点击展开/收起**，用户要求）：
+      //   收起（默认） = 汇总一行 `⚡ 输入 X · 输出 Y · 缓存 Z`
+      //   展开 = 汇总 + 每次 LLM 请求一行明细（`输入 X · 输出 Y · 缓存 Z`），
+      //          加起来 = 汇总（同一份 usages 数组累加）。
+      // 全部行带 tokensIdx，点击任意行切换展开/收起；/tokens 关闭时不渲染（showTokens）。
+      // 数值用 formatCompact（12.3K / 3M），缓存缺省按 0 显示（网关不支持时）。
+      if (!state.showTokens) continue; // /tokens 关闭：该行不渲染（数据保留在 state.lines）
+      const usages = line.tokens.usages;
+      const sum = usages.reduce(
+        (a, u) => ({
+          prompt: a.prompt + u.prompt,
+          completion: a.completion + u.completion,
+          cached: a.cached + (u.cached ?? 0),
+        }),
+        { prompt: 0, completion: 0, cached: 0 }
+      );
+      const fmt = (n: number): string => formatCompact(n);
+      body.push({
+        text: `⚡ 输入 ${fmt(sum.prompt)} · 输出 ${fmt(sum.completion)} · 缓存 ${fmt(sum.cached)}`,
+        style: { dim: true },
+        tokensIdx: li,
+      });
+      if (line.tokens.expanded) {
+        // 展开态：每次 LLM 请求一行明细（输入/输出/缓存；与汇总同源累加），
+        // 用 `-` 作列表符号（用户要求「不要显示 1、2、3 这种，使用 - 即可」）
+        for (let i = 0; i < usages.length; i++) {
+          const u = usages[i]!;
+          body.push({
+            text: `  - 输入 ${fmt(u.prompt)} · 输出 ${fmt(u.completion)} · 缓存 ${fmt(u.cached ?? 0)}`,
+            style: { dim: true },
+            tokensIdx: li,
+          });
+        }
+      }
+      continue;
+    }
+    if (line.kind === 'thinking') {
+      // 思考模块：**支持点击展开/收起**（用户要求）。每个思考段落是独立模块——
+      // 展开态 = 头行（思考中 `⠋ thinking · 实时耗时` / 思考完 `- thinking · 耗时`）
+      // + 完整思考内容；收起态 = 一行 `+ thinking`。全部行带 thinkingIdx，点击即切换该段。
+      // 全局开关（/thinking）决定默认态：展开（默认）或折叠；两个反例集合记录用户
+      // 点击——展开态点 `-`/内容 → 收起（collapsedThinking），折叠态点 `+` → 展开
+      // （expandedThinking）。effective = thinkingExpanded ? !collapsed : expanded。
+      const expanded = state.thinkingExpanded
+        ? !state.collapsedThinking.has(li)
+        : state.expandedThinking.has(li);
+      if (expanded) {
+        // 头行前缀：**思考中（thinkingRunning）→ loading spinner**（`⠋ thinking · 实时耗时`，
+        // 用户要求「思考中显示 loading + thinking + time」）；**思考完 → `-`**（`- thinking · 耗时`）。
+        // spinner 帧与工具卡片同源（state.spinnerIndex，TuiOutput 200ms 定时器推进）；无帧回退 ⏳。
+        const time = line.thinkingMs != null ? ` · ${formatToolDur(line.thinkingMs)}` : '';
+        const prefix = line.thinkingRunning
+          ? state.spinnerIndex >= 0
+            ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
+            : '⏳'
+          : '-';
+        body.push({ text: `${prefix} thinking${time}`, style: { dim: true }, thinkingIdx: li });
+        // 内容为空（onRound 预建头行、chunk 未到）：只显示头行（loading + thinking + 耗时），
+        // 不渲染多余的空内容行
+        if (line.text) {
+          for (const seg of line.text.split('\n')) {
+            body.push(...wrapRow({ text: seg, style: rowStyle(line.kind), thinkingIdx: li }, width));
+          }
         }
       } else {
-        body.push({
-          text: '+ thinking',
-          style: { dim: true },
-          thinkingIdx: li,
-        });
+        body.push({ text: '+ thinking', style: { dim: true }, thinkingIdx: li });
       }
       continue;
     }
@@ -367,9 +432,9 @@ export function buildBody(state: TuiState, width: number): Row[] {
  * renderable，不在这里。
  *
  * 行数预算：根 Box paddingY(2) = 2 行固定（无边框）；
- * 交互模式再占 状态栏(1) + 灰色块（输入框 inputLines + 间距 1 + 模型 1，paddingY 0）
- * + 统计行间距(1) + 统计行(1)，即内容区 = 高度 - 9 - inputLines（inputLines=1 时即高度 - 10）；
- * 单次任务模式内容区 = 高度 - 3。
+ * 交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块（输入框 inputLines + 间距 1 + 模型 1，paddingY 0）
+ * + 统计行间距(1) + 统计行(1)，即内容区 = 高度 - 10 - inputLines（inputLines=1 时即高度 - 11）；
+ * 单次任务模式内容区 = 高度 - 4。
  *
  * 多行输入框自动增高（Enter 发送 / Shift+Enter 换行），inputLines 由 repaintTree
  * 每次从输入框 lineCount 实时同步（蓝色细线同步增高）——输入框变高时内容区预算
@@ -395,8 +460,8 @@ export function computeRows(
   const pendingCount = state.pending.length;
   const pendingRows =
     opts?.withInput && pendingCount > 0 ? 1 + Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) : 0;
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows)
-  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 1 + inputLines + 6 + pendingRows : 1));
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows)
+  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows : 2));
   const total = body.length;
 
   // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）
@@ -496,16 +561,36 @@ export function hitTestCard(state: TuiState, cardRects: Map<number, CardRect>, y
 }
 
 /**
- * 思考折叠态点击命中（纯函数，供 startTui 的鼠标 handler 与快照单测共用）：
- * 命中某条思考行的屏幕 y → 切换该条单独展开/收起（state.expandedThinking），返回是否命中。
+ * 思考模块点击命中（纯函数，供 startTui 的鼠标 handler 与快照单测共用）：
+ * 命中某条思考行的屏幕 y → 切换该段的展开/收起，返回是否命中。
  * y 为 0-based 鼠标事件坐标（内容行 i 位于 y = i，与卡片同一坐标系）。
- * 仅折叠态（thinkingExpanded=false）才有 thinkingRects 条目；全局展开态 rects 为空。
+ * 思考展开态（头行 + 内容）与折叠态（+ thinking）的行都带 thinkingIdx（thinkingRects
+ * 恒有条目）——点击任意思考行即切换：全局展开态 → 收起（collapsedThinking）；
+ * 全局折叠态 → 展开（expandedThinking）。两个集合互补，/thinking 切换时清空。
  */
 export function hitTestThinking(state: TuiState, thinkingRects: Map<number, number>, y: number): boolean {
   const li = thinkingRects.get(y);
   if (li === undefined) return false;
-  if (state.expandedThinking.has(li)) state.expandedThinking.delete(li);
-  else state.expandedThinking.add(li);
+  if (state.thinkingExpanded) {
+    if (state.collapsedThinking.has(li)) state.collapsedThinking.delete(li);
+    else state.collapsedThinking.add(li);
+  } else {
+    if (state.expandedThinking.has(li)) state.expandedThinking.delete(li);
+    else state.expandedThinking.add(li);
+  }
+  return true;
+}
+
+/**
+ * token 统计模块点击命中（纯函数，供 startTui 的鼠标 handler 与快照单测共用）：
+ * 命中某条 tokens 行的屏幕 y → 切换该模块展开/收起（expanded 反置），返回是否命中。
+ * y 为 0-based 鼠标事件坐标（与卡片/思考同一坐标系）。收起=汇总，展开=逐次明细。
+ */
+export function hitTestTokens(state: TuiState, tokensRects: Map<number, number>, y: number): boolean {
+  const li = tokensRects.get(y);
+  if (li === undefined) return false;
+  const line = state.lines[li];
+  if (line && line.kind === 'tokens' && line.tokens) line.tokens.expanded = !line.tokens.expanded;
   return true;
 }
 

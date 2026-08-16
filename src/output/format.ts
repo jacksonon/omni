@@ -184,8 +184,7 @@ export function wrapText(text: string, width: number): string[] {
  *             │ ✓ 执行成功      │    exec 执行缩略（dim）
  *             │ echo 输出内容   │    result 结果缩略（dim，首个非「退出码: 0」行）
  *             └─────────────────┘
- *
- * 展开：命令 + 分隔线 + 完整输出 + 「▾ 点击收起」；running 态：命令 + 「⏳ 执行中…」。
+ *  * 展开：命令 + 分隔线 + 完整输出 + 「▾ 点击收起」；running 态：命令 + 动画 loading（仅 spinner，无执行中文字）。
  * 每行恰好 1 个终端行（内容先折行再补齐宽度），整块被背景色填满，TUI 行数预算不变。
  * console 端仍用增量方框（cardContentLine/cardSepLine/cardBottomLine），不在此处。
  */
@@ -382,9 +381,10 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
   }
 
   if (card.status === 'running') {
-    // 执行中：命令 + 动画 loading（spinner 帧由 TUI 每 200ms 刷新；无帧时回退 ⏳），
-    // 结果未到，无结果缩略行
-    lines.push({ text: padInner(` ${card.spinner ?? '⏳'} 执行中…`, contentWidth), role: 'exec' });
+    // 执行中：命令 + 动画 loading（spinner 帧由 TUI 每 200ms 刷新；无帧时回退 ⏳）。
+    // **不显示「执行中…」文字**——loading 动画本身就是状态（用户要求「不需要显示文字，
+    // 显示一个执行中 loading 即可」）；结果未到，无结果缩略行
+    lines.push({ text: padInner(` ${card.spinner ?? '⏳'}`, contentWidth), role: 'exec' });
   } else if (isRead) {
     // read_file（对标 opencode）：收起态**只有一行 `→ Read 路径`**（无执行/结果缩略行，
     // 保持一行式观感）；展开 = 分隔线 + 路径列表（并行多读合并时逐条 ⤷）+ 输出预览 + 收起提示
@@ -404,8 +404,8 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
     }
   } else if (isWriteDiff) {
-    // write_file 带 diff：收起态 = 命令 + 执行缩略 + 改动摘要（新增 N 行 / 修改 +A −D 行）；
-    // 展开 = 新增文件全文（逐行绿）/ 修改左右对比（左原右新，删除红新增绿）
+    // write_file 带 diff：收起态**只显示命令**（改动摘要/对比点展开才显示，见下方通用
+    // 收起态注释）；展开 = 新增文件全文（逐行绿）/ 修改左右对比（左原右新，删除红新增绿）
     const d = card.diff!;
     const isNew = d.original === null;
     if (card.expanded) {
@@ -442,19 +442,8 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
         }
       }
       lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
-    } else {
-      // 收起态：第二行执行缩略、第三行改动摘要（LCS 统计：新增行数 / +A −D 行数）
-      const execText =
-        card.status === 'ok'
-          ? `✓ 执行成功${card.chars != null ? ` · ${card.chars} 字符` : ''}`
-          : '✗ 执行失败';
-      lines.push({ text: padInner(` ${execText}`, contentWidth), role: 'exec' });
-      const stats = isNew ? null : countDiffLines(d.original!, d.content);
-      const summary = isNew
-        ? `新增文件 · 全文 ${d.content.split('\n').length} 行`
-        : `修改 · +${stats!.add} −${stats!.rem} 行`;
-      lines.push({ text: padInner(` ${summary}`, contentWidth), role: 'result' });
     }
+    // 收起态（write_file 带 diff）：只显示命令（无 else 分支，什么都不加）
   } else if (card.expanded) {
     // 展开态（其余工具）：分隔线 + 完整输出 + 收起提示
     lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
@@ -464,20 +453,11 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
     }
     lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
-  } else {
-    // 收起态（其余工具）：第二行执行缩略、第三行结果缩略（取首个非「退出码: 0」输出行，
-    // 超长截断省略号——不展示过长输出，从执行/结果摘要一部分即可）
-    const execText =
-      card.status === 'ok'
-        ? `✓ 执行成功${card.chars != null ? ` · ${card.chars} 字符` : ''}`
-        : '✗ 执行失败';
-    lines.push({ text: padInner(` ${execText}`, contentWidth), role: 'exec' });
-    const first = card.output.find((l) => !isExitCodeZeroLine(l));
-    lines.push({
-      text: padInner(` ${first ? truncateToWidth(first, inner - 1) : '（无输出）'}`, contentWidth),
-      role: 'result',
-    });
   }
+  // 收起态（所有工具默认）：**只显示完整的执行命令**——执行结果/输出/改动摘要等
+  // 点击展开才显示（用户要求「执行命令默认只显示完整的执行命令，执行的结果等需要
+  // 点击展开才显示」），且**不提示可以点击展开**（无需「点击展开」文案，卡片本身
+  // 可点击切换——上方 cmd 行已输出，这里什么都不加）。
 
   lines.push({ text: ' '.repeat(Math.max(1, contentWidth)), role: 'bottom' });
   return lines;

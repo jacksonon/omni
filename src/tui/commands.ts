@@ -225,12 +225,24 @@ export const TUI_COMMANDS: TuiCommand[] = [
     name: 'thinking',
     description: '展开 / 折叠全部思考过程',
     run: (ctx) => {
-      // 全局开关：buildBody 渲染时读取——展开=每个思考段落完整显示（默认），
-      // 折叠=每个段落压成一行 `+ thinking`（+ 表示可点击展开；无行数/提示文案）。
-      // 会话级，/clear 不清除；切换时清空单独展开标记（避免折叠态残留单条展开）。
-      // 不推 meta 提示文字（用户要求：已折叠/已展开这类提示不要出现在对话流）。
+      // 全局开关：buildBody 渲染时读取——展开=每个思考段落显示 `- thinking` 头行
+      // （含思考时间）+ 内容（默认）；折叠=每个段落压成一行 `+ thinking`。
+      // 会话级，/clear 不清除；切换时清空两个单独反例集合（避免残留用户点击的
+      // 单条展开/收起覆盖全局态）。不推 meta 提示文字（用户要求：已折叠/已展开
+      // 这类提示不要出现在对话流）。
       ctx.state.thinkingExpanded = !ctx.state.thinkingExpanded;
       ctx.state.expandedThinking.clear();
+      ctx.state.collapsedThinking.clear();
+    },
+  },
+  {
+    name: 'tokens',
+    description: '显示 / 隐藏当次 token 使用统计（输入/输出/缓存，点击展开逐次明细）',
+    run: (ctx) => {
+      // 会话级开关：buildBody 渲染时按 showTokens 过滤 tokens 行——关闭后历史与新轮的
+      // 统计都不显示（数据保留在 state.lines，重新打开即恢复）；onTurnEnd 仍收集数据。
+      // 静默切换，不推 meta 提示文字（同 /thinking、/plan）。
+      ctx.state.showTokens = !ctx.state.showTokens;
     },
   },
   {

@@ -33,8 +33,8 @@ export function formatCompact(n: number): string {
   return String(Math.round(n));
 }
 
-/** 工具调用时长：<60s 显示一位小数秒（8.6s），≥60s 用分秒（1m05s）——与用户示例一致 */
-function formatToolDur(ms: number): string {
+/** 工具调用/思考时长：<60s 显示一位小数秒（8.6s），≥60s 用分秒（1m05s）——与用户示例一致 */
+export function formatToolDur(ms: number): string {
   return ms >= 60_000 ? formatDuration(ms) : `${(ms / 1000).toFixed(1)}s`;
 }
 

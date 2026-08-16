@@ -9,7 +9,11 @@ async function main(): Promise<void> {
   pushLine(s, { kind: 'thinking', text: '我需要先分析任务，然后规划执行步骤。' });
   pushLine(s, {
     kind: 'tool',
-    card: { id: 1, name: 'run_command', summary: '$ echo mock-ok', status: 'ok', output: [], expanded: false },
+    card: { id: 1, name: 'run_command', summary: '$ echo mock-ok', status: 'ok', output: ['mock-ok'], expanded: false },
+  });
+  pushLine(s, {
+    kind: 'tool',
+    card: { id: 2, name: 'run_command', summary: '$ ls -la', status: 'ok', output: ['55 个文件'], expanded: false },
   });
   pushLine(s, { kind: 'thinking', text: '命令执行成功，现在总结结果。' });
   pushLine(s, { kind: 'answer', text: '任务完成。' });

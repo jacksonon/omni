@@ -25,7 +25,19 @@ export type TuiLineKind =
   | 'meta' // 元信息（浅色）
   | 'warn' // 警告（黄色）
   | 'task' // 任务标题（青色加粗）
-  | 'tool'; // 工具调用卡片（可点击展开/收起）
+  | 'tool' // 工具调用卡片（可点击展开/收起）
+  | 'tokens'; // 当次 token 使用统计（收起=汇总，点击展开=逐次 LLM 请求明细）
+
+/**
+ * 当次对话轮（一次用户消息 → 回答结束）的 token 使用统计（kind === 'tokens' 时由
+ * TuiLine.tokens 携带）：usages = 该轮内**每次 LLM 请求**的用量（onUsage 按请求顺序
+ * 收集，一轮可能有多次——多步工具调用每步各一次），汇总 = 各请求之和；
+ * expanded = 是否展开逐项明细（默认收起只显示汇总，用户要求）。
+ */
+export interface TurnTokens {
+  usages: TokenUsage[];
+  expanded: boolean;
+}
 
 /** 工具卡片状态：执行中 / 成功 / 失败 */
 export type ToolStatus = 'running' | 'ok' | 'err';
@@ -57,6 +69,14 @@ export interface TuiLine {
   text: string;
   /** kind === 'tool' 时携带卡片数据 */
   card?: ToolCard;
+  /** kind === 'thinking' 时携带思考耗时（毫秒；思考中由 TuiOutput 逐 chunk 刷新实时值，
+   *  思考区结束时写入最终值，展开态头行显示 `· 3.2s`） */
+  thinkingMs?: number;
+  /** kind === 'thinking' 且正在流式思考（思考区未结束）：头行前缀显示 loading spinner
+   *  （`⠋ thinking · 实时耗时`）；思考完（finish）置 false → 头行变 `- thinking · 耗时` */
+  thinkingRunning?: boolean;
+  /** kind === 'tokens' 时携带当次 token 统计（usages + 展开态） */
+  tokens?: TurnTokens;
 }
 
 /** 待发送消息类型：queue = 正常排队（Enter）；steer = 打断优先（Cmd/Ctrl/Option+Enter，插入最前） */
@@ -218,18 +238,29 @@ export interface TuiState {
   /** 是否正在流式生成回答（显示光标在末尾） */
   generating: boolean;
   /**
-   * 是否展开显示全部思考过程（/thinking 命令切换；默认 true = 当前行为——
-   * 思考实时完整保留在屏幕）。false = 每个思考段落折叠成一行摘要。
-   * 会话级状态（/clear 不清除），buildBody 渲染时读取。
+   * 是否展开显示全部思考过程（/thinking 命令切换；默认 true）。false = 每个思考
+   * 段落折叠成一行 `+ thinking`。会话级状态（/clear 不清除），buildBody 渲染时读取。
    */
   thinkingExpanded: boolean;
   /**
-   * 折叠态（thinkingExpanded=false）下**单独展开**的思考行下标集合：
-   * 点击某条折叠摘要可只展开该条（再次点击收起；与工具卡片同交互）。
-   * 下标 = state.lines 中的索引（流式 appendLine 只追加不插入，下标稳定）；
-   * /thinking 切换或 /clear 清空。
+   * 是否展示当次 token 使用统计（/tokens 命令切换；默认 true）。false = buildBody
+   * 渲染时过滤掉所有 tokens 行（历史与新轮的统计都不显示，会话级 /clear 不清除）；
+   * onTurnEnd 仍照常插入（数据保留，重新打开即恢复显示）。
+   */
+  showTokens: boolean;
+  /**
+   * **单独展开**的思考行下标集合：折叠态（thinkingExpanded=false）下点击某条
+   * `+ thinking` 摘要可只展开该条。下标 = state.lines 中的索引（流式 appendLine
+   * 只追加不插入，下标稳定）；/thinking 切换或 /clear 清空。
    */
   expandedThinking: Set<number>;
+  /**
+   * **单独收起**的思考行下标集合：展开态（thinkingExpanded=true）下点击某条
+   * `- thinking` 头行/内容可只收起该条（回到 `+ thinking`）。/thinking 切换或
+   * /clear 清空。与 expandedThinking 互补——全局开关决定默认态，两个集合记录
+   * 用户点击产生的反例（effective = thinkingExpanded ? !collapsed : expanded）。
+   */
+  collapsedThinking: Set<number>;
   inputLines: number;
   /** 当前工作目录（footer 左下角显示，超长中段省略） */
   cwd: string;
@@ -381,7 +412,9 @@ export function createTuiState(): TuiState {
     loadingIndex: -1,
     generating: false,
     thinkingExpanded: true,
+    showTokens: true,
     expandedThinking: new Set(),
+    collapsedThinking: new Set(),
     inputLines: 1,
     cwd: process.cwd(),
     models: [],
@@ -456,5 +489,6 @@ export function clearLines(state: TuiState): void {
   state.lines.length = 0;
   state.scrollTop = null;
   state.scrollIntent = null;
-  state.expandedThinking.clear(); // 行下标失效，单独展开标记一并清空
+  state.expandedThinking.clear(); // 行下标失效，单独展开/收起标记一并清空
+  state.collapsedThinking.clear();
 }

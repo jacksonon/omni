@@ -95,12 +95,13 @@ async function main(): Promise<void> {
     throw new Error(`write_file 卡片未落位 diff: ${JSON.stringify(writeCard.diff)}`);
   }
   frame = grab();
-  if (!frame.includes('修改 · +2 −1 行')) {
-    console.error('--- 帧内容（改动摘要缺失）---');
+  // 收起态只显示命令（用户要求）：无改动摘要/执行缩略，展开才显示
+  if (!frame.includes('✏️ old.txt') || frame.includes('修改 · +2 −1 行') || frame.includes('执行成功')) {
+    console.error('--- 帧内容（收起态应只显示命令）---');
     console.error(frame);
-    throw new Error('write 收起态缺「修改 · +2 −1 行」');
+    throw new Error('write 收起态应只显示命令（无改动摘要）');
   }
-  console.log('[4] ✓ write_file 卡片带 diff：收起态显示「修改 · +2 −1 行」');
+  console.log('[4] ✓ write_file 卡片带 diff：收起态只显示命令（改动摘要点展开才显示）');
 
   // ⑤ 展开 write 卡 → diff 行（│ 分隔 + 行宽）渲染
   const rectW = tree.cardRects.get(writeCard.id);
@@ -121,10 +122,11 @@ async function main(): Promise<void> {
   out.onToolResult(true, 6, ['写入成功'], { diff: { path: 'new.txt', original: null, content: 'l1\nl2\nl3' } });
   await wait(60);
   frame = grab();
-  if (!frame.includes('新增文件 · 全文 3 行')) {
-    console.error('--- 帧内容（新建摘要缺失）---');
+  // 收起态只显示命令（用户要求）：新建摘要展开才显示
+  if (!frame.includes('✏️ new.txt') || frame.includes('新增文件 · 全文 3 行')) {
+    console.error('--- 帧内容（新建收起态应只显示命令）---');
     console.error(frame);
-    throw new Error('新建文件收起态缺「新增文件 · 全文 3 行」');
+    throw new Error('新建文件收起态应只显示命令（无新增摘要）');
   }
   const newCard = state.lines.filter((l) => l.kind === 'tool').at(-1)!.card!;
   const rectN = tree.cardRects.get(newCard.id);
