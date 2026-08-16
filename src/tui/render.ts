@@ -56,7 +56,7 @@ import {
   parseColor,
 } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
-import { commandSuggestions, confirmMenu, findCommand } from './commands.js';
+import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { logCrash } from './crashlog.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
@@ -984,6 +984,8 @@ export function handleTuiMouseEvent(
   state: TuiState,
   width: number,
   paint: () => Promise<void>,
+  session?: { paint?: () => Promise<unknown> } | null,
+  autoCloseDelayMs = 1500,
 ): void {
   // 菜单浮层（/theme /permission /settings language 等）：点击选项行 = 选中并确认
   // （等同数字键 + Enter，用户反馈「点击也没有可选择的语言选项」——此前菜单鼠标被整体忽略）。
@@ -1002,6 +1004,9 @@ export function handleTuiMouseEvent(
       if (optIdx >= 0) {
         state.menu.selectedIndex = optIdx;
         confirmMenu(state);
+        // 确认提示进面板后短暂停留自动收起（与键盘路径一致——键盘由 interactive 菜单
+        // 分支调度；鼠标点选此前漏调度，「切换语言提示始终显示不消失」的根因）
+        scheduleCmdPanelAutoClose(state, session, autoCloseDelayMs);
         void paint();
       }
     }
@@ -1156,7 +1161,7 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   // （模块级导出函数：快照可复用同一真实代码路径）。在根 Box 上挂处理器（实例属性
   // 遮蔽原型 onMouseEvent 方法，属刻意为之——OpenTUI 把鼠标事件沿渲染树冒泡到根）。
   (tree.root as unknown as { onMouseEvent?: (e: MouseEventLike) => void }).onMouseEvent = (e) => {
-    handleTuiMouseEvent(e, tree, state, (ctx as { width?: number }).width ?? 80, paint);
+    handleTuiMouseEvent(e, tree, state, (ctx as { width?: number }).width ?? 80, paint, { paint });
   };
 
   await paint();

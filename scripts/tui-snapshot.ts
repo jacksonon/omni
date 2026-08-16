@@ -4521,10 +4521,33 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const frame43n = t43.captureCharFrame();
-  console.error('[dbg43n] lang=' + s43.language + ' placeholder=' + JSON.stringify(tree43.input?.placeholder) + ' text=' + JSON.stringify(tree43.input?.plainText) + ' cmdPanel=' + (s43.cmdPanel ? 'open' : 'null') + ' settingsPanel=' + (s43.settingsPanel ? 'open' : 'null'));
-  console.error('[dbg43n] frame:\n' + frame43n);
   if (!frame43n.includes('输入消息') || frame43n.includes('Type a message')) {
     console.error('✗ 场景 43 切回中文后 placeholder 未即时刷新');
+    process.exit(1);
+  }
+  // o) 鼠标点选确认后的提示面板自动收起（用户反馈「切换完语言，提示始终显示不消失」——
+  //    键盘确认由 interactive 菜单分支调度 autoClose，鼠标点选路径此前漏调度）：
+  //    鼠标点 English → 确认提示进面板 → 短暂停留后自动收起
+  openLanguageMenu(s43); // 当前 zh：高亮 0（中文）
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43g = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent(
+    { type: 'down', button: 0, x: 30, y: top43g + 2 },
+    tree43,
+    s43,
+    64,
+    noopPaint,
+    { paint: async () => {} },
+    30, // 快速版 delayMs：等 60ms 断言自动收起
+  );
+  if (s43.language !== 'en' || s43.cmdPanel === null) {
+    console.error(`✗ 场景 43 鼠标点 English 未切换+未弹提示面板: ${JSON.stringify({ language: s43.language, cmdPanel: s43.cmdPanel })}`);
+    process.exit(1);
+  }
+  await new Promise((r) => setTimeout(r, 60));
+  if (s43.cmdPanel !== null) {
+    console.error('✗ 场景 43 鼠标确认后的提示面板未自动收起');
     process.exit(1);
   }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
