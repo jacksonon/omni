@@ -130,6 +130,7 @@ src/
   search-code.ts      # search_code
   run-command.ts      # run_command（超时 + 输出截断；危险拦截兜底在 safety/policy）
   skill.ts            # skill 技能工具：按 name 加载 SKILL.md 完整内容（模型按需使用）
+  ask.ts              # ask_user 向用户提问工具（createAskUserTool 工厂，运行时注入提问回调）
     delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
     mcp.ts              # MCP 客户端：stdio JSON-RPC + 运行时工具发现注册（McpClient/discoverMcpTools）
   config/
@@ -150,7 +151,7 @@ src/
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单）
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage 分支）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
-scripts/tui-snapshot.ts # TUI 快照验证（44 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板）
+scripts/tui-snapshot.ts # TUI 快照验证（45 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问）
 scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
 scripts/eval/tasks.ts   # 评估任务集（mock 离线 / 真实 API 两套）
 scripts/eval/run-eval.ts# 评估运行器：跑任务集 + 完成率报告（npm run eval[:mock]）
@@ -194,11 +195,11 @@ for step in 1..maxSteps:
 > - `renderer.loop()` 在 d.ts 中是 private，但运行时存在（test-renderer 内部也调它），用类型断言调用；
 > - **交互模式（交互式 TUI）**：`dev:tui` 无任务参数时进入——底部**多行 `TextareaRenderable` 输入框**（对标 opencode）+ 消息滚动区，多轮对话；自定义 keyBindings（与默认合并）：return/kpenter/linefeed → **submit（Enter 发送）**、shift+return 等 → **newline（Shift+Enter 换行）**；**自动增高**（不设 height、只给 minHeight 1/maxHeight 5 → yoga 按内容行数增高，超 5 行内部滚动），多行粘贴保留换行；**高度预算动态同步**——`repaintTree` 每次从 `lineCount` 刷新 `state.inputLines`（1-5），`computeRows` 按它收缩内容区，输入框变高也不挤坏布局；提交走 `submit()` 触发 **onSubmit 回调**（Textarea 不 emit 'enter'；且 `value` setter 不提交到 buffer，清空必须 `setText('')`，读取用 `plainText`）；状态栏显示“等待输入…”；/exit /clear /help 内联处理；按键时通过 `session.onKeyPress` 兜底重绘；
 > - **Markdown 行式渲染**（`tui/markdown.ts`）：最终回答按行解析成带样式片段（加粗/行内代码/斜体/**删除线 ~~**/标题/引用/水平线/围栏代码块/**无序列表 • / 有序列表 / 任务清单 ☑☐**/**GFM 表格**），语法标记（`**`、` `、```` ``` ````、`#`、`~~`、`- [x]`）隐藏（conceal），代码块行统一着色；**表格渲染成 box-drawing 方框**（`┌──┬──┐` 表头加粗青色、`:---:` 居中/`:--` 左/`--:` 右对齐、列宽按内容自然宽度（CJK 全角 2 列）、超内容宽时收缩最宽列并截断单元格——每行总宽 = Σ列 + 3n + 1 ≤ 内容宽，折行不会打破对齐；`markdownToRows(text, contentWidth?)` 传宽度时表格才收缩，缓存 key 带宽度前缀、终端 resize 自动重解析）；流式友好（每次重绘对完整文本重解析，未闭合标记按纯文本处理）。**用户消息后自动插 1 行空白间距**（用户输入与 AI 思考不紧贴，buildBody 的 user 分支）。刻意不用 MarkdownRenderable——它是动态高度块，无法参与尾部窗口裁剪；行式方案每行高度固定为 1；
-> - 快照验证（`tui:snapshot`）用 `createTestRenderer` 内存渲染，与 CLI 共用 mountTree/repaintTree 同一渲染路径，**44 场景**断言（布局/溢出跟随/增量重绘/卡片与审批/Markdown 渲染/命令面板/联想与 @ 提及/记忆/会话/统计行/当次 token 统计/轨迹面板等）。
+> - 快照验证（`tui:snapshot`）用 `createTestRenderer` 内存渲染，与 CLI 共用 mountTree/repaintTree 同一渲染路径，**45 场景**断言（布局/溢出跟随/增量重绘/卡片与审批/Markdown 渲染/命令面板/联想与 @ 提及/记忆/会话/统计行/当次 token 统计/轨迹面板/ask 提问等）。
 
 ### 工具列表（src/tools/）
 
-静态注册表 6 个基础工具；`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
+静态注册表 6 个基础工具；`ask_user`（向用户提问）、`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
 
 | 工具 | 作用 |
 |---|---|
@@ -208,6 +209,7 @@ for step in 1..maxSteps:
 | `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
 | `run_command` | 执行 shell 命令（带超时 + 输出截断；危险命令拦截在安全护栏闸门）
 | `skill` | **技能**：按 name 加载已安装技能（SKILL.md）的完整指令内容（对标 opencode；只读，不修改文件） |
+| `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方选项面板（A-D 勾选 / 自定义输入 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
 | `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`）
 | `/skill` 命令 | **技能管理**（TUI/CLI 交互）：`/skill` 列出已发现 · `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>]` 安装（`npx skills add -y`，装入 `.agents/skills/` 等）· `/skill show <名>` 查看内容
 | `/compact` 命令 | **手动压缩上下文**：把旧消息合并为摘要（复用 summarizeContext，保留最近 8 条原文）
@@ -225,7 +227,7 @@ for step in 1..maxSteps:
 | `/resume` 命令 | **恢复历史会话**：无参列出 / `<id>` 恢复（替换 messages + sessionPath + 重置落盘计数 + 历史回放进对话流；onResume 回调由 interactive 组装） |
 | `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
 | `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
-| `/trace` 命令 | **轨迹面板（右侧栏）**：每轮请求/工具/消息账本——`/trace` 展开/收起；数据源 = 事件记录器（event.ts 内存全量事件，interactive 每轮 refreshTrace 投影），console 端 `/trace` 打印文本账本；TUI 面板 ↑/↓ 选择 + 点击展开详情 + Esc 收起，展开时内容宽度收缩（面板不盖对话流） |
+| `/trace` 命令 | **轨迹面板（右侧栏）**：每轮请求/工具/消息账本——`/trace` 展开/收起；数据源 = 事件记录器（event.ts 内存全量事件，interactive 每轮 refreshTrace 投影），console 端 `/trace` 打印文本账本；TUI 面板 ↑/↓ 选择 + **点击推入详情页**（顶部返回按钮 + 完整内容）+ Esc 收起，展开时内容宽度收缩（面板不盖对话流） |
 | `/doctor` 命令 | **环境诊断**：Node/Bun 版本、API Key、端点连通性（5s 超时 fetch）、配置/MCP/权限/模型 |
 | `mcp_*` | **MCP 外部工具**：经 stdio JSON-RPC 调用外部服务器（可选，`mcpServers`） |
 
@@ -258,6 +260,10 @@ for step in 1..maxSteps:
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 演进日志
+
+- **2026-08-16（第一百二十九次）**：**trace 详情改页面导航（点击轨迹行推入详情页：顶部返回按钮 + 完整内容，不再内嵌展开）**——用户要求「trace 的详情预览不是简单的点击展开，点击后显示全部内容，可以 push 到下一个页面：页面顶部是返回按钮，下面是具体内容」。**① 两级页面**（`src/tui/trace.ts` + `state.traceDetail: { rowIdx } | null`）：**列表页**（tracePanelLines——移除选中行内嵌 detail 行，预算简化回 `contentRows = budget - 1`，详情内容不再挤占列表窗口）；点击轨迹行/Enter → **推入详情页**（快照 rowIdx，滚动归零）。**② 详情页**（新 `traceDetailLines(state, rowIdx, cols)`）：**返回行（rowMap -2，`← 返回` 蓝色加粗）+ 行标题（标记 + text + done）+ 完整内容（sub 副信息 + detail 全部，按列宽 wrap 折行不截断——长正文/长参数完整可见）**；内容超预算时窗口滚动（复用 traceScroll：底部对齐 + `↑ 还有 N 行` 提示）；刷新后行被移除自动回列表。**③ 交互**：点击返回行（**详情页返回行恒为面板第 1 行，按 panelIdx 判断不依赖 traceRowMap**——点击推入后 paint 异步刷新前同帧第二次点击读到的还是列表页旧 rowMap，快照同帧点击暴露）/ Esc 回列表（再按 Esc 收起面板）/ ↑↓ 详情页滚动内容、列表页移动选中 / Enter 列表页推入详情；`/trace` 关闭与 refreshTrace 同步清 traceDetail；i18n trace.back（← 返回/Back）。验证：typecheck + 快照 **45 场景**全绿（场景 44 重写 d/d2/f 段：列表页不内嵌详情、traceDetailLines 返回行 -2 + 标题 + 完整内容、长内容折行不截断（长×40 跨行统计）、详情页渲染帧（返回行 + API 401 + 无列表标题）、点击返回行/内容行不返回/标题行不触发（选中态保留）、/trace 关闭清详情页；排障：快照 d2 渲染段忘设 traceOpen、断言长内容被折行断开改字符总数统计、f) 段标题行坐标 top+1→top、标题行断言改「状态不变」）+ eval:mock 100%（2/2）+ 探针 probe-trace-detail 重写（列表页无内嵌/详情页组装/渲染点击往返）+ AGENTS.md trace 描述同步（「点击展开详情」→「点击推入详情页」）。
+
+- **2026-08-16（第一百二十八次）**：**ask_user 工具：agent 遇歧义时向用户提问（输入区上方选项面板 A-D / 自定义输入 / Esc 取消）**——用户要求「有需要用户确认的事，在输入区域让用户勾选选项，或自定义输入（选项 A/B/C/D + custom），协助 agent 处理有歧义的地方」。**① 工具**（新 `src/tools/ask.ts`）：`ask_user`（question + 2-6 个 options）——**运行时注入**（同 delegate 模式：静态注册表不放，attachRuntime 用 `createAskUserTool(output.askUser)` 组装进工具链，子代理共用；管道/单任务无 UI 回调时返回「无法输入」，模型自行决定不打断任务）；结果回传「用户选择了选项：X」/「用户自定义输入：Y」/「用户取消了提问」。**② 回调链**：`Output.askUser`（output/types.ts）+ `RunOptions.askUser`（agent/types.ts）+ attachRuntime bind 注入（同 requestApproval 模式）。**③ TUI 面板**（state.ask/askResolve/askKeyJustConsumed + TuiOutput.askUser **队列串行**（同审批卡片）：第一个 resolve 后自动展示下一条）：**bottomBlock 内、待发送区上方**的圆角方框浮层（主题底色 + rounded border，同联想/轨迹面板设计语言）——`❓ 问题` + 每行 3 个选项（`A) x  B) y  C) z`，fit 按列宽截断）+ 底部提示「A-D 勾选 · 输入自定义内容后 Enter · Esc 取消」；**交互**：a-d 字母键（onAskKeyPress 导出函数，startTui 注册在能力协商前同审批模式，preventDefault 不进入输入框）、**输入框 Enter = 自定义答案**（interactive onSubmit 检查 state.ask 优先于 queue/steer 分流——agent 正等待决策，输入内容即答案）、Esc 取消（置 askKeyJustConsumed，interactive 的 Esc=取消运行分支据此跳过——取消提问 ≠ 取消对话）、**鼠标点击选项行**（askRects 按行存 {start,count}——同一行 3 个选项共享 y，点击按 x 列定位：colW = floor((width-4)/3)）；状态栏「等待你的选择」。**④ 预算**：computeRows 的 askRows = 2 + ceil(选项/3)（❓ 行 + 选项行 + 提示）同步收缩内容区（灰色块/输入区恒完整）。**⑤ 只读**：ask_user 进 READ_ONLY_TOOLS（计划模式 /plan 也能问）+ read 权限档天然放行（不在 WRITE_TOOLS）。**⑥ console**：ConsoleOutput.askUser 串行队列（readline：A-D 字母选、其余输入=自定义、空=取消、非 TTY 返回 null）。**⑦ i18n**：status.ask / ask.hint 中英键。**⑧ mock**：MOCK_ASK=1（第一轮发 ask_user 调用）。验证：typecheck + 快照 **45 场景**全绿（新增场景 45：队列串行（首个 resolve 后展示下一条）/渲染（askBox 可见 + 帧含问题/选项/提示）/askRects 映射（{start,count}）与**预算收缩差 3 行 + 关闭恢复**/onAskKeyPress 四路（选项/Esc+askKeyJustConsumed/越界字母不消费）/鼠标点击列定位（第 1 列选甲、第 3 列钳制选乙）/工具四路结果（选项/自定义/取消/无回调/参数校验））+ eval:mock 100%（2/2）+ e2e（MOCK_ASK 真实 runAgent：面板出现 → 渲染帧 → 按键 A → 面板关闭 → 工具结果「用户选择了选项：继续执行」回传 messages）+ AGENTS.md 工具表/演进日志。
 
 - **2026-08-16（第一百二十七次）**：**修复「对话轮次一多 thinking 区域块总会丢」（滚动残留不回底 + 取消路径 thinking 状态残留）**——用户反馈多轮对话后 thinking 区域块消失。**排查**：三条探针逐一排除（probe-thinking-multi：真实事件流 5 轮正常流程 thinking 行数与内容完整、渲染帧头行+内容可见；probe-thinking-cancel：取消残留场景块不消失；probe-thinking-e2e：真实 runAgent + TuiOutput + mock 6 轮全链路，每轮 2 个 thinking 块全部保留）。**根因双实锤**：**① 滚动残留不回底（主因，用户视角的「丢」）**：interactive 的**空闲提交路径**（`waitForSubmit` 后）有 `state.scrollTop = null` 回底，但**待发送积压消费路径（571 行 pending shift）与 steer 打断路径都没有**——用户多轮对话中滚轮/翻页查看过历史（scrollTop 残留）后，运行中排队的消息自动发送（或 Cmd+Enter 打断）时**不回底**，新一轮的 thinking 预建头行/思考内容/回答全部渲染在视口外——「thinking 区域块丢」= 新内容不可见（probe-scroll-think 实测：上滚后第 5 轮思考在帧中消失、回底后恢复）；**② 取消路径 thinking 状态残留**：loop 的 create 阶段取消（AbortError）、请求失败、工具执行阶段取消三处 return 前**不调 thinking.finish()**——`thinkingShown` 残留 true → 下一轮 onRound 的 `thinking.start()` 被 `if (self.thinkingShown) return` 挡掉 → 新思考走 appendLine 兜底 pushLine（无 thinkingRunning/thinkingMs 状态、finish 作用到旧块）——状态残缺（probe 实测 `running=undefined ms=undefined`）。**修复**：① `tui/interactive.ts`：pending 消费路径与 steer 打断路径补 `state.scrollTop = null; state.scrollIntent = null;`（与空闲提交同语义：新消息开始即回底——上滚残留不再让新轮次内容不可见）；② `agent/loop.ts`：三处取消/失败 return 前补 `if (output.thinking.shown) output.thinking.finish()`（收尾预建头行，不留 thinkingShown 残留——create 阶段取消时空块被正常 splice 移除，与正常无思考轮同路径）；③ `tui/output.ts` `clearScrollback`（/clear）：同步复位 thinkingShown/thinkingStart/thinkingLineIdx（行下标全部失效的防御性清理）。验证：typecheck + 快照 **44 场景**全绿 + eval:mock 100%（2/2）+ 探针（probe-thinking-cancel 更新断言：取消收尾后三块全部 `running=false` + `ms` 有值；probe-scroll-think：跟随模式最新思考可见 → 上滚后不可见（「丢」复现）→ 回底后恢复；probe-thinking-multi/probe-thinking-e2e 回归全过）。
 

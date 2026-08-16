@@ -487,8 +487,11 @@ export function computeRows(
   const pendingCount = state.pending.length;
   const pendingRows =
     opts?.withInput && pendingCount > 0 ? 1 + Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) : 0;
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows)
-  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows : 2));
+  // ask_user 提问面板（输入区上方）：❓ 问题行 1 + ceil(选项/3) 选项行 + 提示 1
+  //（最多 6 个选项 → 4 行）；预算同步收缩（同 pendingRows 语义）。
+  const askRows = opts?.withInput && state.ask ? 2 + Math.ceil(state.ask.options.length / 3) : 0;
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows) + ask 面板(askRows)
+  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + askRows : 2));
   const total = body.length;
 
   // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）

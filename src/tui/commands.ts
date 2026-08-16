@@ -904,6 +904,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
       if (!ctx.state.traceOpen) {
         ctx.state.traceSelected = -1;
         ctx.state.traceScroll = 0;
+        ctx.state.traceDetail = null;
       }
     },
   },

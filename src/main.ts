@@ -24,6 +24,7 @@ import { loadConfig, type ConfigOverrides, type OmniConfig } from './config/inde
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
+import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { tools } from './tools/index.js';
 import { closeMcpClients, discoverMcpTools } from './tools/mcp.js';
@@ -95,6 +96,9 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   const requestApproval: (req: ApprovalRequest) => Promise<boolean> | boolean = output.requestApproval
     ? output.requestApproval.bind(output)
     : () => false;
+  // ask_user 提问回调（Output 层实现 UI——console readline / TUI 选项面板）；
+  // 未实现/非交互 → undefined（工具返回「无法询问」，模型自行决定）
+  const askUser = output.askUser ? output.askUser.bind(output) : undefined;
   const gate = new Safety({
     tier: cfg.permission,
     audit: cfg.auditLog,
@@ -140,7 +144,8 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     preloadMaxBytes: cfg.preloadMaxBytes,
     skills: cfg.skills,
   };
-  // 动态工具链：静态工具 + 子代理 delegate（可关）+ MCP 外部工具（失败只警告不阻塞）
+  // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+
+  // MCP 外部工具（失败只警告不阻塞）
   // /undo 撤销：先把静态工具表包装（write_file 执行前快照原内容进 UndoStack），
   // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
   const undoStack = new UndoStack();
@@ -151,6 +156,9 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   if (cfg.allowSubagents) {
     toolchain.push(createDelegateTool({ modelRuntime: ctx.runOpts.modelRuntime!, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps }));
   }
+  // ask_user：运行时注入提问回调（非交互输出（管道/单任务无 UI）时仍注册——工具
+  // 返回「无法询问」让模型自行决定，不打断任务）
+  toolchain.push(createAskUserTool(askUser));
   // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令
   if (cfg.reasoningEffort) ctx.runOpts.reasoningEffort = cfg.reasoningEffort;
   ctx.runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions;

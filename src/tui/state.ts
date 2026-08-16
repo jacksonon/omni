@@ -9,6 +9,7 @@ import type { TokenUsage } from '../output/types.js';
 import type { WriteDiff } from '../output/format.js';
 import type { TuiLang } from './i18n.js';
 import type { TraceRow } from '../agent/trace.js';
+import type { AskResult } from '../tools/ask.js';
 
 /** spinner 动画帧（braille 点阵） */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -124,6 +125,17 @@ export interface TuiApproval {
   summary: string;
   /** 需要审批的原因（危险命令匹配 / 权限策略） */
   reason: string;
+}
+
+/**
+ * 向用户提问面板（ask_user 工具）：输入区上方显示问题 + 选项（A/B/C/D 字母键
+ * 勾选、输入自定义内容 + Enter、Esc 取消）。与审批卡片同队列模式（串行展示）。
+ */
+export interface TuiAsk {
+  /** 问题（模型 ask_user 的 question） */
+  question: string;
+  /** 候选选项（2-6 个；字母 A 起编号） */
+  options: string[];
 }
 
 /**
@@ -387,6 +399,19 @@ export interface TuiState {
   cmdSuggestDismissedText: string | null;
   /** 工具调用审批卡片（安全护栏）：非空时内容流末尾渲染审批卡（y 批准 / n 拒绝 / 点击左右半区） */
   approval: TuiApproval | null;
+  /** ask_user 提问面板（输入区上方；非空 = 等待用户选择） */
+  ask: TuiAsk | null;
+  /**
+   * ask_user 面板的 resolver（TuiOutput 挂载；startTui 字母键 / interactive Enter
+   * 自定义提交消费；resolve 后自动展示队列下一条）。null = 面板已关闭。
+   */
+  askResolve: ((r: AskResult | null) => void) | null;
+  /**
+   * ask 面板刚消费了一次 Esc（startTui ask 按键 handler 置位：Esc = 取消提问）。
+   * interactive 的 Esc=取消运行分支读它跳过取消（取消提问 ≠ 取消对话），读后复位。
+   * 与 approvalKeyJustConsumed 同模式（ask handler 先于 interactive 订阅执行）。
+   */
+  askKeyJustConsumed: boolean;
   /**
    * 审批卡片刚消费了一次 Esc（startTui 审批按键 handler 置位：Esc = 拒绝审批）。
    * interactive 的 Esc=取消运行分支读它跳过取消（拒绝审批 ≠ 取消对话），读后复位。
@@ -422,13 +447,17 @@ export interface TuiState {
   /**
    * 轨迹面板（/trace 展开右侧栏）：traceOpen = 面板可见；traceRows = 折叠投影
    * （interactive 每轮对话后 refreshTrace 刷新）；traceScroll = 面板内部滚动偏移
-   * （0 = 最新在底部；↑/↓ 回看历史）；traceSelected = 选中展开详情的行下标
-   * （-1 = 无；点击轨迹行 toggle，面板内嵌展开详情行）。
+   * （0 = 最新在底部；↑/↓ 回看历史）；traceSelected = 列表页选中行下标
+   * （-1 = 无；点击/Enter 推入详情页）；traceDetail = 详情页快照（非空 = 已推入
+   * 详情页：标题 + 完整内容行——点击轨迹行进入，Esc/返回行回列表）。
    */
   traceOpen: boolean;
   traceRows: TraceRow[];
   traceScroll: number;
   traceSelected: number;
+  /** 详情页（非空 = 面板显示详情页：返回行 + 行标题 + 完整内容；Esc/点返回回列表）：
+   * rowIdx = 点击的 traceRows 行下标（内容渲染时实时取，快照语义由 traceDetailLines 保证） */
+  traceDetail: { rowIdx: number } | null;
   /**
    * 审批结果回调（TuiOutput.requestApproval 注入；渲染层/按键层调用后由
    * TuiOutput 置 null）。放 state 上让 startTui（鼠标）与 interactive（按键）
@@ -484,6 +513,9 @@ export function createTuiState(): TuiState {
     approval: null,
     approvalKeyJustConsumed: false,
     approvalResolve: null,
+    ask: null,
+    askResolve: null,
+    askKeyJustConsumed: false,
     running: false,
     cancelRun: null,
     pending: [],
@@ -494,6 +526,7 @@ export function createTuiState(): TuiState {
     traceRows: [],
     traceScroll: 0,
     traceSelected: -1,
+    traceDetail: null,
   };
 }
 

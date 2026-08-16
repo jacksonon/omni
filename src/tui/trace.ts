@@ -2,11 +2,11 @@
  * 轨迹面板（右侧栏，/trace 展开）：纯展示层——把 agent/trace.ts 的 TraceRow 投影
  * 截断成面板行（TracePanelRow），不持有状态（数据源 state.traceRows 由 interactive
  * 每轮对话后调 refreshTrace 刷新）。与渲染层协作：render.ts 挂 traceBox 绝对定位
- * 浮层（右缘，宽 TRACE_W），行级命中（点击轨迹行展开/收起详情）走 traceRowMap。
+ * 浮层（右缘，宽 TRACE_W），行级命中（点击轨迹行**推入详情页**）走 traceRowMap。
  *
- * 面板结构：标题行 + 内容窗口（底部对齐，traceScroll = 从底部上滚行数）+ 顶/底
- * 「还有 N 行」提示行。traceSelected = 选中行绝对下标（-1 = 无）；选中行高亮
- * `›` 前缀并内嵌展开详情行（副信息 + 完整文本）。
+ * 两级页面：列表页（标题 + 内容窗口 + 滚动提示，点击行进入详情）→ 详情页
+ *（返回行 + 行标题 + 完整内容，Esc/点返回回列表）。traceSelected = 列表页选中行
+ * 下标（-1 = 无）；traceDetail = 详情页快照（非空 = 在详情页）。
  */
 import { foldTrace } from '../agent/trace.js';
 import type { TraceRow } from '../agent/trace.js';
@@ -41,6 +41,32 @@ function fit(text: string, cols: number): string {
   return out;
 }
 
+/** 按列宽折行（CJK 全角 2 列；详情页完整内容用——不截断，换行显示全部） */
+function wrap(text: string, cols: number): string[] {
+  const lines: string[] = [];
+  let cur = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = visualWidth(ch);
+    if (w + cw > cols && cur) {
+      lines.push(cur);
+      cur = ch === '\n' ? '' : ch;
+      w = ch === '\n' ? 0 : cw;
+      continue;
+    }
+    if (ch === '\n') {
+      lines.push(cur);
+      cur = '';
+      w = 0;
+    } else {
+      cur += ch;
+      w += cw;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.length > 0 ? lines : [''];
+}
+
 /** 单条 TraceRow → 面板行（选中高亮 `›` 前缀；副信息拼在右侧） */
 function buildTraceLine(row: TraceRow, selected: boolean, cols: number): TracePanelRow {
   const mark =
@@ -60,11 +86,53 @@ function buildTraceLine(row: TraceRow, selected: boolean, cols: number): TracePa
   return { text: fit(sel + prefix + row.text + done + sub, cols), style };
 }
 
+/** 轨迹行的标记前缀（列表与详情页标题同源） */
+function traceMark(row: TraceRow): string {
+  const mark = row.kind === 'user' ? '❯' : row.kind === 'tool' ? '⚙' : row.kind === 'turn' ? '' : '·';
+  const done = row.kind === 'turn' && row.done ? ` ${row.done}` : '';
+  return `${mark ? mark + ' ' : ''}${row.text}${done}`;
+}
+
 /**
- * 面板行构建（render.ts repaintTree 每帧调用）：
+ * 详情页行组装（点击轨迹行推入详情页时的快照内容）：
+ * 返回行 + 行标题 + 完整内容（text + 副信息 + detail 全部，按列宽折行不截断）。
+ */
+export function traceDetailLines(
+  state: TuiState,
+  rowIdx: number,
+  cols: number
+): { lines: TracePanelRow[]; rowMap: number[] } {
+  const out: TracePanelRow[] = [];
+  const rowMap: number[] = [];
+  const row = state.traceRows[rowIdx];
+  // 返回行（rowMap -2 = 返回按钮；点击返回列表页）
+  out.push({ text: `← ${t(state.language, 'trace.back')}`, style: { fg: 'blue', bold: true } });
+  rowMap.push(-2);
+  if (!row) {
+    out.push({ text: t(state.language, 'trace.empty'), style: { dim: true } });
+    rowMap.push(-1);
+    return { lines: out, rowMap };
+  }
+  // 行标题（标记 + text + done；完整显示）
+  out.push({ text: traceMark(row), style: { bold: true } });
+  rowMap.push(-1);
+  // 完整内容：副信息 + detail 全部（不截断，折行显示全部）
+  const body: string[] = [];
+  if (row.sub) body.push(row.sub);
+  if (row.detail) body.push(...row.detail);
+  for (const line of body.length > 0 ? body : [row.text]) {
+    for (const seg of wrap(line, cols)) {
+      out.push({ text: seg, style: { dim: true } });
+      rowMap.push(-1);
+    }
+  }
+  return { lines: out, rowMap };
+}
+
+/**
+ * 面板行构建（render.ts repaintTree 每帧调用）：列表页——
  * 标题 + 内容窗口 + 提示行；rowMap[i] = 行 i 对应的 traceRows 绝对下标
- * （-1 = 标题/提示行，不可点击）。选中行内嵌详情行（也映射同一行下标——
- * 点击详情行同样可收起）。
+ * （-1 = 标题/提示行，不可点击）。点击行 = 推入详情页（详情内容不在此内嵌）。
  */
 export function tracePanelLines(
   state: TuiState,
@@ -88,21 +156,11 @@ export function tracePanelLines(
     return { lines: out, rowMap };
   }
 
-  // 窗口：traceScroll = 从底部上滚的行数（0 = 全部可见/底部对齐）
+  // 窗口：traceScroll = 从底部上滚的行数（0 = 全部可见/底部对齐）。
+  // 窗口预算 = 总预算 − 标题 − 底部提示位；末尾恒留 1 行给滚动提示
+  //（scrollUp/scrollDown/hint 三选一有位置）。
   const total = rows.length;
-  // **窗口预算 = 总预算 − 标题 − 底部提示 − 选中行详情行数**：detail 行内嵌在选中行
-  // 下（同一 rowMap 下标），若窗口行数不扣减，detail 行会超出面板高度预算被
-  // panelRows 截断——尾部窗口行被挤出/详情不可见（用户反馈「点击展开详情不好使」）。
-  // 末尾再留 1 行给滚动提示（scrollUp/scrollDown/hint 三选一恒有位置，否则 ↑ 提示
-  // 出现时总行数 = budget+3 = maxRows+1，底部提示被截）。
-  const selDetail =
-    state.traceSelected >= 0 &&
-    state.traceSelected < total &&
-    state.traceRows[state.traceSelected]!.detail &&
-    state.traceRows[state.traceSelected]!.detail!.length > 0
-      ? state.traceRows[state.traceSelected]!.detail!.length
-      : 0;
-  const contentRows = Math.max(1, budget - selDetail - 1);
+  const contentRows = Math.max(1, budget - 1);
   const maxScroll = Math.max(0, total - contentRows);
   let scroll = Math.min(Math.max(0, state.traceScroll), maxScroll);
   // 选中行保持可见（交互层 ↑/↓ 只移动选中，滚动收敛在这里兜底——与联想浮层
@@ -127,13 +185,6 @@ export function tracePanelLines(
     const selected = state.traceSelected === i;
     out.push(buildTraceLine(row, selected, TRACE_TEXT_COLS));
     rowMap.push(i);
-    // 选中行：内嵌展开详情（turn 的 error detail），同为可点击行（再次点击收起）
-    if (selected && row.detail) {
-      for (const d of row.detail) {
-        out.push({ text: fit(`  ${d}`, TRACE_TEXT_COLS), style: { dim: true } });
-        rowMap.push(i);
-      }
-    }
   }
   const below = total - end;
   if (below > 0) {
@@ -154,4 +205,8 @@ export function refreshTrace(state: TuiState, events: TrajEvent[]): void {
   const maxScroll = Math.max(0, state.traceRows.length - 2);
   if (state.traceScroll > maxScroll) state.traceScroll = maxScroll;
   if (state.traceSelected >= state.traceRows.length) state.traceSelected = -1;
+  // 详情页打开时行被刷新移除 → 回列表页（内容已失效）
+  if (state.traceDetail && state.traceDetail.rowIdx >= state.traceRows.length) {
+    state.traceDetail = null;
+  }
 }

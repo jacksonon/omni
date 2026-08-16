@@ -5,6 +5,7 @@ import type { ContextOptions } from './context.js';
 import type { EventRecorder } from './events.js';
 import type { ApprovalRequest, PermissionTier } from '../safety/index.js';
 import type { Tool } from '../tools/index.js';
+import type { AskResult } from '../tools/ask.js';
 import type { UndoStack } from '../tools/undo.js';
 
 export interface RunOptions {
@@ -24,6 +25,11 @@ export interface RunOptions {
    * 缺省 = 拒绝（fail-safe）——未接入审批 UI 的环境不会静默放行危险操作。
    */
   requestApproval?: (req: ApprovalRequest) => Promise<boolean> | boolean;
+  /**
+   * 向用户提问（ask_user 工具回调；console readline / TUI 选项面板；由入口注入）。
+   * 返回 null = 用户取消（Esc / 非交互无法询问）——模型据此自行决定继续。
+   */
+  askUser?: (question: string, options: string[]) => Promise<AskResult | null>;
   /** 上下文管理：相关文件预载 + 长对话摘要压缩（由入口按配置注入；缺省 = 关闭） */
   context?: ContextOptions;
   /**

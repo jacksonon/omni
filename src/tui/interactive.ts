@@ -231,9 +231,21 @@ export async function runTuiInteractive(
     // 轨迹面板（/trace 右侧栏）：非模态浮层——↑/↓ 移动选中行（渲染层兜底收敛滚动
     // 保持选中可见）、Esc 收起面板（preventDefault：不触发下方「Esc 取消运行」）；
     // 其余按键放行给输入框（可继续输入/Enter 发送，面板保持打开）。
+    // **两级页面**：详情页（traceDetail 非空）——↑/↓ 滚动详情内容、Esc 回列表页、
+    // Enter 不消费（放行输入框）；列表页——↑/↓ 移动选中、Enter 推入详情页、Esc 收起。
     if (state.traceOpen) {
       let consumed = false;
-      if (key.name === 'up' || key.name === 'down') {
+      if (state.traceDetail) {
+        // 详情页：↑/↓ 滚动内容（复用 traceScroll，渲染层钳制）
+        if (key.name === 'up' || key.name === 'down') {
+          state.traceScroll += key.name === 'down' ? 1 : -1;
+          consumed = true;
+        } else if (key.name === 'escape' || key.name === 'esc') {
+          state.traceDetail = null; // 回列表页（再按 Esc 收起面板）
+          state.traceScroll = 0;
+          consumed = true;
+        }
+      } else if (key.name === 'up' || key.name === 'down') {
         const rows = state.traceRows;
         if (rows.length > 0) {
           if (state.traceSelected < 0) state.traceSelected = rows.length - 1;
@@ -241,6 +253,12 @@ export async function runTuiInteractive(
           else state.traceSelected = Math.min(rows.length - 1, state.traceSelected + 1);
         }
         consumed = true;
+      } else if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
+        if (state.traceSelected >= 0 && state.traceSelected < state.traceRows.length) {
+          state.traceDetail = { rowIdx: state.traceSelected }; // Enter 推入详情页
+          state.traceScroll = 0;
+          consumed = true;
+        }
       } else if (key.name === 'escape' || key.name === 'esc') {
         state.traceOpen = false;
         state.traceSelected = -1;
@@ -398,6 +416,8 @@ export async function runTuiInteractive(
     if ((key.name === 'escape' || key.name === 'esc') && state.running) {
       if (state.approvalKeyJustConsumed) {
         state.approvalKeyJustConsumed = false; // 该 ESC 已用于拒绝审批
+      } else if (state.askKeyJustConsumed) {
+        state.askKeyJustConsumed = false; // 该 ESC 已用于取消提问（取消提问 ≠ 取消对话）
       } else {
         state.cancelRun?.(); // 取消当前回合（loop 优雅结束本轮：已输出保留、半截消息不入上下文）
         out.cancelVisuals(); // **立即**停右侧 loading + 状态栏「思考中/执行中」（不等 runAgent 返回）
@@ -699,6 +719,15 @@ export async function runTuiInteractive(
         const t = input.plainText.trim();
         const m = state.submitMode;
         state.submitMode = 'queue';
+        // ask_user 提问面板打开：Enter = 提交自定义答案（优先于 queue/steer 分流——
+        // agent 正等待用户决策，输入内容即答案；空输入不提交）
+        if (state.ask) {
+          if (t) {
+            state.askResolve?.({ choice: t, custom: true });
+            input.setText('');
+          }
+          return;
+        }
         if (m === 'steer') {
           if (t) {
             // 打断消息写入中断槽：loop 在流中断（AbortError）后经 takeInterrupt 取走，

@@ -10,6 +10,7 @@
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
+import type { AskResult } from '../tools/ask.js';
 import type { WriteDiff } from './format.js';
 
 /** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
@@ -73,6 +74,12 @@ export interface Output {
    * 非交互（管道）自动拒绝（fail-safe）。可选：缺省时 loop 直接拒绝。
    */
   requestApproval?(req: ApprovalRequest): Promise<boolean>;
+  /**
+   * 向用户提问（ask_user 工具）：返回用户选择（选项文本或自定义输入），null = 取消。
+   * 实现方负责 UI——console 用 readline 选项询问、TUI 用输入区上方的选项面板
+   *（A/B/C/D 字母键或自定义输入 + Enter，Esc 取消）；非交互（管道）返回 null。
+   */
+  askUser?(question: string, options: string[]): Promise<AskResult | null>;
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
   /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */

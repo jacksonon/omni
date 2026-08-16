@@ -4643,7 +4643,7 @@ async function main(): Promise<void> {
 
   // 场景 44：/trace 右侧轨迹面板 —— 事件投影（foldTrace）+ 面板行（tracePanelLines）+ 渲染/点击/命令分发
   const { foldTrace, buildTraceTextLines, fmtMs } = await import('../src/agent/trace.js');
-  const { tracePanelLines, refreshTrace, TRACE_TEXT_COLS } = await import('../src/tui/trace.js');
+  const { traceDetailLines, tracePanelLines, refreshTrace, TRACE_TEXT_COLS } = await import('../src/tui/trace.js');
   // 两回合事件序列（turn/start → user → request → tool 配对 → assistant → turn/end；轮 2 interrupt 中止）
   const evs44: TrajEvent[] = [
     { s: 1, time: 1000, k: 'turn/start', turn: 1 },
@@ -4762,7 +4762,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 44 选中行未滚入窗口（应显示末行 ⚡ user）: ${JSON.stringify(pl44c.lines.map((l) => l.text))}`);
     process.exit(1);
   }
-  // 选中行 + 有 detail：turn/end(error) 内嵌详情行（同为可点击行，rowMap 同下标）
+  // 选中行 + 有 detail：列表页**不内嵌**详情（点击进入详情页展示——用户要求页面导航），
+  // 详情内容只出现在 traceDetailLines
   const evs44e: TrajEvent[] = [
     { s: 1, time: 1000, k: 'turn/start', turn: 1 },
     { s: 2, time: 1100, k: 'user/message', text: '跑一下', source: 'user' },
@@ -4772,18 +4773,16 @@ async function main(): Promise<void> {
   refreshTrace(s44d, evs44e);
   s44d.traceSelected = 0; // turn 1 ✗ 带 detail
   const pl44d = tracePanelLines(s44d, 16);
-  const detail44 = pl44d.lines.find((l) => l.text.includes('API 401'));
-  if (!detail44 || !pl44d.lines[1]!.text.includes('✗') || !pl44d.lines[1]!.text.includes('轮 1')) {
-    console.error(`✗ 场景 44 选中行 detail 内嵌失败: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
+  if (!pl44d.lines[1]!.text.includes('✗') || !pl44d.lines[1]!.text.includes('轮 1')) {
+    console.error(`✗ 场景 44 列表页选中行错误: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
     process.exit(1);
   }
-  const detailIdx44 = pl44d.lines.indexOf(detail44!);
-  if (pl44d.rowMap[detailIdx44] !== 0) {
-    console.error(`✗ 场景 44 detail 行 rowMap 应映射同一行下标（点击详情行可收起）: ${JSON.stringify(pl44d.rowMap)}`);
+  if (pl44d.lines.some((l) => l.text.includes('API 401'))) {
+    console.error(`✗ 场景 44 列表页不应内嵌详情（详情在详情页）: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
     process.exit(1);
   }
-  // d2) 窗口满 + 选中带 detail 的行：detail 行计入窗口预算（内容窗口行数 = budget − 详情 − 1
-  // 提示位）——detail 恒可见、尾部窗口行不被 panelRows 截断、底部提示恒有位置
+  // d2) 详情页（traceDetailLines）：返回行（rowMap -2）+ 行标题 + 完整内容（折行不截断）——
+  // 长内容按列宽折行显示全部；点击返回行回列表
   const evs44f: TrajEvent[] = [
     { s: 1, time: 1000, k: 'turn/start', turn: 1 },
     { s: 2, time: 1100, k: 'user/message', text: '问题一', source: 'user' },
@@ -4802,25 +4801,67 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 44 窗口满用例行数错误: ${s44f.traceRows.length}`);
     process.exit(1);
   }
-  s44f.traceSelected = 5; // 轮 2 ✗（唯一带 detail 的行）
-  const pl44f = tracePanelLines(s44f, 12, 7); // budget 5 → 窗口 3 + 详情 1 + 提示位 1
-  const fLines = pl44f.lines.map((l) => l.text);
-  if (!fLines.some((l) => l.includes('API 401'))) {
-    console.error(`✗ 场景 44 窗口满时 detail 被截断（点击展开详情不好使）: ${JSON.stringify(fLines)}`);
+  // turn 2 ✗（下标 5）详情页：返回行 + 轮 2 ✗ 标题 + API 401 完整内容
+  const dl44 = traceDetailLines(s44f, 5, 32);
+  if (!dl44.lines[0]!.text.includes('返回') || dl44.rowMap[0] !== -2) {
+    console.error(`✗ 场景 44 详情页返回行错误: ${JSON.stringify(dl44.lines[0])} rowMap=${dl44.rowMap[0]}`);
     process.exit(1);
   }
-  if (!fLines.some((l) => l.includes('❯ 问题二'))) {
-    console.error(`✗ 场景 44 detail 行挤出尾部窗口行: ${JSON.stringify(fLines)}`);
+  if (!dl44.lines[1]!.text.includes('轮 2 ✗')) {
+    console.error(`✗ 场景 44 详情页标题错误: ${JSON.stringify(dl44.lines.map((l) => l.text))}`);
     process.exit(1);
   }
-  if (!fLines.some((l) => l.includes('Esc 收起'))) {
-    console.error(`✗ 场景 44 底部提示被截断（提示位未预留）: ${JSON.stringify(fLines)}`);
+  if (!dl44.lines.some((l) => l.text.includes('API 401 Invalid token'))) {
+    console.error(`✗ 场景 44 详情页缺完整内容: ${JSON.stringify(dl44.lines.map((l) => l.text))}`);
     process.exit(1);
   }
-  if (pl44f.lines.length > 7 || pl44f.rowMap[pl44f.lines.findIndex((l) => l.text.includes('API 401'))] !== 5) {
-    console.error(`✗ 场景 44 面板行数超预算或 detail rowMap 错位: ${JSON.stringify({ rows: pl44f.lines.length, rowMap: pl44f.rowMap })}`);
+  // 长内容折行不截断（30 个汉字 + 超长参数 → 多行完整显示）
+  const s44g = createTuiState();
+  refreshTrace(s44g, [
+    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
+    { s: 2, time: 1100, k: 'user/message', text: '首行\n' + '长'.repeat(40), source: 'user' },
+    { s: 3, time: 2000, k: 'turn/end', turn: 1, reason: 'completed' },
+  ]);
+  const dl44g = traceDetailLines(s44g, 1, 32); // user 行：完整正文 = 首行 + 40 个「长」
+  const dlText = dl44g.lines.map((l) => l.text).join('\n');
+  if (dlText.includes('…') || dl44g.lines.length < 3) {
+    console.error(`✗ 场景 44 详情页长内容应折行显示全部（不截断）: ${JSON.stringify(dl44g.lines.map((l) => l.text))}`);
     process.exit(1);
   }
+  if (!dlText.includes('长'.repeat(40))) {
+    // 折行后 40 个「长」被换行断开——按字符总数校验内容完整（不截断）
+    const longCount = (dlText.match(/长/g) ?? []).length;
+    if (longCount !== 40) {
+      console.error(`✗ 场景 44 详情页长内容缺失: 长×${longCount}（应 40）: ${JSON.stringify(dl44g.lines.map((l) => l.text))}`);
+      process.exit(1);
+    }
+  }
+  // 渲染集成：traceDetail 打开 → 帧含返回行 + 内容；点击返回行 → 回列表页
+  s44f.traceOpen = true;
+  s44f.traceDetail = { rowIdx: 5 };
+  const t44d = await createTestRenderer({ width: 64, height: 20 });
+  const tree44d = mountTree(t44d.renderer, s44f, { withInput: true });
+  await t44d.renderOnce();
+  const frame44d = t44d.captureCharFrame();
+  if (!frame44d.includes('返回') || !frame44d.includes('API 401 Invalid token') || frame44d.includes('轨迹（7 条）')) {
+    console.error(`✗ 场景 44 详情页渲染错误:\n${frame44d}`);
+    process.exit(1);
+  }
+  const { handleTuiMouseEvent: htm44d } = await import('../src/tui/render.js');
+  // 返回行在面板第 1 行（y = traceRect.top）
+  htm44d({ type: 'down', button: 0, x: tree44d.traceLeft + 5, y: tree44d.traceRect!.top }, tree44d, s44f, 64, noopPaint);
+  if (s44f.traceDetail !== null) {
+    console.error('✗ 场景 44 点击返回行未回列表页');
+    process.exit(1);
+  }
+  // 详情页内容行点击无操作（不关闭/不跳转）
+  s44f.traceDetail = { rowIdx: 5 };
+  htm44d({ type: 'down', button: 0, x: tree44d.traceLeft + 5, y: tree44d.traceRect!.top + 2 }, tree44d, s44f, 64, noopPaint);
+  if (s44f.traceDetail === null) {
+    console.error('✗ 场景 44 详情页内容行点击不应返回');
+    process.exit(1);
+  }
+  s44f.traceDetail = null;
   // e) 渲染集成：traceOpen → traceBox 可见 + 帧内含面板 + traceRect/traceLeft/rowMap；关闭 → 隐藏
   const s44r = createTuiState();
   refreshTrace(s44r, evs44);
@@ -4861,31 +4902,34 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 44 traceOpen 内容宽度未收缩: none=${maxW44none} open=${maxW44open}（应 none≥50、open ≤ ${64 - 2 - 38}）`);
     process.exit(1);
   }
-  // f) 鼠标点击：命中轨迹行 → traceSelected 切换（再点收起）；标题行（rowMap -1）不触发
+  // f) 鼠标点击：列表页命中轨迹行 → **推入详情页**；详情页点返回行 → 回列表；
+  // 标题行（rowMap -1）不触发；面板外点击不命中
   const { handleTuiMouseEvent: htm44 } = await import('../src/tui/render.js');
   const y44row = tree44.traceRect!.top + 2; // 面板第 3 行（rowMap ≥ 0）
   htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: y44row }, tree44, s44r, 64, noopPaint);
-  const selAfter44 = s44r.traceSelected;
-  if (selAfter44 < 0) {
-    console.error('✗ 场景 44 点击轨迹行未选中');
+  if (s44r.traceDetail === null || s44r.traceDetail.rowIdx < 0) {
+    console.error('✗ 场景 44 点击轨迹行未推入详情页');
     process.exit(1);
   }
-  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: y44row }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceSelected !== -1) {
-    console.error('✗ 场景 44 再次点击未收起选中');
-    process.exit(1);
-  }
+  // 详情页：点返回行（面板第 1 行）→ 回列表页
   htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: tree44.traceRect!.top }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceSelected !== -1) {
-    console.error('✗ 场景 44 点击标题行不应触发选中');
+  if (s44r.traceDetail !== null) {
+    console.error('✗ 场景 44 详情页点击返回行未回列表');
+    process.exit(1);
+  }
+  // 列表页：点标题行（面板第 1 行，rowMap -1）不触发——选中/详情状态保持不变
+  const selBefore44 = s44r.traceSelected;
+  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: tree44.traceRect!.top }, tree44, s44r, 64, noopPaint);
+  if (s44r.traceDetail !== null || s44r.traceSelected !== selBefore44) {
+    console.error(`✗ 场景 44 点击标题行不应触发: detail=${JSON.stringify(s44r.traceDetail)} sel=${s44r.traceSelected}（点击前 ${selBefore44}）`);
     process.exit(1);
   }
   htm44({ type: 'down', button: 0, x: tree44.traceLeft - 1, y: y44row }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceSelected !== -1) {
+  if (s44r.traceDetail !== null) {
     console.error('✗ 场景 44 面板左侧区域点击不应命中面板');
     process.exit(1);
   }
-  // g) /trace 命令分发：toggle + 关闭时清选中/滚动；无 events 时也能安全 toggle
+  // g) /trace 命令分发：toggle + 关闭时清选中/滚动/详情页；无 events 时也能安全 toggle
   const { runCommand: runCmd44, findCommand: findCmd44 } = await import('../src/tui/commands.js');
   if (!findCmd44('trace')) {
     console.error('✗ 场景 44 /trace 命令未注册');
@@ -4899,12 +4943,204 @@ async function main(): Promise<void> {
   }
   s44c.traceSelected = 3;
   s44c.traceScroll = 5;
+  s44c.traceDetail = { rowIdx: 2 };
   await runCmd44({ state: s44c, out: {}, session: {}, input: {}, messages: [] } as never, '/trace');
-  if (s44c.traceOpen || s44c.traceSelected !== -1 || s44c.traceScroll !== 0) {
-    console.error(`✗ 场景 44 /trace 关闭未清选中/滚动: ${JSON.stringify({ open: s44c.traceOpen, sel: s44c.traceSelected, scroll: s44c.traceScroll })}`);
+  if (s44c.traceOpen || s44c.traceSelected !== -1 || s44c.traceScroll !== 0 || s44c.traceDetail !== null) {
+    console.error(`✗ 场景 44 /trace 关闭未清选中/滚动/详情页: ${JSON.stringify({ open: s44c.traceOpen, sel: s44c.traceSelected, scroll: s44c.traceScroll, detail: s44c.traceDetail })}`);
     process.exit(1);
   }
-  console.log('✓ 场景 44 通过：/trace 右侧轨迹面板（foldTrace 投影/账本/面板行/选中收敛/渲染收缩/点击/命令分发）');
+  console.log('✓ 场景 44 通过：/trace 右侧轨迹面板（foldTrace 投影/账本/面板行/选中收敛/渲染收缩/页面导航点击/命令分发）');
+
+  // 场景 45：ask_user 提问面板（输入区上方：选项 A-D / 自定义输入 / Esc 取消）
+  const { createAskUserTool } = await import('../src/tools/ask.js');
+  // a) TuiOutput.askUser：队列串行——两个提问排队，第一个 resolve 后自动展示第二个
+  {
+    const s45 = createTuiState();
+    const out45 = new TuiOutput(s45, { showThinking: true }, { paint: async () => {} } as never);
+    const r1 = out45.askUser('方案选择', ['方案A', '方案B', '方案C']);
+    const r2 = out45.askUser('第二个问题', ['甲', '乙']);
+    if (!s45.ask || s45.ask.question !== '方案选择' || s45.ask.options.length !== 3) {
+      console.error(`✗ 场景 45 首个提问未显示: ${JSON.stringify(s45.ask)}`);
+      process.exit(1);
+    }
+    s45.askResolve?.({ choice: '方案B', custom: false });
+    const v1 = await r1;
+    if (v1?.choice !== '方案B' || v1.custom) {
+      console.error(`✗ 场景 45 首个提问结果错误: ${JSON.stringify(v1)}`);
+      process.exit(1);
+    }
+    if (!s45.ask || s45.ask.question !== '第二个问题') {
+      console.error(`✗ 场景 45 队列未展示下一条: ${JSON.stringify(s45.ask)}`);
+      process.exit(1);
+    }
+    s45.askResolve?.(null);
+    const v2 = await r2;
+    if (v2 !== null || s45.ask !== null) {
+      console.error(`✗ 场景 45 取消提问结果错误: ${JSON.stringify(v2)}`);
+      process.exit(1);
+    }
+  }
+  // b) 渲染：askBox 可见 + 帧含问题/选项/提示；askRects 选项行 y → 下标；computeRows 预算收缩
+  {
+    const s45 = createTuiState();
+    s45.model = 'mock';
+    s45.ask = { question: '如何推进？', options: ['先调研', '直接实现', '先问清楚'] };
+    const t45 = await createTestRenderer({ width: 80, height: 24 });
+    const tree45 = mountTree(t45.renderer, s45, { withInput: true });
+    await t45.renderOnce();
+    if (!tree45.askBox || !tree45.askBox.visible) {
+      console.error('✗ 场景 45 askBox 未显示');
+      process.exit(1);
+    }
+    const frame45 = t45.captureCharFrame();
+    if (!frame45.includes('如何推进') || !frame45.includes('A) 先调研') || !frame45.includes('Esc 取消')) {
+      console.error(`✗ 场景 45 ask 面板渲染缺内容:\n${frame45}`);
+      process.exit(1);
+    }
+    // 选项行 y：面板底 = 24-5-1(输入1行)-0(pending) = 18；行数 = 2+ceil(3/3) = 3 → 顶 15
+    // 选项行面板内下标 1 → y = 15+1 = 16；3 个选项共享该行（start 0、count 3）
+    const rowOpt = tree45.askRects.get(16);
+    if (!rowOpt || rowOpt.start !== 0 || rowOpt.count !== 3) {
+      console.error(`✗ 场景 45 askRects 映射错误: y16 → ${JSON.stringify(rowOpt)}（应 {start:0,count:3}）: ${JSON.stringify([...tree45.askRects])}`);
+      process.exit(1);
+    }
+    // 内容区预算收缩：ask 打开时 cap 减 3 行（❓ 问题行 + 选项行 + 提示）——内容超视口才可见
+    const s45b = createTuiState();
+    for (let i = 0; i < 20; i++) pushLine(s45b, { kind: 'user', text: `行 ${i}` });
+    const capNone = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
+    s45b.ask = { question: 'q', options: ['a', 'b', 'c'] };
+    const capAsk = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
+    if (capAsk !== capNone - 3) {
+      console.error(`✗ 场景 45 ask 预算未收缩: none=${capNone} ask=${capAsk}（应差 3）`);
+      process.exit(1);
+    }
+    // ask 关闭后恢复
+    s45b.ask = null;
+    const capBack = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
+    if (capBack !== capNone) {
+      console.error(`✗ 场景 45 ask 关闭后预算未恢复: ${capBack}（应 ${capNone}）`);
+      process.exit(1);
+    }
+    // ask 面板渲染帧：4 行面板在灰色块上方
+    if (!frame45.includes('❓')) {
+      console.error('✗ 场景 45 帧缺 ❓ 标题');
+      process.exit(1);
+    }
+  }
+  // c) 按键：A-D 字母 resolve 选项（preventDefault）、Esc resolve null + askKeyJustConsumed、
+  //    非选项字母不消费。走 startTui 的真实 onAskKey（renderer.keyInput 事件派发）
+  {
+    const s45 = createTuiState();
+    s45.ask = { question: 'q', options: ['一', '二', '三', '四'] };
+    let resolved: unknown = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null; // 模拟 TuiOutput 的 resolver（真实链路里它清 ask + 播放下一条）
+    };
+    const t45 = await createTestRenderer({ width: 80, height: 24 });
+    mountTree(t45.renderer, s45, { withInput: true });
+    const tree45 = t45.renderer as unknown as { root: { onKeyPress: (k: unknown) => void } };
+    // 直接调 render.ts 导出的按键处理（快照复用真实代码路径——与 startTui 注册的同一函数）
+    const { onAskKeyPress } = await import('../src/tui/render.js');
+    const key45 = (name: string) => ({ name, preventDefault: () => {} }) as never;
+    onAskKeyPress(key45('a'), s45, tree45 as never, () => {});
+    if ((resolved as { choice: string } | null)?.choice !== '一' || s45.ask !== null) {
+      console.error(`✗ 场景 45 字母 a 未选中选项: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 重新打开 + Esc 取消
+    s45.ask = { question: 'q2', options: ['x', 'y'] };
+    resolved = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null;
+    };
+    onAskKeyPress(key45('escape'), s45, tree45 as never, () => {});
+    if (resolved !== null || s45.ask !== null || !s45.askKeyJustConsumed) {
+      console.error(`✗ 场景 45 Esc 未取消提问: ${JSON.stringify({ resolved, ask: s45.ask, consumed: s45.askKeyJustConsumed })}`);
+      process.exit(1);
+    }
+    // 非选项字母（e，超出 2 个选项）不消费、不 resolve
+    s45.ask = { question: 'q3', options: ['x', 'y'] };
+    resolved = 'pending';
+    onAskKeyPress(key45('e'), s45, tree45 as never, () => {});
+    if (resolved !== 'pending' || !s45.ask) {
+      console.error(`✗ 场景 45 越界字母不应消费: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    s45.ask = null;
+  }
+  // d) 鼠标点击选项行：resolve 对应选项
+  {
+    const s45 = createTuiState();
+    s45.ask = { question: 'q', options: ['甲', '乙'] };
+    let resolved: unknown = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null;
+    };
+    const t45 = await createTestRenderer({ width: 80, height: 24 });
+    const tree45 = mountTree(t45.renderer, s45, { withInput: true });
+    await t45.renderOnce();
+    const { handleTuiMouseEvent: htm45 } = await import('../src/tui/render.js');
+    // 点击选项行第 1 列（x=5，colW = floor((80-4)/3) = 25）→ 选中第 1 个选项「甲」
+    const y45 = [...tree45.askRects.keys()][0];
+    if (y45 === undefined) {
+      console.error(`✗ 场景 45 askRects 无选项行: ${JSON.stringify([...tree45.askRects])}`);
+      process.exit(1);
+    }
+    htm45({ type: 'down', button: 0, x: 5, y: y45 }, tree45, s45, 80, noopPaint);
+    if ((resolved as { choice: string } | null)?.choice !== '甲' || s45.ask !== null) {
+      console.error(`✗ 场景 45 鼠标点击未选中选项（第 1 列应选「甲」）: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 第 3 列（x=55）→ 选项 1「乙」（2 个选项：count=2，col 钳制到 1）
+    s45.ask = { question: 'q', options: ['甲', '乙'] };
+    resolved = 'pending';
+    s45.askResolve = (r) => {
+      resolved = r;
+      s45.ask = null;
+    };
+    htm45({ type: 'down', button: 0, x: 55, y: y45 }, tree45, s45, 80, noopPaint);
+    if ((resolved as { choice: string } | null)?.choice !== '乙') {
+      console.error(`✗ 场景 45 鼠标点击列定位错误（第 3 列应选「乙」）: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+  }
+  // e) 工具链路：createAskUserTool——选项/自定义/取消/无回调四路结果文本
+  {
+    const tool45 = createAskUserTool(async (q, o) => ({ choice: o[1]!, custom: false }));
+    const r1 = await tool45.execute({ question: 'q', options: ['a', 'b', 'c'] });
+    if (r1 !== '用户选择了选项：b') {
+      console.error(`✗ 场景 45 工具选项结果错误: ${r1}`);
+      process.exit(1);
+    }
+    const tool45b = createAskUserTool(async () => ({ choice: '自定义答案', custom: true }));
+    const r2 = await tool45b.execute({ question: 'q', options: ['a', 'b'] });
+    if (r2 !== '用户自定义输入：自定义答案') {
+      console.error(`✗ 场景 45 工具自定义结果错误: ${r2}`);
+      process.exit(1);
+    }
+    const tool45c = createAskUserTool(async () => null);
+    const r3 = await tool45c.execute({ question: 'q', options: ['a', 'b'] });
+    if (!r3.includes('用户取消')) {
+      console.error(`✗ 场景 45 工具取消结果错误: ${r3}`);
+      process.exit(1);
+    }
+    const tool45d = createAskUserTool(undefined);
+    const r4 = await tool45d.execute({ question: 'q', options: ['a', 'b'] });
+    if (!r4.includes('无法输入')) {
+      console.error(`✗ 场景 45 无回调结果错误: ${r4}`);
+      process.exit(1);
+    }
+    const tool45e = createAskUserTool(async () => ({ choice: 'x', custom: false }));
+    const r5 = await tool45e.execute({ question: 'q', options: ['a'] });
+    if (!r5.includes('错误')) {
+      console.error(`✗ 场景 45 参数校验错误: ${r5}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 45 通过：ask_user 提问面板（队列串行/渲染与预算/字母键与 Esc/鼠标点击/工具四路结果）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

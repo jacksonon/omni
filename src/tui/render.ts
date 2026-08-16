@@ -60,7 +60,7 @@ import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose
 import { logCrash } from './crashlog.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
-import { TRACE_W, tracePanelLines } from './trace.js';
+import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
@@ -179,6 +179,12 @@ export interface TuiTree {
   traceRowMap: number[];
   /** 轨迹面板占据的屏幕列起始（x ≥ 该值且 y 命中 traceRect 的点击归属面板，不穿透内容） */
   traceLeft: number;
+  /** ask_user 提问面板（bottomBlock 内、待发送区上方：问题 + 选项 + 提示；非空时可见） */
+  askBox: BoxRenderable | null;
+  askCells: TextRenderable[];
+  /** 每次重绘刷新：ask 面板选项行的屏幕 y → { start: 行内首个选项下标, count: 本行选项数 }
+   *（鼠标点击按 x 列定位行内选项——同一行多个选项共享 y，需列坐标区分） */
+  askRects: Map<number, { start: number; count: number }>;
 }
 
 /** 建树（首帧）：根 Box（无边框）+ 输入框 + 状态栏挂到 root 下，内容行由 repaintTree 维护 */
@@ -203,6 +209,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerEsc: TextRenderable | null = null;
   let queueBox: BoxRenderable | null = null;
   const queueCells: TextRenderable[] = [];
+  let askBox: BoxRenderable | null = null;
+  const askCells: TextRenderable[] = [];
   if (opts?.withInput) {
     // 灰色块：淡灰背景（按主题），整块行布局——蓝色细线贴左缘竖跨整块，
     // 右侧内容列（输入框 + 模型行）。auto 上边距吸收内容区剩余空间：
@@ -421,6 +429,25 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     queueCells.push(c);
   }
 
+  // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 操作提示。
+  // 圆角方框 + 主题面板底色（同联想/轨迹浮层设计语言）；行数 = 标题 1 + 问题 1 +
+  // ceil(选项/3) 选项行 + 提示 1（最多 6 个选项 → 6 行）；预算同步（computeRows）。
+  askBox = new BoxRenderable(ctx, {
+    flexDirection: 'column',
+    paddingX: 1,
+    gap: 0,
+    visible: false,
+    backgroundColor: theme.suggestBg,
+    border: true,
+    borderStyle: 'rounded',
+    borderColor: theme.suggestBorder,
+  });
+  for (let i = 0; i < 8; i++) {
+    const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    askBox.add(c);
+    askCells.push(c);
+  }
+
   // 底部固定块：**待发送消息区 + 灰色块** 一起钉在视口底部（marginTop:auto 吸收
   // 自由空间——待发送区永远紧贴输入框上方，不随内容浮动；点击命中区域因此确定）。
   // 空待发送时 queueBox 不可见（不占布局），底部块只剩灰色块，行为与之前一致。
@@ -428,6 +455,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     flexDirection: 'column',
     marginTop: 'auto',
   });
+  if (askBox) bottomBlock.add(askBox);
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
   root.add(bottomBlock);
@@ -462,6 +490,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     thinkingRects: new Map(),
     tokensRects: new Map(),
     approvalRect: null,
+    askBox,
+    askCells,
+    askRects: new Map(),
     suggestBox,
     suggestCells,
     suggestRect: null,
@@ -479,6 +510,12 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   };
   repaintTree(ctx, tree, state, opts);
   return tree;
+}
+
+/** 按列宽截断文本（CJK 感知；超出补省略号——ask 面板选项/问题行用） */
+function fitAsk(text: string, cols: number): string {
+  const n = fitCount(text, cols);
+  return n < text.length ? text.slice(0, Math.max(0, n - 1)) + '…' : text;
 }
 
 /** 最近一条 applyRowToCell 错误（去重：连续相同错误只记一次，避免长会话刷爆崩溃日志） */
@@ -934,7 +971,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // footerTop - 5（不遮输入区；footerTop 在输入框高度刷新后已是最终值）。
   // 展开时对话流宽度收缩在 computeRows（读 state.traceOpen）——内容右移重新折行，
   // 面板不盖内容。行级命中：内部行 i → 事件坐标 y = top + 1 + i（border 1 行）；
-  // rowMap 记录 行 → traceRows 绝对下标（-1 = 标题/提示行，点击忽略）。
+  // rowMap 记录 行 → traceRows 绝对下标（-1 = 标题/提示行，-2 = 详情页返回行）。
+  // **两级页面**：列表页（traceDetail 为 null）点击行推入详情页；详情页
+  //（traceDetail 非空）显示返回行 + 完整内容（点击返回行/Esc 回列表）。
   if (tree.traceBox) {
     const tOpen = state.traceOpen;
     tree.traceBox.visible = tOpen;
@@ -942,7 +981,31 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.traceBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
       tree.traceBox.borderColor = parseColor(theme.suggestBorder);
       const maxRows = Math.max(3, footerTop - 5);
-      const { lines, rowMap } = tracePanelLines(state, footerTop, maxRows);
+      // 详情页（点击轨迹行推入）：返回行 + 行标题 + 完整内容（折行不截断）；
+      // 内容超预算时窗口滚动（复用 traceScroll，底部对齐 + 顶部提示）
+      const detail = state.traceDetail;
+      let lines: ReturnType<typeof tracePanelLines>['lines'];
+      let rowMap: ReturnType<typeof tracePanelLines>['rowMap'];
+      if (detail) {
+        const all = traceDetailLines(state, detail.rowIdx, TRACE_TEXT_COLS);
+        const contentRows = Math.max(1, maxRows - 1); // 顶部提示位（滚动时）
+        const maxScroll = Math.max(0, all.lines.length - contentRows);
+        const scroll = Math.min(Math.max(0, state.traceScroll), maxScroll);
+        const end = all.lines.length - scroll;
+        const start = Math.max(0, end - contentRows);
+        lines = [];
+        rowMap = [];
+        if (start > 0) {
+          lines.push({ text: tf(state.language, 'trace.scrollUp', { n: start }), style: { dim: true } });
+          rowMap.push(-1);
+        }
+        for (let i = start; i < end; i++) {
+          lines.push(all.lines[i]);
+          rowMap.push(all.rowMap[i]);
+        }
+      } else {
+        ({ lines, rowMap } = tracePanelLines(state, footerTop, maxRows));
+      }
       const panelRows = Math.min(lines.length, maxRows);
       tree.traceBox.top = 1;
       tree.traceBox.left = Math.max(1, (width ?? 80) - TRACE_W - 1); // 右缘贴内容区右边界（root paddingX 1）
@@ -1027,6 +1090,49 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.pendingRects.clear();
     const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
+  }
+  // ask_user 提问面板（输入区上方）：state.ask 非空时显示——❓ 问题 + 选项行 +
+  // 操作提示。面板在 bottomBlock 顶部（待发送区上方）：底边 = footer 顶 - pendingRows，
+  // 顶 = 底 - 面板行数。选项行 y → 选项下标（鼠标点击选择用，与 pendingRects 同坐标系）。
+  if (tree.askBox) {
+    const a = state.ask;
+    tree.askBox.visible = !!a && !!opts?.withInput;
+    tree.askRects.clear();
+    if (a && opts?.withInput) {
+      tree.askBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
+      tree.askBox.borderColor = parseColor(theme.suggestBorder);
+      const lang = state.language;
+      const aRows: { text: string; style: { dim?: boolean; bold?: boolean; fg?: string } }[] = [];
+      aRows.push({ text: `❓ ${fitAsk(a.question, Math.max(10, (width ?? 80) - 10))}`, style: { bold: true } });
+      const perRow = 3;
+      for (let i = 0; i < a.options.length; i += perRow) {
+        const group = a.options.slice(i, i + perRow);
+        const line = group
+          .map((o, j) => `${String.fromCharCode(65 + i + j)}) ${fitAsk(o, Math.max(8, Math.floor(((width ?? 80) - 8) / perRow)))}`)
+          .join('   ');
+        aRows.push({ text: line, style: {} });
+      }
+      aRows.push({ text: t(lang, 'ask.hint'), style: { dim: true } });
+      for (let i = 0; i < tree.askCells.length; i++) {
+        const cell = tree.askCells[i];
+        if (i >= aRows.length) {
+          cell.visible = false;
+          continue;
+        }
+        cell.visible = true;
+        applyRowToCell(cell, aRows[i], theme);
+      }
+      // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数
+      const aBottom = (height ?? 24) - 5 - state.inputLines - pendingRows;
+      const aTop = aBottom - aRows.length;
+      // 选项行 y → 行内选项区间（同一行多个选项共享 y，点击按 x 列定位；行内下标 = 面板内
+      // 下标 1（❓ 行）起的第 floor(i/3) 行）
+      for (let i = 0; i < a.options.length; i += perRow) {
+        const rowIdx = 1 + Math.floor(i / perRow);
+        const count = Math.min(perRow, a.options.length - i);
+        tree.askRects.set(aTop + rowIdx, { start: i, count });
+      }
+    }
   }
 }
 
@@ -1115,8 +1221,21 @@ export function handleTuiMouseEvent(
       void paint();
       return;
     }
-    // 轨迹面板（/trace 右侧栏）：x ≥ traceLeft 且 y 命中面板内部行 → 点击轨迹行
-    // 切换选中（展开/收起详情行）；面板内标题/提示行与面板外区域不触发、不穿透内容。
+    // ask_user 提问面板：点击选项行 = 选择对应选项（行内按 x 列定位——同一行多个
+    // 选项共享 y；等同字母键；面板区域优先于内容）
+    if (state.ask) {
+      const rowOpt = tree.askRects.get(e.y);
+      if (rowOpt) {
+        const colW = Math.max(1, Math.floor(((width ?? 80) - 4) / 3));
+        const col = Math.min(rowOpt.count - 1, Math.max(0, Math.floor(((e.x ?? 0) - 1) / colW)));
+        state.askResolve?.({ choice: state.ask.options[rowOpt.start + col]!, custom: false });
+        void paint();
+        return;
+      }
+    }
+    // 轨迹面板（/trace 右侧栏）：x ≥ traceLeft 且 y 命中面板内部行。
+    // 详情页：点击返回行（rowMap -2）→ 回列表；内容行无操作。
+    // 列表页：点击轨迹行 → **推入详情页**（rowIdx 快照）；标题/提示行不触发。
     if (
       state.traceOpen &&
       tree.traceRect &&
@@ -1127,9 +1246,18 @@ export function handleTuiMouseEvent(
     ) {
       const panelIdx = e.y - tree.traceRect.top;
       const rowIdx = tree.traceRowMap[panelIdx];
-      if (rowIdx !== undefined && rowIdx >= 0) {
-        state.traceSelected = state.traceSelected === rowIdx ? -1 : rowIdx;
-        // 选中行保持可见（窗口滚动收敛由 repaintTree 的 tracePanelLines 兜底）
+      if (state.traceDetail) {
+        // 详情页：返回行恒为面板第 1 行（traceDetailLines 固定结构）——直接按
+        // panelIdx 判断，不依赖 traceRowMap（点击推入详情页后 paint 异步刷新前，
+        // 同帧第二次点击读到的还是列表页的旧 rowMap——快照同帧点击暴露）
+        if (panelIdx === 0) {
+          state.traceDetail = null; // 点击返回行：回列表页
+          state.traceScroll = 0;
+        }
+      } else if (rowIdx !== undefined && rowIdx >= 0) {
+        state.traceSelected = rowIdx;
+        state.traceDetail = { rowIdx }; // 推入详情页
+        state.traceScroll = 0;
       }
       void paint();
       return;
@@ -1173,6 +1301,35 @@ export function handleTuiMouseEvent(
   }
 }
 
+/**
+ * ask_user 提问面板按键（导出供快照复用同一真实代码路径；startTui 注册）：
+ * A-D 字母选对应选项、Esc 取消（置 askKeyJustConsumed——interactive 据此跳过
+ * 取消运行）；面板未打开时无操作。消费的按键 preventDefault（不进入输入框）。
+ */
+export function onAskKeyPress(
+  key: TuiKey,
+  state: TuiState,
+  _tree: TuiTree,
+  paint: () => void
+): void {
+  if (!state.ask) return;
+  const idx = /^[a-z]$/i.test(key.name ?? '') ? key.name!.toLowerCase().charCodeAt(0) - 97 : -1;
+  if (idx >= 0 && idx < state.ask.options.length) {
+    state.askResolve?.({ choice: state.ask.options[idx]!, custom: false });
+    key.preventDefault();
+    paint();
+    return;
+  }
+  if (key.name === 'escape' || key.name === 'esc') {
+    // Esc 记录「已被 ask 消费」：interactive 的 Esc=取消运行分支据此跳过取消
+    //（取消提问 ≠ 取消对话——模型收到「用户取消」自行决定继续）
+    state.askKeyJustConsumed = true;
+    state.askResolve?.(null);
+    key.preventDefault();
+    paint();
+  }
+}
+
 /** 创建 TUI 会话：建树 + 首帧，返回 paint/stop/input/onKeyPress */
 export async function startTui(state: TuiState, opts?: { withInput?: boolean }): Promise<TuiSession> {
   const renderer = await createCliRenderer({ exitOnCtrlC: true });
@@ -1200,6 +1357,15 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   };
   keyUnsubs.add(unsubApproval);
   renderer.keyInput.on('keypress', onApprovalKey);
+  // ask_user 提问面板按键（输入区上方选项）：A-D 字母选对应选项、Esc 取消。
+  // 与审批同注册时机（能力协商前）+ preventDefault——运行中输入框保持聚焦，
+  // 字母键不拦截会直接打进输入框（自定义输入场景 Enter 提交走 onSubmit 分流）。
+  const onAskKey = (key: TuiKey): void => onAskKeyPress(key, state, tree, () => void paint());
+  const unsubAsk = () => {
+    renderer.keyInput.off('keypress', onAskKey);
+  };
+  keyUnsubs.add(unsubAsk);
+  renderer.keyInput.on('keypress', onAskKey);
   // 主题检测：OpenTUI 通过 OSC 10/11 查询终端背景色并按亮度推断亮/暗。
   // 结果存 detectedTheme（themeMode=system 时取色用）；超时/不支持保持默认深色。
   try {

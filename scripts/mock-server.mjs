@@ -16,6 +16,8 @@ const STREAM_MODE = process.env.MOCK_STREAM === '1';
 const MOCK_WRITE = process.env.MOCK_WRITE === '1';
 // MOCK_DANGEROUS=1 时第一轮发危险命令 run_command（full 直通 / safe 审批 e2e 验证）
 const MOCK_DANGEROUS = process.env.MOCK_DANGEROUS === '1';
+// MOCK_ASK=1 时第一轮发 ask_user 调用（用户提问面板 e2e 验证：选项/自定义/取消）
+const MOCK_ASK = process.env.MOCK_ASK === '1';
 // MOCK_MULTIREAD=1 时第一轮**并行发 3 个 read_file 调用**（TUI 多读合并展示 e2e 验证：
 // `→ Read 3 files` 一张卡、点击展开逐条 ⤷）
 const MOCK_MULTIREAD = process.env.MOCK_MULTIREAD === '1';
@@ -77,7 +79,12 @@ const server = http.createServer((req, res) => {
       ? { name: 'write_file', arguments: JSON.stringify({ path: 'undo-test.txt', content: 'mock-write-content\n' }) }
       : MOCK_DANGEROUS
         ? { name: 'run_command', arguments: '{"command":"git push origin main"}' }
-        : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
+        : MOCK_ASK
+          ? {
+              name: 'ask_user',
+              arguments: JSON.stringify({ question: '接下来怎么做？', options: ['继续执行', '先总结', '换个方案'] }),
+            }
+          : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
     // 第一轮的完整 tool_calls 数组：MOCK_MULTIREAD=1 时并行 3 个 read_file（其余单调用）
     const firstToolCalls = MOCK_MULTIREAD
       ? [

@@ -7,6 +7,7 @@ import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
+import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
 import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
@@ -397,6 +398,36 @@ export class TuiOutput implements Output {
       this.showNextApproval(); // 串行：处理队列里的下一条
     };
     this.state.status = tf(this.state.language, 'status.approval', { tool: next.req.tool });
+    this.schedulePaint();
+  }
+
+  /**
+   * 向用户提问（ask_user 工具）：打开输入区上方的选项面板（问题 + A/B/C/D 选项 +
+   * 自定义输入提示），resolver 挂在 state.askResolve 上——startTui（字母键/鼠标）与
+   * interactive（Enter 自定义提交）无需反向依赖 TuiOutput 即可完成提问。
+   * 并行多个提问串行展示（与审批卡片同队列模式）。
+   */
+  private askQueue: { question: string; options: string[]; resolve: (r: AskResult | null) => void }[] = [];
+  askUser(question: string, options: string[]): Promise<AskResult | null> {
+    return new Promise((resolve) => {
+      this.askQueue.push({ question, options, resolve });
+      this.showNextAsk();
+    });
+  }
+
+  private showNextAsk(): void {
+    if (this.state.ask || this.askQueue.length === 0) return; // 已有面板在等 → 排队
+    const next = this.askQueue.shift()!;
+    this.state.ask = { question: next.question, options: next.options };
+    this.state.askResolve = (r: AskResult | null) => {
+      this.state.ask = null;
+      this.state.askResolve = null;
+      this.state.status = '';
+      next.resolve(r);
+      this.schedulePaint();
+      this.showNextAsk(); // 串行：处理队列里的下一条
+    };
+    this.state.status = t(this.state.language, 'status.ask');
     this.schedulePaint();
   }
 

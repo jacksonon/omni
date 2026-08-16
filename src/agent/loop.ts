@@ -111,7 +111,7 @@ async function waitAbort<T>(p: Promise<T>, signal?: AbortSignal, onAbort?: () =>
 }
 
 /** 计划模式（/plan）下对模型暴露的只读工具：只允许调研，不允许修改/执行 */
-export const READ_ONLY_TOOLS = new Set(['read_file', 'list_directory', 'search_code']);
+export const READ_ONLY_TOOLS = new Set(['read_file', 'list_directory', 'search_code', 'ask_user']);
 
 /** 计划模式追加在系统提示词末尾的说明（指导模型只调研、输出方案，不直接动手） */
 export const PLAN_MODE_NOTE =
