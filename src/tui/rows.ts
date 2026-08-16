@@ -178,10 +178,11 @@ export function menuPanelRows(menu: TuiMenu, contentWidth: number, lang: TuiLang
  * 内容行按面板宽折行（每行恰好 1 个终端行，边框不被撑破），超高时垂直滚动
  * （panel.scroll 由交互层 ↑/↓ 调整，这里 clamp 到合法区间并回写）。
  */
-export function cmdPanelRows(panel: CmdPanel, contentWidth: number, viewportHeight: number, lang: TuiLang = 'zh'): Row[] {
+export function cmdPanelRows(panel: CmdPanel, contentWidth: number, footerTop: number, lang: TuiLang = 'zh'): Row[] {
   const inner = cardInnerWidth(contentWidth);
-  // 可见主体行数：视口减标题 1 + 提示 1 + 底边 1（面板居中，上下留白）
-  const maxVisible = Math.max(2, viewportHeight - 6);
+  // 可见主体行数：面板总高（主体 + 标题 1 + 提示 1 + 底边 1）不得超过 footerTop - 2
+  // （footerTop = 灰色块顶部——面板永不遮住输入区/placeholder，内容超高时滚动查看）
+  const maxVisible = Math.max(2, footerTop - 5);
   // 长行折行成多行（内容完整可滚动查看，不截断）；源行之间不插空行（保持紧凑）
   const body: string[] = [];
   for (const raw of panel.lines) {

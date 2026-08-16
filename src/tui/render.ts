@@ -243,7 +243,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     input = new TextareaRenderable(ctx, {
       // 占位符必须单行内放得下：多行输入框高度预算按 inputLines（内容行数）计算，
       // 占位符若折行会让输入框实际高度超预算、把内容区挤出（见 computeRows 注释）。
-      placeholder: t(state.language, 'input.placeholder'), // mount 时按当前语言取（切语言后重启生效，见 AGENTS.md 第一百一十五次）
+      placeholder: t(state.language, 'input.placeholder'), // mount 时初始值；切语言后由 repaintTree 每帧刷新即时生效
       minHeight: 1,
       maxHeight: 5,
       flexGrow: 1,
@@ -525,6 +525,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.input) {
     tree.input.textColor = theme.inputText;
     tree.input.placeholderColor = theme.placeholder;
+    // placeholder 文本随语言即时刷新（切语言立刻生效，不等重启——mount 时初始值在 mountTree）
+    tree.input.placeholder = t(state.language, 'input.placeholder');
     tree.input.backgroundColor = theme.inputBg;
   }
   if (tree.footerModel) tree.footerModel.fg = parseColor(theme.footerText);
@@ -535,6 +537,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const pendingCount = state.pending.length;
   const pendingVisibleMsgs = Math.min(4, pendingCount);
   const pendingRows = pendingCount > 0 ? 1 + pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
+  // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）。联想/菜单/命令面板浮层共用：
+  // 浮层底边钳制在此行上方——永不遮住输入区。inputLines 刷新后（下方 if 块内）重新赋值。
+  let footerTop = (height ?? 24) - 7 - pendingRows - 1;
   // 状态栏：dark 保持 dim 白字（原样）；light 去掉 dim 属性 + 显式深灰文字
   //（浅底上 dim 白字看不见，dim+深灰又会半亮发浅）
   (tree.status as { attributes?: number }).attributes = createTextAttributes(isLightTheme(theme) ? {} : { dim: true });
@@ -567,7 +572,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
     // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块（圆角边框 2 行））
-    const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
+    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
     if (!state.menu && !state.settingsPanel && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -827,7 +832,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 44);
       const panelRows = menu ? menuPanelRows(menu, panelW, state.language) : settingsPanelRows(settings!, panelW, state.language);
       tree.menuOverlay.visible = true;
-      tree.menuOverlay.top = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
+      // 底边钳制在灰色块上方（同 cmdPanel 面板）：内容少时居中，多时贴灰块上缘
+      const centeredTopMenu = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
+      tree.menuOverlay.top = Math.min(centeredTopMenu, Math.max(1, footerTop - panelRows.length - 1));
       tree.menuOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
       // 菜单行 → 选项下标映射（点击命中用；标题 0 / 提示 / 底边 = -1）：
       // 面板行下标 i（0=标题边框行）→ 选项下标 i-1；事件坐标 y = overlay.top + 1 + i
@@ -864,9 +871,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.cmdPanelOverlay.visible = false;
     } else {
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 72);
-      const panelRows = cmdPanelRows(panel, panelW, height ?? 24, state.language);
+      const panelRows = cmdPanelRows(panel, panelW, footerTop, state.language);
       tree.cmdPanelOverlay.visible = true;
-      tree.cmdPanelOverlay.top = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
+      // 面板底边钳制在灰色块上方（footerTop = 灰块顶）：内容少时保持居中，内容多时
+      // 贴灰块上缘向上生长——面板永不遮住输入区（此前居中定位会压住输入行/placeholder，
+      // 用户「输入提示看不见」的根因；快照场景 43 n) 段帧级实锤）
+      const centeredTop43 = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
+      tree.cmdPanelOverlay.top = Math.min(centeredTop43, Math.max(1, footerTop - panelRows.length - 1));
       tree.cmdPanelOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
       for (let i = 0; i < tree.cmdPanelCells.length; i++) {
         const cell = tree.cmdPanelCells[i];

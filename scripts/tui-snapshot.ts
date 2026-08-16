@@ -4516,6 +4516,17 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 语言面板内点击未切换: ${JSON.stringify({ language: s43.language, menu: s43.menu })}`);
     process.exit(1);
   }
+  // n) 输入区 placeholder 随语言即时刷新（此前 mount 时取一次、切语言后重启才生效）：
+  //    m) 段已切回 zh → 重绘后 placeholder 立即变中文（不再等重启）
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const frame43n = t43.captureCharFrame();
+  console.error('[dbg43n] lang=' + s43.language + ' placeholder=' + JSON.stringify(tree43.input?.placeholder) + ' text=' + JSON.stringify(tree43.input?.plainText) + ' cmdPanel=' + (s43.cmdPanel ? 'open' : 'null') + ' settingsPanel=' + (s43.settingsPanel ? 'open' : 'null'));
+  console.error('[dbg43n] frame:\n' + frame43n);
+  if (!frame43n.includes('输入消息') || frame43n.includes('Type a message')) {
+    console.error('✗ 场景 43 切回中文后 placeholder 未即时刷新');
+    process.exit(1);
+  }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
