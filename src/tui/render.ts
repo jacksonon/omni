@@ -182,9 +182,8 @@ export interface TuiTree {
   /** ask_user 提问面板（bottomBlock 内、待发送区上方：问题 + 选项 + 提示；非空时可见） */
   askBox: BoxRenderable | null;
   askCells: TextRenderable[];
-  /** 每次重绘刷新：ask 面板选项行的屏幕 y → { start: 行内首个选项下标, count: 本行选项数 }
-   *（鼠标点击按 x 列定位行内选项——同一行多个选项共享 y，需列坐标区分） */
-  askRects: Map<number, { start: number; count: number }>;
+  /** 每次重绘刷新：ask 面板行的屏幕 y → 行类型（鼠标点击勾选/确认用） */
+  askRects: Map<number, { kind: 'opt' | 'custom' | 'confirm'; idx?: number }>;
 }
 
 /** 建树（首帧）：根 Box（无边框）+ 输入框 + 状态栏挂到 root 下，内容行由 repaintTree 维护 */
@@ -1091,9 +1090,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
   }
-  // ask_user 提问面板（输入区上方）：state.ask 非空时显示——❓ 问题 + 选项行 +
-  // 操作提示。面板在 bottomBlock 顶部（待发送区上方）：底边 = footer 顶 - pendingRows，
-  // 顶 = 底 - 面板行数。选项行 y → 选项下标（鼠标点击选择用，与 pendingRects 同坐标系）。
+  // ask_user 提问面板（输入区上方）：**竖向勾选列表**——❓ 问题（单选/多选）+ 每行
+  // 一个 `[x] A) 选项` + 自定义行（`[ ] 自定义：内容`，有内容自动勾选）+ `✓ 确认（Enter）`
+  // 提交行 + 提示行（空间不足时提示行被截，确认行恒保留）。高亮行 `›` 前缀。
+  // 输入框内容每帧同步为自定义内容（打字 = 自定义输入，字母/数字不拦截——勾选用空格）。
   if (tree.askBox) {
     const a = state.ask;
     tree.askBox.visible = !!a && !!opts?.withInput;
@@ -1102,16 +1102,29 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.askBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
       tree.askBox.borderColor = parseColor(theme.suggestBorder);
       const lang = state.language;
+      // 输入框内容实时同步为自定义输入（打字进输入框 = 自定义答案；提交时一并返回）
+      if (tree.input) a.custom = tree.input.plainText;
       const aRows: { text: string; style: { dim?: boolean; bold?: boolean; fg?: string } }[] = [];
-      aRows.push({ text: `❓ ${fitAsk(a.question, Math.max(10, (width ?? 80) - 10))}`, style: { bold: true } });
-      const perRow = 3;
-      for (let i = 0; i < a.options.length; i += perRow) {
-        const group = a.options.slice(i, i + perRow);
-        const line = group
-          .map((o, j) => `${String.fromCharCode(65 + i + j)}) ${fitAsk(o, Math.max(8, Math.floor(((width ?? 80) - 8) / perRow)))}`)
-          .join('   ');
-        aRows.push({ text: line, style: {} });
+      const modeTag = a.multiple ? t(lang, 'ask.multiple') : t(lang, 'ask.single');
+      aRows.push({ text: `❓ ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { bold: true } });
+      const optCols = Math.max(10, (width ?? 80) - 8);
+      for (let i = 0; i < a.options.length; i++) {
+        const on = a.selected.has(i);
+        const cur = a.cursor === i;
+        const label = `${String.fromCharCode(65 + i)}) ${fitAsk(a.options[i]!, optCols - 5)}`;
+        aRows.push({
+          text: `${cur ? '›' : ' '} [${on ? 'x' : ' '}] ${label}`,
+          style: cur ? { fg: 'blue', bold: true } : on ? { bold: true } : {},
+        });
       }
+      const curCustom = a.cursor === a.options.length;
+      const customOn = a.custom.trim().length > 0;
+      const customText = a.custom.trim() ? fitAsk(a.custom.trim(), optCols - 7) : t(lang, 'ask.customPlaceholder');
+      aRows.push({
+        text: `${curCustom ? '›' : ' '} [${customOn ? 'x' : ' '}] ${t(lang, 'ask.custom')}：${customText}`,
+        style: curCustom ? { fg: 'blue', bold: true } : customOn ? { bold: true } : { dim: true },
+      });
+      aRows.push({ text: `✓ ${t(lang, 'ask.confirm')}（Enter）`, style: { fg: 'green', bold: true } });
       aRows.push({ text: t(lang, 'ask.hint'), style: { dim: true } });
       for (let i = 0; i < tree.askCells.length; i++) {
         const cell = tree.askCells[i];
@@ -1125,13 +1138,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数
       const aBottom = (height ?? 24) - 5 - state.inputLines - pendingRows;
       const aTop = aBottom - aRows.length;
-      // 选项行 y → 行内选项区间（同一行多个选项共享 y，点击按 x 列定位；行内下标 = 面板内
-      // 下标 1（❓ 行）起的第 floor(i/3) 行）
-      for (let i = 0; i < a.options.length; i += perRow) {
-        const rowIdx = 1 + Math.floor(i / perRow);
-        const count = Math.min(perRow, a.options.length - i);
-        tree.askRects.set(aTop + rowIdx, { start: i, count });
+      // 行 y → 类型：1 起选项行（面板内下标 1+i）、自定义行（下标 1+options.length）、
+      // 确认行（下标 2+options.length）
+      for (let i = 0; i < a.options.length; i++) {
+        tree.askRects.set(aTop + 1 + i, { kind: 'opt', idx: i });
       }
+      tree.askRects.set(aTop + 1 + a.options.length, { kind: 'custom' });
+      tree.askRects.set(aTop + 2 + a.options.length, { kind: 'confirm' });
     }
   }
 }
@@ -1221,14 +1234,26 @@ export function handleTuiMouseEvent(
       void paint();
       return;
     }
-    // ask_user 提问面板：点击选项行 = 选择对应选项（行内按 x 列定位——同一行多个
-    // 选项共享 y；等同字母键；面板区域优先于内容）
+    // ask_user 提问面板：竖向勾选列表——点击选项行 = 勾选/取消（单选互斥）、
+    // 自定义行 = 光标移过去（输入框键入内容）、确认行 = 提交；面板区域优先于内容
     if (state.ask) {
       const rowOpt = tree.askRects.get(e.y);
       if (rowOpt) {
-        const colW = Math.max(1, Math.floor(((width ?? 80) - 4) / 3));
-        const col = Math.min(rowOpt.count - 1, Math.max(0, Math.floor(((e.x ?? 0) - 1) / colW)));
-        state.askResolve?.({ choice: state.ask.options[rowOpt.start + col]!, custom: false });
+        if (rowOpt.kind === 'opt' && rowOpt.idx !== undefined) {
+          if (state.ask.multiple) {
+            if (state.ask.selected.has(rowOpt.idx)) state.ask.selected.delete(rowOpt.idx);
+            else state.ask.selected.add(rowOpt.idx);
+          } else {
+            state.ask.selected.clear();
+            state.ask.selected.add(rowOpt.idx);
+          }
+          state.ask.cursor = rowOpt.idx;
+        } else if (rowOpt.kind === 'custom') {
+          state.ask.cursor = state.ask.options.length;
+        } else if (rowOpt.kind === 'confirm') {
+          submitAsk(state);
+          tree.input?.setText(''); // 自定义内容已进结果，清空输入框
+        }
         void paint();
         return;
       }
@@ -1303,10 +1328,10 @@ export function handleTuiMouseEvent(
 
 /**
  * ask_user 提问面板按键（导出供快照复用同一真实代码路径；startTui 注册）：
- * 输入框为空时 **A-D 字母或 1-6 数字**选对应选项、Esc 取消（置 askKeyJustConsumed——
- * interactive 据此跳过取消运行）；**输入框有内容 = 用户正在输入自定义答案——字母/
- * 数字键全部放行**（不拦截，否则自定义文本里的 a/b/c/d 或数字会被选项键吞掉）。
- * 消费的按键 preventDefault（不进入输入框）。
+ * 竖向勾选列表交互——↑/↓ 移动高亮、**空格勾选/取消**（单选互斥；输入框有内容时
+ * 空格放行给输入框——打字优先）、**Enter 确认提交**（勾选选项 + 自定义内容）、
+ * Esc 取消（置 askKeyJustConsumed——interactive 据此跳过取消运行）。
+ * 字母/数字键恒放行给输入框（= 自定义输入，无选项键冲突）；提交结果含自定义内容。
  */
 export function onAskKeyPress(
   key: TuiKey,
@@ -1314,22 +1339,44 @@ export function onAskKeyPress(
   tree: TuiTree,
   paint: () => void
 ): void {
-  if (!state.ask) return;
-  // 输入框有内容：字母/数字键放行给输入框（自定义输入优先——选项键只对空输入框生效）
-  if (tree?.input && tree.input.plainText.length > 0 && /^[a-z0-9]$/i.test(key.name ?? '')) {
-    return;
-  }
+  const ask = state.ask;
+  if (!ask) return;
   const n = key.name ?? '';
-  let idx = -1;
-  if (/^[a-z]$/i.test(n)) idx = n.toLowerCase().charCodeAt(0) - 97;
-  else if (/^[1-6]$/.test(n)) idx = Number(n) - 1; // 数字键 1-6 与 A-F 标签对应（1=A）
-  if (idx >= 0 && idx < state.ask.options.length) {
-    state.askResolve?.({ choice: state.ask.options[idx]!, custom: false });
+  // ↑/↓：移动高亮光标（0..options.length，末位 = 自定义行）
+  if (n === 'up' || n === 'down') {
+    ask.cursor = n === 'up' ? Math.max(0, ask.cursor - 1) : Math.min(ask.options.length, ask.cursor + 1);
     key.preventDefault();
     paint();
     return;
   }
-  if (key.name === 'escape' || key.name === 'esc') {
+  // Enter：确认提交（勾选项 + 自定义内容；无任何选择时不提交）
+  if (n === 'return' || n === 'kpenter' || n === 'linefeed') {
+    submitAsk(state);
+    tree?.input?.setText(''); // 自定义内容已进结果，清空输入框（下一轮输入干净）
+    key.preventDefault();
+    paint();
+    return;
+  }
+  // 空格：勾选/取消当前高亮选项（输入框有内容 = 正在输入自定义 → 放行给输入框）
+  if (n === 'space') {
+    if (!(tree?.input && tree.input.plainText.length > 0) && ask.cursor < ask.options.length) {
+      if (ask.multiple) {
+        if (ask.selected.has(ask.cursor)) ask.selected.delete(ask.cursor);
+        else ask.selected.add(ask.cursor);
+      } else {
+        // 单选：再按空格取消当前勾选（toggle）；否则互斥替换
+        if (ask.selected.has(ask.cursor)) ask.selected.delete(ask.cursor);
+        else {
+          ask.selected.clear();
+          ask.selected.add(ask.cursor);
+        }
+      }
+      key.preventDefault();
+      paint();
+    }
+    return;
+  }
+  if (n === 'escape' || n === 'esc') {
     // Esc 记录「已被 ask 消费」：interactive 的 Esc=取消运行分支据此跳过取消
     //（取消提问 ≠ 取消对话——模型收到「用户取消」自行决定继续）
     state.askKeyJustConsumed = true;
@@ -1337,6 +1384,25 @@ export function onAskKeyPress(
     key.preventDefault();
     paint();
   }
+}
+
+/**
+ * 组装并提交 ask 面板结果（Enter / 确认行点击共用）：勾选选项（按序）+ 自定义内容
+ *（有内容）→ resolve；无任何勾选/内容时不提交（面板保持，提示用户先选择）。
+ */
+export function submitAsk(state: TuiState): void {
+  const ask = state.ask;
+  if (!ask) return;
+  const picked: string[] = [];
+  for (const i of [...ask.selected].sort((a, b) => a - b)) picked.push(ask.options[i]!);
+  const custom = ask.custom.trim();
+  if (custom) picked.push(custom);
+  if (picked.length === 0) return; // 未选择任何内容 → 不提交（Enter 无操作）
+  state.askResolve?.({
+    choice: picked.join('、'),
+    custom: custom.length > 0,
+    choices: picked,
+  });
 }
 
 /** 创建 TUI 会话：建树 + 首帧，返回 paint/stop/input/onKeyPress */

@@ -407,10 +407,10 @@ export class TuiOutput implements Output {
    * interactive（Enter 自定义提交）无需反向依赖 TuiOutput 即可完成提问。
    * 并行多个提问串行展示（与审批卡片同队列模式）。
    */
-  private askQueue: { question: string; options: string[]; resolve: (r: AskResult | null) => void }[] = [];
-  askUser(question: string, options: string[]): Promise<AskResult | null> {
+  private askQueue: { question: string; options: string[]; multiple: boolean; resolve: (r: AskResult | null) => void }[] = [];
+  askUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
     return new Promise((resolve) => {
-      this.askQueue.push({ question, options, resolve });
+      this.askQueue.push({ question, options, multiple, resolve });
       this.showNextAsk();
     });
   }
@@ -418,7 +418,14 @@ export class TuiOutput implements Output {
   private showNextAsk(): void {
     if (this.state.ask || this.askQueue.length === 0) return; // 已有面板在等 → 排队
     const next = this.askQueue.shift()!;
-    this.state.ask = { question: next.question, options: next.options };
+    this.state.ask = {
+      question: next.question,
+      options: next.options,
+      multiple: next.multiple,
+      selected: new Set(),
+      custom: '',
+      cursor: 0,
+    };
     this.state.askResolve = (r: AskResult | null) => {
       this.state.ask = null;
       this.state.askResolve = null;

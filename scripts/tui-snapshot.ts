@@ -4957,20 +4957,27 @@ async function main(): Promise<void> {
   {
     const s45 = createTuiState();
     const out45 = new TuiOutput(s45, { showThinking: true }, { paint: async () => {} } as never);
-    const r1 = out45.askUser('方案选择', ['方案A', '方案B', '方案C']);
-    const r2 = out45.askUser('第二个问题', ['甲', '乙']);
-    if (!s45.ask || s45.ask.question !== '方案选择' || s45.ask.options.length !== 3) {
-      console.error(`✗ 场景 45 首个提问未显示: ${JSON.stringify(s45.ask)}`);
+    const r1 = out45.askUser('方案选择', ['方案A', '方案B', '方案C'], false);
+    const r2 = out45.askUser('第二个问题', ['甲', '乙'], true);
+    if (
+      !s45.ask ||
+      s45.ask.question !== '方案选择' ||
+      s45.ask.options.length !== 3 ||
+      s45.ask.multiple !== false ||
+      s45.ask.cursor !== 0 ||
+      s45.ask.selected.size !== 0
+    ) {
+      console.error(`✗ 场景 45 首个提问构造错误: ${JSON.stringify(s45.ask)}`);
       process.exit(1);
     }
-    s45.askResolve?.({ choice: '方案B', custom: false });
+    s45.askResolve?.({ choice: '方案B', custom: false, choices: ['方案B'] });
     const v1 = await r1;
-    if (v1?.choice !== '方案B' || v1.custom) {
+    if (v1?.choice !== '方案B' || v1.custom || v1.choices.length !== 1) {
       console.error(`✗ 场景 45 首个提问结果错误: ${JSON.stringify(v1)}`);
       process.exit(1);
     }
-    if (!s45.ask || s45.ask.question !== '第二个问题') {
-      console.error(`✗ 场景 45 队列未展示下一条: ${JSON.stringify(s45.ask)}`);
+    if (!s45.ask || s45.ask.question !== '第二个问题' || s45.ask.multiple !== true) {
+      console.error(`✗ 场景 45 队列未展示下一条（multiple 传递错误）: ${JSON.stringify(s45.ask)}`);
       process.exit(1);
     }
     s45.askResolve?.(null);
@@ -4980,11 +4987,12 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  // b) 渲染：askBox 可见 + 帧含问题/选项/提示；askRects 选项行 y → 下标；computeRows 预算收缩
+  // b) 渲染：竖向勾选列表——❓ 问题（单选/多选）+ [x] 选项行 + 自定义行 + ✓ 确认行 +
+  //    提示行；askRects 行 y → {kind: opt/custom/confirm}；computeRows 预算收缩 options+4
   {
     const s45 = createTuiState();
     s45.model = 'mock';
-    s45.ask = { question: '如何推进？', options: ['先调研', '直接实现', '先问清楚'] };
+    s45.ask = { question: '如何推进？', options: ['先调研', '直接实现', '先问清楚'], multiple: false, selected: new Set([1]), custom: '', cursor: 0 };
     const t45 = await createTestRenderer({ width: 80, height: 24 });
     const tree45 = mountTree(t45.renderer, s45, { withInput: true });
     await t45.renderOnce();
@@ -4993,25 +5001,48 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const frame45 = t45.captureCharFrame();
-    if (!frame45.includes('如何推进') || !frame45.includes('A) 先调研') || !frame45.includes('Esc 取消')) {
+    if (
+      !frame45.includes('如何推进') ||
+      !frame45.includes('单选') ||
+      !frame45.includes('[ ] A) 先调研') ||
+      !frame45.includes('[x] B) 直接实现') ||
+      !frame45.includes('自定义') ||
+      !frame45.includes('确认') ||
+      !frame45.includes('Esc 取消')
+    ) {
       console.error(`✗ 场景 45 ask 面板渲染缺内容:\n${frame45}`);
       process.exit(1);
     }
-    // 选项行 y：面板底 = 24-5-1(输入1行)-0(pending) = 18；行数 = 2+ceil(3/3) = 3 → 顶 15
-    // 选项行面板内下标 1 → y = 15+1 = 16；3 个选项共享该行（start 0、count 3）
-    const rowOpt = tree45.askRects.get(16);
-    if (!rowOpt || rowOpt.start !== 0 || rowOpt.count !== 3) {
-      console.error(`✗ 场景 45 askRects 映射错误: y16 → ${JSON.stringify(rowOpt)}（应 {start:0,count:3}）: ${JSON.stringify([...tree45.askRects])}`);
+    // 高亮行 › 前缀
+    if (!frame45.includes('› [ ] A) 先调研')) {
+      console.error(`✗ 场景 45 高亮行 › 前缀缺失:\n${frame45}`);
       process.exit(1);
     }
-    // 内容区预算收缩：ask 打开时 cap 减 3 行（❓ 问题行 + 选项行 + 提示）——内容超视口才可见
+    // askRects：面板底 = 24-5-1 = 18；行数 = 1+3+1+1+1 = 7 → 顶 11。
+    // 选项 i 在 y = 11+1+i（12/13/14）、自定义 15、确认 16
+    const rOpt = tree45.askRects.get(13);
+    if (!rOpt || rOpt.kind !== 'opt' || rOpt.idx !== 1) {
+      console.error(`✗ 场景 45 askRects 选项行映射错误: y13 → ${JSON.stringify(rOpt)}: ${JSON.stringify([...tree45.askRects])}`);
+      process.exit(1);
+    }
+    const rCus = tree45.askRects.get(15);
+    if (!rCus || rCus.kind !== 'custom') {
+      console.error(`✗ 场景 45 askRects 自定义行映射错误: y15 → ${JSON.stringify(rCus)}`);
+      process.exit(1);
+    }
+    const rCfm = tree45.askRects.get(16);
+    if (!rCfm || rCfm.kind !== 'confirm') {
+      console.error(`✗ 场景 45 askRects 确认行映射错误: y16 → ${JSON.stringify(rCfm)}`);
+      process.exit(1);
+    }
+    // 内容区预算收缩：ask 打开时 cap 减 options+4 行（❓ 1 + 选项 3 + 自定义 1 + 确认 1 + 提示 1）
     const s45b = createTuiState();
     for (let i = 0; i < 20; i++) pushLine(s45b, { kind: 'user', text: `行 ${i}` });
     const capNone = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
-    s45b.ask = { question: 'q', options: ['a', 'b', 'c'] };
+    s45b.ask = { question: 'q', options: ['a', 'b', 'c'], multiple: false, selected: new Set(), custom: '', cursor: 0 };
     const capAsk = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
-    if (capAsk !== capNone - 3) {
-      console.error(`✗ 场景 45 ask 预算未收缩: none=${capNone} ask=${capAsk}（应差 3）`);
+    if (capAsk !== capNone - 7) {
+      console.error(`✗ 场景 45 ask 预算未收缩: none=${capNone} ask=${capAsk}（应差 7 = 3 选项+4）`);
       process.exit(1);
     }
     // ask 关闭后恢复
@@ -5021,17 +5052,14 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 ask 关闭后预算未恢复: ${capBack}（应 ${capNone}）`);
       process.exit(1);
     }
-    // ask 面板渲染帧：4 行面板在灰色块上方
-    if (!frame45.includes('❓')) {
-      console.error('✗ 场景 45 帧缺 ❓ 标题');
-      process.exit(1);
-    }
   }
-  // c) 按键：A-D 字母 resolve 选项（preventDefault）、Esc resolve null + askKeyJustConsumed、
-  //    非选项字母不消费。走 startTui 的真实 onAskKey（renderer.keyInput 事件派发）
+  // c) 按键：↑/↓ 移动光标、空格勾选（单选互斥/多选叠加）、Enter 提交（submitAsk 组装
+  //    choices + 清空输入框）、输入框有内容时空格放行、Esc 取消 + askKeyJustConsumed
   {
     const s45 = createTuiState();
-    s45.ask = { question: 'q', options: ['一', '二', '三', '四'] };
+    const mkAsk = (multiple = false) => {
+      s45.ask = { question: 'q', options: ['一', '二', '三'], multiple, selected: new Set(), custom: '', cursor: 0 };
+    };
     let resolved: unknown = 'pending';
     s45.askResolve = (r) => {
       resolved = r;
@@ -5039,77 +5067,89 @@ async function main(): Promise<void> {
     };
     const t45 = await createTestRenderer({ width: 80, height: 24 });
     const tree45 = mountTree(t45.renderer, s45, { withInput: true });
-    // 直接调 render.ts 导出的按键处理（快照复用真实代码路径——与 startTui 注册的同一函数）
     const { onAskKeyPress } = await import('../src/tui/render.js');
     const key45 = (name: string) => ({ name, preventDefault: () => {} }) as never;
-    onAskKeyPress(key45('a'), s45, tree45, () => {});
-    if ((resolved as { choice: string } | null)?.choice !== '一' || s45.ask !== null) {
-      console.error(`✗ 场景 45 字母 a 未选中选项: ${JSON.stringify(resolved)}`);
+    // 单选：↓ 移到选项二 → 空格勾选 → 空格再按取消 → 空格勾选 → Enter 提交
+    mkAsk();
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    if (!s45.ask!.selected.has(1) || s45.ask!.selected.size !== 1) {
+      console.error(`✗ 场景 45 空格勾选失败: ${JSON.stringify([...s45.ask!.selected])}`);
       process.exit(1);
     }
-    // 数字键 1-6：输入框空时按 2 → 选项二（与 A-D 标签对应，自定义输入可避开头数字）
-    s45.ask = { question: 'q', options: ['一', '二', '三'] };
-    resolved = 'pending';
-    s45.askResolve = (r) => {
-      resolved = r;
-      s45.ask = null;
-    };
-    onAskKeyPress(key45('2'), s45, tree45, () => {});
-    if ((resolved as { choice: string } | null)?.choice !== '二') {
-      console.error(`✗ 场景 45 数字键 2 未选选项二: ${JSON.stringify(resolved)}`);
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    if (s45.ask!.selected.size !== 0) {
+      console.error(`✗ 场景 45 空格再按未取消: ${JSON.stringify([...s45.ask!.selected])}`);
       process.exit(1);
     }
-    // 输入框有内容 = 自定义输入中：a-d/数字键放行（打字优先——自定义文本里的 a/b/c/d
-    // 不被选项键吞掉，「无法键入消息」修复）；放行 = 不 resolve + 不 preventDefault
-    //（字符插入由 OpenTUI 输入框处理，快照只验证按键层不消费）
-    s45.ask = { question: 'q', options: ['一', '二', '三'] };
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    onAskKeyPress(key45('return'), s45, tree45, () => {});
+    if ((resolved as { choice: string } | null)?.choice !== '二' || (resolved as { choice: string } | null)?.custom !== false) {
+      console.error(`✗ 场景 45 Enter 提交失败: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 单选互斥：勾选选项一后再勾选项三 → 只剩三
+    mkAsk();
     resolved = 'pending';
-    s45.askResolve = (r) => {
-      resolved = r;
-      s45.ask = null;
-    };
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    if (!s45.ask!.selected.has(2) || s45.ask!.selected.size !== 1) {
+      console.error(`✗ 场景 45 单选互斥失败: ${JSON.stringify([...s45.ask!.selected])}`);
+      process.exit(1);
+    }
+    // 多选叠加：multiple=true 勾选两个 + 自定义内容 → 提交含自定义 + 输入框清空
+    mkAsk(true);
+    resolved = 'pending';
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('space'), s45, tree45, () => {});
+    if (s45.ask!.selected.size !== 2) {
+      console.error(`✗ 场景 45 多选叠加失败: ${JSON.stringify([...s45.ask!.selected])}`);
+      process.exit(1);
+    }
+    tree45.input!.setText('我的补充');
+    s45.ask!.custom = '我的补充'; // repaintTree 每帧同步（快照手动模拟）
+    onAskKeyPress(key45('return'), s45, tree45, () => {});
+    const mr = resolved as { choice: string; custom: boolean; choices: string[] } | null;
+    if (mr?.choice !== '一、二、我的补充' || mr.custom !== true || mr.choices.length !== 3 || tree45.input!.plainText !== '') {
+      console.error(`✗ 场景 45 多选+自定义提交失败: ${JSON.stringify({ mr, input: tree45.input!.plainText })}`);
+      process.exit(1);
+    }
+    // 无任何选择 Enter 不提交（面板保持）
+    mkAsk();
+    resolved = 'pending';
+    onAskKeyPress(key45('return'), s45, tree45, () => {});
+    if (resolved !== 'pending' || !s45.ask) {
+      console.error(`✗ 场景 45 无选择 Enter 不应提交: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 输入框有内容时空格放行（打字优先——自定义输入含空格不被吞）
+    mkAsk();
     tree45.input!.setText('x');
+    s45.ask!.custom = 'x';
     let prevented = false;
     const key45b = (name: string) => ({ name, preventDefault: () => { prevented = true; } }) as never;
-    onAskKeyPress(key45b('a'), s45, tree45, () => {});
-    onAskKeyPress(key45b('d'), s45, tree45, () => {});
-    if (resolved !== 'pending' || !s45.ask || prevented) {
-      console.error(`✗ 场景 45 输入框有内容时 a-d 应放行（不消费不 resolve）: ${JSON.stringify({ resolved, ask: s45.ask, prevented })}`);
-      process.exit(1);
-    }
-    // 输入框有内容时 Esc 仍消费（取消提问 ≠ 取消运行）
-    onAskKeyPress(key45b('escape'), s45, tree45, () => {});
-    if (resolved !== null || !s45.askKeyJustConsumed) {
-      console.error(`✗ 场景 45 输入框有内容时 Esc 应取消提问: ${JSON.stringify({ resolved, consumed: s45.askKeyJustConsumed })}`);
+    onAskKeyPress(key45b('space'), s45, tree45, () => {});
+    if (prevented || s45.ask!.selected.size !== 0) {
+      console.error(`✗ 场景 45 输入框有内容时空格应放行: ${JSON.stringify({ prevented, sel: [...s45.ask!.selected] })}`);
       process.exit(1);
     }
     tree45.input!.setText('');
-    // 重新打开 + Esc 取消
-    s45.ask = { question: 'q2', options: ['x', 'y'] };
-    resolved = 'pending';
-    s45.askResolve = (r) => {
-      resolved = r;
-      s45.ask = null;
-    };
-    onAskKeyPress(key45('escape'), s45, tree45 as never, () => {});
-    if (resolved !== null || s45.ask !== null || !s45.askKeyJustConsumed) {
-      console.error(`✗ 场景 45 Esc 未取消提问: ${JSON.stringify({ resolved, ask: s45.ask, consumed: s45.askKeyJustConsumed })}`);
-      process.exit(1);
-    }
-    // 非选项字母（e，超出 2 个选项）不消费、不 resolve
-    s45.ask = { question: 'q3', options: ['x', 'y'] };
-    resolved = 'pending';
-    onAskKeyPress(key45('e'), s45, tree45 as never, () => {});
-    if (resolved !== 'pending' || !s45.ask) {
-      console.error(`✗ 场景 45 越界字母不应消费: ${JSON.stringify(resolved)}`);
+    s45.ask!.custom = '';
+    // Esc 取消（含 askKeyJustConsumed）
+    onAskKeyPress(key45('escape'), s45, tree45, () => {});
+    if (resolved !== null || !s45.askKeyJustConsumed) {
+      console.error(`✗ 场景 45 Esc 未取消提问: ${JSON.stringify({ resolved, consumed: s45.askKeyJustConsumed })}`);
       process.exit(1);
     }
     s45.ask = null;
   }
-  // d) 鼠标点击选项行：resolve 对应选项
+  // d) 鼠标点击：选项行勾选（单选互斥+光标移动）、自定义行移光标、确认行提交
   {
     const s45 = createTuiState();
-    s45.ask = { question: 'q', options: ['甲', '乙'] };
+    s45.ask = { question: 'q', options: ['甲', '乙'], multiple: false, selected: new Set(), custom: '', cursor: 0 };
     let resolved: unknown = 'pending';
     s45.askResolve = (r) => {
       resolved = r;
@@ -5119,41 +5159,63 @@ async function main(): Promise<void> {
     const tree45 = mountTree(t45.renderer, s45, { withInput: true });
     await t45.renderOnce();
     const { handleTuiMouseEvent: htm45 } = await import('../src/tui/render.js');
-    // 点击选项行第 1 列（x=5，colW = floor((80-4)/3) = 25）→ 选中第 1 个选项「甲」
-    const y45 = [...tree45.askRects.keys()][0];
-    if (y45 === undefined) {
-      console.error(`✗ 场景 45 askRects 无选项行: ${JSON.stringify([...tree45.askRects])}`);
+    // 点击选项 2 行 → 勾选「乙」+ 光标移动
+    const yOpt2 = [...tree45.askRects.entries()].find(([, v]) => v.kind === 'opt' && v.idx === 1)?.[0];
+    if (yOpt2 === undefined) {
+      console.error(`✗ 场景 45 askRects 无选项 2 行: ${JSON.stringify([...tree45.askRects])}`);
       process.exit(1);
     }
-    htm45({ type: 'down', button: 0, x: 5, y: y45 }, tree45, s45, 80, noopPaint);
-    if ((resolved as { choice: string } | null)?.choice !== '甲' || s45.ask !== null) {
-      console.error(`✗ 场景 45 鼠标点击未选中选项（第 1 列应选「甲」）: ${JSON.stringify(resolved)}`);
+    htm45({ type: 'down', button: 0, x: 10, y: yOpt2 }, tree45, s45, 80, noopPaint);
+    if (!s45.ask!.selected.has(1) || s45.ask!.cursor !== 1) {
+      console.error(`✗ 场景 45 点击选项行未勾选: ${JSON.stringify({ sel: [...s45.ask!.selected], cursor: s45.ask!.cursor })}`);
       process.exit(1);
     }
-    // 第 3 列（x=55）→ 选项 1「乙」（2 个选项：count=2，col 钳制到 1）
-    s45.ask = { question: 'q', options: ['甲', '乙'] };
+    // 点击确认行 → 提交（勾选「乙」）
+    const yCfm = [...tree45.askRects.entries()].find(([, v]) => v.kind === 'confirm')?.[0];
+    if (yCfm === undefined) {
+      console.error(`✗ 场景 45 askRects 无确认行`);
+      process.exit(1);
+    }
+    htm45({ type: 'down', button: 0, x: 10, y: yCfm }, tree45, s45, 80, noopPaint);
+    if ((resolved as { choice: string } | null)?.choice !== '乙' || s45.ask !== null) {
+      console.error(`✗ 场景 45 点击确认行未提交: ${JSON.stringify(resolved)}`);
+      process.exit(1);
+    }
+    // 点击自定义行 → 光标移到自定义（可键入）
+    s45.ask = { question: 'q', options: ['甲', '乙'], multiple: false, selected: new Set(), custom: '', cursor: 0 };
     resolved = 'pending';
-    s45.askResolve = (r) => {
-      resolved = r;
-      s45.ask = null;
-    };
-    htm45({ type: 'down', button: 0, x: 55, y: y45 }, tree45, s45, 80, noopPaint);
-    if ((resolved as { choice: string } | null)?.choice !== '乙') {
-      console.error(`✗ 场景 45 鼠标点击列定位错误（第 3 列应选「乙」）: ${JSON.stringify(resolved)}`);
+    const yCus = [...tree45.askRects.entries()].find(([, v]) => v.kind === 'custom')?.[0];
+    if (yCus === undefined) {
+      console.error(`✗ 场景 45 askRects 无自定义行`);
+      process.exit(1);
+    }
+    htm45({ type: 'down', button: 0, x: 10, y: yCus }, tree45, s45, 80, noopPaint);
+    if (s45.ask!.cursor !== 2 || resolved !== 'pending') {
+      console.error(`✗ 场景 45 点击自定义行未移光标: ${JSON.stringify({ cursor: s45.ask!.cursor })}`);
       process.exit(1);
     }
   }
-  // e) 工具链路：createAskUserTool——选项/自定义/取消/无回调四路结果文本
+  // e) 工具链路：createAskUserTool——单选/多选/自定义/取消/无回调/参数校验 + multiple 传递
   {
-    const tool45 = createAskUserTool(async (q, o) => ({ choice: o[1]!, custom: false }));
+    let gotMultiple: boolean | undefined;
+    const tool45 = createAskUserTool(async (_q, _o, multiple) => {
+      gotMultiple = multiple;
+      return { choice: 'b', custom: false, choices: ['b'] };
+    });
     const r1 = await tool45.execute({ question: 'q', options: ['a', 'b', 'c'] });
-    if (r1 !== '用户选择了选项：b') {
-      console.error(`✗ 场景 45 工具选项结果错误: ${r1}`);
+    if (r1 !== '用户选择了选项：b' || gotMultiple !== false) {
+      console.error(`✗ 场景 45 工具单选结果/multiple 传递错误: ${JSON.stringify({ r1, gotMultiple })}`);
       process.exit(1);
     }
-    const tool45b = createAskUserTool(async () => ({ choice: '自定义答案', custom: true }));
+    const tool45m = createAskUserTool(async () => ({ choice: 'a、c', custom: false, choices: ['a', 'c'] }));
+    const r1m = await tool45m.execute({ question: 'q', options: ['a', 'b', 'c'], multiple: true });
+    if (r1m !== '用户选择了选项：a、c') {
+      console.error(`✗ 场景 45 工具多选结果错误: ${r1m}`);
+      process.exit(1);
+    }
+    const tool45b = createAskUserTool(async () => ({ choice: '自定义答案', custom: true, choices: ['自定义答案'] }));
     const r2 = await tool45b.execute({ question: 'q', options: ['a', 'b'] });
-    if (r2 !== '用户自定义输入：自定义答案') {
+    if (r2 !== '用户选择了：自定义答案（含自定义输入）') {
       console.error(`✗ 场景 45 工具自定义结果错误: ${r2}`);
       process.exit(1);
     }
@@ -5169,14 +5231,14 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 无回调结果错误: ${r4}`);
       process.exit(1);
     }
-    const tool45e = createAskUserTool(async () => ({ choice: 'x', custom: false }));
+    const tool45e = createAskUserTool(async () => ({ choice: 'x', custom: false, choices: ['x'] }));
     const r5 = await tool45e.execute({ question: 'q', options: ['a'] });
     if (!r5.includes('错误')) {
       console.error(`✗ 场景 45 参数校验错误: ${r5}`);
       process.exit(1);
     }
   }
-  console.log('✓ 场景 45 通过：ask_user 提问面板（队列串行/渲染与预算/字母键与 Esc/鼠标点击/工具四路结果）');
+  console.log('✓ 场景 45 通过：ask_user 竖向勾选列表（队列串行/渲染与预算/↑↓空格勾选/Enter 提交/自定义/鼠标/工具结果）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

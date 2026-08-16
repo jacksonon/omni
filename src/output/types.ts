@@ -75,11 +75,11 @@ export interface Output {
    */
   requestApproval?(req: ApprovalRequest): Promise<boolean>;
   /**
-   * 向用户提问（ask_user 工具）：返回用户选择（选项文本或自定义输入），null = 取消。
-   * 实现方负责 UI——console 用 readline 选项询问、TUI 用输入区上方的选项面板
-   *（A/B/C/D 字母键或自定义输入 + Enter，Esc 取消）；非交互（管道）返回 null。
+   * 向用户提问（ask_user 工具）：返回用户选择（选项文本列表/自定义内容），null = 取消。
+   * multiple = 是否允许多选（TUI 竖向勾选列表、console readline 序号输入）。
+   * 实现方负责 UI——TUI 输入区上方勾选面板、console readline；非交互（管道）返回 null。
    */
-  askUser?(question: string, options: string[]): Promise<AskResult | null>;
+  askUser?(question: string, options: string[], multiple?: boolean): Promise<AskResult | null>;
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
   /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */

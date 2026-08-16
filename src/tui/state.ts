@@ -128,14 +128,23 @@ export interface TuiApproval {
 }
 
 /**
- * 向用户提问面板（ask_user 工具）：输入区上方显示问题 + 选项（A/B/C/D 字母键
- * 勾选、输入自定义内容 + Enter、Esc 取消）。与审批卡片同队列模式（串行展示）。
+ * 向用户提问面板（ask_user 工具）：输入区上方**竖向勾选列表**（`[x]` 勾选、支持
+ * 单选/多选、末尾自定义行键入内容），底部确认行（Enter/点击确认提交）。与审批
+ * 卡片同队列模式（串行展示）。
  */
 export interface TuiAsk {
   /** 问题（模型 ask_user 的 question） */
   question: string;
-  /** 候选选项（2-6 个；字母 A 起编号） */
+  /** 候选选项（2-6 个；面板每行一个） */
   options: string[];
+  /** true = 多选（可勾选多个选项）；false = 单选（勾选自动互斥） */
+  multiple: boolean;
+  /** 勾选的选项下标集合（单选最多 1 个；Set 便于切换） */
+  selected: Set<number>;
+  /** 自定义输入内容（末尾自定义行；有内容即视为勾选） */
+  custom: string;
+  /** 高亮行光标（0..options.length；options.length = 自定义行） */
+  cursor: number;
 }
 
 /**

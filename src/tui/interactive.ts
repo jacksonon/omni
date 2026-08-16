@@ -719,13 +719,9 @@ export async function runTuiInteractive(
         const t = input.plainText.trim();
         const m = state.submitMode;
         state.submitMode = 'queue';
-        // ask_user 提问面板打开：Enter = 提交自定义答案（优先于 queue/steer 分流——
-        // agent 正等待用户决策，输入内容即答案；空输入不提交）
+        // ask_user 提问面板打开：Enter 由 onAskKey 全局消费（确认提交）——这里兜底
+        // 不再处理（onSubmit 仅当 Enter 未被面板消费时到达，例如面板刚关闭的边界）
         if (state.ask) {
-          if (t) {
-            state.askResolve?.({ choice: t, custom: true });
-            input.setText('');
-          }
           return;
         }
         if (m === 'steer') {

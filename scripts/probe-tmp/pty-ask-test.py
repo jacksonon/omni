@@ -52,8 +52,12 @@ def main():
                 asked = True
                 print('[pty] ask 面板出现 ✓', flush=True)
                 time.sleep(0.5)
-                send(fd, b'a')  # 选择选项 A
-                print('[pty] 已发送 a', flush=True)
+                send(fd, b'\x1b[B')  # ↓ 移到选项二
+                time.sleep(0.2)
+                send(fd, b' ')      # 空格勾选
+                time.sleep(0.2)
+                send(fd, b'\r')     # Enter 提交
+                print('[pty] 已发送 ↓+空格+Enter（勾选选项二）', flush=True)
             if asked and '任务完成' in text:
                 print('[pty] 任务完成（ask 链路跑通）✓', flush=True)
                 send(fd, b'/exit\r')

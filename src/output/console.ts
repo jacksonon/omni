@@ -192,17 +192,17 @@ export class ConsoleOutput implements Output {
   }
 
   /**
-   * 向用户提问（ask_user 工具）：TTY 下用 readline 打印问题 + 选项，
-   * A-D 字母选对应选项、其余输入视为自定义答案、空输入 = 取消；
+   * 向用户提问（ask_user 工具）：TTY 下用 readline 打印问题 + 竖向选项列表，
+   * 输入选项序号（单选 1 个 / 多选逗号分隔）或自定义文本，Enter 确认；空 = 取消；
    * 非 TTY（管道）返回 null（无法交互）。串行队列与审批一致（readline 不并发）。
    */
   private askTail: Promise<void> = Promise.resolve();
-  askUser(question: string, options: string[]): Promise<AskResult | null> {
+  askUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
     let resolveMe!: (r: AskResult | null) => void;
     const p = new Promise<AskResult | null>((r) => (resolveMe = r));
     this.askTail = this.askTail.then(async () => {
       try {
-        resolveMe(await this.promptAskUser(question, options));
+        resolveMe(await this.promptAskUser(question, options, multiple));
       } catch {
         resolveMe(null); // 提问异常 → 视为取消（不阻塞任务）
       }
@@ -210,19 +210,24 @@ export class ConsoleOutput implements Output {
     return p;
   }
 
-  private async promptAskUser(question: string, options: string[]): Promise<AskResult | null> {
+  private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
     if (!isTTY) return null; // 管道模式无法交互
     const rl = readline.createInterface({ input, output: errOut });
     try {
-      const lines = options.map((o, i) => `  ${String.fromCharCode(65 + i)}) ${o}`);
+      const lines = options.map((o, i) => `  ${i + 1}. ${o}`);
       const ans = await rl.question(
-        `\n${cyan('❓')} ${question}\n${lines.join('\n')}\n  输入 A-${String.fromCharCode(64 + options.length)} 选择、自定义内容直接输入，回车确认；空输入取消：`
+        `\n${cyan('❓')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
       );
       const t = ans.trim();
       if (!t) return null; // 空输入 = 取消
-      const idx = /^[a-z]$/i.test(t) ? t.toUpperCase().charCodeAt(0) - 65 : -1;
-      if (idx >= 0 && idx < options.length) return { choice: options[idx]!, custom: false };
-      return { choice: t, custom: true };
+      // 纯数字/逗号 = 选项序号（多选逗号分隔）；其它 = 自定义输入
+      if (/^[\d,\s]+$/.test(t)) {
+        const idxs = [...new Set(t.split(/[,，\s]+/).map((s) => parseInt(s, 10)).filter((n) => n >= 1 && n <= options.length))];
+        if (idxs.length === 0) return { choice: t, custom: true, choices: [t] };
+        const picked = idxs.map((i) => options[i - 1]!);
+        return { choice: picked.join('、'), custom: false, choices: picked };
+      }
+      return { choice: t, custom: true, choices: [t] };
     } finally {
       rl.close();
     }

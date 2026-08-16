@@ -23,7 +23,7 @@ async function main() {
   input.onSubmit = () => {
     const text = input.plainText.trim();
     if (state.ask) {
-      if (text) { state.askResolve?.({ choice: text, custom: true }); input.setText(''); }
+      if (text) { state.askResolve?.({ choice: text, custom: true, choices: [text] }); input.setText(''); }
       return;
     }
   };
@@ -31,18 +31,20 @@ async function main() {
   let waited = 0;
   while (!state.ask && waited < 5000) { await new Promise((r) => setTimeout(r, 50)); waited += 50; }
   if (!state.ask) { console.log('✗ 面板未出现'); process.exit(1); }
-  console.log('面板出现:', state.ask.question);
-  // 真实按键选择选项 A
-  await t.mockInput.pressKey('a');
+  console.log('面板出现:', state.ask.question, '多选:', state.ask.multiple);
+  // 真实按键：↓ 移到选项二 → 空格勾选 → Enter 提交
+  await t.mockInput.pressKey(KeyCodes.ARROW_DOWN);
+  await t.mockInput.pressKey(' ');
+  await t.mockInput.pressKey(KeyCodes.RETURN);
   await runPromise;
-  console.log('选择 A 后面板关闭:', state.ask === null);
+  console.log('提交后面板关闭:', state.ask === null);
   const toolMsg = messages.find((m) => m.role === 'tool');
   console.log('工具结果:', JSON.stringify(toolMsg?.content));
-  if (!String(toolMsg?.content).includes('用户选择了选项：继续执行')) {
-    console.log('✗ 工具结果错误');
+  if (!String(toolMsg?.content).includes('用户选择了选项：先总结')) {
+    console.log('✗ 工具结果错误（应选「先总结」）');
     process.exit(1);
   }
-  console.log('✓ 完整链路（真实按键管线）通过');
+  console.log('✓ 完整链路（竖向勾选 + Enter 提交）通过');
   process.exit(0);
 }
 void main();
