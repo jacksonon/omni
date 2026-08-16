@@ -50,6 +50,8 @@ import type { OmniConfig } from '../config/index.js';
 import { parseModelAddArgs, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
 import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
+import { EventRecorder } from '../agent/events.js';
+import { refreshTrace } from './trace.js';
 import { setTerminalTitle } from '../ui.js';
 import { openCmdPanel, pushCmdLine, type StatuslinePanel, type TuiState, type TuiThemeMode } from './state.js';
 import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
@@ -100,6 +102,11 @@ export interface TuiCommandContext {
    * state.models）并切换。返回错误信息或 null。
    */
   onAddModel?: (endpoint: ModelEndpoint) => string | null;
+  /**
+   * 轨迹事件记录器（/trace 面板与 /compact 事件用；interactive 从 runOpts.events 传入）。
+   * 面板数据源 = events.events（内存全量事件，含恢复的历史）。
+   */
+  events?: EventRecorder;
 }
 
 /**
@@ -450,8 +457,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       const before = ctx.messages.length;
       // 强制压缩：只要可压缩就压缩（summarizeContext 内部有 split 边界判定，
-      // 消息太少/全是 system 时自动跳过并返回）
-      await summarizeContext(client, model, ctx.messages, { summarizeAt: 1, summarizeWindow: 8 });
+      // 消息太少/全是 system 时自动跳过并返回）；recorder 记录 compact 轨迹事件
+      await summarizeContext(client, model, ctx.messages, { summarizeAt: 1, summarizeWindow: 8 }, ctx.events);
       const after = ctx.messages.length;
       if (after >= before) {
         pushCmdLine(ctx.state, {
@@ -883,6 +890,21 @@ export const TUI_COMMANDS: TuiCommand[] = [
       const left = stack.redoSize;
       pushCmdLine(ctx.state, { kind: 'meta', text: left > 0 ? `${msg}（还有 ${left} 个可重做，/redo all 全部重做）` : `${msg}（无更多可重做）` });
       ctx.messages.push({ role: 'system', content: `[已执行 /redo] ${msg}。` });
+    },
+  },
+  {
+    name: 'trace',
+    description: '展开 / 收起右侧轨迹面板（每轮请求/工具/消息账本）',
+    descriptionEn: 'Toggle the right trace panel (per-turn request/tool/message ledger)',
+    run: (ctx) => {
+      // 右侧轨迹面板开关：刷新投影（数据源 = 事件记录器内存全量事件）后切换显示。
+      // 展开时内容宽度收缩（computeRows 读 state.traceOpen），对话流右移不盖面板。
+      if (ctx.events) refreshTrace(ctx.state, ctx.events.events);
+      ctx.state.traceOpen = !ctx.state.traceOpen;
+      if (!ctx.state.traceOpen) {
+        ctx.state.traceSelected = -1;
+        ctx.state.traceScroll = 0;
+      }
     },
   },
   {

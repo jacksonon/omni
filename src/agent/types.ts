@@ -2,6 +2,7 @@
  * Agent 层共享类型。
  */
 import type { ContextOptions } from './context.js';
+import type { EventRecorder } from './events.js';
 import type { ApprovalRequest, PermissionTier } from '../safety/index.js';
 import type { Tool } from '../tools/index.js';
 import type { UndoStack } from '../tools/undo.js';
@@ -74,6 +75,13 @@ export interface RunOptions {
    * Esc 取消（交互层 cancelRun 指向最新控制器）。
    */
   rearmAbort?: () => void;
+  /**
+   * 轨迹事件记录器（/trace 数据源）：loop 在轮生命周期/LLM 请求/工具调用/压缩
+   * 等关键节点直驱写入（不依赖 Output——单任务模式也记录）。交互入口
+   * （prepareSessionPersistence）创建并注入；每轮对话结束经 persistTurn flush
+   * 进会话文件（`{"t":"ev"}` 行）。恢复会话时 open 载入历史事件续号。
+   */
+  events?: EventRecorder;
   /** /variants 支持的思考级别选项（来自配置 reasoningEffortOptions） */
   reasoningEffortOptions?: string[];
   /** 子代理最大循环步数（/agents 展示用；attachRuntime 注入） */

@@ -20,6 +20,7 @@ import { markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
 import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
+import { TRACE_W } from './trace.js';
 import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
 
 /** 行样式（对应 createTextAttributes 的字段） */
@@ -472,7 +473,10 @@ export function computeRows(
   opts?: { withInput?: boolean }
 ): Row[] {
   const { height, width } = size;
-  const body = buildBody(state, Math.max(1, (width ?? 80) - CONTENT_PAD));
+  // 轨迹面板（/trace）展开时内容宽度收缩 TRACE_W + 2（面板占右缘 36 列 + 与内容的
+  // 1 列间隔 + 根右内边距）——对话流右移、长行重新折行，面板不盖内容
+  const contentW = Math.max(1, (width ?? 80) - CONTENT_PAD - (state.traceOpen ? TRACE_W + 2 : 0));
+  const body = buildBody(state, contentW);
   // footer 高度预算：输入内容行数(1-5) + 间距 1 + 模型行 1 + 统计行 1（paddingY 0，
   // 灰块低）+ 16px 圆角边框 2 行（rounded border 同色线）；极小高度时不强塞内容行（避免把灰色块挤出视口）
   const inputLines = opts?.withInput ? Math.min(5, Math.max(1, state.inputLines ?? 1)) : 0;

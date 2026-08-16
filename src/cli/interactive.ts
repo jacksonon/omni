@@ -28,6 +28,8 @@ import {
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
+import { EventRecorder } from '../agent/events.js';
+import { buildTraceTextLines } from '../agent/trace.js';
 import { captureCommand, collectDiff, detectCheckCommand, reviewCode } from '../agent/review.js';
 import {
   configReport,
@@ -99,6 +101,8 @@ export async function runInteractive(
     if (persistable.length <= savedCount) return;
     await appendSessionMessages(runOpts.sessionPath, persistable.slice(savedCount)).catch(() => {});
     savedCount = persistable.length;
+    // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
+    await runOpts.events?.flush().catch(() => {});
   };
   console.log('输入任务开始；/exit 退出，/help 查看帮助。');
   safePrompt();
@@ -109,6 +113,8 @@ export async function runInteractive(
       if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
         await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
       }
+      // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底退出边界）
+      await runOpts.events?.flush().catch(() => {});
       if (runOpts.sessionPath) {
         await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
         // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
@@ -259,7 +265,7 @@ export async function runInteractive(
     if (cmd === '/compact') {
       // /compact：手动触发长对话摘要压缩（与自动压缩同一实现）
       const before = messages.length;
-      await summarizeContext(currentClient, currentModel, messages, { summarizeAt: 1, summarizeWindow: 8 });
+      await summarizeContext(currentClient, currentModel, messages, { summarizeAt: 1, summarizeWindow: 8 }, runOpts.events);
       const after = messages.length;
       if (after >= before) {
         console.log(dim('上下文还很短或无可压缩内容（/compact 在长对话中才有明显效果）'));
@@ -542,6 +548,9 @@ export async function runInteractive(
       messages.push(...loaded.messages);
       runOpts.sessionPath = file; // 继续追加到同一会话文件
       savedCount = persistableMessages(messages).length;
+      // 轨迹记录器同步重开到新会话文件（读回其历史事件续 seq/turn；失败保留原内存事件）
+      const oldEvents = runOpts.events;
+      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
       // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
       if (prevResumePath && prevResumePath !== file) await removeEmptySession(prevResumePath).catch(() => {});
       console.log(green(`已恢复会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
@@ -595,6 +604,9 @@ export async function runInteractive(
       messages.push(...loaded.messages);
       runOpts.sessionPath = file; // 继续追加到同一会话文件
       savedCount = persistableMessages(messages).length;
+      // 轨迹记录器同步重开到新会话文件（读回其历史事件续 seq/turn；失败保留原内存事件）
+      const oldEvents = runOpts.events;
+      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
       // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
       if (prevSessionPath && prevSessionPath !== file) await removeEmptySession(prevSessionPath).catch(() => {});
       console.log(green(`已继续会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
@@ -635,6 +647,19 @@ export async function runInteractive(
       } else {
         console.log(dim('正在诊断环境…'));
         for (const line of await doctorReport(runOpts.cfg)) console.log(dim(line));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/trace') {
+      // /trace：本次会话的轨迹账本（每轮请求/工具/消息/压缩的事件序列折叠投影）。
+      // 数据源 = 事件记录器内存全量事件；console 端文本账本，TUI 端右侧面板。
+      const events = runOpts.events?.events ?? [];
+      if (events.length === 0) {
+        console.log(dim('暂无轨迹——开始对话后这里会记录每一轮请求/工具/消息'));
+      } else {
+        console.log(dim(`轨迹账本（${events.length} 条事件 · 当前会话，含恢复的历史）：`));
+        for (const line of buildTraceTextLines(events, { full: true })) console.log(dim(line));
       }
       safePrompt();
       continue;
@@ -685,8 +710,10 @@ export async function runInteractive(
     }
     messages.push({ role: 'user', content: cmd });
     out.onUserMessage(cmd);
-    // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context）
-    await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {});
+    runOpts.events?.user(cmd); // 轨迹：用户消息（source=user）
+    // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
+    // recorder 传下去——压缩成功时记 compact 轨迹事件）
+    await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
     runOpts.planMode = planMode; // 每轮同步计划模式（/plan 切换即时生效）
     runOpts.permission = permission; // 每轮同步权限档位（/permission 切换即时生效）
     runOpts.safetyGate?.setTier(permission); // 共用闸门（子代理）同步，与 TUI 路径一致

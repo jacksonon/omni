@@ -60,6 +60,7 @@ import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose
 import { logCrash } from './crashlog.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
+import { TRACE_W, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
@@ -170,6 +171,14 @@ export interface TuiTree {
   /** 命令输出面板浮层（所有 / 命令的独立窗口：绝对定位居中，不占用内容流/不参与滚动） */
   cmdPanelOverlay: BoxRenderable | null;
   cmdPanelCells: TextRenderable[];
+  /** 轨迹面板浮层（/trace 右侧栏：绝对定位右缘，宽 TRACE_W；展开时内容宽度收缩） */
+  traceBox: BoxRenderable | null;
+  traceCells: TextRenderable[];
+  /** 轨迹面板可点击区域（面板内部行；屏幕 0-based y 区间）+ 行 → traceRows 下标映射（-1 = 标题/提示行） */
+  traceRect: { top: number; bottom: number } | null;
+  traceRowMap: number[];
+  /** 轨迹面板占据的屏幕列起始（x ≥ 该值且 y 命中 traceRect 的点击归属面板，不穿透内容） */
+  traceLeft: number;
 }
 
 /** 建树（首帧）：根 Box（无边框）+ 输入框 + 状态栏挂到 root 下，内容行由 repaintTree 维护 */
@@ -374,6 +383,29 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     cmdPanelCells.push(c);
   }
 
+  // 轨迹面板浮层（/trace 右侧栏）：绝对定位右缘（top/left 每帧重算），zIndex 低于
+  // 菜单/命令面板（内容流之上、浮层之下）；展开时内容宽度收缩（computeRows 读
+  // state.traceOpen——对话流右移，线条重新折行，面板不盖内容）。细胞池预分配
+  // 充足行数（视口最高 ~60 行；不参与内容流/滚动）。
+  const traceBox = new BoxRenderable(ctx, {
+    position: 'absolute',
+    zIndex: 8,
+    flexDirection: 'column',
+    visible: false,
+    backgroundColor: theme.suggestBg,
+    border: true,
+    borderStyle: 'rounded',
+    borderColor: theme.suggestBorder,
+    paddingX: 1,
+  });
+  root.add(traceBox);
+  const traceCells: TextRenderable[] = [];
+  for (let i = 0; i < 60; i++) {
+    const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    traceBox.add(c);
+    traceCells.push(c);
+  }
+
   // 待发送消息区：灰色块（输入框）正上方——运行中 Enter 提交的消息在此显示（标题 + 最多 4 条，
   // 每条带 queue/steer 徽标），不参与内容区滚动；回合结束后 interactive 按序消费。
   // 行数随 pending 长度变化（标题 1 + 最多 4 条 + 超出时「还有 N 条」1 行）。
@@ -439,6 +471,11 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     menuRowMap: [],
     cmdPanelOverlay,
     cmdPanelCells,
+    traceBox,
+    traceCells,
+    traceRect: null,
+    traceRowMap: [],
+    traceLeft: 0,
   };
   repaintTree(ctx, tree, state, opts);
   return tree;
@@ -893,6 +930,45 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
 
+  // 轨迹面板（/trace 右侧栏）：绝对定位右缘浮层——top=1、宽 TRACE_W、底边 ≤
+  // footerTop - 5（不遮输入区；footerTop 在输入框高度刷新后已是最终值）。
+  // 展开时对话流宽度收缩在 computeRows（读 state.traceOpen）——内容右移重新折行，
+  // 面板不盖内容。行级命中：内部行 i → 事件坐标 y = top + 1 + i（border 1 行）；
+  // rowMap 记录 行 → traceRows 绝对下标（-1 = 标题/提示行，点击忽略）。
+  if (tree.traceBox) {
+    const tOpen = state.traceOpen;
+    tree.traceBox.visible = tOpen;
+    if (tOpen && footerTop > 7) {
+      tree.traceBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
+      tree.traceBox.borderColor = parseColor(theme.suggestBorder);
+      const maxRows = Math.max(3, footerTop - 5);
+      const { lines, rowMap } = tracePanelLines(state, footerTop, maxRows);
+      const panelRows = Math.min(lines.length, maxRows);
+      tree.traceBox.top = 1;
+      tree.traceBox.left = Math.max(1, (width ?? 80) - TRACE_W - 1); // 右缘贴内容区右边界（root paddingX 1）
+      tree.traceLeft = Math.max(1, (width ?? 80) - TRACE_W - 1); // 面板边框盒起始列（屏幕 0-based 事件坐标）
+      for (let i = 0; i < tree.traceCells.length; i++) {
+        const cell = tree.traceCells[i];
+        if (i >= panelRows) {
+          cell.visible = false;
+          continue;
+        }
+        cell.visible = true;
+        try {
+          const l = lines[i];
+          applyRowToCell(cell, { text: l.text, style: l.style }, theme);
+        } catch (e) {
+          logCrash('trace-row', e);
+        }
+      }
+      tree.traceRect = { top: tree.traceBox.top + 1, bottom: tree.traceBox.top + panelRows };
+      tree.traceRowMap = rowMap.slice(0, panelRows);
+    } else {
+      tree.traceRect = null;
+      tree.traceRowMap = [];
+    }
+  }
+
   const rows = computeRows(state, { height, width }, opts);
   const anchor = tree.status; // 内容行始终插在状态栏之前（联想列表是独立浮层，不在内容流里）
   while (tree.cells.length < rows.length) {
@@ -1036,6 +1112,25 @@ export function handleTuiMouseEvent(
     if (hitTestApproval(state, tree.approvalRect, e.y)) {
       const allow = typeof e.x === 'number' && e.x < width / 2;
       state.approvalResolve?.(allow);
+      void paint();
+      return;
+    }
+    // 轨迹面板（/trace 右侧栏）：x ≥ traceLeft 且 y 命中面板内部行 → 点击轨迹行
+    // 切换选中（展开/收起详情行）；面板内标题/提示行与面板外区域不触发、不穿透内容。
+    if (
+      state.traceOpen &&
+      tree.traceRect &&
+      typeof e.x === 'number' &&
+      e.x >= tree.traceLeft &&
+      e.y >= tree.traceRect.top &&
+      e.y <= tree.traceRect.bottom
+    ) {
+      const panelIdx = e.y - tree.traceRect.top;
+      const rowIdx = tree.traceRowMap[panelIdx];
+      if (rowIdx !== undefined && rowIdx >= 0) {
+        state.traceSelected = state.traceSelected === rowIdx ? -1 : rowIdx;
+        // 选中行保持可见（窗口滚动收敛由 repaintTree 的 tracePanelLines 兜底）
+      }
       void paint();
       return;
     }

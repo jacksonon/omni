@@ -436,6 +436,11 @@ export class TuiOutput implements Output {
 
   clearScrollback(): void {
     clearLines(this.state);
+    // /clear 清空全部内容行：thinking 内部状态同步复位——否则行下标全部失效，
+    // 残留的 thinkingShown/thinkingLineIdx 会让下一轮 start() 被挡或 finish 操作错行
+    this.thinkingShown = false;
+    this.thinkingStart = 0;
+    this.thinkingLineIdx = -1;
     this.schedulePaint();
   }
 

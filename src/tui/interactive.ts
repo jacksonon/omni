@@ -22,6 +22,8 @@ import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession } from '../agent/session.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
+import { EventRecorder } from '../agent/events.js';
+import { refreshTrace } from './trace.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
@@ -126,17 +128,25 @@ export async function runTuiInteractive(
     if (persistable.length <= savedCount) return;
     await appendSessionMessages(runOpts.sessionPath, persistable.slice(savedCount)).catch(() => {});
     savedCount = persistable.length;
+    // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
+    await runOpts.events?.flush().catch(() => {});
   };
 
   // 恢复会话：替换 messages + 会话文件 + 重置落盘计数 + 把历史回放进对话流
-  // （/resume、/session <id>、/session 面板共用同一逻辑）
-  const restoreSession = (file: string, msgs: ChatCompletionMessageParam[]): void => {
+  // （/resume、/session <id>、/session 面板共用同一逻辑）；轨迹记录器同步重开
+  // 到新会话文件（读回其历史事件续 seq/turn，中断轨迹无缝衔接）
+  const restoreSession = async (file: string, msgs: ChatCompletionMessageParam[]): Promise<void> => {
     const prevPath = runOpts.sessionPath;
     messages.length = 0;
     messages.push(...msgs);
     runOpts.sessionPath = file;
     savedCount = persistableMessages(messages).length; // 已落盘历史不重复追加
+    // 快照旧记录器（恢复失败时保留原内存事件，不打断会话恢复流程）
+    const oldEvents = runOpts.events;
+    runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
     state.scrollTop = null;
+    state.traceSelected = -1;
+    state.traceScroll = 0;
     // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
     if (prevPath && prevPath !== file) void removeEmptySession(prevPath);
     for (const m of msgs) {
@@ -217,6 +227,31 @@ export async function runTuiInteractive(
       // 滚动位置由 cmdPanelRows 在渲染时 clamp 到合法区间（回写 panel.scroll）
       paintNow();
       return;
+    }
+    // 轨迹面板（/trace 右侧栏）：非模态浮层——↑/↓ 移动选中行（渲染层兜底收敛滚动
+    // 保持选中可见）、Esc 收起面板（preventDefault：不触发下方「Esc 取消运行」）；
+    // 其余按键放行给输入框（可继续输入/Enter 发送，面板保持打开）。
+    if (state.traceOpen) {
+      let consumed = false;
+      if (key.name === 'up' || key.name === 'down') {
+        const rows = state.traceRows;
+        if (rows.length > 0) {
+          if (state.traceSelected < 0) state.traceSelected = rows.length - 1;
+          else if (key.name === 'up') state.traceSelected = Math.max(0, state.traceSelected - 1);
+          else state.traceSelected = Math.min(rows.length - 1, state.traceSelected + 1);
+        }
+        consumed = true;
+      } else if (key.name === 'escape' || key.name === 'esc') {
+        state.traceOpen = false;
+        state.traceSelected = -1;
+        state.traceScroll = 0;
+        consumed = true;
+      }
+      if (consumed) {
+        key.preventDefault();
+        paintNow();
+        return;
+      }
     }
     // 待发送列表选择入口：输入框为空且有待发送消息时，↑ 进入列表选择
     //（否则 ↑ 是滚动——只有有待发送消息时让位给列表选择）
@@ -330,10 +365,36 @@ export async function runTuiInteractive(
       if (!consumed) paintDeferred();
       return;
     }
+    // 轨迹面板（/trace 右侧栏）：非模态浮层——↑/↓ 移动选中行（渲染层兜底收敛滚动
+    // 保持选中可见）、Esc 收起面板（preventDefault：不触发下方「Esc 取消运行」）；
+    // 其余按键放行给输入框（可继续输入/Enter 发送，面板保持打开）。放在联想/提及
+    // 之后：输入浮层（用户正在打字）优先消费 ↑/↓/Esc，轨迹面板是边缘 UI。
+    if (state.traceOpen) {
+      let consumed = false;
+      if (key.name === 'up' || key.name === 'down') {
+        const rows = state.traceRows;
+        if (rows.length > 0) {
+          if (state.traceSelected < 0) state.traceSelected = rows.length - 1;
+          else if (key.name === 'up') state.traceSelected = Math.max(0, state.traceSelected - 1);
+          else state.traceSelected = Math.min(rows.length - 1, state.traceSelected + 1);
+        }
+        consumed = true;
+      } else if (key.name === 'escape' || key.name === 'esc') {
+        state.traceOpen = false;
+        state.traceSelected = -1;
+        state.traceScroll = 0;
+        consumed = true;
+      }
+      if (consumed) {
+        key.preventDefault();
+        paintNow();
+        return;
+      }
+    }
     // ESC 取消正在进行的对话（同取消语义）：前面的浮层分支（菜单/面板/联想/提及/
-    // 待发送选择）已各自消费自己的 Esc——能走到这里说明无任何浮层。审批卡片打开时 ESC
-    // 由 startTui 的审批 handler 先消费（拒绝审批并置位 approvalKeyJustConsumed），
-    // 这里跳过取消运行（拒绝审批 ≠ 取消对话）。
+    // 待发送选择/轨迹面板）已各自消费自己的 Esc——能走到这里说明无任何浮层。
+    // 审批卡片打开时 ESC 由 startTui 的审批 handler 先消费（拒绝审批并置位
+    // approvalKeyJustConsumed），这里跳过取消运行（拒绝审批 ≠ 取消对话）。
     if ((key.name === 'escape' || key.name === 'esc') && state.running) {
       if (state.approvalKeyJustConsumed) {
         state.approvalKeyJustConsumed = false; // 该 ESC 已用于拒绝审批
@@ -402,6 +463,8 @@ export async function runTuiInteractive(
       if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
         await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
       }
+      // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底 /clear 后等边界）
+      await runOpts.events?.flush().catch(() => {});
       if (runOpts.sessionPath) {
         await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
         // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
@@ -485,7 +548,7 @@ export async function runTuiInteractive(
           if (!loaded) {
             pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」加载失败` }, '/session');
           } else {
-            restoreSession(file, loaded.messages);
+            await restoreSession(file, loaded.messages);
             // 恢复会话标题（若有）→ 终端窗口标题
             if (loaded.meta.title) {
               state.sessionTitle = loaded.meta.title;
@@ -510,6 +573,11 @@ export async function runTuiInteractive(
         const msg = state.pending.shift()!;
         text = msg.text;
         submitMode = msg.mode;
+        // 回到最新：排队消息自动发送时，若用户此前上滚过（scrollTop 残留），新轮次的
+        // thinking/回答会全部渲染在视口外——「对话轮次一多 thinking 区域块总会丢」
+        //（新内容不可见）。与空闲提交（下方 else 分支）同语义：新消息开始即回底。
+        state.scrollTop = null;
+        state.scrollIntent = null;
       } else {
         if (!state.menu) {
           out.onWaitForInput();
@@ -539,6 +607,8 @@ export async function runTuiInteractive(
         sessionPath: runOpts.sessionPath,
         cfg: runOpts.cfg,
         mcpServers: runOpts.mcpServers,
+        // 轨迹事件记录器（/trace 面板数据源 + /compact 事件）
+        events: runOpts.events,
         // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
         onReconnectMcp: async () => {
           closeMcpClients();
@@ -565,9 +635,9 @@ export async function runTuiInteractive(
           return null;
         },
         // /resume /session <id>：恢复会话（共用 restoreSession：替换 messages +
-        // 会话文件 + 重置落盘计数 + 把历史回放进对话流）
+        // 会话文件 + 重置落盘计数 + 把历史回放进对话流；事件记录器同步重开）
         onResume: (file: string, msgs: ChatCompletionMessageParam[]) => {
-          restoreSession(file, msgs);
+          void restoreSession(file, msgs);
         },
       };
       // /settings 菜单确认「环境诊断」的意图（confirmMenu 纯 state 无法执行——
@@ -590,8 +660,10 @@ export async function runTuiInteractive(
 
       messages.push({ role: 'user', content: cmd });
       out.onUserMessage(cmd);
-      // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context）
-      await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {});
+      runOpts.events?.user(cmd); // 轨迹：用户消息（source=user）
+      // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context；
+      // recorder 传下去——压缩成功时记 compact 轨迹事件）
+      await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
       // Agent 运行期间输入框**保持聚焦**（不 blur）：blur 会摘除 Textarea 的按键处理器
       //（OpenTUI blur() 里 offInternal("keypress")），Enter/Cmd+Enter 到不了 onSubmit——
       // queue/steer 运行中提交全是死路径（旧 mockInput 探针没模拟 blur 才"通过"）。
@@ -633,6 +705,10 @@ export async function runTuiInteractive(
             // 插入当前轮（作为新的 user 消息）同一轮内继续——模型直接回答打断消息，
             // 不结束本轮；回合自然结束时残留的消息由 finally 转入待发送列表
             interruptText = t;
+            // 打断即用户主动发起新消息：回到最新——上滚残留会让打断消息与新一轮
+            // thinking/回答渲染在视口外（「多轮后 thinking 区域块丢」的根因之一）
+            state.scrollTop = null;
+            state.scrollIntent = null;
             state.cancelRun?.(); // 打断当前回合（流中断后取走槽中的消息继续）
           }
           input.setText('');
@@ -685,7 +761,9 @@ export async function runTuiInteractive(
         await exitSession();
         break;
       }
-      await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
+      await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件 + 轨迹事件落盘
+      // 轨迹投影刷新（/trace 面板数据源）：每轮结束重新折叠——面板下次重绘即为最新
+      if (runOpts.events) refreshTrace(state, runOpts.events.events);
       turn++;
       // 首轮对话结束后异步生成会话标题：独立轻量 LLM 调用，不阻塞主流程
       // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；

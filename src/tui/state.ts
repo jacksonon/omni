@@ -8,6 +8,7 @@ import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
 import type { WriteDiff } from '../output/format.js';
 import type { TuiLang } from './i18n.js';
+import type { TraceRow } from '../agent/trace.js';
 
 /** spinner 动画帧（braille 点阵） */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -419,6 +420,16 @@ export interface TuiState {
    */
   submitMode: 'queue' | 'steer';
   /**
+   * 轨迹面板（/trace 展开右侧栏）：traceOpen = 面板可见；traceRows = 折叠投影
+   * （interactive 每轮对话后 refreshTrace 刷新）；traceScroll = 面板内部滚动偏移
+   * （0 = 最新在底部；↑/↓ 回看历史）；traceSelected = 选中展开详情的行下标
+   * （-1 = 无；点击轨迹行 toggle，面板内嵌展开详情行）。
+   */
+  traceOpen: boolean;
+  traceRows: TraceRow[];
+  traceScroll: number;
+  traceSelected: number;
+  /**
    * 审批结果回调（TuiOutput.requestApproval 注入；渲染层/按键层调用后由
    * TuiOutput 置 null）。放 state 上让 startTui（鼠标）与 interactive（按键）
    * 无需反向依赖 TuiOutput 即可完成审批。
@@ -479,6 +490,10 @@ export function createTuiState(): TuiState {
     pendingSelected: -1,
     pendingSeq: 0,
     submitMode: 'queue',
+    traceOpen: false,
+    traceRows: [],
+    traceScroll: 0,
+    traceSelected: -1,
   };
 }
 

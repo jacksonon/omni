@@ -13,6 +13,7 @@ import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testin
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { countDiffLines, sideBySideDiff, toolCardLines } from '../src/output/format.js';
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
+import type { TrajEvent } from '../src/agent/events.js';
 import { gateTool } from '../src/safety/policy.js';
 import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
 import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect, type TuiSession } from '../src/tui/render.js';
@@ -1330,8 +1331,8 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 25 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 25、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 26 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 26、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1401,8 +1402,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 19 个」提示行
-  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 19 个'];
+  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 20 个」提示行
+  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 20 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1414,7 +1415,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/help']) {
+  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/trace', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1482,9 +1483,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = context/export/config/mcp/diff/rename；上下各一条提示行（↑ 15 个 · ↓ 4 个，25 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 4 个') || frame19s.includes('/review')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 4 个」、无 /review）');
+  // items[15..20] = context/export/config/mcp/diff/rename；上下各一条提示行（↑ 15 个 · ↓ 5 个，26 条命令）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 5 个') || frame19s.includes('/review')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 5 个」、无 /review）');
     process.exit(1);
   }
   if (!frame19s.includes('/context') || !frame19s.includes('/export') || !frame19s.includes('/rename')) {
@@ -4639,6 +4640,271 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
+
+  // 场景 44：/trace 右侧轨迹面板 —— 事件投影（foldTrace）+ 面板行（tracePanelLines）+ 渲染/点击/命令分发
+  const { foldTrace, buildTraceTextLines, fmtMs } = await import('../src/agent/trace.js');
+  const { tracePanelLines, refreshTrace, TRACE_TEXT_COLS } = await import('../src/tui/trace.js');
+  // 两回合事件序列（turn/start → user → request → tool 配对 → assistant → turn/end；轮 2 interrupt 中止）
+  const evs44: TrajEvent[] = [
+    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
+    { s: 2, time: 1100, k: 'user/message', text: '列一下当前目录', source: 'user' },
+    { s: 3, time: 1200, k: 'request/header', step: 1, model: 'mock', tools: ['list_directory'], messages: 2 },
+    { s: 4, time: 1250, k: 'tool/call', step: 1, callId: 'call_1', name: 'list_directory', args: '{"path":"."}' },
+    { s: 5, time: 2000, k: 'tool/result', callId: 'call_1', ok: true, chars: 320 },
+    { s: 6, time: 2100, k: 'assistant/message', step: 2, text: '当前目录共 3 个文件', usage: { input: 500, cached: 100, output: 60 }, llmMs: 1500, firstTokenMs: 200 },
+    { s: 7, time: 2200, k: 'turn/end', turn: 1, reason: 'completed' },
+    { s: 8, time: 3000, k: 'turn/start', turn: 2 },
+    { s: 9, time: 3100, k: 'user/message', text: '改为查询文件内容', source: 'interrupt' },
+    { s: 10, time: 3200, k: 'turn/end', turn: 2, reason: 'aborted' },
+  ];
+  // a) 投影：foldTrace 折叠（turn 标记 / user 缩进 / tool 按 callId 配对 / answer 副信息）
+  const rows44 = foldTrace(evs44);
+  const turns44 = rows44.filter((r) => r.kind === 'turn');
+  const tool44 = rows44.find((r) => r.kind === 'tool');
+  const ans44 = rows44.find((r) => r.kind === 'answer');
+  const usr44 = rows44.filter((r) => r.kind === 'user');
+  if (rows44.length !== 7 || turns44.length !== 2) {
+    console.error(`✗ 场景 44 foldTrace 行数错误: ${JSON.stringify(rows44.map((r) => `${r.kind}:${r.text}`))}`);
+    process.exit(1);
+  }
+  if (turns44[0]!.done !== '✓' || turns44[1]!.done !== '⚠') {
+    console.error(`✗ 场景 44 turn 结束标记错误: ${JSON.stringify(turns44.map((t) => t.done))}（应 ✓/⚠）`);
+    process.exit(1);
+  }
+  if (!usr44[0]!.text.startsWith('列一下当前目录') || !usr44[1]!.text.startsWith('⚡ 改为查询文件内容')) {
+    console.error(`✗ 场景 44 user 行（interrupt ⚡ 前缀）错误: ${JSON.stringify(usr44.map((u) => u.text))}`);
+    process.exit(1);
+  }
+  if (!tool44 || tool44.sub !== `✓ 320 字符 · ${fmtMs(750)}`) {
+    console.error(`✗ 场景 44 tool 配对耗时错误: ${JSON.stringify(tool44)}`);
+    process.exit(1);
+  }
+  if (!ans44 || !ans44.sub!.includes('入 500 · 出 60 · 缓存 100') || !ans44.sub!.includes('LLM 1.5s · 首 token 0.2s')) {
+    console.error(`✗ 场景 44 answer 副信息错误: ${JSON.stringify(ans44.sub)}`);
+    process.exit(1);
+  }
+  // a2) detail 生成（点击展开详情的内容）：tool 完整 args / request 完整工具列表；
+  // 单行正文无 detail（无需展开）
+  const req44 = rows44.find((r) => r.kind === 'request');
+  if (!tool44!.detail || tool44!.detail[0] !== '{"path":"."}') {
+    console.error(`✗ 场景 44 tool detail 应为完整 args JSON: ${JSON.stringify(tool44!.detail)}`);
+    process.exit(1);
+  }
+  if (!req44!.detail || req44!.detail[0] !== '调用工具: list_directory') {
+    console.error(`✗ 场景 44 request detail 应为完整工具列表: ${JSON.stringify(req44!.detail)}`);
+    process.exit(1);
+  }
+  if (usr44[0]!.detail !== undefined || ans44!.detail !== undefined) {
+    console.error(`✗ 场景 44 单行正文不应生成 detail: ${JSON.stringify({ u: usr44[0]!.detail, a: ans44!.detail })}`);
+    process.exit(1);
+  }
+  // 多行正文：首行作 text、剩余行作 detail（点击展开查看全文）
+  const evs44m: TrajEvent[] = [
+    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
+    { s: 2, time: 1100, k: 'user/message', text: '第一行\n第二行\n第三行', source: 'user' },
+    { s: 3, time: 2000, k: 'assistant/message', step: 1, text: '正文首行\n续行一\n续行二', usage: { input: 10, output: 5 }, llmMs: 100, firstTokenMs: 50 },
+    { s: 4, time: 2100, k: 'turn/end', turn: 1, reason: 'completed' },
+  ];
+  const rows44m = foldTrace(evs44m);
+  const usr44m = rows44m.find((r) => r.kind === 'user')!;
+  const ans44m = rows44m.find((r) => r.kind === 'answer')!;
+  if (usr44m.detail?.join('|') !== '第二行|第三行' || ans44m.detail?.join('|') !== '续行一|续行二') {
+    console.error(`✗ 场景 44 多行正文 detail 错误: ${JSON.stringify({ u: usr44m.detail, a: ans44m.detail })}`);
+    process.exit(1);
+  }
+  // b) buildTraceTextLines（console /trace 账本）：full 模式含副信息行
+  const led44 = buildTraceTextLines(evs44, { full: true });
+  if (!led44.some((l) => l.startsWith('轮 1 ✓')) || !led44.some((l) => l.includes('list_directory .')) || !led44.some((l) => l.includes('入 500'))) {
+    console.error(`✗ 场景 44 账本文本错误: ${JSON.stringify(led44)}`);
+    process.exit(1);
+  }
+  if (!led44.some((l) => l.includes('{"path":"."}'))) {
+    console.error(`✗ 场景 44 账本 full 应包含 tool 完整 args: ${JSON.stringify(led44)}`);
+    process.exit(1);
+  }
+  // c) tracePanelLines：空状态（empty + hint）
+  const s44e = createTuiState();
+  const pl44e = tracePanelLines(s44e, 16);
+  if (!pl44e.lines.some((l) => l.text.includes('暂无轨迹')) || !pl44e.lines.some((l) => l.text.includes('Esc 收起'))) {
+    console.error(`✗ 场景 44 空面板错误: ${JSON.stringify(pl44e.lines.map((l) => l.text))}`);
+    process.exit(1);
+  }
+  // d) 有数据：标题「轨迹（N 条）」+ 内容窗口 + 底部 hint；窗口外选中行保持可见（滚动收敛）
+  const s44 = createTuiState();
+  refreshTrace(s44, evs44);
+  if (s44.traceRows.length !== 7) {
+    console.error(`✗ 场景 44 refreshTrace 行数错误: ${s44.traceRows.length}`);
+    process.exit(1);
+  }
+  const pl44 = tracePanelLines(s44, 16); // budget = 16-5-2 = 9 → contentRows 9 全部可见
+  if (!pl44.lines[0]!.text.includes('轨迹（7 条）') || pl44.rowMap[0] !== -1) {
+    console.error(`✗ 场景 44 面板标题错误: ${JSON.stringify(pl44.lines[0])}`);
+    process.exit(1);
+  }
+  if (!pl44.lines.some((l) => l.text.includes('❯ 列一下当前目录')) || !pl44.lines.some((l) => l.text.includes('⚙ list_directory .'))) {
+    console.error(`✗ 场景 44 面板行渲染错误: ${JSON.stringify(pl44.lines.map((l) => l.text))}`);
+    process.exit(1);
+  }
+  // 选中可见收敛：全部可见时选中任何行都不应触发滚动（scroll 保持 0）
+  s44.traceSelected = 6;
+  const pl44b = tracePanelLines(s44, 16);
+  if (pl44b.lines.some((l) => l.text.startsWith('↑ 还有'))) {
+    console.error('✗ 场景 44 全量可见时不应出现上滚提示（选中行已在窗口内）');
+    process.exit(1);
+  }
+  // 收紧窗口（budget 3 → contentRows 1）：选中末行 → scroll 钳到 T-1-s 保证选中行可见
+  const s44s = createTuiState();
+  refreshTrace(s44s, evs44);
+  s44s.traceSelected = 6; // 末行（轮 2 的 user ⚡ 行）
+  const pl44c = tracePanelLines(s44s, 8, 3); // contentRows = 1
+  const sel44c = pl44c.lines.find((l) => l.text.startsWith('› '));
+  if (!sel44c || !sel44c.text.includes('改为查询文件内容')) {
+    console.error(`✗ 场景 44 选中行未滚入窗口（应显示末行 ⚡ user）: ${JSON.stringify(pl44c.lines.map((l) => l.text))}`);
+    process.exit(1);
+  }
+  // 选中行 + 有 detail：turn/end(error) 内嵌详情行（同为可点击行，rowMap 同下标）
+  const evs44e: TrajEvent[] = [
+    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
+    { s: 2, time: 1100, k: 'user/message', text: '跑一下', source: 'user' },
+    { s: 3, time: 2000, k: 'turn/end', turn: 1, reason: 'error', detail: 'API 401 Invalid token' },
+  ];
+  const s44d = createTuiState();
+  refreshTrace(s44d, evs44e);
+  s44d.traceSelected = 0; // turn 1 ✗ 带 detail
+  const pl44d = tracePanelLines(s44d, 16);
+  const detail44 = pl44d.lines.find((l) => l.text.includes('API 401'));
+  if (!detail44 || !pl44d.lines[1]!.text.includes('✗') || !pl44d.lines[1]!.text.includes('轮 1')) {
+    console.error(`✗ 场景 44 选中行 detail 内嵌失败: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
+    process.exit(1);
+  }
+  const detailIdx44 = pl44d.lines.indexOf(detail44!);
+  if (pl44d.rowMap[detailIdx44] !== 0) {
+    console.error(`✗ 场景 44 detail 行 rowMap 应映射同一行下标（点击详情行可收起）: ${JSON.stringify(pl44d.rowMap)}`);
+    process.exit(1);
+  }
+  // d2) 窗口满 + 选中带 detail 的行：detail 行计入窗口预算（内容窗口行数 = budget − 详情 − 1
+  // 提示位）——detail 恒可见、尾部窗口行不被 panelRows 截断、底部提示恒有位置
+  const evs44f: TrajEvent[] = [
+    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
+    { s: 2, time: 1100, k: 'user/message', text: '问题一', source: 'user' },
+    { s: 3, time: 1200, k: 'request/header', step: 1, model: 'mock', tools: ['list_directory'], messages: 2 },
+    { s: 4, time: 1250, k: 'tool/call', step: 1, callId: 'c1', name: 'list_directory', args: '{"path":"."}' },
+    { s: 5, time: 2000, k: 'tool/result', callId: 'c1', ok: true, chars: 320 },
+    { s: 6, time: 2100, k: 'assistant/message', step: 2, text: '回答一', usage: { input: 500, output: 60 }, llmMs: 1500, firstTokenMs: 200 },
+    { s: 7, time: 2200, k: 'turn/end', turn: 1, reason: 'completed' },
+    { s: 8, time: 3000, k: 'turn/start', turn: 2 },
+    { s: 9, time: 3100, k: 'user/message', text: '问题二', source: 'user' },
+    { s: 10, time: 3200, k: 'turn/end', turn: 2, reason: 'error', detail: 'API 401 Invalid token' },
+  ];
+  const s44f = createTuiState();
+  refreshTrace(s44f, evs44f);
+  if (s44f.traceRows.length !== 7) {
+    console.error(`✗ 场景 44 窗口满用例行数错误: ${s44f.traceRows.length}`);
+    process.exit(1);
+  }
+  s44f.traceSelected = 5; // 轮 2 ✗（唯一带 detail 的行）
+  const pl44f = tracePanelLines(s44f, 12, 7); // budget 5 → 窗口 3 + 详情 1 + 提示位 1
+  const fLines = pl44f.lines.map((l) => l.text);
+  if (!fLines.some((l) => l.includes('API 401'))) {
+    console.error(`✗ 场景 44 窗口满时 detail 被截断（点击展开详情不好使）: ${JSON.stringify(fLines)}`);
+    process.exit(1);
+  }
+  if (!fLines.some((l) => l.includes('❯ 问题二'))) {
+    console.error(`✗ 场景 44 detail 行挤出尾部窗口行: ${JSON.stringify(fLines)}`);
+    process.exit(1);
+  }
+  if (!fLines.some((l) => l.includes('Esc 收起'))) {
+    console.error(`✗ 场景 44 底部提示被截断（提示位未预留）: ${JSON.stringify(fLines)}`);
+    process.exit(1);
+  }
+  if (pl44f.lines.length > 7 || pl44f.rowMap[pl44f.lines.findIndex((l) => l.text.includes('API 401'))] !== 5) {
+    console.error(`✗ 场景 44 面板行数超预算或 detail rowMap 错位: ${JSON.stringify({ rows: pl44f.lines.length, rowMap: pl44f.rowMap })}`);
+    process.exit(1);
+  }
+  // e) 渲染集成：traceOpen → traceBox 可见 + 帧内含面板 + traceRect/traceLeft/rowMap；关闭 → 隐藏
+  const s44r = createTuiState();
+  refreshTrace(s44r, evs44);
+  s44r.traceOpen = true;
+  const t44 = await createTestRenderer({ width: 64, height: 20 });
+  const tree44 = mountTree(t44.renderer, s44r, { withInput: true });
+  await t44.renderOnce();
+  if (!tree44.traceBox || !tree44.traceBox.visible) {
+    console.error('✗ 场景 44 traceBox 未显示');
+    process.exit(1);
+  }
+  const frame44 = t44.captureCharFrame();
+  if (!frame44.includes('轨迹（7 条）') || !frame44.includes('list_directory')) {
+    console.error('✗ 场景 44 帧内无轨迹面板内容');
+    process.exit(1);
+  }
+  if (tree44.traceLeft !== 64 - 36 - 1) {
+    console.error(`✗ 场景 44 traceLeft 错误: ${tree44.traceLeft}（应 ${64 - 36 - 1}）`);
+    process.exit(1);
+  }
+  if (!tree44.traceRect || tree44.traceRect.top !== 2 || tree44.traceRect.bottom < tree44.traceRect.top) {
+    console.error(`✗ 场景 44 traceRect 错误: ${JSON.stringify(tree44.traceRect)}（应 top=2、bottom ≥ top）`);
+    process.exit(1);
+  }
+  if (tree44.traceRowMap.some((v) => v !== -1 && (v < 0 || v >= 7))) {
+    console.error(`✗ 场景 44 traceRowMap 下标越界: ${JSON.stringify(tree44.traceRowMap)}`);
+    process.exit(1);
+  }
+  // 内容宽度收缩：traceOpen 时 computeRows 内容区右移（长行重新折行，面板不盖对话流）
+  const s44w = createTuiState();
+  pushLine(s44w, { kind: 'user', text: 'a'.repeat(50) });
+  const rows44none = computeRows(s44w, { height: 20, width: 64 }, { withInput: true });
+  s44w.traceOpen = true;
+  const rows44open = computeRows(s44w, { height: 20, width: 64 }, { withInput: true });
+  const maxW44none = Math.max(...rows44none.map((r) => visualWidth(r.text)));
+  const maxW44open = Math.max(...rows44open.map((r) => visualWidth(r.text)));
+  if (maxW44none < 50 || maxW44open > 64 - 2 - (36 + 2) || maxW44open >= maxW44none) {
+    console.error(`✗ 场景 44 traceOpen 内容宽度未收缩: none=${maxW44none} open=${maxW44open}（应 none≥50、open ≤ ${64 - 2 - 38}）`);
+    process.exit(1);
+  }
+  // f) 鼠标点击：命中轨迹行 → traceSelected 切换（再点收起）；标题行（rowMap -1）不触发
+  const { handleTuiMouseEvent: htm44 } = await import('../src/tui/render.js');
+  const y44row = tree44.traceRect!.top + 2; // 面板第 3 行（rowMap ≥ 0）
+  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: y44row }, tree44, s44r, 64, noopPaint);
+  const selAfter44 = s44r.traceSelected;
+  if (selAfter44 < 0) {
+    console.error('✗ 场景 44 点击轨迹行未选中');
+    process.exit(1);
+  }
+  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: y44row }, tree44, s44r, 64, noopPaint);
+  if (s44r.traceSelected !== -1) {
+    console.error('✗ 场景 44 再次点击未收起选中');
+    process.exit(1);
+  }
+  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: tree44.traceRect!.top }, tree44, s44r, 64, noopPaint);
+  if (s44r.traceSelected !== -1) {
+    console.error('✗ 场景 44 点击标题行不应触发选中');
+    process.exit(1);
+  }
+  htm44({ type: 'down', button: 0, x: tree44.traceLeft - 1, y: y44row }, tree44, s44r, 64, noopPaint);
+  if (s44r.traceSelected !== -1) {
+    console.error('✗ 场景 44 面板左侧区域点击不应命中面板');
+    process.exit(1);
+  }
+  // g) /trace 命令分发：toggle + 关闭时清选中/滚动；无 events 时也能安全 toggle
+  const { runCommand: runCmd44, findCommand: findCmd44 } = await import('../src/tui/commands.js');
+  if (!findCmd44('trace')) {
+    console.error('✗ 场景 44 /trace 命令未注册');
+    process.exit(1);
+  }
+  const s44c = createTuiState();
+  await runCmd44({ state: s44c, out: {}, session: {}, input: {}, messages: [] } as never, '/trace');
+  if (!s44c.traceOpen) {
+    console.error('✗ 场景 44 /trace 未打开面板');
+    process.exit(1);
+  }
+  s44c.traceSelected = 3;
+  s44c.traceScroll = 5;
+  await runCmd44({ state: s44c, out: {}, session: {}, input: {}, messages: [] } as never, '/trace');
+  if (s44c.traceOpen || s44c.traceSelected !== -1 || s44c.traceScroll !== 0) {
+    console.error(`✗ 场景 44 /trace 关闭未清选中/滚动: ${JSON.stringify({ open: s44c.traceOpen, sel: s44c.traceSelected, scroll: s44c.traceScroll })}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 44 通过：/trace 右侧轨迹面板（foldTrace 投影/账本/面板行/选中收敛/渲染收缩/点击/命令分发）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

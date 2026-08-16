@@ -113,6 +113,8 @@ src/
     subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
+    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/trace 面板与 /compact 事件源；恢复会话读回续号）
+    trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console 账本）
     types.ts            # RunOptions / ThinkingDisplay 共享类型
   safety/
     index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用）
@@ -135,7 +137,8 @@ src/
     jsonc.ts            # JSONC 解析（注释/尾逗号）
     discover.ts         # 配置发现：目录内查找 + cwd 向上查找
   tui/
-    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单状态）
+    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单/轨迹面板状态）
+    trace.ts            # **轨迹面板（右侧栏，/trace）**：TraceRow 投影截断成面板行（tracePanelLines，窗口滚动/选中收敛）+ refreshTrace（交互每轮刷新）
     render.ts           # 渲染编排：mountTree/repaintTree/startTui（行构建在 rows.ts）
     rows.ts             # 内容行构建：buildBody/computeRows/卡片与审批卡/点击命中（纯函数）
     layout.ts           # 布局常量 + 按显示列数的折行/截断数学（不依赖 OpenTUI）
@@ -147,7 +150,7 @@ src/
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单）
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage 分支）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
-scripts/tui-snapshot.ts # TUI 快照验证（40 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话）
+scripts/tui-snapshot.ts # TUI 快照验证（44 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板）
 scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
 scripts/eval/tasks.ts   # 评估任务集（mock 离线 / 真实 API 两套）
 scripts/eval/run-eval.ts# 评估运行器：跑任务集 + 完成率报告（npm run eval[:mock]）
@@ -191,7 +194,7 @@ for step in 1..maxSteps:
 > - `renderer.loop()` 在 d.ts 中是 private，但运行时存在（test-renderer 内部也调它），用类型断言调用；
 > - **交互模式（交互式 TUI）**：`dev:tui` 无任务参数时进入——底部**多行 `TextareaRenderable` 输入框**（对标 opencode）+ 消息滚动区，多轮对话；自定义 keyBindings（与默认合并）：return/kpenter/linefeed → **submit（Enter 发送）**、shift+return 等 → **newline（Shift+Enter 换行）**；**自动增高**（不设 height、只给 minHeight 1/maxHeight 5 → yoga 按内容行数增高，超 5 行内部滚动），多行粘贴保留换行；**高度预算动态同步**——`repaintTree` 每次从 `lineCount` 刷新 `state.inputLines`（1-5），`computeRows` 按它收缩内容区，输入框变高也不挤坏布局；提交走 `submit()` 触发 **onSubmit 回调**（Textarea 不 emit 'enter'；且 `value` setter 不提交到 buffer，清空必须 `setText('')`，读取用 `plainText`）；状态栏显示“等待输入…”；/exit /clear /help 内联处理；按键时通过 `session.onKeyPress` 兜底重绘；
 > - **Markdown 行式渲染**（`tui/markdown.ts`）：最终回答按行解析成带样式片段（加粗/行内代码/斜体/**删除线 ~~**/标题/引用/水平线/围栏代码块/**无序列表 • / 有序列表 / 任务清单 ☑☐**/**GFM 表格**），语法标记（`**`、` `、```` ``` ````、`#`、`~~`、`- [x]`）隐藏（conceal），代码块行统一着色；**表格渲染成 box-drawing 方框**（`┌──┬──┐` 表头加粗青色、`:---:` 居中/`:--` 左/`--:` 右对齐、列宽按内容自然宽度（CJK 全角 2 列）、超内容宽时收缩最宽列并截断单元格——每行总宽 = Σ列 + 3n + 1 ≤ 内容宽，折行不会打破对齐；`markdownToRows(text, contentWidth?)` 传宽度时表格才收缩，缓存 key 带宽度前缀、终端 resize 自动重解析）；流式友好（每次重绘对完整文本重解析，未闭合标记按纯文本处理）。**用户消息后自动插 1 行空白间距**（用户输入与 AI 思考不紧贴，buildBody 的 user 分支）。刻意不用 MarkdownRenderable——它是动态高度块，无法参与尾部窗口裁剪；行式方案每行高度固定为 1；
-> - 快照验证（`tui:snapshot`）用 `createTestRenderer` 内存渲染，与 CLI 共用 mountTree/repaintTree 同一渲染路径，**42 场景**断言（布局/溢出跟随/增量重绘/卡片与审批/Markdown 渲染/命令面板/联想与 @ 提及/记忆/会话/统计行/当次 token 统计等）。
+> - 快照验证（`tui:snapshot`）用 `createTestRenderer` 内存渲染，与 CLI 共用 mountTree/repaintTree 同一渲染路径，**44 场景**断言（布局/溢出跟随/增量重绘/卡片与审批/Markdown 渲染/命令面板/联想与 @ 提及/记忆/会话/统计行/当次 token 统计/轨迹面板等）。
 
 ### 工具列表（src/tools/）
 
@@ -222,6 +225,7 @@ for step in 1..maxSteps:
 | `/resume` 命令 | **恢复历史会话**：无参列出 / `<id>` 恢复（替换 messages + sessionPath + 重置落盘计数 + 历史回放进对话流；onResume 回调由 interactive 组装） |
 | `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
 | `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
+| `/trace` 命令 | **轨迹面板（右侧栏）**：每轮请求/工具/消息账本——`/trace` 展开/收起；数据源 = 事件记录器（event.ts 内存全量事件，interactive 每轮 refreshTrace 投影），console 端 `/trace` 打印文本账本；TUI 面板 ↑/↓ 选择 + 点击展开详情 + Esc 收起，展开时内容宽度收缩（面板不盖对话流） |
 | `/doctor` 命令 | **环境诊断**：Node/Bun 版本、API Key、端点连通性（5s 超时 fetch）、配置/MCP/权限/模型 |
 | `mcp_*` | **MCP 外部工具**：经 stdio JSON-RPC 调用外部服务器（可选，`mcpServers`） |
 
@@ -254,6 +258,12 @@ for step in 1..maxSteps:
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 演进日志
+
+- **2026-08-16（第一百二十七次）**：**修复「对话轮次一多 thinking 区域块总会丢」（滚动残留不回底 + 取消路径 thinking 状态残留）**——用户反馈多轮对话后 thinking 区域块消失。**排查**：三条探针逐一排除（probe-thinking-multi：真实事件流 5 轮正常流程 thinking 行数与内容完整、渲染帧头行+内容可见；probe-thinking-cancel：取消残留场景块不消失；probe-thinking-e2e：真实 runAgent + TuiOutput + mock 6 轮全链路，每轮 2 个 thinking 块全部保留）。**根因双实锤**：**① 滚动残留不回底（主因，用户视角的「丢」）**：interactive 的**空闲提交路径**（`waitForSubmit` 后）有 `state.scrollTop = null` 回底，但**待发送积压消费路径（571 行 pending shift）与 steer 打断路径都没有**——用户多轮对话中滚轮/翻页查看过历史（scrollTop 残留）后，运行中排队的消息自动发送（或 Cmd+Enter 打断）时**不回底**，新一轮的 thinking 预建头行/思考内容/回答全部渲染在视口外——「thinking 区域块丢」= 新内容不可见（probe-scroll-think 实测：上滚后第 5 轮思考在帧中消失、回底后恢复）；**② 取消路径 thinking 状态残留**：loop 的 create 阶段取消（AbortError）、请求失败、工具执行阶段取消三处 return 前**不调 thinking.finish()**——`thinkingShown` 残留 true → 下一轮 onRound 的 `thinking.start()` 被 `if (self.thinkingShown) return` 挡掉 → 新思考走 appendLine 兜底 pushLine（无 thinkingRunning/thinkingMs 状态、finish 作用到旧块）——状态残缺（probe 实测 `running=undefined ms=undefined`）。**修复**：① `tui/interactive.ts`：pending 消费路径与 steer 打断路径补 `state.scrollTop = null; state.scrollIntent = null;`（与空闲提交同语义：新消息开始即回底——上滚残留不再让新轮次内容不可见）；② `agent/loop.ts`：三处取消/失败 return 前补 `if (output.thinking.shown) output.thinking.finish()`（收尾预建头行，不留 thinkingShown 残留——create 阶段取消时空块被正常 splice 移除，与正常无思考轮同路径）；③ `tui/output.ts` `clearScrollback`（/clear）：同步复位 thinkingShown/thinkingStart/thinkingLineIdx（行下标全部失效的防御性清理）。验证：typecheck + 快照 **44 场景**全绿 + eval:mock 100%（2/2）+ 探针（probe-thinking-cancel 更新断言：取消收尾后三块全部 `running=false` + `ms` 有值；probe-scroll-think：跟随模式最新思考可见 → 上滚后不可见（「丢」复现）→ 回底后恢复；probe-thinking-multi/probe-thinking-e2e 回归全过）。
+
+- **2026-08-16（第一百二十六次）**：**修复「trace 点击展开详情不好使」（窗口预算截断 + 无 detail 的行点击无内容）**——用户反馈点击轨迹行展开详情没反应。**根因双实锤**（探针 probe-trace-detail.ts 帧级复现）：**① 预算截断**：detail 行内嵌在选中行后**追加**到窗口行尾，窗口行数固定 → 面板总行数超 maxRows → repaintTree 的 `panelRows = min(lines, maxRows)` 截断——**尾部窗口行被挤出 + detail 被截**（帧实锤：窗口 [2,7) 5 行 + detail 1 + 标题 + ↑ 提示 = 9 > maxRows 7 → 「❯ 问题二」和底部 hint 消失）；**② 设计缺陷**：foldTrace 只有 turn/end(error) 行带 detail——用户点 completed 回合/普通行只有蓝色高亮、没有任何「详情」出现。**修复**：① `tui/trace.ts` 窗口预算改为 `contentRows = max(1, budget − selDetail − 1)`——**detail 行计入窗口占用**（选中行 + 详情恒在预算内）+ **末尾预留 1 行提示位**（顺带修掉原缺陷：↑ 提示出现时总行数 = budget+3 = maxRows+1 恒溢 1、hint 行永被截——现在 scrollUp/scrollDown/hint 三选一恒有位置）；② `agent/trace.ts` foldTrace 为**各类型行补 detail**：user/answer 多行正文的**剩余行**（单行不生成）、tool **完整 args JSON**、request **完整工具列表**——点击任意行都有详情可展开；console `/trace` 账本 full 模式同步打印 tool detail（完整 args）。验证：typecheck + 快照 **44 场景**全绿（场景 44 新增 a2) 段：tool/request detail 生成、单行正文无 detail、多行正文剩余行做 detail、账本 full 含完整 args；新增 d2) 段：窗口满 + 选中带 detail 行——detail 可见、尾部行不挤出、底部提示有位置、面板行数 ≤ maxRows、detail 行 rowMap 同选中行下标）+ eval:mock 100%（2/2）+ mock e2e（账本 tool 完整 args 打印 + 会话文件 ev 落盘）；排障：探针首版 traceSelected=9 越界（foldTrace 7 行非 10 行——turn/end 不产行）、edit 误删 `let scroll` 初始化（typecheck 抓到补齐）。
+
+- **2026-08-16（第一百二十五次）**：**轨迹系统（/trace）：事件记录 + 投影折叠 + TUI 右侧面板 / console 文本账本**——用户要求「增加一个类似 debug 的面板，把每一轮的产生过程展示出来：LLM 请求、工具调用、消息」。**① 事件记录器**（新 `src/agent/events.ts`）：`EventRecorder` 把运行过程记录成 `TrajEvent` 序列（turn/start·end、user/message（source interrupt ⚡）、request/header、tool/call+result（按 callId）、assistant/message（usage/llmMs/firstTokenMs）、compact）——**内存累积（轨迹投影源）+ 批量落盘**（交互会话文件追加 `{"t":"ev"}` 行，单任务只记内存）；loop 各阶段埋点（turnStart/turnEnd/userMessage/toolCall/toolResult/llmRequest/llmMessage），`RunOptions.events` 注入，子代理事件也归入主记录器；恢复会话（--continue /resume /session）读回历史事件续号续写。**② 投影层**（新 `src/agent/trace.ts`，纯函数）：`foldTrace` 把事件序列折叠成 TraceRow（turn 回合行带完成标记 ✓/⚠/✗/⌛、user 缩进行（interrupt ⚡ 前缀）、request 请求步、tool 工具步（callId 配对，结果含 `✓ N 字符 · 耗时`）、answer 回答步（正文首行 + `入/出/缓存 · LLM 耗时 · 首 token`））+ `buildTraceTextLines`（console `/trace` 账本，full 模式含副信息行）+ `fmtMs`（<10s 一位小数、≥60s 分:秒）。**③ TUI 右侧面板**（新 `src/tui/trace.ts` + `state.traceOpen/traceRows/traceSelected/traceScroll`）：`/trace` 命令 toggle（命令数 25→26）；面板 = **右缘绝对定位浮层**（宽 TRACE_W=36、圆角方框、主题底色），tracePanelLines 输出——标题 `轨迹（N 条）` + 内容窗口（**底部对齐窗口滚动**：scroll 从底部上滚，顶部/底部 `↑ 还有 N 行`/`↓ 还有 N 行` 提示行，**选中行保持可见**（scroll 钳制收敛））+ 底部「Esc 收起 · ↑↓ 选择 · 点击展开详情」；行标记：`❯` user / `⚙` tool / `·` request·answer；**点击轨迹行切换选中**（高亮 `›` + 内嵌展开详情行，点击详情行同样可收起——rowMap 同下标）；**Esc 收起 / ↑↓ 选择**（interactive 兜底收敛滚动）；**computeRows 内容宽度收缩 TRACE_W+2 —— 对话流右移、长行重新折行，面板不盖内容**；命中守卫 `x ≥ traceLeft`（面板外点击不穿透不误触）。**④ 修复**（场景 44 揪出）：空态补 hint 行；buildTraceLine 漏渲染 done 标记（turn 行 `轮 1` 无 ✓/⚠）——补 ` ${done}`。**⑤ CLI**：`cli/interactive.ts` `/trace` 打印 `buildTraceTextLines` 文本账本（行数 + 会话含恢复历史标注）。**⑥ i18n**：trace.title/empty/hint/scrollUp/scrollDown 中英键。验证：typecheck + 快照 **44 场景**全绿（新增场景 44：foldTrace 投影（turn 标记/⚡ interrupt/tool 配对耗时/answer 副信息）、账本 full 文本、tracePanelLines 空态/窗口滚动/选中收敛/detail 内嵌 + rowMap 同下标、渲染集成（traceRect top=2/traceLeft=64-36-1/rowMap 越界）、**traceOpen 内容宽度收缩实测**（长行 none=51→open=24）、handleTuiMouseEvent 点击四路（选中/收起/标题行不触发/面板外不命中）、/trace 命令分发（打开/关闭清选中滚动/无 events 安全）+ eval:mock 100%（2/2）+ mock e2e（交互 /trace 账本 9 条事件 + 会话文件 `{"t":"ev"}` 9 行落盘）；排障：foldTrace 产 7 行非 9（turn/end 不产行）、断言文本在滚动窗口外）。
 
 - **2026-08-16（第一百二十四次）**：**loading + esc 提示移到模型行文本右侧（不再钉在灰块右缘）**——用户要求「输入区域的 loading + esc 显示在左侧现有文本的右面」。此前（第八十八次设计）footerLoading/footerEsc 是 footerBox（row）的独立子节点（contentCol 之后），`marginTop:'auto'` 推到灰块最内底行 = 模型行——**位于灰块右缘**，模型行在左，视觉上 loading 与「模型 X · 思考 medium」隔着整个灰块。**修复**（`render.ts` mountTree）：footerLoading/footerEsc 从 footerBox 移进 **modelRow**（模型行 row 容器，footerEffort 之后）——loading+esc 紧跟 `模型 X · 思考 medium` 文本右侧；去掉 `marginTop:'auto'`（modelRow 是 row + alignItems:'center'，不需要），保留 `marginLeft:1` 间距；footerBox 只留 blueLine + contentCol。注释同步（接口 TuiTree 字段 + repaintTree 更新段）。**验证**：typecheck + 快照 **43 场景**全绿（场景 15 断言不依赖具体 x，兼容）+ eval:mock 100%（2/2）+ **三个产物重建**（dist/omni.cjs + release/omni + packages/omni-tui/dist）+ 帧级探针（probe-loading 回归：模型行 y=19 · loading y=19 同一行、帧推进换帧、esc 在 loading 右侧同帧、结束后消失、输入增高 3 行仍对齐；**位置实测 x=29**——模型文本 x=3 起 24 字符宽后紧跟 loading，此前灰块右缘 x=53）。
 

@@ -16,6 +16,7 @@ import { createClient, type ModelEndpoint } from './client.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
 import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
+import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
@@ -215,6 +216,10 @@ export async function prepareSessionPersistence(
   if (!singleTask && !runOpts.sessionPath) {
     runOpts.sessionPath = (await createSession({ project: process.cwd(), model: cfg.model })) ?? undefined;
   }
+  // 轨迹事件记录器（/trace 数据源）：恢复/新建会话都挂在同一会话文件
+  // （`{"t":"ev"}` 行与消息行共存，loadSession 天然跳过）；单任务模式无会话
+  // 文件 → 仅内存记录（flush 为 no-op，供 eval 等复用）。
+  runOpts.events = await EventRecorder.open(runOpts.sessionPath ?? null);
   return true;
 }
 
@@ -253,7 +258,7 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
       });
     }
     messages.push({ role: 'user', content: singleTask });
-    await prepareContext(client, cfg.model, messages, runOpts.context ?? {});
+    await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
     await runAgent(client, cfg.model, messages, runOpts, output);
     return;
   }

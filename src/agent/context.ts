@@ -31,6 +31,7 @@ import {
   memoryMessage,
 } from './memory.js';
 import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
+import type { EventRecorder } from './events.js';
 
 export interface ContextOptions {
   /** 是否加载全局记忆 ~/.config/omni/AGENTS.md（跨项目共享；默认 true） */
@@ -137,12 +138,14 @@ const SUMMARY_SYSTEM_PROMPT =
 /**
  * 长对话摘要压缩：消息数超过 summarizeAt 时，把最旧完整回合压成一条 system 摘要。
  * 就地修改 messages；压缩失败（网络/无 Key）静默返回（不打扰对话）。
+ * recorder：轨迹事件记录器（可选）——压缩成功时记录 compact 事件。
  */
 export async function summarizeContext(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  opts: ContextOptions
+  opts: ContextOptions,
+  recorder?: EventRecorder
 ): Promise<void> {
   const threshold = opts.summarizeAt ?? 0;
   if (threshold <= 0 || messages.length <= threshold) return;
@@ -158,6 +161,7 @@ export async function summarizeContext(
   const summary = await summarizeMessages(client, model, head);
   if (!summary) return; // 失败静默
   messages.splice(headStart, split - headStart, { role: 'system', content: `[历史对话摘要]\n${summary}` });
+  recorder?.compact(split - headStart); // 轨迹：压缩移除 N 条
 }
 
 /** 独立轻量 LLM 调用（流式与主循环一致，兼容各家网关）；失败返回 null */
@@ -204,7 +208,8 @@ export async function prepareContext(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  opts: ContextOptions
+  opts: ContextOptions,
+  recorder?: EventRecorder
 ): Promise<void> {
   // 1) 相关文件预载：只在尚未预载过时执行一次（会话首个用户消息）
   const preload = opts.preloadFiles !== false;
@@ -253,6 +258,6 @@ export async function prepareContext(
     const skills = await discoverSkills();
     if (skills.length > 0) messages.unshift(skillMessage(skills));
   }
-  // 3) 长对话摘要压缩
-  await summarizeContext(client, model, messages, opts);
+  // 3) 长对话摘要压缩（recorder：压缩成功时记 compact 轨迹事件）
+  await summarizeContext(client, model, messages, opts, recorder);
 }

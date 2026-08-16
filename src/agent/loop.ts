@@ -157,6 +157,8 @@ export async function runAgent(
   const maxSteps = opts.maxSteps ?? 50;
   // 轮数统计（footer）：每次回合（交互每轮用户提交 / 单次任务）计 1 轮
   output.onTurnStart?.();
+  // 轨迹事件：轮开始（turn 号内部递增；loop 打断 continue 时同一轮号延续）
+  opts.events?.turnStart();
   // 计划模式（/plan）：只暴露只读工具 + 系统提示词追加只读说明（由 buildToolSchemas 过滤）
   const planMode = opts.planMode === true;
   const toolSchemas = buildToolSchemas(opts.tools, planMode);
@@ -186,6 +188,9 @@ export async function runAgent(
       console.error(`[OMNI_DEBUG] model=${model} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
       console.error(JSON.stringify({ model, messages: requestMessages, tools: toolSchemas }, null, 2).slice(0, 6000));
     }
+
+    // 轨迹事件：LLM 请求快照（模型 + 可调工具名 + 消息数；轻量版，不存提示词全文）
+    opts.events?.requestHeader(step, model, toolSchemas.map((s) => s.function.name), requestMessages.length);
 
     output.onRound(step, maxSteps);
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
@@ -239,12 +244,17 @@ export async function runAgent(
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
           output.onUserMessage(interrupt);
+          opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue;
         }
+        opts.events?.turnEnd('aborted'); // 轨迹：创建阶段取消（/stop / Esc）
+        if (output.thinking.shown) output.thinking.finish(); // 预建的 thinking 头行复位
         return;
       }
       output.onRequestFailed(err);
+      opts.events?.turnEnd('error', (err as Error)?.message); // 轨迹：请求失败结束本轮
+      if (output.thinking.shown) output.thinking.finish(); // 同上：不留 thinkingShown 残留
       return;
     }
 
@@ -314,9 +324,11 @@ export async function runAgent(
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
           output.onUserMessage(interrupt);
+          opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue; // 下一轮循环：模型看到打断消息并回答
         }
+        opts.events?.turnEnd('aborted'); // 轨迹：流式阶段取消（/stop / Esc）
         return;
       }
       throw err;
@@ -348,8 +360,30 @@ export async function runAgent(
     const assistantMsg = buildAssistantMessage(content, toolCalls);
     messages.push(assistantMsg);
 
+    // 轨迹：assistant 消息（正文 + 用量 + LLM 墙钟/首 token 延迟）
+    const u = lastUsage as (OpenAI.Completions.CompletionUsage & {
+      prompt_tokens_details?: { cached_tokens?: number };
+      prompt_cache_hit_tokens?: number;
+    }) | null;
+    opts.events?.assistant(
+      step,
+      content,
+      u
+        ? {
+            input: u.prompt_tokens ?? 0,
+            cached: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
+            output: u.completion_tokens ?? 0,
+          }
+        : undefined,
+      Date.now() - llmT0,
+      firstTokenAt !== null ? Date.now() - firstTokenAt : null
+    );
+
     // 没有工具调用 → 模型给出了最终回答，循环结束
-    if (toolCalls.size === 0) return;
+    if (toolCalls.size === 0) {
+      opts.events?.turnEnd('completed'); // 轨迹：正常完成
+      return;
+    }
 
     // 并行执行：一次响应里的多个工具调用并发跑（Promise.all），结果按原顺序回传。
     // 副作用工具（多个 run_command 写同一文件等）由模型自行负责顺序/冲突；
@@ -374,6 +408,8 @@ export async function runAgent(
               return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
             }
             output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args);
+            // 轨迹：工具调用（callId = OpenAI 调用 id，与 tool/result 天然配对）
+            opts.events?.toolCall(step, call.id, tool.name, JSON.stringify(parsed.args));
             // 安全护栏过闸：拒绝 → 结果回传模型（自我纠错）；需要审批 → 用户决定
             const gate = await safety.gate(tool, parsed.args);
             let result: string;
@@ -404,6 +440,8 @@ export async function runAgent(
               }
             }
             output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail);
+            // 轨迹：工具结果（与 tool/call 按 callId 配对；耗时 = result - call）
+            opts.events?.toolResult(call.id, !TOOL_ERROR_PREFIX.test(result), result.length);
             return result;
           })
         ),
@@ -417,9 +455,12 @@ export async function runAgent(
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
           output.onUserMessage(interrupt);
+          opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue; // 打断：下一轮循环，模型看到打断消息并回答
         }
+        opts.events?.turnEnd('aborted'); // 轨迹：工具执行阶段取消（/stop / Esc）
+        if (output.thinking.shown) output.thinking.finish(); // 同上：不留 thinkingShown 残留
         return; // 取消：结束本轮
       }
       throw err;
@@ -432,4 +473,5 @@ export async function runAgent(
   }
 
   output.onMaxSteps(maxSteps);
+  opts.events?.turnEnd('max-steps'); // 轨迹：触达轮次上限
 }
