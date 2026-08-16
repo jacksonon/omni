@@ -56,7 +56,7 @@ import {
   parseColor,
 } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
-import { commandSuggestions, findCommand } from './commands.js';
+import { commandSuggestions, confirmMenu, findCommand } from './commands.js';
 import { logCrash } from './crashlog.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
@@ -165,6 +165,8 @@ export interface TuiTree {
   /** 命令面板浮层（/theme alert：绝对定位居中，不占用内容流） */
   menuOverlay: BoxRenderable | null;
   menuCells: TextRenderable[];
+  /** 菜单浮层内部行 → 选项下标映射（-1 = 标题/提示/底边行，不可点击；鼠标点击命中用） */
+  menuRowMap: number[];
   /** 命令输出面板浮层（所有 / 命令的独立窗口：绝对定位居中，不占用内容流/不参与滚动） */
   cmdPanelOverlay: BoxRenderable | null;
   cmdPanelCells: TextRenderable[];
@@ -436,6 +438,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     suggestRowMap: [],
     menuOverlay,
     menuCells,
+    menuRowMap: [],
     cmdPanelOverlay,
     cmdPanelCells,
   };
@@ -819,12 +822,24 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const settings = state.settingsPanel;
     if (!menu && !settings) {
       tree.menuOverlay.visible = false;
+      tree.menuRowMap = [];
     } else {
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 44);
       const panelRows = menu ? menuPanelRows(menu, panelW, state.language) : settingsPanelRows(settings!, panelW, state.language);
       tree.menuOverlay.visible = true;
       tree.menuOverlay.top = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
       tree.menuOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
+      // 菜单行 → 选项下标映射（点击命中用；标题 0 / 提示 / 底边 = -1）：
+      // 面板行下标 i（0=标题边框行）→ 选项下标 i-1；事件坐标 y = overlay.top + 1 + i
+      // （与联想浮层 suggestRect 同一坐标系：浮层顶边框占 1 行）
+      const rowMap: number[] = [];
+      if (menu) {
+        for (let i = 0; i < panelRows.length; i++) {
+          const optIdx = i - 1;
+          rowMap.push(optIdx >= 0 && optIdx < menu.options.length ? optIdx : -1);
+        }
+      }
+      tree.menuRowMap = rowMap;
       for (let i = 0; i < tree.menuCells.length; i++) {
         const cell = tree.menuCells[i];
         if (i >= panelRows.length) {
@@ -941,6 +956,111 @@ interface MouseEventLike {
   button?: number;
 }
 
+/**
+ * 根 Box 鼠标事件处理器（startTui 挂载；导出供快照用同一真实代码路径测试）：
+ * 滚轮上/下 → 滚动意图（每格约 3 行），与键盘滚动同一套机制；只在 scroll 类型事件时
+ * 消费，点击/移动保持默认行为（不干扰输入框聚焦）。同方向连续滚轮累加步长——
+ * 帧执行期间到达的多格并入同一意图，由尾沿补帧一次性消费，快速连滚不丢格。
+ * 左键点击优先级：① 菜单浮层选项行（选中并确认，等同数字键+Enter）② 审批卡片
+ * ③ 命令联想/@ 提及浮层 ④ 待发送消息选中 ⑤ 思考/token 模块展开收起 ⑥ 工具卡片。
+ * 浮层打开时点击不穿透到下层内容（避免误触被遮挡的工具卡片）。
+ * 坐标语义：MouseEvent.y 为 0-based（实测 SGR y 减 1）；repaintTree 已把
+ * 每个可见卡片/思考行按事件坐标登记（内容行 i → y = i）。
+ */
+export function handleTuiMouseEvent(
+  e: MouseEventLike,
+  tree: TuiTree,
+  state: TuiState,
+  width: number,
+  paint: () => Promise<void>,
+): void {
+  // 菜单浮层（/theme /permission /settings language 等）：点击选项行 = 选中并确认
+  // （等同数字键 + Enter，用户反馈「点击也没有可选择的语言选项」——此前菜单鼠标被整体忽略）。
+  // 面板内其它区域点击忽略；都不穿透到下层内容。坐标：行 i → y = overlay.top + 1 + i
+  // （浮层顶边框占 1 行，与联想浮层 suggestRect 同一坐标系）。
+  // 放在 cmdPanel 守卫之前：菜单确认后 pushCmdLine 会打开命令输出面板，若面板还开着
+  // （测试/边界态），重新打开的菜单点击仍应优先命中菜单，而不是被面板守卫整体吞掉。
+  if (state.menu) {
+    if (e.type === 'down' && e.button === 0 && typeof e.y === 'number' && tree.menuOverlay) {
+      const overlayTop = (tree.menuOverlay.top ?? 0) as number;
+      const panelIdx = e.y - overlayTop - 1;
+      const optIdx = panelIdx >= 0 && panelIdx < tree.menuRowMap.length ? tree.menuRowMap[panelIdx] : -1;
+      if (optIdx >= 0) {
+        state.menu.selectedIndex = optIdx;
+        confirmMenu(state);
+        void paint();
+      }
+    }
+    return;
+  }
+  // 命令输出面板 / 状态行设置面板浮层打开时忽略鼠标（滚动/点击都不穿透到下层内容，避免误点工具卡片）
+  if (state.settingsPanel || state.cmdPanel) return;
+  // 滚轮：滚动意图（见上）
+  if (e.type === 'scroll' && e.scroll) {
+    const dir = e.scroll.direction;
+    if (dir !== 'up' && dir !== 'down') return;
+    const action = dir === 'up' ? 'line-up' : 'line-down';
+    const lines = Math.min(6, Math.max(1, Math.round(e.scroll.delta ?? 1) * 3));
+    const prev = state.scrollIntent;
+    state.scrollIntent =
+      prev && prev.action === action ? { action, lines: (prev.lines ?? 1) + lines } : { action, lines };
+    void paint();
+    return;
+  }
+  // 左键点击：
+  // ① 工具调用审批卡片（安全护栏）：点击左侧批准、右侧拒绝（y 命中审批卡区域）；
+  // ② 命令联想浮层：点击某项 → 填入该命令（等同 Tab，可继续编辑后 Enter 执行）；
+  //    浮层区域内的点击不穿透到下层内容（避免误触被遮挡的工具卡片）；
+  // ③ 思考折叠态：点击某条折叠摘要 → 单独展开该条思考（再次点击收起）；
+  // ④ token 统计模块：点击展开/收起汇总明细；
+  // ⑤ 命中工具卡片 → 切换展开/收起。
+  if (e.type === 'down' && e.button === 0 && typeof e.y === 'number') {
+    // 审批卡片优先级最高：命中即按点击列批准/拒绝（左半批准、右半拒绝）
+    if (hitTestApproval(state, tree.approvalRect, e.y)) {
+      const allow = typeof e.x === 'number' && e.x < width / 2;
+      state.approvalResolve?.(allow);
+      void paint();
+      return;
+    }
+    // 命令联想 / @ 提及浮层：点击某项 → 填入（命令填 /cmd ；提及按文件/目录插入）。
+    // 行 → items 下标经 tree.suggestRowMap 映射（-1 = ↑/↓ 提示行，点击忽略）
+    const picker = state.cmdSuggest ?? state.mention;
+    if (picker && tree.suggestRect && tree.input) {
+      const { top, bottom } = tree.suggestRect;
+      if (e.y >= top && e.y <= bottom) {
+        const idx = e.y - top;
+        const itemIdx = tree.suggestRowMap[idx];
+        const sel = itemIdx !== undefined && itemIdx >= 0 ? picker.items[itemIdx] : undefined;
+        if (sel) {
+          if (state.cmdSuggest) {
+            tree.input.setText(`/${sel} `); // 尾空格让联想自动隐藏（与 Tab 同语义）
+            state.cmdSuggest = null;
+          } else if (state.mention) {
+            insertMention(tree.input, state.mention, itemIdx); // 目录保留 / 继续浏览；文件结束提及
+          }
+        }
+        void paint();
+        return;
+      }
+    }
+    // 待发送消息区：点击某条消息 → 选中该条（进入选择态后可 ↑/↓ 移动高亮、
+    // ←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc 退出）
+    if (state.pending.length > 0) {
+      const pIdx = tree.pendingRects.get(e.y);
+      if (pIdx !== undefined) {
+        state.pendingSelected = pIdx;
+        void paint();
+        return;
+      }
+    }
+    // ④ 思考模块 / token 统计模块：点击切换展开/收起；
+    // ⑤ 命中工具卡片 → 切换展开/收起。
+    if (hitTestThinking(state, tree.thinkingRects, e.y)) void paint();
+    else if (hitTestTokens(state, tree.tokensRects, e.y)) void paint();
+    else if (hitTestCard(state, tree.cardRects, e.y)) void paint();
+  }
+}
+
 /** 创建 TUI 会话：建树 + 首帧，返回 paint/stop/input/onKeyPress */
 export async function startTui(state: TuiState, opts?: { withInput?: boolean }): Promise<TuiSession> {
   const renderer = await createCliRenderer({ exitOnCtrlC: true });
@@ -1018,80 +1138,11 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
     await paintSettled;
   };
 
-  // 鼠标滚轮滚动：OpenTUI 上报 SGR 滚轮事件（\e[<64/65;x;yM）并沿渲染树冒泡到根 Box。
-  // 在根 Box 上挂处理器（实例属性遮蔽原型 onMouseEvent 方法，属刻意为之）：
-  // 滚轮上/下 → 滚动意图（每格约 3 行），与键盘滚动同一套机制；只在 scroll 类型事件时
-  // 消费，点击/移动保持默认行为（不干扰输入框聚焦）。同方向连续滚轮累加步长——
-  // 帧执行期间到达的多格并入同一意图，由尾沿补帧一次性消费，快速连滚不丢格。
+  // 鼠标事件：滚轮滚动 + 点击（菜单/联想/待发送/思考/token/卡片），逻辑见 handleTuiMouseEvent
+  // （模块级导出函数：快照可复用同一真实代码路径）。在根 Box 上挂处理器（实例属性
+  // 遮蔽原型 onMouseEvent 方法，属刻意为之——OpenTUI 把鼠标事件沿渲染树冒泡到根）。
   (tree.root as unknown as { onMouseEvent?: (e: MouseEventLike) => void }).onMouseEvent = (e) => {
-    // 菜单 / 设置面板 / 命令输出面板浮层打开时忽略鼠标（滚动/点击都不穿透到下层内容，避免误点工具卡片）
-    if (state.menu || state.settingsPanel || state.cmdPanel) return;
-    // 滚轮：滚动意图（见上）
-    if (e.type === 'scroll' && e.scroll) {
-      const dir = e.scroll.direction;
-      if (dir !== 'up' && dir !== 'down') return;
-      const action = dir === 'up' ? 'line-up' : 'line-down';
-      const lines = Math.min(6, Math.max(1, Math.round(e.scroll.delta ?? 1) * 3));
-      const prev = state.scrollIntent;
-      state.scrollIntent =
-        prev && prev.action === action ? { action, lines: (prev.lines ?? 1) + lines } : { action, lines };
-      void paint();
-      return;
-    }
-    // 左键点击：
-    // ① 工具调用审批卡片（安全护栏）：点击左侧批准、右侧拒绝（y 命中审批卡区域）；
-    // ② 命令联想浮层：点击某项 → 填入该命令（等同 Tab，可继续编辑后 Enter 执行）；
-    //    浮层区域内的点击不穿透到下层内容（避免误触被遮挡的工具卡片）；
-    // ③ 思考折叠态：点击某条折叠摘要 → 单独展开该条思考（再次点击收起）；
-    // ④ token 统计模块：点击展开/收起汇总明细；
-    // ⑤ 命中工具卡片 → 切换展开/收起。
-    // 坐标语义：MouseEvent.y 为 0-based（实测 SGR y 减 1）；repaintTree 已把
-    // 每个可见卡片/思考行按事件坐标登记（内容行 i → y = i）。
-    if (e.type === 'down' && e.button === 0 && typeof e.y === 'number') {
-      // 审批卡片优先级最高：命中即按点击列批准/拒绝（左半批准、右半拒绝）
-      if (hitTestApproval(state, tree.approvalRect, e.y)) {
-        const allow = typeof e.x === 'number' && e.x < ((ctx as { width?: number }).width ?? 80) / 2;
-        state.approvalResolve?.(allow);
-        void paint();
-        return;
-      }
-      // 命令联想 / @ 提及浮层：点击某项 → 填入（命令填 /cmd ；提及按文件/目录插入）。
-      // 行 → items 下标经 tree.suggestRowMap 映射（-1 = ↑/↓ 提示行，点击忽略）
-      const picker = state.cmdSuggest ?? state.mention;
-      if (picker && tree.suggestRect && tree.input) {
-        const { top, bottom } = tree.suggestRect;
-        if (e.y >= top && e.y <= bottom) {
-          const idx = e.y - top;
-          const itemIdx = tree.suggestRowMap[idx];
-          const sel = itemIdx !== undefined && itemIdx >= 0 ? picker.items[itemIdx] : undefined;
-          if (sel) {
-            if (state.cmdSuggest) {
-              tree.input.setText(`/${sel} `); // 尾空格让联想自动隐藏（与 Tab 同语义）
-              state.cmdSuggest = null;
-            } else if (state.mention) {
-              insertMention(tree.input, state.mention, itemIdx); // 目录保留 / 继续浏览；文件结束提及
-            }
-          }
-          void paint();
-          return;
-        }
-      }
-      // 待发送消息区：点击某条消息 → 选中该条（进入选择态后可 ↑/↓ 移动高亮、
-      // ←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc 退出）
-      if (state.pending.length > 0) {
-        const pIdx = tree.pendingRects.get(e.y);
-        if (pIdx !== undefined) {
-          state.pendingSelected = pIdx;
-          void paint();
-          return;
-        }
-      }
-      // ④ 思考模块 / token 统计模块：点击切换展开/收起；
-      // ⑤ 命中工具卡片 → 切换展开/收起。
-      if (hitTestThinking(state, tree.thinkingRects, e.y)) void paint();
-      else if (hitTestTokens(state, tree.tokensRects, e.y)) void paint();
-      else if (hitTestCard(state, tree.cardRects, e.y)) void paint();
-    }
+    handleTuiMouseEvent(e, tree, state, (ctx as { width?: number }).width ?? 80, paint);
   };
 
   await paint();

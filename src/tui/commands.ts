@@ -1232,7 +1232,7 @@ export function closeStatuslinePanel(state: TuiState): void {
 }
 
 /** 确认当前选项：按面板 id 分发处理（theme → 切换 themeMode；permission → 切换权限档位；variants → 思考级别），然后关闭面板 */
-function confirmMenu(state: TuiState): void {
+export function confirmMenu(state: TuiState): void {
   const menu = state.menu;
   if (!menu) return;
   const opt = menu.options[menu.selectedIndex];

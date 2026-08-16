@@ -4422,7 +4422,62 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 英文 placeholder 缺失');
     process.exit(1);
   }
-  console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏）');
+  // k) 菜单浮层鼠标点击（用户反馈「语言切换，点击也没有可选择的语言选项」——
+  //    此前菜单打开时鼠标被整体忽略）：真实代码路径 handleTuiMouseEvent 点击选项行
+  //    = 选中并确认（等同数字键 + Enter）；提示/底边行与面板外部点击不触发、不穿透
+  const { handleTuiMouseEvent } = await import('../src/tui/render.js');
+  const noopPaint = async (): Promise<void> => {};
+  openLanguageMenu(s43); // d) 段已切回 zh：高亮 0（中文）
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const overlayTop43 = (tree43.menuOverlay!.top ?? 0) as number;
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, -1, -1])) {
+    console.error(`✗ 场景 43 菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
+    process.exit(1);
+  }
+  // 点击 English 行（标题 top+1、中文 top+2、English top+3）→ 选中并确认切换
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: overlayTop43 + 3 }, tree43, s43, 64, noopPaint);
+  if (s43.language !== 'en' || s43.languageSave !== 'en' || s43.menu !== null) {
+    console.error(`✗ 场景 43 菜单点击未选中确认 English: ${JSON.stringify({ language: s43.language, languageSave: s43.languageSave, menu: s43.menu })}`);
+    process.exit(1);
+  }
+  // 点击底边行（top+5）：rowMap=-1 不触发切换，菜单保持
+  openLanguageMenu(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43b = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43b + 5 }, tree43, s43, 64, noopPaint);
+  if (s43.menu === null || s43.language !== 'en') {
+    console.error('✗ 场景 43 点击底边行不应触发切换');
+    process.exit(1);
+  }
+  // 点击面板外部（y=0）：不穿透、不误触、菜单保持
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: 0 }, tree43, s43, 64, noopPaint);
+  if (s43.menu === null) {
+    console.error('✗ 场景 43 点击外部不应关闭菜单');
+    process.exit(1);
+  }
+  // l) 主题菜单点击回归（真实鼠标事件链路：mockMouse 派发 → 冒泡到 root.onMouseEvent →
+  //    handleTuiMouseEvent → 菜单确认）：点击「亮色」行 → themeMode 切换（confirmMenu 通用路径）
+  (tree43.root as unknown as { onMouseEvent?: (e: unknown) => void }).onMouseEvent = (e: unknown) => {
+    handleTuiMouseEvent(e as never, tree43, s43, 64, noopPaint);
+  };
+  const { openThemeMenu: openThemeMenu43 } = await import('../src/tui/commands.js');
+  openThemeMenu43(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43c = (tree43.menuOverlay!.top ?? 0) as number;
+  // 主题菜单：标题 top+1、跟随系统 top+2、亮色 top+3、深色 top+4、提示 top+5、底边 top+6
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, -1, -1])) {
+    console.error(`✗ 场景 43 主题菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
+    process.exit(1);
+  }
+  await t43.mockMouse.click(30, top43c + 3);
+  if (s43.themeMode !== 'light') {
+    console.error(`✗ 场景 43 菜单点击未切换主题: ${s43.themeMode}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);
