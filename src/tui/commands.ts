@@ -2,7 +2,7 @@
  * Commands（/ 命令）框架：斜杠命令注册表 + 命令面板交互。
  *
  * 交互模式输入 `/xxx` 提交时，interactive.ts 调 runCommand 按命令名分发。
- * 带面板的命令（如 /theme）会打开一个圆角方框选项面板（state.menu）：
+ * 带面板的命令（如 /permission、/settings 二级菜单）会打开一个圆角方框选项面板（state.menu）：
  * ↑/↓ 或数字键选择、Enter 确认、Esc 取消；面板打开时键盘事件由
  * handleMenuKey 消费（interactive.ts 在全局 keypress 里先于输入框拦截）。
  */
@@ -205,12 +205,6 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
 /** 命令注册表：新增命令在这里登记（interactive.ts 按此分发） */
 export const TUI_COMMANDS: TuiCommand[] = [
   {
-    name: 'theme',
-    description: '切换主题（亮色 / 深色 / 跟随系统）',
-    descriptionEn: 'Switch theme (light / dark / system)',
-    run: (ctx) => openThemeMenu(ctx.state),
-  },
-  {
     name: 'permission',
     description: '切换安全权限（低=只读 / 中=标准 / 高=谨慎 / 全量=直通）',
     descriptionEn: 'Switch security level (read / safe / ask / full)',
@@ -240,17 +234,6 @@ export const TUI_COMMANDS: TuiCommand[] = [
       ctx.state.thinkingExpanded = !ctx.state.thinkingExpanded;
       ctx.state.expandedThinking.clear();
       ctx.state.collapsedThinking.clear();
-    },
-  },
-  {
-    name: 'tokens',
-    description: '显示 / 隐藏当次 token 使用统计（输入/输出/缓存，点击展开逐次明细）',
-    descriptionEn: 'Show / hide per-turn token usage (click to expand)',
-    run: (ctx) => {
-      // 会话级开关：buildBody 渲染时按 showTokens 过滤 tokens 行——关闭后历史与新轮的
-      // 统计都不显示（数据保留在 state.lines，重新打开即恢复）；onTurnEnd 仍收集数据。
-      // 静默切换，不推 meta 提示文字（同 /thinking、/plan）。
-      ctx.state.showTokens = !ctx.state.showTokens;
     },
   },
   {
@@ -551,12 +534,14 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'settings',
-    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · Enter 保存生效；/settings language 切换界面语言）',
-    descriptionEn: 'Settings (/settings statusline · /settings language)',
-    run: (ctx) => {
+    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · Enter 保存生效；/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
+    descriptionEn: 'Settings (/settings statusline · /settings language · /settings theme · /settings tokens · /settings doctor)',
+    run: async (ctx) => {
       // /settings：列出可用设置项（面板选择后打开对应设置编辑器）；
       // /settings statusline：直接打开底部状态行编辑器（多选 + 排序面板）；
-      // /settings language：直接打开语言面板
+      // /settings language：直接打开语言面板；/settings theme：直接打开主题面板；
+      // /settings tokens：切换当次 token 统计显示（静默，同原 /tokens）；
+      // /settings doctor：执行环境诊断（输出到命令面板，同原 /doctor）
       const args = (ctx.args ?? '').trim();
       if (/^statusline(?:\s|$)/.test(args)) {
         openStatuslinePanel(ctx.state);
@@ -566,11 +551,23 @@ export const TUI_COMMANDS: TuiCommand[] = [
         openLanguageMenu(ctx.state);
         return;
       }
+      if (/^theme(?:\s|$)/.test(args)) {
+        openThemeMenu(ctx.state);
+        return;
+      }
+      if (/^tokens(?:\s|$)/.test(args)) {
+        ctx.state.showTokens = !ctx.state.showTokens;
+        return;
+      }
+      if (/^doctor(?:\s|$)/.test(args)) {
+        await runDoctor(ctx);
+        return;
+      }
       if (!args) {
         openSettingsMenu(ctx.state);
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：statusline 底部状态行 · language 界面语言）` });
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：statusline 底部状态行 · language 界面语言 · theme 主题 · tokens 当次 token 统计 · doctor 环境诊断）` });
     },
   },
   {
@@ -622,10 +619,15 @@ export const TUI_COMMANDS: TuiCommand[] = [
         }
         return;
       }
-      // /model <名称>：直接切换（不同模型可配不同端点，见 config models）
+      // /model <名称>：直接切换（不同模型可配不同端点，见 config models）。
+      // 持久化：切换成功 → 记录待落盘意图（interactive 每轮写入配置文件顶层 model
+      // 字段——用户要求切换后下次启动默认就是新模型）
       const err = ctx.onSwitchModel?.(args);
       if (err) pushCmdLine(ctx.state, { kind: 'warn', text: err });
-      else pushCmdLine(ctx.state, { kind: 'meta', text: `已切换模型 → ${args}` });
+      else {
+        ctx.state.modelSave = args;
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已切换模型 → ${args}` });
+      }
     },
   },
   {
@@ -884,20 +886,6 @@ export const TUI_COMMANDS: TuiCommand[] = [
     },
   },
   {
-    name: 'doctor',
-    description: '环境诊断（Node/Bun/API 连通性/配置健康检查）',
-    descriptionEn: 'Environment diagnostics (Node/Bun/API/config)',
-    run: async (ctx) => {
-      if (!ctx.cfg) {
-        pushCmdLine(ctx.state, { kind: 'warn', text: '配置信息不可用' });
-        return;
-      }
-      pushCmdLine(ctx.state, { kind: 'meta', text: '正在诊断环境…' });
-      await ctx.session.paint().catch(() => {});
-      for (const line of await doctorReport(ctx.cfg)) pushCmdLine(ctx.state, { kind: 'meta', text: line });
-    },
-  },
-  {
     name: 'help',
     description: '显示帮助',
     descriptionEn: 'Show help',
@@ -934,7 +922,7 @@ export function commandSuggestions(query: string): TuiCommand[] {
   );
 }
 
-/** 主题选项（/theme 面板） */
+/** 主题选项（/settings theme 面板） */
 const THEME_OPTIONS: { label: string; value: TuiThemeMode }[] = [
   { label: '跟随系统', value: 'system' },
   { label: '亮色', value: 'light' },
@@ -1098,6 +1086,17 @@ export function openVariantsMenu(state: TuiState): void {
   state.status = t(state.language, 'menu.variants.status');
 }
 
+/** 环境诊断（/settings doctor）：输出 Node/Bun/API 连通性/配置健康检查报告到命令面板 */
+async function runDoctor(ctx: TuiCommandContext): Promise<void> {
+  if (!ctx.cfg) {
+    pushCmdLine(ctx.state, { kind: 'warn', text: '配置信息不可用' });
+    return;
+  }
+  pushCmdLine(ctx.state, { kind: 'meta', text: '正在诊断环境…' });
+  await ctx.session.paint().catch(() => {});
+  for (const line of await doctorReport(ctx.cfg)) pushCmdLine(ctx.state, { kind: 'meta', text: line });
+}
+
 /** 打开设置菜单（/settings）：列出可用设置项，选择后打开对应编辑器 */
 export function openSettingsMenu(state: TuiState): void {
   state.menu = {
@@ -1106,6 +1105,9 @@ export function openSettingsMenu(state: TuiState): void {
     options: [
       { label: t(state.language, 'settings.statusline'), value: 'statusline' },
       { label: t(state.language, 'settings.language'), value: 'language' },
+      { label: t(state.language, 'settings.theme'), value: 'theme' },
+      { label: t(state.language, 'settings.tokens'), value: 'tokens' },
+      { label: t(state.language, 'settings.doctor'), value: 'doctor' },
     ],
     selectedIndex: 0,
     currentValue: '',
@@ -1240,7 +1242,7 @@ export function confirmMenu(state: TuiState): void {
   const lang = state.language;
   if (menu.id === 'theme') {
     state.themeMode = opt.value as TuiThemeMode;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.theme', { label }) }, '/theme');
+    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.theme', { label }) }, '/settings theme');
   } else if (menu.id === 'permission') {
     // 切换权限档位：interactive 每轮把 state.permission 同步进 runOpts.permission
     // 并 setTier 到共用闸门（子代理同步）；meta 提示当前档位语义
@@ -1248,14 +1250,20 @@ export function confirmMenu(state: TuiState): void {
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.permission', { label }) }, '/permission');
   } else if (menu.id === 'variants') {
     // 切换思考级别：interactive 每轮把 state.reasoningEffort 同步进 runOpts.reasoningEffort
-    // （loop 请求带 reasoning_effort 参数；网关不认自动回退不带）
+    // （loop 请求带 reasoning_effort 参数；网关不认自动回退不带）。
+    // 持久化：记录待落盘意图（interactive 每轮写入配置文件 reasoningEffort 字段——
+    // 用户要求切换后下次启动仍是新思考级别）
     state.reasoningEffort = opt.value;
+    state.variantsSave = opt.value;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.variants', { label }) }, '/variants');
   } else if (menu.id === 'model') {
     // 切换模型：交给 interactive 的 switchModel 回调（重建 client + 更新 modelRuntime）。
     // confirmMenu 是纯 state 操作拿不到回调——这里只记录意图，interactive 每轮
     // 对比 state.model 与运行时模型，变了才真正切换（见 interactive.ts syncModel）。
+    // 持久化：记录待落盘意图（interactive 每轮写入配置文件顶层 model 字段——
+    // 用户要求切换后下次启动默认就是新模型）
     state.model = opt.value;
+    state.modelSave = opt.value;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.model', { label }) }, '/model');
   } else if (menu.id === 'session') {
     // 恢复会话：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
@@ -1272,6 +1280,20 @@ export function confirmMenu(state: TuiState): void {
       state.menu = null;
     } else if (opt.value === 'language') {
       openLanguageMenu(state);
+    } else if (opt.value === 'theme') {
+      openThemeMenu(state);
+    } else if (opt.value === 'tokens') {
+      // 当次 token 统计开关：无编辑器面板，选择即切换（静默，同原 /tokens 命令）——
+      // 关闭菜单 + 清状态栏；内容流里 tokens 模块即时出现/消失
+      state.showTokens = !state.showTokens;
+      state.menu = null;
+      state.status = '';
+    } else if (opt.value === 'doctor') {
+      // 环境诊断：无编辑器面板，但执行需要 ctx（cfg + session.paint）——confirmMenu 是
+      // 纯 state 操作拿不到 ctx，这里只记录意图，interactive 每轮命令分发前执行（同 sessionPick 模式）
+      state.doctorPending = true;
+      state.menu = null;
+      state.status = '';
     }
     return;
   } else if (menu.id === 'language') {

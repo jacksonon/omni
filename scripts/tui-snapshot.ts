@@ -1130,7 +1130,7 @@ async function main(): Promise<void> {
   const tree17e = mountTree(t17e.renderer, s17e, { withInput: true });
   await t17e.renderOnce();
   const r17 = { frame: t17e.captureCharFrame() };
-  console.log('=== 场景 17：/theme 命令面板（alert 浮层）===');
+  console.log('=== 场景 17：/settings theme 主题面板（alert 浮层）===');
   console.log(r17.frame);
   const checks17 = ['主题', '跟随系统 ✓', '› 跟随系统', '亮色', '深色', 'Enter 确认', 'Esc 取消'];
   const missing17 = checks17.filter((c) => !r17.frame.includes(c));
@@ -1190,7 +1190,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 17 system 跟随切 dark 后未恢复深灰底');
     process.exit(1);
   }
-  console.log('✓ 场景 17 通过：/theme 面板（打开/↑↓/数字/Enter/Esc）+ 渲染 + system 跟随亮暗');
+  console.log('✓ 场景 17 通过：主题面板（打开/↑↓/数字/Enter/Esc）+ 渲染 + system 跟随亮暗');
 
   // 场景 18：Markdown 表格（box-drawing）+ 删除线 + 任务清单 + 用户消息↔思考间距
   console.log('=== 场景 18：Markdown 表格 / 删除线 / 任务清单 / 用户间距 ===');
@@ -1330,8 +1330,8 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 28 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 28、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 25 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 25、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1339,11 +1339,11 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 19 联想面板未启用圆角边框: border=${tree19.suggestBox?.border} style=${tree19.suggestBox?.borderStyle}`);
     process.exit(1);
   }
-  // b) 前缀过滤：'/the' → 只剩 theme（/th 会同时命中 theme 与 thinking）
-  tree19.input?.setText('/the');
+  // b) 前缀过滤：'/th' → 只剩 thinking（/t 会同时命中 thinking 与 tokens——tokens 已并入 /settings）
+  tree19.input?.setText('/th');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 1 || s19.cmdSuggest.items[0] !== 'theme') {
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 1 || s19.cmdSuggest.items[0] !== 'thinking') {
     console.error(`✗ 场景 19 前缀过滤错误: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
@@ -1364,14 +1364,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // d2) Esc 关闭后保持隐藏（文本未变不复活；变了才恢复）——review 抓到的 bug 回归
-  tree19.input?.setText('/the');
+  tree19.input?.setText('/th');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
   if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 1) {
-    console.error('✗ 场景 19 Esc 回归前置条件失败（/the 应列出 theme）');
+    console.error('✗ 场景 19 Esc 回归前置条件失败（/th 应列出 thinking）');
     process.exit(1);
   }
-  s19.cmdSuggestDismissedText = '/the'; // 模拟 interactive.ts 的 Esc 分支
+  s19.cmdSuggestDismissedText = '/th'; // 模拟 interactive.ts 的 Esc 分支
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
   if (s19.cmdSuggest !== null) {
@@ -1382,12 +1382,12 @@ async function main(): Promise<void> {
   tree19.input?.setText('/t');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items[0] !== 'theme') {
+  if (!s19.cmdSuggest || s19.cmdSuggest.items[0] !== 'thinking') {
     console.error('✗ 场景 19 文本变化后联想未恢复');
     process.exit(1);
   }
-  // Tab 填入的尾空格（`/theme `）→ 联想自动隐藏（commandSuggestions 不 trim）
-  tree19.input?.setText('/theme ');
+  // Tab 填入的尾空格（`/thinking `）→ 联想自动隐藏（commandSuggestions 不 trim）
+  tree19.input?.setText('/thinking ');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
   if (s19.cmdSuggest !== null) {
@@ -1401,8 +1401,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 5 条（theme/permission/plan/thinking/tokens）+ 底部「↓ 还有 22 个」提示行
-  const checks19 = ['/theme', '切换主题', '/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/tokens', '显示 / 隐藏当次 token 使用统计', '/exit', '退出 TUI', '↓ 还有 22 个'];
+  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 19 个」提示行
+  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 19 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1414,7 +1414,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/undo', '/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/doctor', '/help']) {
+  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1457,7 +1457,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // g) 滚动到全部命令：选中项 20（窗口外）→ repaint 把 top 收敛到选中项可见，
-  //    出现顶部「↑ 还有 N 个」提示行、窗口外命令（/theme）不再渲染（用户反馈无法翻页的回归）
+  //    出现顶部「↑ 还有 N 个」提示行、窗口外命令（/review）不再渲染（用户反馈无法翻页的回归）
   const s19s = createTuiState();
   s19s.version = '0.1.0';
   s19s.model = 'mock';
@@ -1482,13 +1482,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = model/status/context/export/config/mcp；上下各一条提示行（↑ 15 个 · ↓ 7 个，28 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 7 个') || frame19s.includes('/theme')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 7 个」、无 /theme）');
+  // items[15..20] = context/export/config/mcp/diff/rename；上下各一条提示行（↑ 15 个 · ↓ 4 个，25 条命令）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 4 个') || frame19s.includes('/review')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 4 个」、无 /review）');
     process.exit(1);
   }
-  if (!frame19s.includes('/status') || !frame19s.includes('/context') || !frame19s.includes('/export')) {
-    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /status /context /export 等）');
+  if (!frame19s.includes('/context') || !frame19s.includes('/export') || !frame19s.includes('/rename')) {
+    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /context /export /rename 等）');
     process.exit(1);
   }
   console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/圆角浮层/不挤动内容区）');
@@ -2860,6 +2860,10 @@ async function main(): Promise<void> {
     console.error('✗ 场景 33 /variants 提示泄漏进了对话流');
     process.exit(1);
   }
+  if (s33.variantsSave !== 'high') {
+    console.error(`✗ 场景 33 /variants 确认未记录持久化意图: ${JSON.stringify(s33.variantsSave)}`);
+    process.exit(1);
+  }
   // 自定义选项（配置 reasoningEffortOptions 只支持 low/high）：面板只列配置的选项
   const s33b = createTuiState();
   s33b.reasoningEffort = 'low';
@@ -3054,11 +3058,19 @@ async function main(): Promise<void> {
     console.error('✗ 场景 34 /model 提示泄漏进了对话流');
     process.exit(1);
   }
+  if (s34.modelSave !== 'moonshot-v1-8k') {
+    console.error(`✗ 场景 34 /model 确认未记录持久化意图: ${JSON.stringify(s34.modelSave)}`);
+    process.exit(1);
+  }
   // 数字键 1 直接选中第一个模型
   openModelMenu(s34);
   handleMenuKey34({ name: '1', ...key34 }, s34);
   if (s34.model !== 'deepseek-chat' || s34.menu !== null) {
     console.error(`✗ 场景 34 /model 数字键选择未生效: ${JSON.stringify(s34)}`);
+    process.exit(1);
+  }
+  if (s34.modelSave !== 'deepseek-chat') {
+    console.error(`✗ 场景 34 /model 数字键确认未记录持久化意图: ${JSON.stringify(s34.modelSave)}`);
     process.exit(1);
   }
   // Esc 取消不改模型
@@ -3078,7 +3090,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // e) /model add：参数解析（parseModelAddArgs）——名称 + 三个 flag + 未知 flag/缺名报错
-  const { parseModelAddArgs, persistModelToConfig } = await import('../src/config/write.js');
+  const { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig } = await import('../src/config/write.js');
   const addOk = parseModelAddArgs('my-model --base-url https://x.com/v1 --api-key sk-1 --user-agent ua-1');
   if (!addOk.ok || addOk.name !== 'my-model' || addOk.baseURL !== 'https://x.com/v1' || addOk.apiKey !== 'sk-1' || addOk.userAgent !== 'ua-1') {
     console.error(`✗ 场景 34 parseModelAddArgs 解析失败: ${JSON.stringify(addOk)}`);
@@ -3165,16 +3177,51 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 TUI /model <名称> 切换分发未生效: switched=${switched34} panel=${JSON.stringify(s34d.cmdPanel?.lines)}`);
     process.exit(1);
   }
+  if (s34d.modelSave !== 'glm-4-flash') {
+    console.error(`✗ 场景 34 /model <名称> 切换未记录持久化意图: ${JSON.stringify(s34d.modelSave)}`);
+    process.exit(1);
+  }
+  // h) persistModelDefaultToConfig / persistReasoningEffortToConfig：纯 JSON 改写顶层字段 + JSONC 跳过
+  const tmp34d = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-def-'));
+  const jsonFile2 = path.join(tmp34d, 'omni.json');
+  fs.writeFileSync(jsonFile2, JSON.stringify({ model: 'a', reasoningEffort: 'low' }));
+  const resDef = persistModelDefaultToConfig('glm-4-flash', { sources: [jsonFile2] } as never);
+  if (!resDef.ok || !resDef.message.includes('glm-4-flash')) {
+    console.error(`✗ 场景 34 persistModelDefaultToConfig 失败: ${JSON.stringify(resDef)}`);
+    process.exit(1);
+  }
+  const resEff = persistReasoningEffortToConfig('high', { sources: [jsonFile2] } as never);
+  if (!resEff.ok) {
+    console.error(`✗ 场景 34 persistReasoningEffortToConfig 失败: ${JSON.stringify(resEff)}`);
+    process.exit(1);
+  }
+  const written34d = JSON.parse(fs.readFileSync(jsonFile2, 'utf8'));
+  if (written34d.model !== 'glm-4-flash' || written34d.reasoningEffort !== 'high') {
+    console.error(`✗ 场景 34 顶层字段持久化内容错误: ${JSON.stringify(written34d)}`);
+    process.exit(1);
+  }
+  const jsoncFile2 = path.join(tmp34d, 'omni.jsonc');
+  fs.writeFileSync(jsoncFile2, '{ "model": "a", // 注释\n}\n');
+  const resDefJsonc = persistModelDefaultToConfig('b', { sources: [jsoncFile2] } as never);
+  if (resDefJsonc.ok || !resDefJsonc.message.includes('手动')) {
+    console.error(`✗ 场景 34 persistModelDefaultToConfig 未跳过 JSONC: ${JSON.stringify(resDefJsonc)}`);
+    process.exit(1);
+  }
+  if (!fs.readFileSync(jsoncFile2, 'utf8').includes('// 注释')) {
+    console.error('✗ 场景 34 JSONC 文件被破坏（注释丢失）');
+    process.exit(1);
+  }
+  fs.rmSync(tmp34d, { recursive: true, force: true });
   fs.rmSync(tmp34, { recursive: true, force: true });
   fs.rmSync(tmp34b, { recursive: true, force: true });
   fs.rmSync(tmp34c, { recursive: true, force: true });
   console.log('✓ 场景 34 通过：config models 多端点解析/attachRuntime 展开+modelRuntime/createClient 重建//model 面板选择确认/数字键/Esc/无列表回退 + /model add 解析/持久化（纯 JSON 改写·JSONC 跳过·无配置新建）/TUI 分发');
 
-  // 场景 35：/status /context /export /config /mcp /diff /rename /resume /redo /doctor 十个新命令
+  // 场景 35：/status /context /export /config /mcp /diff /rename /resume /redo 九个命令 + /settings doctor 诊断
   console.log('=== 场景 35：批量新命令 ===');
   const cmd35 = await import('../src/tui/commands.js');
-  // a) 全部注册
-  for (const n of ['status', 'context', 'export', 'config', 'mcp', 'diff', 'rename', 'resume', 'redo', 'doctor']) {
+  // a) 全部注册（doctor 已并入 /settings 二级菜单）
+  for (const n of ['status', 'context', 'export', 'config', 'mcp', 'diff', 'rename', 'resume', 'redo']) {
     if (!cmd35.findCommand(n)) {
       console.error(`✗ 场景 35 /${n} 命令未注册`);
       process.exit(1);
@@ -3326,12 +3373,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   process.env.XDG_CONFIG_HOME = oldXdg35;
-  // k) /doctor：输出环境诊断（Node 版本 + API Key + 端点）
+  // k) /settings doctor：输出环境诊断（Node 版本 + API Key + 端点；/doctor 已并入 /settings 二级菜单）
   const s35k = createTuiState();
   await cmd35.runCommand({
     state: s35k, out: {}, session: { paint: async () => {} }, input: {}, messages: [],
     cfg: { apiKey: 'sk-x', baseURL: 'http://127.0.0.1:1', sources: ['测试'], permission: 'safe', allowSubagents: true, maxSubagentSteps: 10, reasoningEffortOptions: ['low'], model: 'mock' } as never,
-  } as never, '/doctor');
+  } as never, '/settings doctor');
   const doctor35 = (s35k.cmdPanel?.lines ?? []).map((l) => String(l)).join('\n');
   if (!doctor35.includes('Node') || !doctor35.includes('API Key')) {
     console.error(`✗ 场景 35 /doctor 输出缺失: ${JSON.stringify(s35k.cmdPanel?.lines)}`);
@@ -3600,7 +3647,7 @@ async function main(): Promise<void> {
   const cmd38 = await import('../src/tui/commands.js');
   // a) autoClose 标记：执行型（动作+确认）置位；列表型（需阅读输出）不置位
   const autoCloseNames = ['undo', 'redo', 'init', 'compact', 'rename', 'export', 'model'];
-  const listingNames = ['status', 'help', 'context', 'agents', 'diff', 'config', 'review', 'doctor', 'skill', 'mcp', 'resume', 'session', 'theme', 'permission', 'variants'];
+  const listingNames = ['status', 'help', 'context', 'agents', 'diff', 'config', 'review', 'skill', 'mcp', 'resume', 'session', 'permission', 'variants'];
   const missingAuto38 = autoCloseNames.filter((n) => !cmd38.findCommand(n)?.autoClose);
   if (missingAuto38.length) {
     console.error(`✗ 场景 38 执行型命令缺 autoClose 标记: ${missingAuto38.join(', ')}`);
@@ -4119,11 +4166,11 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 41 通过：read_file 一行式/多读合并/新建全文/write diff 左右对比（LCS 对齐 + 逐 chunk 红绿着色）');
 
-  // 场景 42：当次 token 使用统计模块（/tokens）
+  // 场景 42：当次 token 使用统计模块（/settings tokens 开关）
   // —— 每一次发送消息、返回消息结束后，插入当次 token 统计：输入/输出/缓存。
   // 默认收起显示汇总；点开显示每次 LLM 请求的明细（一行一条，加起来 = 汇总）；
-  // /tokens 命令控制是否展示（关闭时历史与新轮都不显示，数据保留重开恢复）。
-  console.log('=== 场景 42：当次 token 统计模块（/tokens）===');
+  // /settings tokens 命令控制是否展示（关闭时历史与新轮都不显示，数据保留重开恢复）。
+  console.log('=== 场景 42：当次 token 统计模块（/settings tokens）===');
   const { TuiOutput: TuiOutput42 } = await import('../src/tui/output.js');
   const { hitTestTokens } = await import('../src/tui/rows.js');
   const s42 = createTuiState();
@@ -4254,24 +4301,24 @@ async function main(): Promise<void> {
     console.error('✗ 场景 42 关闭时数据应保留在 state.lines');
     process.exit(1);
   }
-  // /tokens 命令分发：切换 showTokens
+  // /settings tokens 命令分发：切换 showTokens（/tokens 已并入 /settings 二级菜单）
   const { runCommand: runCmd42 } = await import('../src/tui/commands.js');
   const s42c = createTuiState();
   if (s42c.showTokens !== true) {
     console.error('✗ 场景 42 showTokens 默认应为 true');
     process.exit(1);
   }
-  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/tokens');
+  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/settings tokens');
   if (s42c.showTokens !== false) {
-    console.error('✗ 场景 42 /tokens 未关闭 showTokens');
+    console.error('✗ 场景 42 /settings tokens 未关闭 showTokens');
     process.exit(1);
   }
-  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/tokens');
+  await runCmd42({ state: s42c, out: {}, session: {}, input: {}, messages: [] } as never, '/settings tokens');
   if (s42c.showTokens !== true) {
-    console.error('✗ 场景 42 /tokens 未重新打开 showTokens');
+    console.error('✗ 场景 42 /settings tokens 未重新打开 showTokens');
     process.exit(1);
   }
-  console.log('✓ 场景 42 通过：当次 token 统计（收起汇总/点击展开逐次明细/往返切换//tokens 开关）');
+  console.log('✓ 场景 42 通过：当次 token 统计（收起汇总/点击展开逐次明细/往返切换//settings tokens 开关）');
 
   // 场景 43：/settings language 语言切换 + 界面 chrome 本地化（footer/菜单/面板/联想/tokens/状态栏）
   const { t: ti18n, tf: tfi18n } = await import('../src/tui/i18n.js');
@@ -4308,11 +4355,11 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 英文统计行错误: ${enLine43}`);
     process.exit(1);
   }
-  // c) 设置菜单含语言项 + 打开语言面板：高亮当前语言
+  // c) 设置菜单含语言/主题/tokens/doctor 项 + 打开语言面板：高亮当前语言
   const s43 = createTuiState();
   openSettingsMenu(s43);
-  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 2 || s43.menu.options[1]?.value !== 'language') {
-    console.error(`✗ 场景 43 设置菜单缺语言项: ${JSON.stringify(s43.menu)}`);
+  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 5 || s43.menu.options[1]?.value !== 'language' || s43.menu.options[2]?.value !== 'theme' || s43.menu.options[3]?.value !== 'tokens' || s43.menu.options[4]?.value !== 'doctor') {
+    console.error(`✗ 场景 43 设置菜单缺语言/主题/tokens/doctor 项: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
   openLanguageMenu(s43);
@@ -4372,14 +4419,23 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 settingsPanelRows 英文错误');
     process.exit(1);
   }
-  // g) 联想 descriptionEn：28 条命令都配了英文描述（英文模式渲染层取 descriptionEn）
-  const themeCmd43 = findCommand43('theme');
-  if (!themeCmd43?.descriptionEn || themeCmd43.descriptionEn !== 'Switch theme (light / dark / system)') {
-    console.error('✗ 场景 43 theme 命令缺 descriptionEn');
+  // g) 联想 descriptionEn：25 条命令都配了英文描述（英文模式渲染层取 descriptionEn）
+  //    /theme /tokens /doctor 已并入 /settings（二级菜单）——设置命令带完整英文描述
+  const settingsCmd43 = findCommand43('settings');
+  if (!settingsCmd43?.descriptionEn || settingsCmd43.descriptionEn !== 'Settings (/settings statusline · /settings language · /settings theme · /settings tokens · /settings doctor)') {
+    console.error('✗ 场景 43 settings 命令缺 descriptionEn');
     process.exit(1);
   }
-  if (!themeCmd43.description.includes('切换主题')) {
-    console.error('✗ 场景 43 theme 命令 description 应为中文');
+  if (!settingsCmd43.description.includes('设置')) {
+    console.error('✗ 场景 43 settings 命令 description 应为中文');
+    process.exit(1);
+  }
+  if (findCommand43('theme') || findCommand43('tokens') || findCommand43('doctor')) {
+    console.error('✗ 场景 43 /theme /tokens /doctor 不应再是一级命令（应并入 /settings 二级菜单）');
+    process.exit(1);
+  }
+  if (ti18n('zh', 'settings.theme') !== '主题（亮色 / 深色 / 跟随系统）' || ti18n('en', 'settings.theme') !== 'Theme (light / dark / system)' || ti18n('zh', 'settings.tokens') !== '当次 token 统计（输入/输出/缓存）' || ti18n('en', 'settings.tokens') !== 'Per-turn token stats (in/out/cache)' || ti18n('zh', 'settings.doctor') !== '环境诊断（Node/Bun/API/配置）' || ti18n('en', 'settings.doctor') !== 'Environment diagnostics (Node/Bun/API/config)') {
+    console.error('✗ 场景 43 settings.theme / settings.tokens / settings.doctor i18n 键缺失');
     process.exit(1);
   }
   // h) buildBody tokens 英文：language=en 时 tokens 模块英文
@@ -4486,7 +4542,7 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43d = (tree43.menuOverlay!.top ?? 0) as number;
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, -1, -1])) {
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, 3, 4, -1, -1])) {
     console.error(`✗ 场景 43 设置菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
@@ -4514,6 +4570,38 @@ async function main(): Promise<void> {
   handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43f + 1 }, tree43, s43, 64, noopPaint);
   if (s43.language !== 'zh' || s43.menu !== null) {
     console.error(`✗ 场景 43 语言面板内点击未切换: ${JSON.stringify({ language: s43.language, menu: s43.menu })}`);
+    process.exit(1);
+  }
+  // 点「主题」（重新打开设置菜单，top+3）→ menu 转换为主题面板（/theme 并入 /settings 二级菜单）
+  openSettingsMenu43(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43h = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43h + 3 }, tree43, s43, 64, noopPaint);
+  if (s43.menu === null || s43.menu.id !== 'theme') {
+    console.error(`✗ 场景 43 点主题未转换到主题面板: ${JSON.stringify(s43.menu)}`);
+    process.exit(1);
+  }
+  // 点「当次 token 统计」（重新打开设置菜单，top+4）→ 无编辑器面板：选择即切换开关 + 菜单关闭
+  const tokensBefore43 = s43.showTokens;
+  openSettingsMenu43(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43i = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43i + 4 }, tree43, s43, 64, noopPaint);
+  if (s43.menu !== null || s43.showTokens === tokensBefore43) {
+    console.error(`✗ 场景 43 点 tokens 未切换开关并关闭菜单: ${JSON.stringify({ menu: s43.menu, showTokens: s43.showTokens, before: tokensBefore43 })}`);
+    process.exit(1);
+  }
+  // 点「环境诊断」（重新打开设置菜单，top+5）→ 无编辑器面板且需 ctx 执行：
+  // 只记录 doctorPending 意图 + 关闭菜单（interactive 每轮命令分发前消费执行诊断）
+  openSettingsMenu43(s43);
+  repaintTree(t43.renderer, tree43, s43, { withInput: true });
+  await t43.renderOnce();
+  const top43j = (tree43.menuOverlay!.top ?? 0) as number;
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43j + 5 }, tree43, s43, 64, noopPaint);
+  if (s43.menu !== null || s43.doctorPending !== true) {
+    console.error(`✗ 场景 43 点 doctor 未记录意图并关闭菜单: ${JSON.stringify({ menu: s43.menu, doctorPending: s43.doctorPending })}`);
     process.exit(1);
   }
   // n) 输入区 placeholder 随语言即时刷新（此前 mount 时取一次、切语言后重启才生效）：

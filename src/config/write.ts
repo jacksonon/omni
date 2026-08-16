@@ -186,3 +186,47 @@ export function persistLanguageToConfig(lang: string, cfg: OmniConfig): PersistM
   }
   return { ok: true, file: res.file, message: `已保存语言配置 → ${res.file}（重启后同样生效）` };
 }
+
+/**
+ * 把默认模型名写入配置文件顶层 model 字段（/model <名称> 切换 / 面板确认持久化）。
+ * 运行时已即时生效（interactive 重建 client + 更新 modelRuntime），这里只落盘供下次会话加载。
+ */
+export function persistModelDefaultToConfig(model: string, cfg: OmniConfig): PersistModelResult {
+  const res = loadConfigObject(cfg);
+  if (!res.ok) {
+    return { ok: false, file: null, message: `${res.message}（model 字段手动添加："${model}"）` };
+  }
+  res.obj.model = model;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（model 字段手动添加："${model}"）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已保存默认模型 → ${res.file}（下次启动默认使用 ${model}）` };
+}
+
+/**
+ * 把思考级别写入配置文件顶层 reasoningEffort 字段（/variants 面板确认持久化）。
+ * 运行时已即时生效（interactive 每轮同步进 runOpts.reasoningEffort），这里只落盘供下次会话加载。
+ */
+export function persistReasoningEffortToConfig(effort: string, cfg: OmniConfig): PersistModelResult {
+  const res = loadConfigObject(cfg);
+  if (!res.ok) {
+    return { ok: false, file: null, message: `${res.message}（reasoningEffort 字段手动添加："${effort}"）` };
+  }
+  res.obj.reasoningEffort = effort;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（reasoningEffort 字段手动添加："${effort}"）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已保存思考级别 → ${res.file}（重启后同样生效）` };
+}

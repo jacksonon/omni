@@ -25,7 +25,7 @@ import type { RunOptions } from '../agent/types.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
-import { persistLanguageToConfig, persistStatuslineToConfig } from '../config/write.js';
+import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig } from '../config/write.js';
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import type { TuiOutput } from './output.js';
@@ -441,6 +441,38 @@ export async function runTuiInteractive(
           await session.paint();
         }
       }
+      // /model 默认模型保存意图：切换已即时生效（interactive syncModel 重建 client +
+      // 更新 modelRuntime）——这里把配置**持久化**（顶层 model 字段，下次启动默认使用）
+      if (state.modelSave) {
+        const m = state.modelSave;
+        state.modelSave = null;
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistModelDefaultToConfig(m, cfg);
+          if (res.ok) {
+            pushCmdLine(state, { kind: 'meta', text: res.message }, '/model');
+          } else {
+            pushCmdLine(state, { kind: 'warn', text: res.message }, '/model');
+          }
+          await session.paint();
+        }
+      }
+      // /variants 思考级别保存意图：切换已即时生效（interactive 每轮同步进
+      // runOpts.reasoningEffort）——这里把配置**持久化**（顶层 reasoningEffort 字段）
+      if (state.variantsSave) {
+        const v = state.variantsSave;
+        state.variantsSave = null;
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistReasoningEffortToConfig(v, cfg);
+          if (res.ok) {
+            pushCmdLine(state, { kind: 'meta', text: res.message }, '/variants');
+          } else {
+            pushCmdLine(state, { kind: 'warn', text: res.message }, '/variants');
+          }
+          await session.paint();
+        }
+      }
       // /session 面板确认：恢复所选会话（异步加载；每轮只处理一次，处理完清空意图）
       if (state.sessionPick) {
         const pick = state.sessionPick;
@@ -538,6 +570,13 @@ export async function runTuiInteractive(
           restoreSession(file, msgs);
         },
       };
+      // /settings 菜单确认「环境诊断」的意图（confirmMenu 纯 state 无法执行——
+      // 记录 doctorPending，这里在命令分发前消费，输出诊断报告到命令面板）
+      if (state.doctorPending) {
+        state.doctorPending = false;
+        await runCommand(ctx, '/settings doctor');
+        await session.paint();
+      }
       // 斜杠命令：注册表分发（/theme 打开面板、/exit 返回 'exit' 结束循环…）
       if (cmd.startsWith('/')) {
         const result = await runCommand(ctx, cmd);

@@ -319,6 +319,16 @@ export interface TuiState {
    */
   languageSave: TuiLang | null;
   /**
+   * 待持久化的默认模型名（/model <名称> 切换 / 面板确认时写入，interactive 每轮
+   * 消费并写入配置文件顶层 model 字段——下次启动默认就是切换后的模型）。
+   */
+  modelSave: string | null;
+  /**
+   * 待持久化的思考级别（/variants 面板确认时写入，interactive 每轮消费并写入
+   * 配置文件顶层 reasoningEffort 字段——下次启动仍是切换后的思考级别）。
+   */
+  variantsSave: string | null;
+  /**
    * 命令输出面板（所有 / 命令的输出窗口；null = 无）。
    * 独立浮层（绝对定位居中），不占内容流——命令输出不再写进对话流（用户要求）。
    * 打开时键盘事件由面板消费（↑/↓ 滚动、Esc/Enter 关闭）。
@@ -360,6 +370,12 @@ export interface TuiState {
    * 非 null 时 interactive 在处理完恢复后置 null。
    */
   sessionPick: string | null;
+  /**
+   * /settings 菜单确认「环境诊断」项的意图（confirmMenu 是纯 state 操作拿不到
+   * ctx——只记录意图，interactive 每轮消费后调 runCommand('/settings doctor')）。
+   * 非 null 时 interactive 在每轮命令分发前执行诊断并置 false。
+   */
+  doctorPending: boolean;
   /** 输入框当前文本（repaintTree 同步，buildBody/联想共用） */
   inputText: string;
   /**
@@ -440,6 +456,8 @@ export function createTuiState(): TuiState {
     statuslineSave: null,
     language: 'zh',
     languageSave: null,
+    modelSave: null,
+    variantsSave: null,
     cmdPanel: null,
     cmdSuggest: null,
     mention: null,
@@ -449,6 +467,7 @@ export function createTuiState(): TuiState {
     reasoningEffort: '',
     reasoningEffortOptions: ['low', 'medium', 'high'],
     sessionPick: null,
+    doctorPending: false,
     inputText: '',
     cmdSuggestDismissedText: null,
     approval: null,

@@ -4,7 +4,7 @@
  */
 import { existsSync } from 'node:fs';
 import readline from 'node:readline/promises';
-import { parseModelAddArgs, persistModelToConfig } from '../config/write.js';
+import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig } from '../config/write.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -318,6 +318,12 @@ export async function runInteractive(
       } else {
         runOpts.reasoningEffort = want;
         console.log(green(`已切换思考级别 → ${want}`));
+        // 持久化：切换后下次启动仍是新思考级别（纯 JSON 配置文件自动改写；JSONC 提示手动）
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistReasoningEffortToConfig(want, cfg);
+          console.log(res.ok ? dim(res.message) : yellow(res.message));
+        }
       }
       safePrompt();
       continue;
@@ -325,7 +331,7 @@ export async function runInteractive(
     if (cmd === '/settings' || cmd.startsWith('/settings ')) {
       // /settings：TUI 专属设置（底部状态行 statusline 的可视化配置面板只在 TUI 有——
       // CLI 模式无该界面）。配置文件 statusline 字段对所有模式生效（TUI 渲染时读取）。
-      console.log(dim('/settings 是 TUI（全屏）模式命令：/settings statusline 用面板配置底部状态行（空格勾选 · ←/→ 排序 · Enter 保存生效）。'));
+      console.log(dim('/settings 是 TUI（全屏）模式命令：/settings statusline 用面板配置底部状态行（空格勾选 · ←/→ 排序 · Enter 保存生效）· /settings language 切换界面语言 · /settings theme 切换主题 · /settings tokens 显示/隐藏当次 token 统计 · /settings doctor 环境诊断。'));
       console.log(dim('CLI 模式可直接编辑配置文件 statusline 字段（段：rounds/llm/speed/cache/tokens，空数组 = 不显示），TUI 渲染时读取。'));
       safePrompt();
       continue;
@@ -378,6 +384,12 @@ export async function runInteractive(
         } else {
           switchModel(want); // 重建 client + 更新 modelRuntime（子代理同步）
           console.log(green(`已切换模型 → ${want}${ep.baseURL ? `（${ep.baseURL}）` : ''}`));
+          // 持久化：切换后下次启动默认就是新模型（纯 JSON 配置文件自动改写；JSONC 提示手动）
+          const cfg = runOpts.cfg;
+          if (cfg) {
+            const res = persistModelDefaultToConfig(want, cfg);
+            console.log(res.ok ? dim(res.message) : yellow(res.message));
+          }
         }
       }
       safePrompt();
