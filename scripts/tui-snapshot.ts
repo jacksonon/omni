@@ -4435,18 +4435,18 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  // 点击 English 行（标题 top+1、中文 top+2、English top+3）→ 选中并确认切换
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: overlayTop43 + 3 }, tree43, s43, 64, noopPaint);
+  // 点击 English 行（无边框浮层：标题 top、中文 top+1、English top+2）→ 选中并确认切换
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: overlayTop43 + 2 }, tree43, s43, 64, noopPaint);
   if (s43.language !== 'en' || s43.languageSave !== 'en' || s43.menu !== null) {
     console.error(`✗ 场景 43 菜单点击未选中确认 English: ${JSON.stringify({ language: s43.language, languageSave: s43.languageSave, menu: s43.menu })}`);
     process.exit(1);
   }
-  // 点击底边行（top+5）：rowMap=-1 不触发切换，菜单保持
+  // 点击底边行（top+4）：rowMap=-1 不触发切换，菜单保持
   openLanguageMenu(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43b = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43b + 5 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43b + 4 }, tree43, s43, 64, noopPaint);
   if (s43.menu === null || s43.language !== 'en') {
     console.error('✗ 场景 43 点击底边行不应触发切换');
     process.exit(1);
@@ -4467,12 +4467,12 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43c = (tree43.menuOverlay!.top ?? 0) as number;
-  // 主题菜单：标题 top+1、跟随系统 top+2、亮色 top+3、深色 top+4、提示 top+5、底边 top+6
+  // 主题菜单：标题 top、跟随系统 top+1、亮色 top+2、深色 top+3、提示 top+4、底边 top+5
   if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, -1, -1])) {
     console.error(`✗ 场景 43 主题菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  await t43.mockMouse.click(30, top43c + 3);
+  await t43.mockMouse.click(30, top43c + 2);
   if (s43.themeMode !== 'light') {
     console.error(`✗ 场景 43 菜单点击未切换主题: ${s43.themeMode}`);
     process.exit(1);

@@ -976,14 +976,17 @@ export function handleTuiMouseEvent(
 ): void {
   // 菜单浮层（/theme /permission /settings language 等）：点击选项行 = 选中并确认
   // （等同数字键 + Enter，用户反馈「点击也没有可选择的语言选项」——此前菜单鼠标被整体忽略）。
-  // 面板内其它区域点击忽略；都不穿透到下层内容。坐标：行 i → y = overlay.top + 1 + i
-  // （浮层顶边框占 1 行，与联想浮层 suggestRect 同一坐标系）。
+  // 面板内其它区域点击忽略；都不穿透到下层内容。
+  // 坐标：menuOverlay **无 border**（行 0 即标题行直接渲染在 top）——行 i → y = top + i，
+  // panelIdx = e.y − top（注意与联想浮层不同：suggestBox 有 border，内部行从 top+1 起）。
+  // 之前误套 suggestBox 的 −1 偏移：真实终端按屏幕位置点击命中偏下 1 行
+  // （点「语言」打开的是「状态行」操作页——用户反馈实锤，探针按公式算坐标未暴露）。
   // 放在 cmdPanel 守卫之前：菜单确认后 pushCmdLine 会打开命令输出面板，若面板还开着
   // （测试/边界态），重新打开的菜单点击仍应优先命中菜单，而不是被面板守卫整体吞掉。
   if (state.menu) {
     if (e.type === 'down' && e.button === 0 && typeof e.y === 'number' && tree.menuOverlay) {
       const overlayTop = (tree.menuOverlay.top ?? 0) as number;
-      const panelIdx = e.y - overlayTop - 1;
+      const panelIdx = e.y - overlayTop;
       const optIdx = panelIdx >= 0 && panelIdx < tree.menuRowMap.length ? tree.menuRowMap[panelIdx] : -1;
       if (optIdx >= 0) {
         state.menu.selectedIndex = optIdx;
