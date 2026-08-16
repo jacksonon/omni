@@ -370,7 +370,8 @@ export function buildBody(state: TuiState, width: number): Row[] {
     if (line.kind === 'thinking') {
       // 思考模块：**支持点击展开/收起**（用户要求）。每个思考段落是独立模块——
       // 展开态 = 头行（思考中 `⠋ thinking · 实时耗时` / 思考完 `- thinking · 耗时`）
-      // + 完整思考内容；收起态 = 一行 `+ thinking`。全部行带 thinkingIdx，点击即切换该段。
+      // + 完整思考内容；收起态 = 一行（思考中 `⠋ thinking` loading / 思考完 `+ thinking`）。
+      // 全部行带 thinkingIdx，点击即切换该段。
       // 全局开关（/thinking）决定默认态：展开（默认）或折叠；两个反例集合记录用户
       // 点击——展开态点 `-`/内容 → 收起（collapsedThinking），折叠态点 `+` → 展开
       // （expandedThinking）。effective = thinkingExpanded ? !collapsed : expanded。
@@ -396,7 +397,15 @@ export function buildBody(state: TuiState, width: number): Row[] {
           }
         }
       } else {
-        body.push({ text: '+ thinking', style: { dim: true }, thinkingIdx: li });
+        // 收起态：**思考中（thinkingRunning）→ loading spinner**（用户要求「收起时正在思考，
+        // 左侧不显示 + 号，而是显示 loading」——与展开态思考中头行同源，动画持续到思考完；
+        // 无帧回退 ⏳）；**思考完 → `+ thinking`**（点击可展开）。
+        const prefix = line.thinkingRunning
+          ? state.spinnerIndex >= 0
+            ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
+            : '⏳'
+          : '+';
+        body.push({ text: `${prefix} thinking`, style: { dim: true }, thinkingIdx: li });
       }
       continue;
     }

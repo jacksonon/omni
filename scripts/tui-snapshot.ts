@@ -1613,6 +1613,23 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 21 思考完头行应为 - thinking · time: ${JSON.stringify(doneHead21?.text)}`);
     process.exit(1);
   }
+  // a2b) **折叠态（/thinking 收起）思考中 = loading 而非 + 号**（用户要求「收起时正在思考，
+  //      左侧不显示 + 号，而是应该显示 loading」）：thinkingExpanded=false + thinkingRunning
+  //      → 头行 `⠸ thinking`（spinner 帧，无时间）；思考完 → `+ thinking`
+  s21a2.thinkingExpanded = false;
+  s21a2.lines[0]!.thinkingRunning = true;
+  const rows21a2c = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
+  const runColl21 = rows21a2c.find((r) => r.text.includes('thinking'));
+  if (!runColl21 || !runColl21.text.startsWith('⠸ thinking') || runColl21.text.includes('·')) {
+    console.error(`✗ 场景 21 折叠态思考中应为 loading（⠸ thinking，无 + 号）: ${JSON.stringify(runColl21?.text)}`);
+    process.exit(1);
+  }
+  s21a2.lines[0]!.thinkingRunning = false; // 思考完 → 恢复 + thinking
+  const rows21a2d = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
+  if (rows21a2d.filter((r) => r.text.trim() === '+ thinking').length !== 1) {
+    console.error('✗ 场景 21 折叠态思考完应恢复 + thinking');
+    process.exit(1);
+  }
   // a3) **收到消息开始思考（onRound）立即显示 thinking 模块**（用户要求「接收到消息开始
   //     thinking 的时候就要显示，而不是收到流式返回才开始」）：onRound 预建空内容
   //     running 行 → 头行 `⠋ thinking · 0.0s`（无内容行）；无实际思考 finish 移除空模块
