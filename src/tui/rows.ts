@@ -331,8 +331,8 @@ export function buildBody(state: TuiState, width: number): Row[] {
     }
     if (line.kind === 'tokens' && line.tokens) {
       // 当次 token 使用统计模块（**可点击展开/收起**，用户要求）：
-      //   收起（默认） = 汇总一行 `⚡ 输入 X · 输出 Y · 缓存 Z`
-      //   展开 = 汇总 + 每次 LLM 请求一行明细（`输入 X · 输出 Y · 缓存 Z`），
+      //   收起（默认） = 汇总一行 `⚡ N 次 LLM 请求 · 输入 X · 输出 Y · 缓存 Z`
+      //   展开 = 汇总 + 每次 LLM 请求一行明细（`LLM 请求：输入 X · 输出 Y · 缓存 Z`），
       //          加起来 = 汇总（同一份 usages 数组累加）。
       // 全部行带 tokensIdx，点击任意行切换展开/收起；/tokens 关闭时不渲染（showTokens）。
       // 数值用 formatCompact（12.3K / 3M），缓存缺省按 0 显示（网关不支持时）。
@@ -348,17 +348,18 @@ export function buildBody(state: TuiState, width: number): Row[] {
       );
       const fmt = (n: number): string => formatCompact(n);
       body.push({
-        text: `⚡ 输入 ${fmt(sum.prompt)} · 输出 ${fmt(sum.completion)} · 缓存 ${fmt(sum.cached)}`,
+        text: `⚡ ${usages.length} 次 LLM 请求 · 输入 ${fmt(sum.prompt)} · 输出 ${fmt(sum.completion)} · 缓存 ${fmt(sum.cached)}`,
         style: { dim: true },
         tokensIdx: li,
       });
       if (line.tokens.expanded) {
         // 展开态：每次 LLM 请求一行明细（输入/输出/缓存；与汇总同源累加），
-        // 用 `-` 作列表符号（用户要求「不要显示 1、2、3 这种，使用 - 即可」）
+        // 用 `-` 作列表符号（用户要求「不要显示 1、2、3 这种，使用 - 即可」），
+        // 每项开头标明「LLM 请求」说明这一行是什么（用户要求「在开头标明每一项是干嘛的」）
         for (let i = 0; i < usages.length; i++) {
           const u = usages[i]!;
           body.push({
-            text: `  - 输入 ${fmt(u.prompt)} · 输出 ${fmt(u.completion)} · 缓存 ${fmt(u.cached ?? 0)}`,
+            text: `  - LLM 请求：输入 ${fmt(u.prompt)} · 输出 ${fmt(u.completion)} · 缓存 ${fmt(u.cached ?? 0)}`,
             style: { dim: true },
             tokensIdx: li,
           });

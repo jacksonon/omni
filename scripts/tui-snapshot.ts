@@ -4141,9 +4141,9 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 42 轮结束未插入收起态 tokens 模块: ${JSON.stringify(tokLines42.map((l) => l.tokens))}`);
     process.exit(1);
   }
-  // b) 收起态渲染：一行汇总 `⚡ 输入 1.8K · 输出 600 · 缓存 1.1K`（1300+300+200 / 350+150+100 / 1000+30+50）
+  // b) 收起态渲染：一行汇总 `⚡ 3 次 LLM 请求 · 输入 1.8K · 输出 600 · 缓存 1.1K`（1300+300+200 / 350+150+100 / 1000+30+50）
   const frame42a = t42.captureCharFrame();
-  if (!frame42a.includes('⚡ 输入 1.8K · 输出 600 · 缓存 1.1K')) {
+  if (!frame42a.includes('⚡ 3 次 LLM 请求 · 输入 1.8K · 输出 600 · 缓存 1.1K')) {
     console.error(`✗ 场景 42 收起态汇总行缺失: ${frame42a.split('\n').filter((l) => l.includes('⚡')).join('|')}`);
     process.exit(1);
   }
@@ -4187,12 +4187,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame42b = t42.captureCharFrame();
-  const detail42 = frame42b.split('\n').filter((l) => l.includes('⚡ 输入') || /^\s+- 输入/.test(l));
+  const detail42 = frame42b.split('\n').filter((l) => l.includes('⚡') || /^\s+- LLM 请求/.test(l));
   if (detail42.length !== 4) {
     console.error(`✗ 场景 42 展开后明细行数错误（应 1 汇总 + 3 明细 = 4 行）: ${JSON.stringify(detail42)}`);
     process.exit(1);
   }
-  for (const want of ['- 输入 1.3K · 输出 350 · 缓存 1.0K', '- 输入 300 · 输出 150 · 缓存 30', '- 输入 200 · 输出 100 · 缓存 50']) {
+  for (const want of ['- LLM 请求：输入 1.3K · 输出 350 · 缓存 1.0K', '- LLM 请求：输入 300 · 输出 150 · 缓存 30', '- LLM 请求：输入 200 · 输出 100 · 缓存 50']) {
     if (!frame42b.includes(want)) {
       console.error(`✗ 场景 42 展开明细缺失: ${want}`);
       process.exit(1);
@@ -4200,7 +4200,7 @@ async function main(): Promise<void> {
   }
   // 汇总行与回答文本之间应有 1 行空白间距（tokens 是独立组，other→tokens 切换插 1 行）
   const frame42Lines = frame42b.split('\n');
-  const sum42Row = frame42Lines.findIndex((l) => l.includes('⚡ 输入'));
+  const sum42Row = frame42Lines.findIndex((l) => l.includes('⚡ 3 次 LLM 请求'));
   if (sum42Row < 2 || frame42Lines[sum42Row - 1]!.trim() !== '' || !frame42Lines[sum42Row - 2]!.includes('统计结果如上')) {
     console.error('✗ 场景 42 汇总行上方缺少间距（应紧邻的回答文本后留 1 行空白）');
     process.exit(1);
@@ -4213,7 +4213,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame42c = t42.captureCharFrame();
-  if (frame42c.includes('- 输入 1.3K')) {
+  if (frame42c.includes('- LLM 请求')) {
     console.error('✗ 场景 42 收起后明细仍显示');
     process.exit(1);
   }
@@ -4221,7 +4221,7 @@ async function main(): Promise<void> {
   const s42t = createTuiState();
   pushLine(s42t, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
   const rows42on = computeRows(s42t, { height: 20, width: 64 }, { withInput: true });
-  if (!rows42on.some((r) => r.text.includes('⚡ 输入'))) {
+  if (!rows42on.some((r) => r.text.includes('⚡ 1 次 LLM 请求'))) {
     console.error('✗ 场景 42 showTokens=true 应渲染 tokens 行');
     process.exit(1);
   }
@@ -4229,7 +4229,7 @@ async function main(): Promise<void> {
   s42off.showTokens = false;
   pushLine(s42off, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
   const rows42off = computeRows(s42off, { height: 20, width: 64 }, { withInput: true });
-  if (rows42off.some((r) => r.text.includes('⚡ 输入'))) {
+  if (rows42off.some((r) => r.text.includes('⚡ 1 次 LLM 请求'))) {
     console.error('✗ 场景 42 showTokens=false 不应渲染 tokens 行');
     process.exit(1);
   }
