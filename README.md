@@ -13,7 +13,7 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation + approval UI + audit log
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
-- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 25+ `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/config etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
+- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 26 `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/config etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
 - **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn, and the model loads full content on demand via the `skill` tool; `/skill` lists / `find <term>` searches skills.sh online / `add` installs
 - **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global one-shot generation, session-end auto-extraction of new preferences into global memory (with dedup/conflict merging)
 - **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk)
@@ -245,6 +245,89 @@ omni mcp-server     # stdio JSON-RPC: initialize / tools/list / tools/call
 
 `examples/ci/omni-fix-ci.yml` — an "agent fixes the CI failure" workflow modeled on anthropics/claude-code-action: a **read-only job** (only `OMNI_API_KEY` exposed) reproduces the failure, pipes the output into `omni exec "修复…"`, uploads the resulting `git diff` as an artifact; a **separate job with write permissions** applies the patch, pushes a branch and opens a PR — keys never enter the job that generates the patch. See `examples/ci/README.md` for the security boundary, usage steps and variants.
 
+## Usage Guide (使用指导)
+
+> Full user manual (installation, configuration, Headless/CI, MCP, Hooks, skills, FAQ):
+> [`Doc/Usage-Guide.md`](Doc/Usage-Guide.md) (English) · [`Doc/使用指导.md`](Doc/使用指导.md) (中文).
+> This section is a condensed quick reference.
+
+### TUI quick reference (full-screen interactive mode)
+
+| Action | Effect |
+|---|---|
+| **Enter** | send message |
+| **Shift+Enter** | newline (kitty-protocol terminals) |
+| **Cmd/Ctrl+Enter** | steer: interrupt the current turn and insert the new message into that round |
+| **Esc** | cancel the running turn (when no overlay is open) |
+| Submit while running | ordinary messages go to the "⏳ pending" list and send when the turn ends; steer messages jump the queue |
+| `/` + type | command-suggestion overlay above the input (↑/↓ move, Tab fill, Enter run, Esc close, click to fill) |
+| `@` + type | file/directory mention overlay (Tab/Enter insert, directories drill down with `@path/`) |
+| Click a tool card | expand/collapse full output & diff (collapsed by default, shows just the command) |
+| Click a thinking row | collapse/expand that thinking module; `/thinking` folds all globally |
+| Click the token summary | expand per-LLM-request details (`⚡ 输入 X · 输出 Y · 缓存 Z`) |
+| Mouse wheel / PgUp/PgDn / ↑↓ / Home / End | scroll content (End = back to latest) |
+| `/settings theme` · `/settings language` | light/dark/system theme · 中文/English UI (persisted) |
+
+### Command reference (all `/` commands, TUI + console interactive)
+
+| Command | Effect |
+|---|---|
+| `/permission` | switch permission tier at runtime (low=read / medium=safe / high=ask / full=pass-through) |
+| `/plan` | plan mode: read-only tools, research only, output an implementation plan for approval |
+| `/thinking` | fold/unfold all thinking globally |
+| `/model` | switch models; `/model <name>`; `/model add <name> [--base-url] [--api-key]` (adds + persists) |
+| `/variants` | switch the model's reasoning level (low/medium/high, persisted) |
+| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
+| `/undo` · `/redo` | undo the latest file edit (`/undo all` for everything) · redo the last undo |
+| `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites) |
+| `/skill` | skill management: list / `find <word>` online search / `add <repo>` install / `show <name>` |
+| `/compact` | manually compress context (old messages → summary, last 8 kept verbatim) |
+| `/agents` | view subagent config (enabled / model / step cap / available tools) |
+| `/review` | code review: typecheck + git diff → LLM review |
+| `/status` · `/context` | session status summary · context usage with compression advice |
+| `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |
+| `/resume` · `/rename` | restore a past session · rename the session (window title + persisted meta) |
+| `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
+| `/trace` | trace panel (right sidebar): per-turn LLM request / tool / message ledger, click for detail page |
+| `/diff` · `/config` | uncommitted changes · config paths & sources |
+| `/mcp` | MCP management: list servers/tools, `/mcp reconnect` reconnects after config edits |
+| `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
+| `/clear` · `/exit` (alias `/quit`) · `/help` | clear view · quit (autoMemory + session finalize) · help |
+
+### Safety & permissions
+
+| Tier | Behavior |
+|---|---|
+| `full` | any command passes through (including dangerous), no prompting |
+| `safe` (default) | dangerous commands (rm -rf /, mkfs, dd, fork bombs, git push …) prompt the user first |
+| `ask` | every command prompts |
+| `read` | read-only: no file writes / command execution |
+
+Approval: console shows `⚠ 需要确认 [y/n]`; TUI shows an approval card (`y`/Enter approve, `n`/Esc
+reject, or click); piped/non-interactive auto-rejects. Every tool call is audited to
+`~/.config/omni/audit.log` (`auditLog: true`).
+
+### Memory & sessions
+
+- **Memory**: project `AGENTS.md` (searched upward from cwd, git root/home are boundaries) + global
+  `~/.config/omni/AGENTS.md` cascade into the first turn automatically; `/init` generates them;
+  `autoMemory` appends newly expressed preferences on interactive exit (dedup + conflict merge).
+- **Sessions**: interactive conversations persist as JSONL under `~/.config/omni/sessions/`;
+  `omni -l` lists, `omni --continue` resumes the latest of the current project, `omni -r <id>`
+  resumes a specific session; in-session `/session` / `/resume` / `/export` / `/trace` / `/compact`.
+
+### FAQ (condensed)
+
+- **No API key?** Set `OMNI_API_KEY` (or `apiKey` in config; `models.<name>.apiKey` for multi-endpoint).
+- **Gateway 403/timeout?** Many gateways block the SDK default UA — set `"userAgent"` to a browser UA.
+- **TUI won't start / clicks dead?** Needs a **real TTY** (pipes/`script` fall back to console or
+  disable mouse mode) and a TUI build (`npm run dev:tui` / TUI npm package / native binary).
+- **See what the model receives?** `OMNI_DEBUG=1 omni "task"` prints the full request body to stderr.
+- **Conversation too long?** Auto-summarization is on (`summarizeAt: 40`); `/compact` manually,
+  `/context` shows usage.
+- **Config not applied?** Check precedence (env vars > config files > CLI args); `/config` shows sources.
+- **No key, want a local try?** `npm run mock` (port 8787) + `OMNI_BASE_URL=http://127.0.0.1:8787/v1 OMNI_API_KEY=sk-mock`.
+
 ## Architecture
 
 ```
@@ -255,7 +338,7 @@ src/
   exec.ts               # **Headless exec (`omni exec`) + MCP server (`omni mcp-server`)**: stdout result-only / stderr progress; --output-format text|json|stream-json (reuses events.ts ev stream, last line t=result); stdin two forms; --max-turns / --allowed-tools / --output-schema (JSON Schema subset validation); exit code 0/1; exec resume <id>; omni_exec/omni_reply MCP tools
   ui.ts                 # terminal UI: ANSI colors, TTY detection, spinner, window title
   version.ts            # version constant
-  cli/                  # arg parsing / banner / interactive mode (25+ / commands)
+  cli/                  # arg parsing / banner / interactive mode (26 / commands)
   agent/
     loop.ts             # agent main loop: stream LLM → parallel tool calls → execute → feed back
     thinking.ts         # thinking: streaming display / save to disk

@@ -13,7 +13,7 @@
 - **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
-- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、25 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
+- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、26 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
 - **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单，模型用 `skill` 工具按需加载；`/skill` 命令列出 / `find <词>` 网络检索 skills.sh / `add` 安装
 - **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目 / `/init --global` 全局一键生成，会话结束自动提取新偏好写入全局记忆（偏好去重/矛盾合并）
 - **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
@@ -245,6 +245,85 @@ omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 
 `examples/ci/omni-fix-ci.yml` —— 对标 anthropics/claude-code-action 的「agent 修 CI」工作流：**只读 job**（只暴露 `OMNI_API_KEY`）复现失败 → 把失败输出管道进 `omni exec "修复…"` → 把 `git diff` 作为 artifact 上传；**独立的有写权限 job** 应用补丁、推送分支、开 PR——生成补丁的 job 里没有任何密钥。安全边界、使用步骤与变体见 `examples/ci/README.md`。
 
+## 使用指导（Usage Guide）
+
+> 完整使用手册（安装/配置/Headless 与 CI/MCP/Hooks/技能/FAQ）：[`Doc/使用指导.md`](Doc/使用指导.md)（中文）·
+> [`Doc/Usage-Guide.md`](Doc/Usage-Guide.md)（English）。本节是浓缩速查。
+
+### TUI 操作速查（全屏交互模式）
+
+| 操作 | 作用 |
+|---|---|
+| **Enter** | 发送消息 |
+| **Shift+Enter** | 换行（kitty 协议终端） |
+| **Cmd/Ctrl+Enter** | steer 打断：中止当前回合，新消息插入正在进行的这一轮 |
+| **Esc** | 取消正在运行的回合（无浮层打开时） |
+| 运行中提交 | 普通消息进「⏳ 待发送」列表、回合结束自动发送；steer 消息插队优先 |
+| `/` + 输入 | 命令联想浮层（↑/↓ 移动、Tab 填入、Enter 执行、Esc 关闭、点击填入） |
+| `@` + 输入 | 文件/目录提及浮层（Tab/Enter 插入；目录 `@path/` 继续下钻） |
+| 点击工具卡片 | 展开/收起完整输出与 diff（默认收起只显示命令） |
+| 点击思考行 | 单独折叠/展开该思考模块；`/thinking` 全局折叠 |
+| 点击 token 汇总 | 展开逐次 LLM 请求明细（`⚡ 输入 X · 输出 Y · 缓存 Z`） |
+| 滚轮 / PgUp/PgDn / ↑↓ / Home / End | 滚动内容（End 回到最新） |
+| `/settings theme` · `/settings language` | 亮色/深色/跟随系统 · 中文/English 界面（持久化） |
+
+### 命令速查（全部 `/` 命令，TUI 与 console 交互通用）
+
+| 命令 | 作用 |
+|---|---|
+| `/permission` | 运行时切换权限档位（低=read 只读 / 中=safe 危险询问 / 高=ask 全询问 / 全量=full 直通） |
+| `/plan` | 计划模式：只读工具、只调研，输出实施计划供确认后执行 |
+| `/thinking` | 全局折叠/展开所有思考过程 |
+| `/model` | 切换模型；`/model <名称>`；`/model add <名称> [--base-url] [--api-key]`（添加并持久化） |
+| `/variants` | 切换模型思考级别（low/medium/high，持久化） |
+| `/settings` | 设置二级菜单：状态行 / 语言 / 主题 / token 统计 / 环境诊断 |
+| `/undo` · `/redo` | 撤销最近一次文件修改（`/undo all` 全量回滚）· 重做上次撤销 |
+| `/init` | 扫描项目生成 AGENTS.md（`/init --global` 全局记忆；已存在不覆盖） |
+| `/skill` | 技能管理：列表 / `find <词>` 网络检索 / `add <repo>` 安装 / `show <名>` 查看 |
+| `/compact` | 手动压缩上下文（旧消息合并摘要，保留最近 8 条原文） |
+| `/agents` | 查看子代理配置（启用/模型/步数上限/可用工具） |
+| `/review` | 代码审查：typecheck + git diff → LLM 审查 |
+| `/status` · `/context` | 会话状态汇总 · 上下文用量与压缩建议 |
+| `/session` | 列出当前目录历史会话并继续（`/session <id>` 前缀匹配；`all` 跨目录） |
+| `/resume` · `/rename` | 恢复历史会话 · 会话改名（窗口标题 + meta 落盘） |
+| `/export` | 导出会话为 Markdown（`.omni/export-<时间戳>.md`） |
+| `/trace` | 轨迹面板（右侧栏）：每轮 LLM 请求/工具/消息账本，点击推入详情页 |
+| `/diff` · `/config` | 未提交改动 · 配置路径与来源 |
+| `/mcp` | MCP 管理：列出服务器/工具，`/mcp reconnect` 改配置后重连 |
+| `/doctor`（console）/ `/settings doctor`（TUI） | 环境诊断：Node/bun 版本、API Key、端点连通性、配置/MCP/权限/模型 |
+| `/clear` · `/exit`（别名 `/quit`）· `/help` | 清屏 · 退出（autoMemory + 会话落盘）· 帮助 |
+
+### 安全与权限
+
+| 档位 | 行为 |
+|---|---|
+| `full` | 任意命令直通（含危险命令），不询问 |
+| `safe`（默认） | 危险命令（rm -rf /、mkfs、dd 写盘、fork bomb、git push 等）先询问用户 |
+| `ask` | 所有命令都询问 |
+| `read` | 只读：不允许写文件/执行命令 |
+
+审批：console 弹 `⚠ 需要确认 [y/n]`；TUI 弹审批卡片（`y`/Enter 批准、`n`/Esc 拒绝，或鼠标点击）；
+管道/非交互自动拒绝。所有工具调用写审计日志 `~/.config/omni/audit.log`（`auditLog: true`）。
+
+### 记忆与会话
+
+- **记忆**：项目 `AGENTS.md`（从 cwd 向上找，git 根/home 为边界）+ 全局 `~/.config/omni/AGENTS.md`
+  级联注入首轮；`/init` 一键生成；`autoMemory` 在交互退出时自动沉淀新偏好（去重/矛盾合并）。
+- **会话**：交互对话 JSONL 落盘 `~/.config/omni/sessions/`；`omni -l` 列出、`omni --continue`
+  恢复当前项目最近会话、`omni -r <id>` 恢复指定会话；会话内 `/session` / `/resume` / `/export` /
+  `/trace` / `/compact`。
+
+### 常见问题（速查）
+
+- **没有 API Key？** 配 `OMNI_API_KEY`（或配置文件 `apiKey`；多端点放 `models.<名>.apiKey`）。
+- **网关 403/超时？** 多数网关拦截 SDK 默认 UA——配置 `"userAgent"` 为浏览器 UA。
+- **TUI 不进全屏 / 点击无效？** 需要**真实 TTY**（管道/`script` 伪终端会回退 console 或禁用鼠标模式），
+  且用 TUI 版产物（`npm run dev:tui` / TUI npm 包 / 原生二进制）。
+- **想看模型收到什么？** `OMNI_DEBUG=1 omni "任务"` 完整请求体打到 stderr。
+- **对话太长？** 自动摘要默认开启（`summarizeAt: 40`）；`/compact` 手动压缩、`/context` 看用量。
+- **配置不生效？** 按优先级检查更高层覆盖（环境变量 > 配置文件 > CLI 参数）；`/config` 看来源。
+- **无 Key 本地试跑？** `npm run mock`（端口 8787）+ `OMNI_BASE_URL=http://127.0.0.1:8787/v1 OMNI_API_KEY=sk-mock`。
+
 ## 架构
 
 ```
@@ -255,7 +334,7 @@ src/
   exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
   version.ts            # 版本号常量
-  cli/                  # 参数解析 / banner / 交互模式（25 个 / 命令）
+  cli/                  # 参数解析 / banner / 交互模式（26 个 / 命令）
   agent/
     loop.ts             # Agent 主循环：流式调 LLM → 并行工具调用 → 执行 → 回传
     thinking.ts         # 思考过程：流式显示 / 落盘
