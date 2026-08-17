@@ -73,6 +73,18 @@ export function printHelp(): void {
   omni "<任务描述>"    单次执行一个任务
   omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/compact 压缩上下文；/status 状态；/context 上下文用量；/session 会话管理（列出/继续当前目录历史会话）；/resume 恢复会话；/export 导出；/diff 查看改动；/review 审查；/mcp MCP 管理；/skill 技能；/doctor 诊断；/help 帮助）
 
+Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p）：
+  omni exec "<任务>"                非交互执行：stdout 只输出最终结果，进度走 stderr
+  omni exec -                      任务从 stdin 读取（echo "任务" | omni exec -）
+  echo "<上下文>" | omni exec "<任务>"   stdin 注入为上下文
+  omni exec "<任务>" --output-format json       单对象 { result, cost_usd, duration_ms, num_turns, session_id, exit_code }
+  omni exec "<任务>" --output-format stream-json 每行一个轨迹事件 {"t":"ev",...}，末行 {"t":"result",...}
+  omni exec "<任务>" --max-turns 20 --allowed-tools read_file,run_command
+  omni exec "<任务>" --output-schema '{"type":"object","required":["verdict"]}'   # 最终回答须符合 JSON Schema（不符 → 非零退出）
+  omni exec resume <会话id> "<继续任务>"   恢复 headless 会话继续（json 输出带 session_id）
+  omni mcp-server                作为 MCP server（stdio JSON-RPC：omni_exec / omni_reply 工具）
+  headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
+
 会话持久化（跨进程恢复对话）：
   omni --continue "继续任务"      恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
   omni -r <会话id> "继续任务"      恢复指定会话（id 见 --list-sessions 输出）

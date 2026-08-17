@@ -36,6 +36,11 @@ const LONG_LINE =
     ? '\n\n这是一段特意构造的非常长的无换行文本，用来验证终端里的消息在超过屏幕宽度时会自动折行而不是被截断，长度一路延伸下去直到超过一行所能容纳的列数，从而确认每一段内容都完整可见。LONGLINE-END。'
     : '';
 const MARKDOWN_ANSWER = MARKDOWN_BASE + LONG_LINE;
+// MOCK_JSON=1 时最终回答改为单个 JSON 对象（headless `omni exec --output-schema` e2e：
+// schema 通过 → exit 0；json/stream-json 输出里 result 字段即为该 JSON 文本）
+const MOCK_JSON = process.env.MOCK_JSON === '1';
+const JSON_ANSWER = '{"verdict":"safe","summary":"任务完成 ✅ mock 端到端验证通过。"}';
+const FINAL_ANSWER = MOCK_JSON ? JSON_ANSWER : MARKDOWN_ANSWER;
 
 const server = http.createServer((req, res) => {
   // 兼容 baseURL 带 /v1 与不带 /v1 两种情况
@@ -313,7 +318,7 @@ const server = http.createServer((req, res) => {
             role: 'assistant',
             reasoning_content: p,
           }));
-          await streamDelta(chars(MARKDOWN_ANSWER + (modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '')), (p) => ({ role: 'assistant', content: p }));
+          await streamDelta(chars(FINAL_ANSWER + (!MOCK_JSON && modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '')), (p) => ({ role: 'assistant', content: p }));
         }
         sendChunk(usageChunk('mock-done'));
         res.write('data: [DONE]\n\n');
@@ -379,7 +384,7 @@ const server = http.createServer((req, res) => {
         choices: [
           {
             index: 0,
-            delta: { role: 'assistant', content: MARKDOWN_ANSWER + (modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '') },
+            delta: { role: 'assistant', content: FINAL_ANSWER + (!MOCK_JSON && modelName !== 'mock' ? `\n\n[模型 ${modelName}]` : '') },
             finish_reason: null,
           },
         ],

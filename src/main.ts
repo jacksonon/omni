@@ -25,6 +25,7 @@ import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
+import { runExec, runMcpServer } from './exec.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { tools } from './tools/index.js';
@@ -252,6 +253,18 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   }
   if (flags.listSessions) {
     await printSessions();
+    return;
+  }
+
+  // Headless 子命令（把 omni 变成可组合 Unix 命令）：
+  //   omni exec "<任务>"  —— 非交互执行（stdout 结果 / stderr 进度；--output-format json|stream-json）
+  //   omni mcp-server     —— 作为 MCP server（stdio JSON-RPC，omni_exec / omni_reply 工具）
+  if (taskArgs[0] === 'exec') {
+    process.exitCode = await runExec(taskArgs.slice(1), overrides);
+    return;
+  }
+  if (taskArgs[0] === 'mcp-server') {
+    await runMcpServer(overrides);
     return;
   }
 

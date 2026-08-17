@@ -188,7 +188,8 @@ export async function runAgent(
     // 该数组被原地追加 assistant/tool 消息用于跨轮上下文，直接 push 会每轮重复累积）。
     // buildSystemPrompt 每轮调用 → persona 里的 model/cwd/权限档位始终是最新值
     //（/model、/permission 运行时切换即时生效）
-    const systemPrompt = buildSystemPrompt(model, process.cwd(), opts.permission) + sessionNote;
+    const systemPrompt =
+      buildSystemPrompt(model, process.cwd(), opts.permission) + sessionNote + (opts.systemNote ?? '');
     const requestMessages: ChatCompletionMessageParam[] = [
       { role: 'system', content: planMode ? systemPrompt + PLAN_MODE_NOTE : systemPrompt },
       ...messages,

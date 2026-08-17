@@ -24,6 +24,8 @@ npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 npm run eval              # 评估：真实 API 跑任务集 + 完成率报告（eval-report.json）
 npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
+npm run dev -- exec "<任务>" --output-format json   # Headless：stdout 只出结果、进度走 stderr（可 | jq / 管道分支）
+npm run dev -- mcp-server # Headless：作为 MCP server（omni_exec / omni_reply 工具）
 ```
 
 > ⚠️ **打包需要 bun**（`bundle` / `compile` / `npm pack` 的 prepack 都会调用 bun）：`bun --version` 验证。开发运行（`dev`）不需要。
@@ -98,10 +100,16 @@ npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 
 ```
 src/
-  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互）
+  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server）
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用（主循环/子代理）
   version.ts            # 版本号常量
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
+  exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；
+                        #   --output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）· stdin 两形态
+                        #   （`-` 整段 prompt / prompt+stdin 注入上下文）· --max-turns · --allowed-tools（纯工具过滤）·
+                        #   --output-schema（JSON Schema 子集校验，不符 → 非零退出）· exit code 0/1 管道分支 ·
+                        #   exec resume <id> 会话续跑（复用 session JSONL）· MCP server 暴露 omni_exec/omni_reply
+                        #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -119,7 +127,7 @@ src/
     subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/trace 面板与 /compact 事件源；恢复会话读回续号）
+    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/trace 面板与 /compact 事件源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
     trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console 账本）
     types.ts            # RunOptions / ThinkingDisplay 共享类型
   safety/
@@ -157,9 +165,11 @@ src/
   tui-entry.ts          # TUI 入口（纯 TS 无 JSX）：TTY 门控 + 回退 console
   agent/skill.ts        # **技能系统**：SKILL.md 发现（项目 .opencode/.claude/.agents/skills 向上 + 全局）+ frontmatter 解析 + 按名加载 + npx skills CLI 封装
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单）
-scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage 分支）
+scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
 scripts/tui-snapshot.ts # TUI 快照验证（45 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问）
+scripts/probe-tmp/probe-exec.ts # Headless 探针：parseExecArgs/schema 校验单元 + runHeadless 全链路 e2e（text/json/stream-json、
+                                 #   max-turns/allowed-tools/stdin 两形态/exec resume/schema 通过·不符）+ MCP server 握手
 scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
 scripts/eval/tasks.ts   # 评估任务集（mock 离线 / 真实 API 两套）
 scripts/eval/run-eval.ts# 评估运行器：跑任务集 + 完成率报告（npm run eval[:mock]）
@@ -265,9 +275,12 @@ for step in 1..maxSteps:
 - [x] **计划模式 /plan**：只读工具过滤 + 系统提示只读说明，输出实施计划供用户确认后执行
 - [x] **/undo 文件撤销**：write_file 自动快照 + `/undo` / `/undo all` 回滚本次会话修改
 - [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换（共用闸门 setTier 同步，子代理一致）
+- [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果/stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 演进日志
+
+- **2026-08-17（第一百三十四次）**：**Headless 与 CI 集成（TODO.md 第二节全量）：`omni exec` 非交互模式 + `--output-schema` + 会话续跑 + `omni mcp-server` + CI 工作流模板**——用户要求「实现 TODO.md 第二节 headless 与 CI 集成」。**① 核心模块**（新 `src/exec.ts`，untracked 补齐）：`parseExecArgs`（exec 专属 flag：`--output-format text|json|stream-json` / `--max-turns N` / `--allowed-tools` 逗号白名单 / `--output-schema`（内联 JSON **或文件路径**）/ `--resume` / `exec resume <id>` 子命令形态 / `--` 分隔 / 未知 flag 抛错；`-` = 整段 stdin 即 prompt）；`ExecOutput` 实现 `Output`（**stdout 零污染**——进度/思考/工具步骤/错误全走 stderr；`onUsage` 累计 token 供 cost 估算）；**`validateAgainstSchema` JSON Schema 子集校验器**（无框架依赖：type 含数组联合 / enum / properties / required / additionalProperties:false / items / min·maxLength / pattern / minimum·maximum / min·maxItems——返回错误路径列表，CI 用稳定字段）；`extractFinalAnswer`（从 messages 末尾找最后一个带正文的 assistant 消息）；`runHeadless`（**exec CLI 与 MCP server 共用**：会话持久化——resume 复用原文件、否则新建（结果带 `session_id`）、`EventRecorder.open(sessionPath, onEvent)` 轨迹实时回调 + 落盘并存、UserPromptSubmit hook 改写、prompt+stdin 注入、`--output-schema` 经 `runOpts.systemNote` 拼进 system 提示（不污染消息历史），完成后按 `persistableMessages` 增量落盘 + flush + finalize；exit code = `lastTurnReason==='completed' ? 0 : 1` + schema 不符强制 1）。**② CLI 接线**（`main.ts`：`taskArgs[0]==='exec'` → runExec / `'mcp-server'` → runMcpServer；`cli/args.ts` 帮助文本补 9 行 Headless 用法）；**③ MCP server**（`runMcpServer`：stdio JSON-RPC（协议版本 2024-11-05），`initialize`/`ping`/`resources\/list`/`tools\/list`（omni_exec：新建会话 + model/max_turns/allowed_tools/output_schema；omni_reply：按 session_id 续跑）/`tools/call`——请求串行（tail promise 链防并发抢占）、`isError: exitCode!==0`、进度静默（quiet）、协议与 `tools/mcp.ts` 客户端对称）；**④ mock 扩展**（`scripts/mock-server.mjs` 新增 `MOCK_JSON=1`/`JSON_ANSWER`/`FINAL_ANSWER`——默认最终回答非 JSON，MOCK_JSON 下回答为 `{"verdict":"safe","summary":…}` 供 schema 通过路径 e2e）；**⑤ CI 示例**（新 `examples/ci/omni-fix-ci.yml`：**fix-ci job（`permissions: contents: read`，只暴露 `OMNI_API_KEY`）** 复现失败 → `cat 失败输出 | omni exec "修复…" --output-format json`（stdin 注入上下文）+ `--allowed-tools` 白名单 + `--max-turns 30` → `git diff --binary` 补丁上传 artifact；**apply-patch job（写权限）** 下载 → `git apply --binary` → 推分支 → create-pull-request 开 PR——**密钥不进生成补丁的 job**；`examples/ci/README.md` 安全边界/使用步骤/变体表/结构化结果消费示例）；**⑥ 验证**：typecheck ✓ + 探针 `scripts/probe-tmp/probe-exec.ts`（单元：parseExecArgs 全 flag/`-`/resume/`--`/非法抛错、validateAgainstSchema 全约束、extractFinalAnswer、resultJson；e2e：mock 8811（XDG_CONFIG_HOME 临时目录）text/json/stream-json（stdout 零污染断言）、stdin 两形态、`--max-turns 1` → exit 1、exec resume（session_id 不变、num_turns 递增）、schema 通过 exit 0 / 不符 exit 1 + stderr 错误路径、MCP server JSON-RPC 握手 + omni_exec/omni_reply 全链路）+ README 双语 Headless 段（`exec`/`mcp-server`/CI 模板指引）+ AGENTS.md 命令/架构/脚本/路线图同步。**⑦ 注意**：Node `--experimental-strip-types` 不支持 parameter properties，exec 相关代码必须 `npx tsx` 跑；mock 只服务 `POST /chat/completions`，健康检查用 TCP 连接探测。**⑧ 修复记录**：mock 回答的 `[模型 X]` 后缀会污染 `MOCK_JSON` 纯 JSON 回答导致 schema 校验失败——后缀改 `!MOCK_JSON` 条件（流式/非流式两处）；`src/exec.ts` schema 校验带兜底（新增导出 `extractJsonObject`：```json 围栏 / 全串 parse / 首 `{` 到末 `}` 收窄），防真实模型围栏/尾随散文误判；探针主进程必须把 mock ENV 同步进 `process.env`（`prepareRun`/`loadConfig` 读主进程环境变量——漏设 `OMNI_BASE_URL` 会落到默认 api.openai.com，runHeadless 请求外网卡死，实测两次卡住均此根因，探针全链路 A–L 全绿）。
 
 - **2026-08-17（第一百三十三次）**：**Hooks P1 补齐：事件补全 + 分层配置 + 子代理接入 + enforcement 示例集**（TODO.md 第一节两个 P1）。**① 新事件**（`hooks/index.ts`）：**SessionStart**（会话首轮前一次——`sessionStartOutput` 字符串数组**注入首个 system 提示**作上下文，不污染消息历史）/ **PreCompact**（summarizeContext 压缩前——block 则本次跳过压缩；`context.ts` 在 `compressible` 判定后调 `runCompactHook` 取决策）/ **SubagentStart** / **SubagentStop**（delegate 子代理生命周期 fire-and-forget）；**子代理工具也过 hooks**（`subagent.ts` loop 内 PreToolUse（block 硬拦截）/PostToolUse（extra 拼结果）与主循环同语义）。**② 配置分层合并**（`config/index.ts`）：`hooks` 字段从「后层覆盖」改为**逐层合并**——`mergeHooks` 按事件 key 累加（全局 `~/.config/omni` + 项目 + 自定义），同 matcher 后层优先（覆盖同名条目）；DEFAULTS/apply 同步。**③ stderr 捕获**（`runHook`）：spawn 的 stderr 与 stdout 一起收集回显（非 JSON 行也回显），超时/失败仍降级放行。**④ 接线**：`main.ts` attachRuntime 把 `hooks.cfg` 透传进 delegate 工厂（子代理内部跑 hooks 用主循环同一 HookRunner）+ `runOpts.hooksEvent` 注入 context.ts 的 PreCompact；`loop.ts` SessionStart 在 buildSystemPrompt 前跑一次、`sessionStartOutput` 拼进首个 system 消息（`[SessionStart hook 输出]`）；TUI `/clear` 后 SessionStart 重新注入。**⑤ enforcement 示例集**（`examples/hooks/`）：新增 `guard-dangerous.mjs`（`rm -rf /`/`mkfs`/`dd of=/dev`/fork bomb 等破坏性模式硬拦截）/ `guard-git-push.mjs`（拦截 `git push` 提示用户自行推送）+ `examples/hooks/README.md` 完整目录（6 个脚本用法/输出/配置）；`omni.example.jsonc`/README 双语文档同步（新事件表 + 分层说明 + 7 个用例）。**⑥ 验证**：typecheck ✓ + 快照 **45 场景**全绿（`env -u OMNI_MODEL -u OMNI_API_KEY -u OMNI_BASE_URL`，用户 shell 环境变量覆盖测试配置与 hooks 无关）+ eval:mock 100%（2/2）+ 探针扩展（`probe-hooks.ts` 新增：mergeHooks 分层累加/同 matcher 覆盖、SessionStart 注入首轮 system、PreCompact block 跳过压缩、SubagentStart/Stop 触发、stderr 回显——fire-and-forget 事件加 settle 等待消除竞态）+ 示例脚本逐个冒烟（guard-dangerous 对 `rm -rf /` block / 普通命令放行、guard-git-push 对 `git push` block）。**⑦ 边界**：SessionStart/PreCompact 输出有 40KB 截断防撑爆上下文；子代理 hooks 共享主 HookRunner（配置同一份、事件 source=subagent）；Stop/PreCompact 的 block 语义互不影响。
 - **2026-08-17（第一百三十二次）**：**Hooks 生命周期自动化（对标 Claude Code，TODO.md 第一节 P0）**——用户要求「实现 @TODO.md 的 hook框架」。**① 核心模块**（新 `src/hooks/index.ts`）：`HookRunner` + `HooksConfig`（`{ 事件: [{ matcher?, command, timeoutMs? }] }`）+ JSON 协议（事件上下文经 stdin 喂入、stdout 返回 JSON 决策）；5 事件——**UserPromptSubmit**（返回 `updatedPrompt` 改写 prompt）/ **PreToolUse**（`decision: block` **硬拦截** + `updatedInput` 改写工具参数 + `hookSpecificOutput` 回传）/ **PostToolUse**（`hookSpecificOutput` 追加回传上下文，如 lint 结果让模型自修复）/ **Stop**（block 要求继续修；`stop_hook_active=true` 后忽略只续一次防死循环）/ **Notification**（fire-and-forget 通知）；`matcher` 通配（`*`=全部 / `read_*` 前缀 / `*_file` 后缀）；`runHook` spawn shell（stdin 写 JSON、stdout 收集、超时 SIGKILL、前置日志后取末尾 JSON 解析）；**超时/命令失败/非 JSON → 降级放行不阻塞主流程**（原因回显）。**② 配置**（`config/index.ts`）：新增 `hooks` 字段（未知事件丢弃、command 非空才收、timeoutMs ≥1000 钳制）；`omni.example.jsonc` 文档。**③ 接入**（`main.ts` attachRuntime 创建 HookRunner 注入 `runOpts.hooks` + `output.onHookOutput` 回显）：**loop.ts**——PreToolUse 在 parseArgs 后、安全闸门前（block 跳过闸门与执行、updatedInput 合并进执行参数）；PostToolUse 在 execute 后（extra 拼进工具结果 `[hook 输出]`）；Stop 在 `toolCalls.size===0` 结束点（block → push `[Stop hook 要求继续]` system 消息 + `continue` 同一回合继续，续一次后忽略）；Notification 正常完成时 fire-and-forget；**UserPromptSubmit** 三处提交点（main 单任务 / cli+ tui interactive）——改写后消息入上下文（`events.user` 记录模型实际看到的 prompt，UI 回显用户原文）。**④ 输出回显**（`output/types.ts` 可选 `onHookOutput?`；ConsoleOutput dim 行 / TuiOutput 对话流 meta 行，截断 5 行防刷屏）。**⑤ 验证**：typecheck + 快照 **45 场景**全绿（本改动不影响既有场景；场景 34 在此机器上需 `env -u OMNI_MODEL -u OMNI_API_KEY -u OMNI_BASE_URL`——用户 shell 的 OMNI_* 环境变量覆盖测试临时配置，与 hooks 无关）+ eval:mock 100%（2/2）+ 新探针 `scripts/probe-tmp/probe-hooks.ts`（单元：matchTool 通配 / runHook JSON 解析·前置日志取末尾 JSON·非 JSON null·超时·命令不存在；HookRunner 各事件：PreToolUse block/放行/matcher 过滤/updatedInput、PostToolUse extra、Stop block+stop_hook_active 忽略、UserPromptSubmit 改写、Notification 输出、失败/超时降级放行；E2E：真实 runAgent + mock——PostToolUse `[hook 输出]`+mock-lint 进工具结果且含原始输出、PreToolUse block 工具结果 `已拦截（hook）` 且 write_file 未执行（无副作用）、UserPromptSubmit 改写后 messages[0]、Stop block 后 messages 含 `[Stop hook 要求继续]` 且只续一次）+ `scripts/mock-hook.mjs`（pass/block/updated/output/rewrite/notify/fail/slow 八模式）。**⑥ 边界**：hooks 只挂在主循环（delegate 子代理不自跑 hooks，P1 再做子代理专属）；`hookSpecificOutput` 完整回传模型（echo 只截 5 行）；Stop 续命每回合一次（runAgent 局部 stopHookActive）。

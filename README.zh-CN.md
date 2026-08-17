@@ -208,6 +208,43 @@ hook 输出会回显到终端（`⚡ hook[<事件>] …`；TUI 以对话流 dim 
 
 > 可运行的示例在 `examples/hooks/`（guard-env / guard-dangerous / guard-git-push / lint-hook / require-tests / rewrite-prompt）——完整目录见 `examples/hooks/README.md`。另附 mock hook（`scripts/mock-hook.mjs`，模式 `pass/block/updated/output/rewrite/notify/fail/slow`）用于测试——单元 + 端到端覆盖见 `scripts/probe-tmp/probe-hooks.ts`。
 
+## Headless 模式（`exec` / `mcp-server`）
+
+把 omni 变成可组合的 Unix 命令（对标 `codex exec` / `claude -p`）：脚本、管道、CI 里非交互执行。
+
+```bash
+omni exec "修复 src/foo.test.ts 里失败的测试"                # stdout 只出最终回答
+omni exec "总结一下" --output-format json                   # 单个 JSON 对象 → | jq
+omni exec "分析这个 diff" --output-schema '{"type":"object","properties":{"verdict":{"type":"string"}},"required":["verdict"]}'
+cat test-output.txt | omni exec "修复下面的失败"              # stdin 注入为上下文
+omni exec resume <session_id> "接着上次继续"
+```
+
+关键语义：
+
+| 维度 | 行为 |
+|---|---|
+| **stdout 纯净** | stdout 只输出最终结果；进度（思考/工具步骤/错误）全部走 **stderr** —— 可安全 `\| jq` / `> file` |
+| **`--output-format`** | `text`（默认，纯文本回答）· `json`（单对象 `{ result, cost_usd, duration_ms, num_turns, session_id, exit_code }`）· `stream-json`（每行一个轨迹事件 `{"t":"ev",…}`，末行 `{"t":"result",…}`——`tail -1` 即得结构化结果） |
+| **stdin 两形态** | 任务为 `-` = 整段 stdin 即 prompt；任务给定 + stdin 被管道 = 注入为 `[stdin 输入]` 上下文 |
+| **`--max-turns N`** | 步数上限（超出 → 非零退出；管道里 `&&` / `\|\|` 分支） |
+| **`--allowed-tools`** | 逗号分隔的工具白名单（纯工具过滤，复用 /plan 只读过滤语义） |
+| **`--output-schema`** | 最终回答强制符合 JSON Schema 子集（内联 JSON 或文件路径；不符 → 非零退出 + stderr 列出错误路径） |
+| **exit code** | `0` = 正常完成 · `1` = 请求失败 / 触达步数上限 / schema 校验失败 |
+| **会话** | 每次执行落盘 JSONL 会话（json 输出带 `session_id`）；`exec resume <id>` 续跑 |
+
+### `omni mcp-server`
+
+以 **MCP server** 形态跑在 stdio JSON-RPC 上，暴露 `omni_exec`（新建会话）与 `omni_reply`（按 `session_id` 继续会话）——外部 harness（Claude Code / opencode …）可把 omni 当子代理用。协议与内置 `tools/mcp.ts` 客户端对称：
+
+```bash
+omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
+```
+
+### CI 集成
+
+`examples/ci/omni-fix-ci.yml` —— 对标 anthropics/claude-code-action 的「agent 修 CI」工作流：**只读 job**（只暴露 `OMNI_API_KEY`）复现失败 → 把失败输出管道进 `omni exec "修复…"` → 把 `git diff` 作为 artifact 上传；**独立的有写权限 job** 应用补丁、推送分支、开 PR——生成补丁的 job 里没有任何密钥。安全边界、使用步骤与变体见 `examples/ci/README.md`。
+
 ## 架构
 
 ```
@@ -215,6 +252,7 @@ src/
   index.ts              # CLI 入口：参数 → 配置 → 客户端 → 单次/交互
   main.ts               # attachRuntime：Safety 闸门 + MCP 工具发现 + delegate 注入 + 上下文准备
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用
+  exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
   version.ts            # 版本号常量
   cli/                  # 参数解析 / banner / 交互模式（25 个 / 命令）
@@ -294,6 +332,7 @@ npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
 - [x] **技能系统（Agent Skill / SKILL.md）**：自动发现 + 清单注入 + `skill` 工具按需加载 + `/skill` 命令（列出 / find 网络检索 / add 安装），对标 opencode
 - [x] **更多交互命令**：`/compact` 手动压缩上下文 · `/agents` 查看子代理配置 · `/review` 代码审查（typecheck + git diff → LLM）· `/variants` 切换模型思考级别（reasoning_effort）· `/model` 切换/添加模型（config `models` 可配多端点，切换时重建客户端，子代理同步；`/model add <名称> [--base-url] [--api-key]` 运行时添加并持久化到配置文件）· `/status` 会话状态 · `/context` 上下文用量 · `/export` 导出 Markdown · `/config` 查看配置 · `/mcp` 管理 MCP 服务器（reconnect）· `/diff` 查看改动 · `/rename` 会话改名（meta 落盘）· `/resume` 恢复历史会话 · `/redo` 重做撤销 · `/doctor` 环境诊断
 - [x] **Hooks 生命周期自动化**：`UserPromptSubmit` 改写 prompt / `PreToolUse` 硬拦截 + 改写参数 / `PostToolUse` 输出回传（lint）/ `Stop` 要求继续（限一次）/ `Notification` 通知 + `SessionStart` 上下文注入 / `SubagentStart`·`SubagentStop` 子代理 hooks / `PreCompact`——JSON 协议 + matcher 通配 + 配置分层合并（全局+项目）+ stderr 捕获，超时/失败降级放行；enforcement 示例（guard-env / guard-dangerous / guard-git-push）在 `examples/hooks/`
+- [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果 / stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 技术栈

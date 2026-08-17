@@ -208,6 +208,43 @@ Hook output is echoed to the terminal (`⚡ hook[<Event>] …`; TUI shows dim li
 
 > Runnable examples live in `examples/hooks/` (guard-env / guard-dangerous / guard-git-push / lint-hook / require-tests / rewrite-prompt) — see `examples/hooks/README.md` for the full catalog. A mock hook (`scripts/mock-hook.mjs`, modes `pass/block/updated/output/rewrite/notify/fail/slow`) is included for testing — see `scripts/probe-tmp/probe-hooks.ts` for unit + end-to-end coverage.
 
+## Headless Mode (`exec` / `mcp-server`)
+
+Turns omni into a composable Unix command (modeled on `codex exec` / `claude -p`): run it non-interactively in scripts, pipes and CI.
+
+```bash
+omni exec "fix the failing test in src/foo.test.ts"          # stdout = final answer only
+omni exec "summarize" --output-format json                   # single JSON object → | jq
+omni exec "analyze this diff" --output-schema '{"type":"object","properties":{"verdict":{"type":"string"}},"required":["verdict"]}'
+cat test-output.txt | omni exec "fix the failures below"     # stdin injected as context
+omni exec resume <session_id> "continue from where you left off"
+```
+
+Key semantics:
+
+| Aspect | Behavior |
+|---|---|
+| **stdout purity** | stdout carries only the final result; progress (thinking / tool steps / errors) goes to **stderr** — safe to `\| jq` / `> file` |
+| **`--output-format`** | `text` (default, plain final answer) · `json` (one object `{ result, cost_usd, duration_ms, num_turns, session_id, exit_code }`) · `stream-json` (one JSON line per trace event `{"t":"ev",…}`, last line `{"t":"result",…}` — `tail -1` yields the structured result) |
+| **stdin forms** | task `-` = the whole stdin is the prompt; task given + piped stdin = injected as `[stdin 输入]` context |
+| **`--max-turns N`** | step cap (exceeding → non-zero exit; branch with `&&` / `\|\|` in pipelines) |
+| **`--allowed-tools`** | comma-separated tool whitelist (pure tool filtering, same semantics as `/plan` read-only filtering) |
+| **`--output-schema`** | final answer must validate against a JSON Schema subset (inline JSON or file path; mismatch → non-zero exit + error paths on stderr) |
+| **exit code** | `0` = completed · `1` = request failed / hit the step cap / schema validation failed |
+| **sessions** | every run persists a JSONL session (json output carries `session_id`); `exec resume <id>` continues it |
+
+### `omni mcp-server`
+
+Runs omni as an **MCP server** over stdio JSON-RPC, exposing `omni_exec` (new session) and `omni_reply` (continue a session by `session_id`) — an external harness (Claude Code / opencode …) can use omni as a sub-agent. Protocol is symmetric with the built-in `tools/mcp.ts` client:
+
+```bash
+omni mcp-server     # stdio JSON-RPC: initialize / tools/list / tools/call
+```
+
+### CI integration
+
+`examples/ci/omni-fix-ci.yml` — an "agent fixes the CI failure" workflow modeled on anthropics/claude-code-action: a **read-only job** (only `OMNI_API_KEY` exposed) reproduces the failure, pipes the output into `omni exec "修复…"`, uploads the resulting `git diff` as an artifact; a **separate job with write permissions** applies the patch, pushes a branch and opens a PR — keys never enter the job that generates the patch. See `examples/ci/README.md` for the security boundary, usage steps and variants.
+
 ## Architecture
 
 ```
@@ -215,6 +252,7 @@ src/
   index.ts              # CLI entry: args → config → client → single-shot/interactive
   main.ts               # attachRuntime: Safety gate + MCP tool discovery + delegate injection + context preparation
   client.ts             # OpenAI client factory: created per "model endpoint" (/model rebuilds on endpoint switch) + shared ModelRuntime
+  exec.ts               # **Headless exec (`omni exec`) + MCP server (`omni mcp-server`)**: stdout result-only / stderr progress; --output-format text|json|stream-json (reuses events.ts ev stream, last line t=result); stdin two forms; --max-turns / --allowed-tools / --output-schema (JSON Schema subset validation); exit code 0/1; exec resume <id>; omni_exec/omni_reply MCP tools
   ui.ts                 # terminal UI: ANSI colors, TTY detection, spinner, window title
   version.ts            # version constant
   cli/                  # arg parsing / banner / interactive mode (25+ / commands)
@@ -294,6 +332,7 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 - [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection + `skill` tool on-demand loading + `/skill` command (list / find online / add), aligned with opencode
 - [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
 - [x] **Hooks lifecycle automation**: `UserPromptSubmit` prompt rewrite / `PreToolUse` hard-block + arg rewrite / `PostToolUse` output feedback (lint) / `Stop` require-continue (once) / `Notification` + `SessionStart` context injection / `SubagentStart`·`SubagentStop` subagent hooks / `PreCompact` — JSON protocol with wildcard matchers, layered config (global+project merged), stderr capture, timeout/failure degrade to pass-through; enforcement examples (guard-env / guard-dangerous / guard-git-push) in `examples/hooks/`
+- [x] **Headless & CI integration (modeled on codex exec / claude -p)**: `omni exec "<task>"` (stdout result-only / stderr progress, `--output-format text|json|stream-json`, stdin two forms, `--max-turns`, `--allowed-tools` filtering, exit code 0/1 pipeline branching) + `--output-schema` structured validation + `exec resume <id>` session continuation + `omni mcp-server` (omni_exec / omni_reply) + CI workflow template (`examples/ci/omni-fix-ci.yml`: read-only job generates the patch → separate job opens the PR, keys never enter the patch-generating job)
 - [ ] Advanced: SWE-bench eval, MCP resources/prompts protocol, memory progressive disclosure/TTL, nested AGENTS.md
 
 ## Tech Stack

@@ -74,11 +74,15 @@ export class EventRecorder {
   private seq = 0;
   private flushed = 0;
 
-  constructor(readonly file?: string | null) {}
+  constructor(
+    readonly file?: string | null,
+    /** 实时事件监听（headless stream-json 输出用：每个事件立即回调） */
+    private onEvent?: (e: TrajEvent) => void
+  ) {}
 
-  /** 打开记录器（可选会话文件）：读回历史事件 + seq/turn 续号 */
-  static async open(file?: string | null): Promise<EventRecorder> {
-    const rec = new EventRecorder(file);
+  /** 打开记录器（可选会话文件 + 实时事件监听）：读回历史事件 + seq/turn 续号 */
+  static async open(file?: string | null, onEvent?: (e: TrajEvent) => void): Promise<EventRecorder> {
+    const rec = new EventRecorder(file, onEvent);
     if (file && existsSync(file)) {
       try {
         const raw = await readFile(file, 'utf8');
@@ -108,7 +112,10 @@ export class EventRecorder {
   }
 
   private push(e: PushEvent): void {
-    this.events.push({ ...e, s: ++this.seq, time: Date.now() } as TrajEvent);
+    const ev = { ...e, s: ++this.seq, time: Date.now() } as TrajEvent;
+    this.events.push(ev);
+    // headless stream-json：每个事件实时输出（不落盘也触发——单任务模式无会话文件）
+    this.onEvent?.(ev);
   }
 
   /** 轮开始（runAgent 开头调用一次；返回本轮号——loop 打断继续时轮号不变） */

@@ -1,0 +1,152 @@
+# omni-fix-ci.yml —— 用 omni 自动修复 CI 失败并开 PR
+#
+# 对标 anthropics/claude-code-action 与 openai/codex-action 的「agent 修 CI」模式：
+#   1. fix-ci job（无任何仓库写权限）：只读 checkout → 复现失败 → `omni exec` 修复 →
+#      生成补丁上传 artifact —— **密钥不进入此 job**：只有 LLM 的 OMNI_API_KEY，
+#      GITHUB_TOKEN 被 `contents: read` 钳制为只读，agent 无仓库写权限、无法推送
+#   2. apply-patch job（needs fix-ci，有写权限）：下载补丁 → 应用 → 推送分支 → 开 PR
+#
+# 安全边界（关键设计）：
+#   · 生成补丁的 job 永远拿不到写凭据 —— 即使 prompt/仓库内容注入恶意指令，
+#     agent 也推不出去，改动以「人类可审查的 PR diff」形式呈现
+#   · 默认不给 untrusted PR 跑 agent（fork 的 PR 可携带任意代码/指令）：本模板用
+#     workflow_dispatch / schedule / push 触发；若要支持 PR 请加
+#     `if: github.event.pull_request.head.repo.fork == false` 守卫
+#
+# 使用前：
+#   1. 在仓库 Secrets 配置 `OMNI_API_KEY`（模型 API Key；非 OpenAI 端点时另配
+#      OMNI_BASE_URL / OMNI_MODEL）
+#   2. 改「复现 CI 失败」步骤为项目的真实失败命令（npm test / pnpm build / …）
+#   3. 按需调整 --allowed-tools / --max-turns：白名单过窄会修不了（缺少 run_command
+#      就无法执行测试验证）；建议至少保留 read_file,write_file,list_directory,
+#      search_code,run_command 五个
+#   4. console 版开箱即用（Node 18+）；若要使用 TUI 版（bun）才需要 setup-bun 步骤，
+#      纯 headless 可删除
+
+name: omni-fix-ci
+
+on:
+  workflow_dispatch:          # 手动触发：修当前默认分支的 CI
+  schedule:                   # 可选：定时巡检存量失败
+    - cron: '0 3 * * *'
+  push:
+    branches: [main]          # 可选：主干新提交失败自动修复（注意 API 成本）
+
+# 全 workflow 最小权限默认值；每个 job 再显式声明
+permissions:
+  contents: read
+
+jobs:
+  fix-ci:
+    name: 🛠 omni 修复（只读 · 生成补丁）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read          # ★ 只读：agent 无法推送 / 改分支
+    env:
+      OMNI_API_KEY: ${{ secrets.OMNI_API_KEY }}   # 只暴露 LLM 密钥，不暴露仓库 token
+      OMNI_PERMISSION: full   # CI 无人批准：允许 agent 自行执行修复命令
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # 完整历史（agent 可能需要看 diff）
+
+      - uses: oven-sh/setup-bun@v2   # 可选：仅当需要 bun（TUI 版 / 工具链）
+        with:
+          bun-version: latest
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 复现 CI 失败（不中断 job）
+        id: repro
+        run: |
+          set +e
+          npm test > /tmp/ci-failure.txt 2>&1
+          echo "exit_code=$?" >> /tmp/ci-failure.txt
+          # 截断失败输出（防超长上下文撑爆；200 行足够定位）
+          head -200 /tmp/ci-failure.txt > /tmp/ci-failure-short.txt
+          echo '--- 失败输出（前 200 行）---'
+          cat /tmp/ci-failure-short.txt
+
+      - name: omni exec 修复（stdin 注入失败上下文 · 工具白名单 · JSON 结果）
+        run: |
+          # prompt = 任务，stdin = 失败输出（omni exec 的 stdin 注入形态）
+          cat /tmp/ci-failure-short.txt | omni exec \
+            "修复 CI 测试失败。先用 read_file/list_directory 定位问题，修改代码或测试，
+            再重新运行测试命令验证通过（测试命令见失败输出与 package.json scripts）。
+            最终用一句话总结改动。" \
+            --output-format json \
+            --allowed-tools read_file,write_file,list_directory,search_code,run_command \
+            --max-turns 30 \
+            2> /tmp/omni-progress.log
+          code=$?
+          echo "omni exit=$code"
+          if [ $code -ne 0 ]; then
+            echo '❌ omni 未能完成修复（触达步数上限 / 失败），日志尾段：'
+            tail -20 /tmp/omni-progress.log
+            exit 1
+          fi
+
+      - name: 校验确有改动并生成补丁
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git diff --cached --binary > /tmp/omni-fix.patch
+            echo "✅ 补丁 $(wc -l < /tmp/omni-fix.patch) 行"
+          else
+            echo '⚠️ agent 未产生任何改动'
+            exit 0              # 无改动也放行（apply job 判断空补丁跳过）
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omni-fix-patch
+          path: /tmp/omni-fix.patch
+          if-no-files-found: ignore
+
+  apply-patch:
+    name: 📦 应用补丁并开 PR（有写权限）
+    needs: fix-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: omni-fix-patch
+          path: /tmp/patch
+        continue-on-error: true    # 无补丁 artifact 时跳过
+
+      - name: 检查补丁存在
+        id: has_patch
+        run: |
+          if [ -s /tmp/patch/omni-fix.patch ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 应用补丁到工作区
+        if: steps.has_patch.outputs.found == 'true'
+        run: |
+          git apply --binary --check /tmp/patch/omni-fix.patch \
+            && git apply --binary /tmp/patch/omni-fix.patch
+          git status --short
+
+      - uses: peter-evans/create-pull-request@v6
+        if: steps.has_patch.outputs.found == 'true'
+        with:
+          commit-message: 'fix: omni 自动修复 CI 失败'
+          branch: omni/fix-ci-${{ github.run_id }}
+          delete-branch: true
+          title: '🤖 omni：修复 CI 失败（run #${{ github.run_id }}）'
+          body: |
+            omni 针对本次 CI 失败自动生成的修复补丁。
+
+            - 生成 job 为只读（无写凭据），改动经补丁审查后由本 job 应用
+            - 请 review diff 后合并；若修复不完整，可把失败原因发给 omni 继续修：
+              `omni exec resume <session_id> "仍然失败，原因：…"`
+            - session_id 见上游 `omni exec` 的 `--output-format json` 输出

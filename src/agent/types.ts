@@ -123,6 +123,11 @@ export interface RunOptions {
    * 完整配置对象（/status /context /doctor /config 等命令读取字段；attachRuntime 注入）。
    */
   cfg?: import('../config/index.js').OmniConfig;
+  /**
+   * 附加系统提示段（headless exec `--output-schema` 用：要求模型以 JSON 输出）。
+   * loop 拼进每个 system 提示（与 SessionStart 注入同位置，不污染消息历史）。
+   */
+  systemNote?: string;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */
