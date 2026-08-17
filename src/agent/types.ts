@@ -3,6 +3,7 @@
  */
 import type { ContextOptions } from './context.js';
 import type { EventRecorder } from './events.js';
+import type { HookRunner } from '../hooks/index.js';
 import type { ApprovalRequest, PermissionTier } from '../safety/index.js';
 import type { Tool } from '../tools/index.js';
 import type { AskResult } from '../tools/ask.js';
@@ -111,6 +112,13 @@ export interface RunOptions {
    * MCP 服务器配置（/mcp 命令列出/重连用；attachRuntime 从 cfg 注入）。
    */
   mcpServers?: Record<string, import('../tools/mcp.js').McpServerConfig>;
+  /**
+   * Hooks 生命周期自动化运行器（入口 attachRuntime 按配置创建）：
+   * loop 在工具调用前（PreToolUse）/后（PostToolUse）、回合结束（Stop）触发；
+   * 交互层在用户提交时（UserPromptSubmit）触发；Notification 会话完成 fire-and-forget。
+   * 缺省 undefined = 未配置 hooks（全部 no-op）。
+   */
+  hooks?: HookRunner;
   /**
    * 完整配置对象（/status /context /doctor /config 等命令读取字段；attachRuntime 注入）。
    */

@@ -12,6 +12,7 @@ import { stdin as input, stderr as errOut } from 'node:process';
 import { printBanner } from '../cli/banner.js';
 import { printHelp } from '../cli/args.js';
 import type { OmniConfig } from '../config/index.js';
+import type { HookEventName } from '../hooks/index.js';
 import type { ThinkingDisplay } from '../agent/types.js';
 import { createThinkingDisplay } from '../agent/thinking.js';
 import type { ApprovalRequest } from '../safety/index.js';
@@ -157,6 +158,12 @@ export class ConsoleOutput implements Output {
 
   showHelp(): void {
     printHelp();
+  }
+
+  /** hooks 输出回显（生命周期自动化）：dim 行打印到 stdout（不改写流程，仅提示） */
+  onHookOutput(event: HookEventName, lines: string[]): void {
+    if (!this.opts.stream) return;
+    for (const l of lines) console.log(dim(`⚡ hook[${event}] ${l}`));
   }
 
   /**

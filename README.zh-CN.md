@@ -17,6 +17,7 @@
 - **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单，模型用 `skill` 工具按需加载；`/skill` 命令列出 / `find <词>` 网络检索 skills.sh / `add` 安装
 - **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目 / `/init --global` 全局一键生成，会话结束自动提取新偏好写入全局记忆（偏好去重/矛盾合并）
 - **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
+- **Hooks（生命周期自动化）**：在生命周期事件上挂 shell 命令——改写用户 prompt（`UserPromptSubmit`）、硬拦截工具调用（`PreToolUse`）、把工具后的输出回传模型（`PostToolUse`，如 lint 结果）、要求 agent 修完再停（`Stop`）、会话完成通知（`Notification`），另有 `SessionStart` 注入上下文、子代理 hooks（`SubagentStart`/`SubagentStop` + 子代理工具 Pre/Post）、`PreCompact`；JSON 协议（stdin 喂入 / stdout 返回），matcher 工具名通配，配置分层合并（全局+项目），stderr 捕获，超时/失败降级放行
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
 - **四种产物**：单文件 JS 包（`dist/omni.cjs`，console 版）、原生二进制（`release/omni`，TUI 版）、console npm 包（`omni-<版本>.tgz`）、TUI npm 包（`omni-tui-<版本>.tgz`，需 bun）；GitHub Actions 打 tag 自动构建发布
@@ -112,9 +113,100 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   },
   "mcpServers": {                        // MCP 外部工具：{ 名称: { command, args?, env? } }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
+  },
+  "hooks": {                              // 生命周期自动化（可选，对标 Claude Code）：{ 事件: [{ matcher?, command, timeoutMs? }] }
+    "PostToolUse": [{ "matcher": "write_file", "command": "sh scripts/lint-hook.sh" }]
   }
 }
 ```
+
+完整协议与用例见 [Hooks（生命周期自动化）](#hooks生命周期自动化)。
+
+## Hooks（生命周期自动化）
+
+Hooks 在生命周期事件上挂 shell 命令（对标 Claude Code hooks）。事件上下文经 **stdin** 喂入 hook 脚本，脚本在 **stdout** 返回 JSON 决策——可以改写 prompt、硬拦截工具调用、把额外上下文回传模型（如 lint 结果）、要求 agent 修完再停，或发送通知。
+
+### 配置
+
+```jsonc
+"hooks": {
+  "UserPromptSubmit": [{ "command": "node scripts/rewrite-prompt.mjs" }],
+  "PreToolUse": [
+    { "matcher": "write_file", "command": "sh scripts/guard-env.sh", "timeoutMs": 10000 }
+  ],
+  "PostToolUse": [
+    { "matcher": "write_file", "command": "sh scripts/lint-hook.sh", "timeoutMs": 30000 }
+  ],
+  "Stop": [{ "command": "node scripts/require-tests.mjs" }],
+  "Notification": [{ "command": "sh scripts/notify.sh" }]
+}
+```
+
+每个 hook 条目：
+
+| 字段 | 说明 |
+|---|---|
+| `command` | 要执行的 shell 命令（必填）——如 `sh lint.sh` / `node guard.mjs` / `python check.py` |
+| `matcher` | PreToolUse / PostToolUse 的工具名过滤：`*` = 全部（默认）、`read_*` / `*_file` 通配；其它事件忽略该字段 |
+| `timeoutMs` | 超时毫秒（默认 `60000`）；超时 kill 后该事件**降级放行** |
+
+失败放行：未知事件名、空命令、命令启动失败、输出非 JSON、非零退出码都会被忽略——坏掉的 hook 永远不会卡住 agent（失败原因会回显到终端）。
+
+**配置分层**：`hooks` 字段按配置层级**合并**而非覆盖（全局 `~/.config/omni/omni.json` → 项目 `omni.json` → 自定义），hook 累积生效，同 matcher 时后层优先。hook 的 **stderr 也捕获**并与 stdout 一起回显（前缀 `⚡ hook[<事件>] …`）。
+
+### 事件与 JSON 协议
+
+事件上下文写入 hook 的 stdin：`{ "cwd", "hook_event_name", "source", "session_id", "tool_name", "tool_input", "tool_response", "prompt", "stop_hook_active" }`（字段随事件出现）。hook 在 stdout 打印一个 JSON 对象：
+
+| 事件 | 触发时机 | 相关输出字段 |
+|---|---|---|
+| `UserPromptSubmit` | 用户提交 prompt 后 | `updatedPrompt`（替换 prompt）· `hookSpecificOutput` |
+| `PreToolUse` | 工具调用前（参数解析后、安全闸门前） | `decision: "approve" \| "block"` + `reason`（**硬拦截**）· `updatedInput`（合并进工具参数）· `hookSpecificOutput` |
+| `PostToolUse` | 工具调用后 | `hookSpecificOutput`（字符串数组，追加进工具结果，如 lint 输出供模型自修复） |
+| `Stop` | agent 准备结束 | `decision: "continue" \| "block"` + `reason`（block → 要求 agent 继续修；`stop_hook_active` 置 true 后**只允许续一次**，防死循环） |
+| `Notification` | 会话完成（fire-and-forget，不等待） | `hookSpecificOutput` |
+| `SessionStart` | 会话开始、首轮之前（仅一次） | `sessionStartOutput`（字符串数组，追加进首个 system 提示作为上下文）· `hookSpecificOutput` |
+| `SubagentStart` | delegate 子代理启动 | `hookSpecificOutput` |
+| `SubagentStop` | delegate 子代理结束 | `hookSpecificOutput` |
+| `PreCompact` | 长对话摘要压缩之前 | `decision: "continue" \| "block"`（block → 本次跳过压缩）· `hookSpecificOutput` |
+
+hook 输出会回显到终端（`⚡ hook[<事件>] …`；TUI 以对话流 dim 行展示，截断 5 行防刷屏）——完整 `hookSpecificOutput` 仍会回传模型。
+
+### 用例
+
+1. **编辑后自动 lint（PostToolUse）**——对刚写入的文件跑 linter 并把结果回传，让模型自己修：
+   ```jsonc
+   "hooks": { "PostToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/lint-hook.mjs" }] }
+   ```
+   `examples/hooks/lint-hook.mjs`：从 stdin 读事件 JSON（`.tool_input.path`），对写入的文件跑 ESLint，打印 `{"hookSpecificOutput": ["lint 输出…"]}`——输出以 `[hook 输出]` 追加进工具结果，模型看到后即可修复。
+2. **敏感写入防护（PreToolUse）**——无论模型想写什么，`.env` / 密钥类文件一律硬拦截：
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/guard-env.mjs" }] }
+   ```
+   `examples/hooks/guard-env.mjs` 检查 `.tool_input.path`，命中 `.env*` / 密钥 / 证书即打印 `{"decision": "block", "reason": "…"}`——调用在**安全闸门之前**被拦截、绝不执行（无副作用），原因以 `已拦截（hook）` 回传模型。
+3. **测试不过不许停（Stop）**——测试套件为红时阻止 agent 收尾：
+   ```jsonc
+   "hooks": { "Stop": [{ "command": "node examples/hooks/require-tests.mjs" }] }
+   ```
+   `examples/hooks/require-tests.mjs` 跑 `npm test`，失败则打印 `{"decision": "block", "reason": "测试未通过…"}`——要求 agent 继续修（仅一次；`stop_hook_active` 防无限循环），请按项目实际测试命令修改。
+4. **改写 prompt（UserPromptSubmit）**——给每条用户消息注入项目策略或额外上下文：
+   ```jsonc
+   "hooks": { "UserPromptSubmit": [{ "command": "node examples/hooks/rewrite-prompt.mjs" }] }
+   ```
+   `examples/hooks/rewrite-prompt.mjs` 打印 `{"updatedPrompt": "<原文> + 策略"}`——改写后的 prompt 才是模型实际看到的（UI 仍回显你输入的原话）。
+5. **会话完成通知（Notification）**——每次会话结束发通知（fire-and-forget，不阻塞流程）。
+6. **危险命令防护（PreToolUse enforcement）**——无论模型意图如何，`rm -rf /`、磁盘擦写等破坏性命令一律硬拦截：
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-dangerous.mjs" }] }
+   ```
+   `examples/hooks/guard-dangerous.mjs` 对 `.tool_input.command` 扫描破坏性命令模式，命中即打印 `{"decision": "block", "reason": "…"}`——命令绝不执行（与内置 `safe` 档位互补，这是**规则强制**而非模型自觉）。
+7. **拦截 git push（PreToolUse enforcement）**——阻止 agent 推送到远程仓库：
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-git-push.mjs" }] }
+   ```
+   `examples/hooks/guard-git-push.mjs` 拦截一切 `git push …` 调用，提示用户自行推送。
+
+> 可运行的示例在 `examples/hooks/`（guard-env / guard-dangerous / guard-git-push / lint-hook / require-tests / rewrite-prompt）——完整目录见 `examples/hooks/README.md`。另附 mock hook（`scripts/mock-hook.mjs`，模式 `pass/block/updated/output/rewrite/notify/fail/slow`）用于测试——单元 + 端到端覆盖见 `scripts/probe-tmp/probe-hooks.ts`。
 
 ## 架构
 
@@ -140,6 +232,7 @@ src/
     subagent.ts         # 子代理：隔离上下文嵌套循环（共用 Safety 闸门）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
   safety/               # 安全护栏：权限分级（policy）/ 审批 / 审计日志（audit）
+  hooks/                # 生命周期自动化：HookRunner（9 事件、JSON 协议 stdin/stdout、matcher 通配、stderr 捕获、超时/失败降级放行；配置分层合并全局+项目）
   tools/                # 工具注册表：5 基础工具 + skill 静态注册；delegate / mcp_* 运行时注入
     undo.ts             # /undo 文件撤销：write_file 快照 + 恢复 + redo 重做栈
   output/               # 输出层：console / TUI 共用格式化（format.ts 工具卡片、types.ts 接口）
@@ -200,6 +293,7 @@ npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
 - [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换，子代理同步
 - [x] **技能系统（Agent Skill / SKILL.md）**：自动发现 + 清单注入 + `skill` 工具按需加载 + `/skill` 命令（列出 / find 网络检索 / add 安装），对标 opencode
 - [x] **更多交互命令**：`/compact` 手动压缩上下文 · `/agents` 查看子代理配置 · `/review` 代码审查（typecheck + git diff → LLM）· `/variants` 切换模型思考级别（reasoning_effort）· `/model` 切换/添加模型（config `models` 可配多端点，切换时重建客户端，子代理同步；`/model add <名称> [--base-url] [--api-key]` 运行时添加并持久化到配置文件）· `/status` 会话状态 · `/context` 上下文用量 · `/export` 导出 Markdown · `/config` 查看配置 · `/mcp` 管理 MCP 服务器（reconnect）· `/diff` 查看改动 · `/rename` 会话改名（meta 落盘）· `/resume` 恢复历史会话 · `/redo` 重做撤销 · `/doctor` 环境诊断
+- [x] **Hooks 生命周期自动化**：`UserPromptSubmit` 改写 prompt / `PreToolUse` 硬拦截 + 改写参数 / `PostToolUse` 输出回传（lint）/ `Stop` 要求继续（限一次）/ `Notification` 通知 + `SessionStart` 上下文注入 / `SubagentStart`·`SubagentStop` 子代理 hooks / `PreCompact`——JSON 协议 + matcher 通配 + 配置分层合并（全局+项目）+ stderr 捕获，超时/失败降级放行；enforcement 示例（guard-env / guard-dangerous / guard-git-push）在 `examples/hooks/`
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 技术栈

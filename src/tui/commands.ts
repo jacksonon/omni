@@ -107,6 +107,8 @@ export interface TuiCommandContext {
    * 面板数据源 = events.events（内存全量事件，含恢复的历史）。
    */
   events?: EventRecorder;
+  /** Hooks 运行器（/clear 后 resetSessionStart；interactive 从 runOpts.hooks 传入） */
+  hooks?: import('../hooks/index.js').HookRunner;
 }
 
 /**
@@ -257,6 +259,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
     run: (ctx) => {
       ctx.messages.length = 0;
       ctx.out.clearScrollback();
+      // 新一轮会话：SessionStart hook 重新触发（sessionStart 每会话一次，/clear 后重置）
+      ctx.hooks?.resetSessionStart();
     },
   },
   {

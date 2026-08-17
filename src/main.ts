@@ -21,6 +21,7 @@ import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig } from './config/index.js';
+import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
@@ -99,6 +100,13 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   // ask_user 提问回调（Output 层实现 UI——console readline / TUI 选项面板）；
   // 未实现/非交互 → undefined（工具返回「无法询问」，模型自行决定）
   const askUser = output.askUser ? output.askUser.bind(output) : undefined;
+  // Hooks 生命周期自动化（对标 Claude Code）：配置了 hooks 才创建（未配置 = no-op）。
+  // hook 输出经 Output.onHookOutput 回显（TUI 对话流 / console dim 行）；超时/失败降级放行
+  ctx.runOpts.hooks = new HookRunner({
+    hooks: cfg.hooks,
+    cwd: process.cwd(),
+    onOutput: (event, lines) => output.onHookOutput?.(event, lines),
+  });
   const gate = new Safety({
     tier: cfg.permission,
     audit: cfg.auditLog,
@@ -143,6 +151,7 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     preloadMaxFiles: cfg.preloadMaxFiles,
     preloadMaxBytes: cfg.preloadMaxBytes,
     skills: cfg.skills,
+    hooks: ctx.runOpts.hooks, // PreCompact：长对话压缩前 fire-and-forget
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+
   // MCP 外部工具（失败只警告不阻塞）
@@ -154,7 +163,7 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   if (cfg.skills === false) tracked = tracked.filter((t) => t.name !== 'skill');
   const toolchain = [...tracked];
   if (cfg.allowSubagents) {
-    toolchain.push(createDelegateTool({ modelRuntime: ctx.runOpts.modelRuntime!, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps }));
+    toolchain.push(createDelegateTool({ modelRuntime: ctx.runOpts.modelRuntime!, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps, hooks: ctx.runOpts.hooks }));
   }
   // ask_user：运行时注入提问回调（非交互输出（管道/单任务无 UI）时仍注册——工具
   // 返回「无法询问」让模型自行决定，不打断任务）
@@ -265,7 +274,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
         process.exit(130);
       });
     }
-    messages.push({ role: 'user', content: singleTask });
+    let userPrompt = singleTask;
+    // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
+    if (runOpts.hooks?.has('UserPromptSubmit')) {
+      userPrompt = (await runOpts.hooks.userPromptSubmit(singleTask)).prompt;
+    }
+    messages.push({ role: 'user', content: userPrompt });
     await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
     await runAgent(client, cfg.model, messages, runOpts, output);
     return;

@@ -99,5 +99,34 @@
   //     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allow"]
   //   }
   // }
-  "mcpServers": {}
+  "mcpServers": {},
+
+  // ── Hooks 生命周期自动化（对标 Claude Code）──────────────
+  // 可选：在生命周期事件上挂 shell 命令——事件 JSON 经 stdin 喂入脚本，stdout 返回 JSON 决策。
+  // 事件：
+  //   UserPromptSubmit —— 用户提交 prompt 后（返回 {"updatedPrompt": "改写后"} 可改写 prompt）
+  //   PreToolUse —— 工具调用前（返回 {"decision": "block", "reason": "..."} 可**硬拦截**；
+  //                 {"updatedInput": {...}} 可改写工具参数；matcher 按工具名过滤）
+  //   PostToolUse —— 工具调用后（返回 {"hookSpecificOutput": ["lint 结果"]} 追加回传上下文，
+  //                如编辑后自动 lint 让模型自修复）
+  //   Stop —— agent 准备结束（返回 {"decision": "block", "reason": "..."} 可要求继续修；
+  //           stop_hook_active=true 后忽略 block，只允许续一次防死循环）
+  //   Notification —— 会话完成通知（fire-and-forget）
+  // 每项：{ "matcher"?, "command", "timeoutMs"? }——matcher 支持 `*`（全部）/`read_*` 前缀通配；
+  // 超时（默认 60s）/命令失败/输出非 JSON → 降级放行不阻塞主流程。
+  // 事件：UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / SessionStart
+  //      / SubagentStart / SubagentStop / PreCompact（完整协议见 README「Hooks」章节）。
+  // 配置分层合并：全局 ~/.config/omni/omni.json → 项目 omni.json → 自定义，逐层累加同 matcher 后层优先。
+  // 可直接运行的完整示例见 examples/hooks/（guard-env 拦截 .env · guard-dangerous 防危险命令 ·
+  // guard-git-push 防 git push · lint-hook 编辑后自动 ESLint · require-tests 测试不过不许停 ·
+  // rewrite-prompt 注入项目规范；完整目录见 examples/hooks/README.md）。
+  // "hooks": {
+  //   "PostToolUse": [
+  //     { "matcher": "write_file", "command": "node examples/hooks/lint-hook.mjs", "timeoutMs": 30000 }
+  //   ],
+  //   "PreToolUse": [
+  //     { "matcher": "write_file", "command": "node examples/hooks/guard-env.mjs" },
+  //     { "matcher": "run_command", "command": "node examples/hooks/guard-dangerous.mjs" }
+  //   ]
+  // }
 }

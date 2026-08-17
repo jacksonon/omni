@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { HOOK_EVENTS, type HookDefinition, type HooksConfig } from '../hooks/index.js';
 import type { PermissionTier } from '../safety/index.js';
 import type { McpServerConfig } from '../tools/mcp.js';
 import { parseJsonc } from './jsonc.js';
@@ -80,8 +81,16 @@ export interface OmniConfig {
    * 即时切换，命令面板的具体输出内容（/status 列表等）暂保持中文。
    */
   language: 'zh' | 'en';
-  /** MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
+  /**
+   * MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Hooks 生命周期自动化（对标 Claude Code）：{ 事件: [{ matcher?, command, timeoutMs? }] }。
+   * 事件：UserPromptSubmit（改写 prompt）/ PreToolUse（硬拦截/改写参数）/ PostToolUse（输出回传上下文）/ Stop（要求继续修）/ Notification（通知）。
+   * JSON 协议：事件上下文经 stdin 喂入，stdout 返回 JSON 决策（decision/updatedPrompt/updatedInput/hookSpecificOutput）。
+   * matcher 按工具名过滤（`*`=全部，`read_*` 前缀通配）；超时/失败降级放行不阻塞主流程。
+   */
+  hooks?: HooksConfig;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
   sources: string[];
 }
@@ -198,6 +207,34 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   }
   // 界面语言：只认 zh/en，其余回退默认中文
   if (data.language === 'zh' || data.language === 'en') cfg.language = data.language;
+  if (data.hooks && typeof data.hooks === 'object' && !Array.isArray(data.hooks)) {
+    // **分层叠加合并**（全局 → 项目 → 自定义）：同一事件各层的 hook 全部保留并按层顺序运行
+    //（低层在前）——项目 hook 与全局 hook 共存，无需在单层重复声明。
+    for (const [eventName, defs] of Object.entries(data.hooks as Record<string, unknown>)) {
+      if (!HOOK_EVENTS.includes(eventName as (typeof HOOK_EVENTS)[number])) continue; // 未知事件丢弃
+      if (!Array.isArray(defs)) continue;
+      const list: HookDefinition[] = [];
+      for (const d of defs) {
+        if (!d || typeof d !== 'object') continue;
+        const v = d as Record<string, unknown>;
+        if (typeof v.command !== 'string' || !v.command.trim()) continue;
+        list.push({
+          command: v.command.trim(),
+          matcher: typeof v.matcher === 'string' && v.matcher.trim() ? v.matcher.trim() : undefined,
+          timeoutMs:
+            typeof v.timeoutMs === 'number' && Number.isFinite(v.timeoutMs)
+              ? Math.max(1000, Math.floor(v.timeoutMs))
+              : undefined,
+        });
+      }
+      if (list.length === 0) continue;
+      // 追加到既有列表（低层已写入的保留在前），实现跨层叠加
+      cfg.hooks = {
+        ...cfg.hooks,
+        [eventName]: [...(cfg.hooks?.[eventName as keyof HooksConfig] ?? []), ...list],
+      };
+    }
+  }
   if (data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)) {
     const servers: Record<string, McpServerConfig> = {};
     for (const [name, v] of Object.entries(data.mcpServers as Record<string, unknown>)) {

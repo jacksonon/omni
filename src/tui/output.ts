@@ -5,6 +5,7 @@
  */
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
+import type { HookEventName } from '../hooks/index.js';
 import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
@@ -368,6 +369,12 @@ export class TuiOutput implements Output {
   onMaxSteps(max: number): void {
     pushLine(this.state, { kind: 'warn', text: `⚠️ 已达到最大步数（${max}），任务可能未完成` });
     this.state.status = t(this.state.language, 'status.aborted');
+    this.schedulePaint();
+  }
+
+  /** hooks 输出回显（生命周期自动化）：写入对话流 meta 行（dim，不打断流程） */
+  onHookOutput(event: HookEventName, lines: string[]): void {
+    for (const l of lines) pushLine(this.state, { kind: 'meta', text: `⚡ hook[${event}] ${l}` });
     this.schedulePaint();
   }
 

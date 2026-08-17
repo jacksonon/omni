@@ -125,6 +125,7 @@ export async function runInteractive(
     if (cmd === '/clear') {
       messages.length = 0;
       savedCount = 0;
+      runOpts.hooks?.resetSessionStart(); // 新一轮会话：SessionStart hook 重新触发
       console.log(dim('（已清空上下文，开始新一轮对话）'));
       safePrompt();
       continue;
@@ -708,9 +709,14 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    messages.push({ role: 'user', content: cmd });
-    out.onUserMessage(cmd);
-    runOpts.events?.user(cmd); // 轨迹：用户消息（source=user）
+    // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
+    let userText = cmd;
+    if (runOpts.hooks?.has('UserPromptSubmit')) {
+      userText = (await runOpts.hooks.userPromptSubmit(cmd)).prompt;
+    }
+    messages.push({ role: 'user', content: userText });
+    out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
+    runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
     // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
     // recorder 传下去——压缩成功时记 compact 轨迹事件）
     await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);

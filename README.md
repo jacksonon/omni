@@ -17,6 +17,7 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn, and the model loads full content on demand via the `skill` tool; `/skill` lists / `find <term>` searches skills.sh online / `add` installs
 - **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global one-shot generation, session-end auto-extraction of new preferences into global memory (with dedup/conflict merging)
 - **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk)
+- **Hooks (lifecycle automation)**: attach shell commands to lifecycle events — rewrite user prompts (`UserPromptSubmit`), hard-block tool calls (`PreToolUse`), feed post-tool output back to the model such as lint results (`PostToolUse`), require the agent to keep working before it stops (`Stop`), session-complete notifications (`Notification`), plus `SessionStart` context injection, subagent hooks (`SubagentStart`/`SubagentStop` + Pre/Post around subagent tool calls) and `PreCompact`; JSON protocol over stdin/stdout, wildcard tool-name matchers, config layers merged (global + project), stderr captured, timeout/failure degrade to pass-through
 - **Swappable backends**: `OMNI_BASE_URL` is compatible with any OpenAI-protocol service (OpenAI / DeepSeek / Zhipu / Moonshot / Grok etc.)
 - **Layered config**: defaults → global config → project config → custom config → env vars → CLI args (JSONC with comments)
 - **Four build artifacts**: single-file JS bundle (`dist/omni.cjs`, console), native binary (`release/omni`, TUI), console npm package (`omni-<version>.tgz`), TUI npm package (`omni-tui-<version>.tgz`, requires bun); GitHub Actions builds and publishes automatically on tag push
@@ -112,9 +113,100 @@ Config fields (see `omni.example.jsonc` for a full example):
   },
   "mcpServers": {                        // MCP external tools: { name: { command, args?, env? } }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
+  },
+  "hooks": {                              // lifecycle automation (optional, Claude Code style): { event: [{ matcher?, command, timeoutMs? }] }
+    "PostToolUse": [{ "matcher": "write_file", "command": "sh scripts/lint-hook.sh" }]
   }
 }
 ```
+
+See [Hooks (Lifecycle Automation)](#hooks-lifecycle-automation) for the full protocol and use cases.
+
+## Hooks (Lifecycle Automation)
+
+Hooks attach shell commands to lifecycle events (modeled on Claude Code hooks). A hook receives a JSON context on **stdin** and returns a JSON decision on **stdout** — it can rewrite the prompt, hard-block a tool call, feed extra context back to the model (e.g. lint results), require the agent to keep working before it stops, or send a notification.
+
+### Config
+
+```jsonc
+"hooks": {
+  "UserPromptSubmit": [{ "command": "node scripts/rewrite-prompt.mjs" }],
+  "PreToolUse": [
+    { "matcher": "write_file", "command": "sh scripts/guard-env.sh", "timeoutMs": 10000 }
+  ],
+  "PostToolUse": [
+    { "matcher": "write_file", "command": "sh scripts/lint-hook.sh", "timeoutMs": 30000 }
+  ],
+  "Stop": [{ "command": "node scripts/require-tests.mjs" }],
+  "Notification": [{ "command": "sh scripts/notify.sh" }]
+}
+```
+
+Each hook entry:
+
+| Field | Description |
+|---|---|
+| `command` | Shell command to run (required) — e.g. `sh lint.sh` / `node guard.mjs` / `python check.py` |
+| `matcher` | Tool-name filter for PreToolUse / PostToolUse: `*` = all (default), `read_*` / `*_file` wildcards; hooks for other events ignore it |
+| `timeoutMs` | Timeout in ms (default `60000`); on timeout the hook is killed and the event **degrades to pass-through** |
+
+Fail-open behavior: unknown event names, empty commands, failed spawns, non-JSON output and non-zero exit codes are all ignored — a broken hook never blocks the agent (the failure reason is echoed to the terminal).
+
+**Config layering**: the `hooks` field is merged across config layers (global `~/.config/omni/omni.json` → project `omni.json` → custom) instead of replaced — hooks accumulate, with later layers taking precedence for the same `matcher`. Hook `stderr` is captured and echoed alongside stdout output (prefix `⚡ hook[<Event>] …`).
+
+### Events & JSON protocol
+
+The event context is written to the hook's stdin: `{ "cwd", "hook_event_name", "source", "session_id", "tool_name", "tool_input", "tool_response", "prompt", "stop_hook_active" }` (fields present depend on the event). The hook prints one JSON object on stdout:
+
+| Event | When | Relevant output JSON fields |
+|---|---|---|
+| `UserPromptSubmit` | after the user submits a prompt | `updatedPrompt` (replaces the prompt) · `hookSpecificOutput` |
+| `PreToolUse` | before a tool call (after arg parsing, before the safety gate) | `decision: "approve" \| "block"` + `reason` (**hard-block**) · `updatedInput` (merged into the tool args) · `hookSpecificOutput` |
+| `PostToolUse` | after a tool call | `hookSpecificOutput` (string array appended to the tool result, e.g. lint output the model can act on) |
+| `Stop` | the agent is about to finish | `decision: "continue" \| "block"` + `reason` (block → the agent is told to keep working; `stop_hook_active` becomes true and only **one** continuation is allowed, preventing infinite loops) |
+| `Notification` | session complete (fire-and-forget, never awaited) | `hookSpecificOutput` |
+| `SessionStart` | once, before the first turn | `sessionStartOutput` (string array appended to the first system prompt as context) · `hookSpecificOutput` |
+| `SubagentStart` | a `delegate` subagent spawns | `hookSpecificOutput` |
+| `SubagentStop` | a `delegate` subagent finishes | `hookSpecificOutput` |
+| `PreCompact` | before long-conversation summarization | `decision: "continue" \| "block"` (block → skip compaction this time) · `hookSpecificOutput` |
+
+Hook output is echoed to the terminal (`⚡ hook[<Event>] …`; TUI shows dim lines in the conversation flow, capped at 5 lines to avoid spam) — the full `hookSpecificOutput` is still passed to the model.
+
+### Use cases
+
+1. **Auto-lint after edits (PostToolUse)** — run the linter on the file just written and feed the result back so the model fixes its own mistakes:
+   ```jsonc
+   "hooks": { "PostToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/lint-hook.mjs" }] }
+   ```
+   `examples/hooks/lint-hook.mjs`: reads the event JSON from stdin (`.tool_input.path`), runs ESLint on the written file, and prints `{"hookSpecificOutput": ["lint output…"]}` — the output is appended to the tool result as `[hook 输出]`, the model sees it and fixes the issues.
+2. **Guard sensitive writes (PreToolUse)** — hard-block writes to `.env` / secrets no matter what the model wants:
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/guard-env.mjs" }] }
+   ```
+   `examples/hooks/guard-env.mjs` inspects `.tool_input.path`; if it matches `.env*` / secrets / certs, it prints `{"decision": "block", "reason": "…"}` — the call is intercepted **before the safety gate** and never executes (no side effects), and the reason is returned to the model as `已拦截（hook）`.
+3. **Require tests to pass before stopping (Stop)** — block the agent from finishing while the suite is red:
+   ```jsonc
+   "hooks": { "Stop": [{ "command": "node examples/hooks/require-tests.mjs" }] }
+   ```
+   `examples/hooks/require-tests.mjs` runs `npm test`; on failure it prints `{"decision": "block", "reason": "tests failing: …"}` — the agent is told to continue fixing (once; `stop_hook_active` prevents an infinite loop). Adjust the test command to your project.
+4. **Rewrite the prompt (UserPromptSubmit)** — inject project policy or extra context into every user message:
+   ```jsonc
+   "hooks": { "UserPromptSubmit": [{ "command": "node examples/hooks/rewrite-prompt.mjs" }] }
+   ```
+   `examples/hooks/rewrite-prompt.mjs` prints `{"updatedPrompt": "<original> + policy"}` — the rewritten prompt is what the model actually sees (the UI still echoes what you typed).
+5. **Session-complete notification (Notification)** — notify on every finished session (fire-and-forget, never blocks the flow).
+6. **Guard dangerous commands (PreToolUse enforcement)** — hard-block `rm -rf /`, disk-wiping and other destructive patterns regardless of model intent:
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-dangerous.mjs" }] }
+   ```
+   `examples/hooks/guard-dangerous.mjs` scans `.tool_input.command` against a destructive-pattern list; on a hit it prints `{"decision": "block", "reason": "…"}` — the call never executes (mirrors the built-in `safe` tier but is enforceable by rule, not model discretion).
+7. **Block `git push` (PreToolUse enforcement)** — stop the agent from pushing to a remote:
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-git-push.mjs" }] }
+   ```
+   `examples/hooks/guard-git-push.mjs` blocks any `git push …` invocation with a reminder to let the user push manually.
+
+> Runnable examples live in `examples/hooks/` (guard-env / guard-dangerous / guard-git-push / lint-hook / require-tests / rewrite-prompt) — see `examples/hooks/README.md` for the full catalog. A mock hook (`scripts/mock-hook.mjs`, modes `pass/block/updated/output/rewrite/notify/fail/slow`) is included for testing — see `scripts/probe-tmp/probe-hooks.ts` for unit + end-to-end coverage.
 
 ## Architecture
 
@@ -140,6 +232,7 @@ src/
     subagent.ts         # subagents: isolated-context nested loop (shared Safety gate)
     title.ts            # session title: generated async after the first turn, set as terminal window title
   safety/               # safety guardrails: permission tiers (policy) / approval / audit log (audit)
+  hooks/                # lifecycle automation: HookRunner (9 events, JSON protocol over stdin/stdout, wildcard matchers, stderr capture, timeout/failure degrade to pass-through; config layering merges global+project)
   tools/                # tool registry: 5 base tools + skill static; delegate / mcp_* injected at runtime
     undo.ts             # /undo file undo: write_file snapshots + restore + redo stack
   output/               # output layer: console / TUI shared formatting (format.ts tool cards, types.ts interface)
@@ -200,6 +293,7 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 - [x] **/permission runtime permission switch**: low=read-only / medium=safe ask-on-danger (default) / high=ask everything / full=pass-through — TUI panel + CLI arg instant switching, subagents stay in sync
 - [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection + `skill` tool on-demand loading + `/skill` command (list / find online / add), aligned with opencode
 - [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
+- [x] **Hooks lifecycle automation**: `UserPromptSubmit` prompt rewrite / `PreToolUse` hard-block + arg rewrite / `PostToolUse` output feedback (lint) / `Stop` require-continue (once) / `Notification` + `SessionStart` context injection / `SubagentStart`·`SubagentStop` subagent hooks / `PreCompact` — JSON protocol with wildcard matchers, layered config (global+project merged), stderr capture, timeout/failure degrade to pass-through; enforcement examples (guard-env / guard-dangerous / guard-git-push) in `examples/hooks/`
 - [ ] Advanced: SWE-bench eval, MCP resources/prompts protocol, memory progressive disclosure/TTL, nested AGENTS.md
 
 ## Tech Stack

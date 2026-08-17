@@ -9,6 +9,7 @@
  */
 import { runSubagent } from '../agent/subagent.js';
 import type { ModelRuntime } from '../client.js';
+import type { HookRunner } from '../hooks/index.js';
 import type { Safety } from '../safety/index.js';
 import { truncate } from './util.js';
 import type { Tool } from './types.js';
@@ -22,6 +23,8 @@ export interface DelegateToolOptions {
   gate: Safety;
   /** 子代理最大循环步数（缺省 10） */
   maxSteps?: number;
+  /** Hooks 运行器（与主代理同一实例）：SubagentStart/Stop + 子代理工具调用过 Pre/PostUse */
+  hooks?: HookRunner;
 }
 
 export function createDelegateTool(opts: DelegateToolOptions): Tool {
@@ -48,6 +51,7 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
         tools: subTools,
         gate: opts.gate,
         maxSteps: opts.maxSteps,
+        hooks: opts.hooks,
       });
       return `子代理结果：\n${truncate(answer)}`;
     },

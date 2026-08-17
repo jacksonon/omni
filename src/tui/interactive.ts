@@ -629,6 +629,7 @@ export async function runTuiInteractive(
         mcpServers: runOpts.mcpServers,
         // 轨迹事件记录器（/trace 面板数据源 + /compact 事件）
         events: runOpts.events,
+        hooks: runOpts.hooks,
         // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
         onReconnectMcp: async () => {
           closeMcpClients();
@@ -678,9 +679,14 @@ export async function runTuiInteractive(
         continue;
       }
 
-      messages.push({ role: 'user', content: cmd });
-      out.onUserMessage(cmd);
-      runOpts.events?.user(cmd); // 轨迹：用户消息（source=user）
+      // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
+      let userText = cmd;
+      if (runOpts.hooks?.has('UserPromptSubmit')) {
+        userText = (await runOpts.hooks.userPromptSubmit(cmd)).prompt;
+      }
+      messages.push({ role: 'user', content: userText });
+      out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
+      runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
       // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context；
       // recorder 传下去——压缩成功时记 compact 轨迹事件）
       await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);

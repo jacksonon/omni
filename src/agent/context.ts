@@ -32,6 +32,7 @@ import {
 } from './memory.js';
 import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
 import type { EventRecorder } from './events.js';
+import type { HookRunner } from '../hooks/index.js';
 
 export interface ContextOptions {
   /** 是否加载全局记忆 ~/.config/omni/AGENTS.md（跨项目共享；默认 true） */
@@ -52,6 +53,8 @@ export interface ContextOptions {
   preloadMaxFiles?: number;
   /** 单文件预载字节上限（默认 30KB） */
   preloadMaxBytes?: number;
+  /** Hooks 运行器（PreCompact：压缩前 fire-and-forget；attachRuntime 注入） */
+  hooks?: HookRunner;
 }
 
 /** 预载消息内容前缀（同内容重复判断 / 调试识别用） */
@@ -157,6 +160,8 @@ export async function summarizeContext(
   let headStart = 0;
   while (headStart < split && messages[headStart].role === 'system') headStart++;
   if (headStart >= split) return; // 全是 system（不应发生）→ 不压缩
+  // Hooks：PreCompact——压缩真正发生前 fire-and-forget（可归档/通知；失败静默）
+  opts.hooks?.preCompact(messages.length);
   const head = messages.slice(headStart, split);
   const summary = await summarizeMessages(client, model, head);
   if (!summary) return; // 失败静默

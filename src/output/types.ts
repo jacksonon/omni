@@ -9,6 +9,7 @@
  */
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
+import type { HookEventName } from '../hooks/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import type { WriteDiff } from './format.js';
@@ -92,4 +93,9 @@ export interface Output {
   clearScrollback(): void;
   /** 内联显示帮助（/help 命令；TUI 写入滚动区，console 打印帮助文本） */
   showHelp(): void;
+  /**
+   * Hooks 输出回显（生命周期自动化；TUI 写入对话流 meta 行 / console stderr）。
+   * 可选：缺省时 hook 输出静默（仍按决策生效）。
+   */
+  onHookOutput?(event: HookEventName, lines: string[]): void;
 }

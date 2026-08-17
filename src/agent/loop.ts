@@ -171,12 +171,24 @@ export async function runAgent(
     summarize: formatToolCall,
   });
 
+  // Stop hook 的续命标记：模型已被要求继续过一次后为 true（只允许续一次，防 hook 无限循环）。
+  // 每次 runAgent = 一个用户回合 → 每回合一次续命机会
+  let stopHookActive = false;
+  // Hooks：SessionStart——会话开始（每会话一次，sessionStart 内部标记去重）。
+  // hookSpecificOutput 注入**首轮系统提示词**（如启动策略/环境快照）——不污染消息历史；
+  // 后续回合 sessionStart 返回空（不再触发）
+  let sessionNote = '';
+  if (opts.hooks?.has('SessionStart')) {
+    const lines = await opts.hooks.sessionStart();
+    if (lines.length > 0) sessionNote = `\n\n[SessionStart hook]\n${lines.join('\n')}`;
+  }
+
   for (let step = 0; step < maxSteps; step++) {
     // 系统提示词：每轮请求前构造带 system 消息的副本（不能 push 进 messages——
     // 该数组被原地追加 assistant/tool 消息用于跨轮上下文，直接 push 会每轮重复累积）。
     // buildSystemPrompt 每轮调用 → persona 里的 model/cwd/权限档位始终是最新值
     //（/model、/permission 运行时切换即时生效）
-    const systemPrompt = buildSystemPrompt(model, process.cwd(), opts.permission);
+    const systemPrompt = buildSystemPrompt(model, process.cwd(), opts.permission) + sessionNote;
     const requestMessages: ChatCompletionMessageParam[] = [
       { role: 'system', content: planMode ? systemPrompt + PLAN_MODE_NOTE : systemPrompt },
       ...messages,
@@ -379,8 +391,23 @@ export async function runAgent(
       firstTokenAt !== null ? Date.now() - firstTokenAt : null
     );
 
-    // 没有工具调用 → 模型给出了最终回答，循环结束
+    // 没有工具调用 → 模型给出了最终回答，循环结束（先过 Stop hook）
     if (toolCalls.size === 0) {
+      // Hooks：Stop——agent 准备结束时 hook 返回 block（reason）可要求继续修；
+      // stop_hook_active=true 后 hook 的 block 被忽略（只允许续一次，防 hook 无限循环）
+      if (opts.hooks?.has('Stop')) {
+        const stop = await opts.hooks.stop(stopHookActive);
+        if (!stop.allow) {
+          messages.push({
+            role: 'system',
+            content: `[Stop hook 要求继续] ${stop.reason ?? '请继续修复问题'}`,
+          });
+          stopHookActive = true; // 已续一次：后续 Stop 的 block 不再生效
+          continue; // 下一轮：模型看到要求并继续修
+        }
+      }
+      // Hooks：Notification——会话完成通知（fire-and-forget，不等待）
+      opts.hooks?.notification({ message_type: 'session_complete', stop_hook_active: stopHookActive });
       opts.events?.turnEnd('completed'); // 轨迹：正常完成
       return;
     }
@@ -410,17 +437,38 @@ export async function runAgent(
             output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args);
             // 轨迹：工具调用（callId = OpenAI 调用 id，与 tool/result 天然配对）
             opts.events?.toolCall(step, call.id, tool.name, JSON.stringify(parsed.args));
+            // Hooks：PreToolUse——JSON 返回 decision:block 可**硬拦截**（规则型护栏，
+            // 不依赖模型自觉）；updatedInput 合并进工具参数（hook 可修正/补充参数）
+            let args = parsed.args;
+            let hookBlocked: string | null = null;
+            if (opts.hooks?.has('PreToolUse')) {
+              const pre = await opts.hooks.preToolUse(tool.name, args);
+              if (!pre.allow) {
+                hookBlocked = pre.reason ?? 'PreToolUse hook 阻止了该调用';
+              } else if (pre.updatedInput && typeof pre.updatedInput === 'object') {
+                args = { ...args, ...pre.updatedInput };
+              }
+            }
             // 安全护栏过闸：拒绝 → 结果回传模型（自我纠错）；需要审批 → 用户决定
-            const gate = await safety.gate(tool, parsed.args);
+            //（hook 已拦截则跳过闸门与执行——规则型拦截是硬性的）
+            const gate = hookBlocked ? null : await safety.gate(tool, args);
             let result: string;
-            if (!gate.allow) {
-              result = `已拦截：${gate.reason}\n请向用户说明情况，由其决定如何继续。`;
+            if (hookBlocked) {
+              result = `已拦截（hook）：${hookBlocked}\n请向用户说明情况，由其决定如何继续。`;
+            } else if (!gate!.allow) {
+              result = `已拦截：${gate!.reason}\n请向用户说明情况，由其决定如何继续。`;
             } else {
               try {
-                result = await tool.execute(parsed.args);
+                result = await tool.execute(args);
               } catch (err: any) {
                 // 自我纠错：把错误信息喂回模型，让它自己修正
                 result = `执行失败：${err?.message ?? err}`;
+              }
+              // Hooks：PostToolUse——hookSpecificOutput 追加回传上下文（如 lint 结果让
+              // 模型自修复）；工具结果照常回传，hook 输出是补充信息
+              if (opts.hooks?.has('PostToolUse')) {
+                const post = await opts.hooks.postToolUse(tool.name, args, result);
+                if (post.extra.length > 0) result = `${result}\n\n[hook 输出]\n${post.extra.join('\n')}`;
               }
             }
             // 预览只取前几行（终端展示用），完整结果仍回传给模型；
@@ -428,13 +476,13 @@ export async function runAgent(
             // 前已 snapshotWrite，此处读栈取「写入前」内容；新建文件 original=null）
             let detail: ToolResultDetail | undefined;
             if (tool.name === 'write_file') {
-              const snap = opts.undoStack?.latestFor(String(parsed.args.path ?? ''));
+              const snap = opts.undoStack?.latestFor(String(args.path ?? ''));
               if (snap) {
                 detail = {
                   diff: {
-                    path: String(parsed.args.path ?? ''),
+                    path: String(args.path ?? ''),
                     original: snap.existed ? snap.content : null,
-                    content: String(parsed.args.content ?? ''),
+                    content: String(args.content ?? ''),
                   },
                 };
               }

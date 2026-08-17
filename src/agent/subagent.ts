@@ -12,6 +12,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { HookRunner } from '../hooks/index.js';
 import type { Safety } from '../safety/index.js';
 import { truncate } from '../tools/index.js';
 import type { Tool } from '../tools/types.js';
@@ -29,6 +30,12 @@ export interface SubagentOptions {
   gate: Safety;
   /** 子代理最大循环步数（默认 10） */
   maxSteps?: number;
+  /**
+   * Hooks 运行器（与主代理同一实例）：SubagentStart/SubagentStop 生命周期事件 +
+   * 子代理内部工具调用同样过 PreToolUse/PostToolUse（enforcement 语义：
+   * 主代理配的 guard-env / guard-dangerous 对子代理的写入/命令同样生效）。
+   */
+  hooks?: HookRunner;
 }
 
 export async function runSubagent(
@@ -37,12 +44,19 @@ export async function runSubagent(
   task: string,
   opts: SubagentOptions
 ): Promise<string> {
+  // Hooks：SubagentStart（fire-and-forget，任务回传；失败静默）
+  opts.hooks?.subagentStart(task);
   const maxSteps = opts.maxSteps ?? 10;
   const messages: ChatCompletionMessageParam[] = [{ role: 'user', content: SUBAGENT_PROMPT + task }];
   const toolSchemas = opts.tools.map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
+  // 所有返回路径统一收尾：SubagentStop（结论回传）+ 最终回答
+  const finish = (answer: string): string => {
+    opts.hooks?.subagentStop(answer);
+    return answer;
+  };
 
   for (let step = 0; step < maxSteps; step++) {
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
@@ -54,7 +68,7 @@ export async function runSubagent(
         stream: true,
       });
     } catch (err: any) {
-      return `子代理请求失败：${err?.message ?? err}`;
+      return finish(`子代理请求失败：${err?.message ?? err}`);
     }
 
     let content = '';
@@ -76,10 +90,11 @@ export async function runSubagent(
 
     if (toolCalls.size === 0) {
       // 子代理给出最终结论
-      return content.trim() || '（子代理无文字输出）';
+      return finish(content.trim() || '（子代理无文字输出）');
     }
 
-    // 并行执行子代理的工具调用（同样过安全闸：审批/审计与主代理一致）
+    // 并行执行子代理的工具调用（同样过安全闸：审批/审计与主代理一致；
+    // hooks 同主代理：PreToolUse 硬拦截/改写参数、PostToolUse 输出回传）
     const calls = assistantMsg.tool_calls!;
     const results = await Promise.all(
       calls.map(async (call) => {
@@ -87,13 +102,35 @@ export async function runSubagent(
         if (!tool) return `错误：未知工具「${call.function.name}」`;
         const parsed = parseArgs(call.function.arguments);
         if (!parsed.ok) return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
-        const gate = await opts.gate.gate(tool, parsed.args);
-        if (!gate.allow) return `已拦截：${gate.reason}`;
-        try {
-          return await tool.execute(parsed.args);
-        } catch (err: any) {
-          return `执行失败：${err?.message ?? err}`;
+        // Hooks：PreToolUse（与主循环同语义——block 跳过闸门与执行、updatedInput 改写参数）
+        let args = parsed.args;
+        let hookBlocked: string | null = null;
+        if (opts.hooks?.has('PreToolUse')) {
+          const pre = await opts.hooks.preToolUse(tool.name, args);
+          if (!pre.allow) {
+            hookBlocked = pre.reason ?? 'PreToolUse hook 阻止了该调用';
+          } else if (pre.updatedInput && typeof pre.updatedInput === 'object') {
+            args = { ...args, ...pre.updatedInput };
+          }
         }
+        const gate = hookBlocked ? null : await opts.gate.gate(tool, args);
+        let result: string;
+        if (hookBlocked) {
+          result = `已拦截（hook）：${hookBlocked}\n请向用户说明情况，由其决定如何继续。`;
+        } else if (!gate!.allow) {
+          result = `已拦截：${gate!.reason}`;
+        } else {
+          try {
+            result = await tool.execute(args);
+          } catch (err: any) {
+            result = `执行失败：${err?.message ?? err}`;
+          }
+          if (opts.hooks?.has('PostToolUse')) {
+            const post = await opts.hooks.postToolUse(tool.name, args, result);
+            if (post.extra.length > 0) result = `${result}\n\n[hook 输出]\n${post.extra.join('\n')}`;
+          }
+        }
+        return result;
       })
     );
     results.forEach((result, i) => {
@@ -101,5 +138,5 @@ export async function runSubagent(
     });
   }
 
-  return '（子代理达到步数上限，任务未完成）';
+  return finish('（子代理达到步数上限，任务未完成）');
 }
