@@ -27,26 +27,26 @@
       写入）/ `guard-dangerous`（防 `rm -rf /` 等破坏性命令）/ `guard-git-push`（防 git push），与内置
       permission 分级互补（规则强制、不依赖模型自觉）；`examples/hooks/README.md` 完整目录。
 
-## 二、Headless 与 CI 集成（对标 `codex exec` / `claude -p`，把 omni 变成可组合 Unix 命令）
+## 二、Headless 与 CI 集成（对标 `codex exec` / `claude -p`，把 omni 变成可组合 Unix 命令）✅ 基线：`omni exec` 非交互 + `--output-schema` 结构化校验 + `exec resume` 续跑 + CI 工作流模板 + `mcp-server` 子代理模式（第一百三十四次）
 
-- [ ] **P0 `omni exec "任务"` 非交互模式**：现有单任务模式升级——stdout 只输出最终结果、
+- [x] **P0 `omni exec "任务"` 非交互模式**（`src/exec.ts`，第一百三十四次）：现有单任务模式升级——stdout 只输出最终结果、
       stderr 流式进度；`--output-format text|json|stream-json`（json = 单对象含
       `result/cost_usd/duration_ms/num_turns/session_id`，stream-json = 每行一个事件 JSON，
       复用现有轨迹事件记录器 `events.ts` 的 ev 序列）；stdin 管道两种形态（裸 `-` = 全 prompt /
       prompt+stdin = 注入上下文，对标 codex）；`--max-turns` 上限（超出非零退出）；工具上限
       `--allowed-tools` 前置声明（不对应安全审批语义，纯工具过滤，复用 /plan 只读过滤）；
       exit code 语义（0 成功 / 非零失败，管道可 `&&`/`||` 分支）。
-- [ ] **P1 `--output-schema <json>` 结构化结果校验**（codex）：最终回答强制符合 JSON Schema，
-      供下游 job 读取稳定字段（如 `{ "verdict": "safe" }`）。
-- [ ] **P1 headless 会话恢复**（codex `exec resume` / claude `--resume`）：非交互跑一半续跑
-      （复用现有会话 JSONL 恢复 + `--continue` 机制）。
-- [ ] **P2 CI 集成示例与文档**（openai/codex-action、anthropics/claude-code-action 模式）：
-      GitHub Actions 工作流模板——只读 checkout + `omni exec` 修 CI 失败 → patch artifact →
-      独立 job 应用补丁开 PR（密钥不进入生成补丁的 job）。
-- [ ] **P1 `omni` 作为 MCP server 暴露**（codex `mcp-server` 模式）：stdio JSON-RPC 暴露
+- [x] **P1 `--output-schema <json>` 结构化结果校验**（第一百三十四次）：最终回答强制符合 JSON Schema
+      （无框架依赖子集校验器，支持 type/enum/properties/required/items/长度/范围/pattern +
+      围栏与散文兜底提取），供下游 job 读取稳定字段（如 `{ "verdict": "safe" }`）。
+- [x] **P1 headless 会话恢复**（第一百三十四次）：非交互跑一半续跑——`exec resume <id>` /
+      `--resume`（复用现有会话 JSONL 恢复，session_id 不变、历史载入续写、无重复落盘）。
+- [x] **P2 CI 集成示例与文档**（第一百三十四次）：GitHub Actions 工作流模板（`examples/ci/`）——
+      只读 checkout + `omni exec` 修 CI 失败 → patch artifact → 独立 job 应用补丁开 PR
+      （密钥不进入生成补丁的 job）。
+- [x] **P1 `omni` 作为 MCP server 暴露**（`src/exec.ts` runMcpServer，第一百三十四次）：stdio JSON-RPC 暴露
       `omni_exec`/`omni_reply` 两个工具（启动会话/续会话），让 Claude Code、opencode 等外部
-      harness 把 omni 当子代理用——低成本（MCP 客户端已有，服务端反向包一层即得，可复用
-      `tools/mcp.ts` 的 JSON-RPC 结构）。
+      harness 把 omni 当子代理用——复用 `tools/mcp.ts` 的 JSON-RPC 结构，请求串行 + isError 透传退出码。
 
 ## 三、记忆与上下文增强（✅ 基线：全局+项目级联、/init 生成、autoMemory 去重合并、预载文件、摘要压缩）
 
@@ -137,8 +137,9 @@
 
 ## 九、安全与信任（✅ 基线：permission 四档分级、审批卡片/队列、审计日志、危险命令正则、MCP 过滤）
 
-- [ ] **P0 hooks 化 enforcement**（见第一节：PreToolUse block 是「规则」与「保证」的分界线，
-      Claude Code 明确推荐 hook 而非 prompt 指令）。
+- [x] **P0 hooks 化 enforcement**（见第一节：PreToolUse block 是「规则」与「保证」的分界线，
+      Claude Code 明确推荐 hook 而非 prompt 指令；第一百三十三次已随第一节 P1 落地
+      `guard-env` / `guard-dangerous` / `guard-git-push` 示例集）。
 - [ ] **P1 工作区信任（workspace trust）**（Claude Code / Codex）：首次进入未信任目录时
       提示信任；未信任 = 只读（read 档位）+ 跳过项目级 hooks/skills/子代理定义（防仓库注入
       恶意配置）——低成本，直接复用 /permission 档位。
