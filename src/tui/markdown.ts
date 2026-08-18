@@ -25,6 +25,8 @@ export interface MdChunk {
   dim?: boolean;
   underline?: boolean;
   strike?: boolean; // 删除线（~~text~~）
+  /** 可点击的本地文件路径（行内代码 `` `path` `` 且磁盘上真实存在的文件；buildBody 标记） */
+  link?: string;
 }
 
 /** 一行带样式的文本 */

@@ -313,8 +313,9 @@ omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 
 - **记忆**：项目 `AGENTS.md`（从 cwd 向上找，git 根/home 为边界）+ 全局 `~/.config/omni/AGENTS.md`
   级联注入首轮；`/init` 一键生成；`autoMemory` 在交互退出时自动沉淀新偏好（去重/矛盾合并）。
-- **会话**：交互对话 JSONL 落盘 `~/.config/omni/sessions/`；`omni -l` 列出、`omni --continue`
-  恢复当前项目最近会话、`omni -r <id>` 恢复指定会话；会话内 `/session` / `/resume` / `/export` /
+- **会话**：交互对话 JSONL 落盘 `~/.config/omni/sessions/`；`omni -l` 列出、`omni -c`
+  恢复当前项目最近会话、`omni -s <id>` 恢复指定会话（`-r` 同义）；TUI 退出（/exit 或
+  Ctrl+C）自动提示恢复命令；会话内 `/session` / `/resume` / `/export` /
   `/trace` / `/compact`。
 
 ### 常见问题（速查）

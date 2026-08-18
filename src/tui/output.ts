@@ -23,7 +23,7 @@ const NOOP_THINKING: ThinkingDisplay = {
 };
 
 export class TuiOutput implements Output {
-  readonly exitOnCtrlC = true; // TUI 渲染器自带 Ctrl+C 退出，main 不注册自己的 SIGINT
+  readonly exitOnCtrlC = true; // TUI 渲染器处理 Ctrl+C（有输入时清空输入框、空输入退出），main 不注册自己的 SIGINT
   readonly thinking: ThinkingDisplay;
   private paintTimer: ReturnType<typeof setTimeout> | null = null;
 

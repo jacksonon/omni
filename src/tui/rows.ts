@@ -5,6 +5,8 @@
  * OpenTUI renderable），render.ts 只做挂载/重绘/事件编排。行式渲染的核心
  * 折行数学在 layout.ts，主题取色在 theme.ts。
  */
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import {
   cardBottomLine,
   cardContentLine,
@@ -16,9 +18,10 @@ import {
   type ToolCardLine,
   type ToolCardRole,
 } from '../output/format.js';
-import { markdownToRows, type MdChunk } from './markdown.js';
+import { INLINE_CODE_FG, markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
 import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
+import { visualWidth } from './width.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { TRACE_W } from './trace.js';
 import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
@@ -63,6 +66,8 @@ export interface Row {
   tokensIdx?: number;
   /** 审批卡片的 id（state.approval；点击「批准/拒绝」区域用） */
   approvalId?: number;
+  /** 本行内的可点击本地文件链接（行内代码里的真实文件路径）：{ 行内起始列, 显示宽度, 绝对路径 } */
+  fileLinks?: { col: number; width: number; path: string }[];
 }
 
 /**
@@ -254,6 +259,42 @@ export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number, 
   return rows;
 }
 
+/**
+ * 把行内代码文本解析为磁盘上真实存在的本地文件（绝对路径或相对 cwd）。
+ * 只认**文件**（目录不算可点击链接）；去掉结尾常见标点（散文里 `` `path` `` 后
+ * 常跟逗号/句号/括号等——`src/foo.ts,` 应命中 `src/foo.ts`）；不存在/含换行返回 null。
+ * 每次实时 stat（不缓存）：会话中 agent 可能刚 write_file 创建了该文件，缓存会让
+ * 渲染过的路径永远不可点（负缓存更糟——写文件后仍不可点）。
+ */
+export function resolveLocalFile(text: string, cwd: string): string | null {
+  let p = text.trim();
+  p = p.replace(/[,.;:!?)\]}>，。；：！？）》」』、]+$/, '');
+  if (!p || p.includes('\n')) return null;
+  const abs = p.startsWith('/') ? p : path.resolve(cwd, p);
+  try {
+    return statSync(abs).isFile() ? abs : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 收集一行（已折行）chunks 内的可点击文件链接：遍历 chunks 累计显示列偏移，
+ * 带 `link` 的 chunk（行内代码且磁盘真实存在）记一个 { col, width, path } 跨度。
+ * 路径若被折行拆成多段，每段各自带 link——每行各得一个部分宽度跨度，点任一段都打开。
+ */
+export function collectFileLinks(chunks: MdChunk[] | undefined): { col: number; width: number; path: string }[] | undefined {
+  if (!chunks) return undefined;
+  let links: { col: number; width: number; path: string }[] | undefined;
+  let col = 0;
+  for (const c of chunks) {
+    const w = visualWidth(c.text);
+    if (c.link) (links ??= []).push({ col, width: w, path: c.link });
+    col += w;
+  }
+  return links;
+}
+
 /** 状态 → 全部内容行（未裁剪窗口），每行已按内容宽度折行（不截断） */
 export function buildBody(state: TuiState, width: number): Row[] {
   const theme = themeFor(state);
@@ -290,14 +331,25 @@ export function buildBody(state: TuiState, width: number): Row[] {
       // 传内容宽度：表格按此收缩列宽（超宽截断），每行不折行、对齐不被打断。
       // 亮色模式下把 markdown 的浅色常量（代码块/行内代码/引用/标题 cyan）映射为深色变体，
       // 否则浅底上看不清（用户报告：亮色下 AI 输出白字）。
+      // **本地文件链接**（用户要求）：行内代码 `` `path` `` 且磁盘上真实存在的文件 →
+      // 标记 link + 下划线（可点击提示），点击在外部 $EDITOR 打开（见 render.ts）。
+      // 检测在主题映射之前：INLINE_CODE_FG 是行内代码的原始色（themeColor 会改写）。
       for (const md of markdownToRows(line.text, width)) {
-        const chunks = md.chunks.map((c) => (c.fg ? { ...c, fg: themeColor(c.fg, theme) } : c));
-        body.push(
-          ...wrapRow(
-            { text: chunks.map((c) => c.text).join(''), style: rowStyle(line.kind), chunks },
-            width
-          )
-        );
+        const chunks = md.chunks.map((c) => {
+          const themed = c.fg ? { ...c, fg: themeColor(c.fg, theme) } : c;
+          if (c.fg === INLINE_CODE_FG) {
+            const abs = resolveLocalFile(c.text, state.cwd);
+            if (abs) return { ...themed, link: abs, underline: true };
+          }
+          return themed;
+        });
+        for (const w of wrapRow(
+          { text: chunks.map((c) => c.text).join(''), style: rowStyle(line.kind), chunks },
+          width
+        )) {
+          const links = collectFileLinks(w.chunks);
+          body.push(links && links.length > 0 ? { ...w, fileLinks: links } : w);
+        }
       }
       continue;
     }

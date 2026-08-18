@@ -317,7 +317,9 @@ reject, or click); piped/non-interactive auto-rejects. Every tool call is audite
   `~/.config/omni/AGENTS.md` cascade into the first turn automatically; `/init` generates them;
   `autoMemory` appends newly expressed preferences on interactive exit (dedup + conflict merge).
 - **Sessions**: interactive conversations persist as JSONL under `~/.config/omni/sessions/`;
-  `omni -l` lists, `omni --continue` resumes the latest of the current project, `omni -r <id>`
+  `omni -l` lists, `omni -c` resumes the latest of the current project, `omni -s <id>`
+  resumes a specific session (`-r` synonym); exiting the TUI (/exit or Ctrl+C) prints the
+  restore command
   resumes a specific session; in-session `/session` / `/resume` / `/export` / `/trace` / `/compact`.
 
 ### FAQ (condensed)

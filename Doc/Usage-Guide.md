@@ -193,10 +193,10 @@ defaults → global config → project config → custom config → environment 
 omni "<task>"                     # single run
 omni                              # interactive mode (auto full-screen TUI with real TTY + bun)
 omni -m glm-4-flash "<task>"       # explicit model (overrides config)
-omni -c ./my-config.json "<task>"  # explicit config file
+omni -C ./my-config.json "<task>" # explicit config file (-c now means continue)
 omni --no-tui "<task>"             # disable full-screen TUI (fall back to console)
-omni --continue "<task>"           # resume the most recent session of the current project
-omni -r <session-id> "<task>"       # resume a specific session
+omni -c "<task>"                    # resume the most recent session of the current project
+omni -s <session-id> "<task>"        # resume a specific session (-r is a synonym)
 omni -l                           # list saved sessions
 omni -h / -v                      # help / version
 ```
@@ -451,8 +451,9 @@ restore.
 
 ```bash
 omni -l                      # list saved sessions (id + project + time + first message)
-omni --continue "<task>"     # resume the most recent session of the current project
-omni -r <session-id> "<task>" # resume a specific session
+omni -c "<task>"               # resume the most recent session of the current project
+omni -s <session-id> "<task>"   # resume a specific session (-r is a synonym)
+# After exiting the TUI (/exit or Ctrl+C) the terminal prints: 💬 Resume this session: omni -s <id>
 ```
 
 In-session commands: `/session` (history sessions of the same directory — list/continue),

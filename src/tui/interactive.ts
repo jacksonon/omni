@@ -7,7 +7,8 @@
  *   · 带面板的命令（如 /theme）打开 state.menu——面板打开期间键盘事件由
  *     handleMenuKey 在全局 keypress 里先于输入框拦截（↑/↓/数字选择、Enter 确认、
  *     Esc 取消），输入框不参与，也不会误提交。
- * Ctrl+C 由渲染器的 exitOnCtrlC 处理（直接退出进程）。
+ * Ctrl+C 由 startTui 的 onCtrlC 处理：输入框有内容时清空输入框（不退出，可继续输入）；
+ * 输入框为空才退出进程（原 exitOnCtrlC 语义）。
  *
  * 按键刷新：输入框内部编辑会自行 requestRender，但这里再订阅一次 keypress
  * 显式重绘，兜底保证键入字符实时上屏（与 30ms 节流无关，代价很小）。
@@ -19,7 +20,7 @@ import { createClient, type ModelEndpoint } from '../client.js';
 import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
-import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession } from '../agent/session.js';
+import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
@@ -128,6 +129,11 @@ export async function runTuiInteractive(
     if (persistable.length <= savedCount) return;
     await appendSessionMessages(runOpts.sessionPath, persistable.slice(savedCount)).catch(() => {});
     savedCount = persistable.length;
+    // 退出提示恢复命令：会话文件已写入真实消息后设置（/exit 或 Ctrl+C 退出、终端恢复后打印
+    // 给用户——空会话/仅命令的会话不提示）。id 取文件名主干（omni -s <id> 可恢复）。
+    if (runOpts.sessionPath) {
+      state.restoreHint = `omni -s ${sessionIdFromPath(runOpts.sessionPath)}`;
+    }
     // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
     await runOpts.events?.flush().catch(() => {});
   };

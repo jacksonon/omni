@@ -56,14 +56,16 @@ import {
   parseColor,
 } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
+import { openInEditor } from '../agent/report.js';
 import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { logCrash } from './crashlog.js';
+import { dim } from '../ui.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
 import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
-import { SPINNER_FRAMES, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
+import { SPINNER_FRAMES, pushLine, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { visualWidth } from './width.js';
 import {
   cmdPanelRows,
@@ -154,6 +156,8 @@ export interface TuiTree {
   thinkingRects: Map<number, number>;
   /** 每次重绘刷新：token 统计模块行的屏幕 y → state.lines 下标（点击展开/收起汇总明细） */
   tokensRects: Map<number, number>;
+  /** 每次重绘刷新：本地文件链接行的屏幕 y → 该行内可点击跨度（行内起始列/显示宽度/绝对路径；点击外部编辑器打开） */
+  fileRects: Map<number, { col: number; width: number; path: string }[]>;
   /** 每次重绘刷新：审批卡片本次可见的屏幕 y 范围（点击批准/拒绝用；无审批为 null） */
   approvalRect: { top: number; bottom: number } | null;
   /** 命令联想 / @ 提及列表（独立浮层：圆角方框 + 背景，绝对定位悬停在输入框上方，不占内容流；非模态） */
@@ -502,6 +506,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     cardRects: new Map(),
     thinkingRects: new Map(),
     tokensRects: new Map(),
+    fileRects: new Map(),
     approvalRect: null,
     askBox,
     askCells,
@@ -1063,6 +1068,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   tree.cardRects.clear();
   tree.thinkingRects.clear();
   tree.tokensRects.clear();
+  tree.fileRects.clear();
   tree.approvalRect = null;
   for (let i = 0; i < tree.cells.length; i++) {
     const cell = tree.cells[i];
@@ -1092,6 +1098,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     if (thinkingIdx !== undefined) tree.thinkingRects.set(y, thinkingIdx);
     const tokensIdx = rows[i].tokensIdx;
     if (tokensIdx !== undefined) tree.tokensRects.set(y, tokensIdx);
+    // 本地文件链接：行内列 c → 事件 x = 1 + c（根 paddingX:1，与 y = i + 1 同坐标系）
+    const fileLinks = rows[i].fileLinks;
+    if (fileLinks && fileLinks.length > 0) tree.fileRects.set(y, fileLinks);
     if (rows[i].approvalId !== undefined) {
       if (tree.approvalRect) tree.approvalRect.bottom = y;
       else tree.approvalRect = { top: y, bottom: y };
@@ -1195,6 +1204,8 @@ export function handleTuiMouseEvent(
   paint: () => Promise<void>,
   session?: { paint?: () => Promise<unknown> } | null,
   autoCloseDelayMs = 1500,
+  /** 点击本地文件链接时的回调（startTui 注入：挂起 TUI → $EDITOR 打开 → 恢复 + 重绘）；未注入则命中链接不消费 */
+  onOpenFile?: (path: string) => void,
 ): void {
   // 菜单浮层（/theme /permission /settings language 等）：点击选项行 = 选中并确认
   // （等同数字键 + Enter，用户反馈「点击也没有可选择的语言选项」——此前菜单鼠标被整体忽略）。
@@ -1334,12 +1345,42 @@ export function handleTuiMouseEvent(
         return;
       }
     }
+    // 本地文件链接（对话流中行内代码里的真实文件路径，下划线提示）：命中 →
+    // 外部编辑器打开。x 映射：根 paddingX:1 → 行内列 c 的事件 x = 1 + c（与
+    // repaintTree 的 fileRects 登记同坐标系；0-based 终端列）。链接在 answer 行，
+    // 与思考/token/卡片不重叠，放优先级链最前（更具体的命中优先）。
+    const links = tree.fileRects.get(e.y);
+    if (links && onOpenFile && typeof e.x === 'number') {
+      const col = e.x - 1;
+      for (const l of links) {
+        if (col >= l.col && col < l.col + l.width) {
+          onOpenFile(l.path);
+          void paint();
+          return;
+        }
+      }
+    }
     // ④ 思考模块 / token 统计模块：点击切换展开/收起；
     // ⑤ 命中工具卡片 → 切换展开/收起。
     if (hitTestThinking(state, tree.thinkingRects, e.y)) void paint();
     else if (hitTestTokens(state, tree.tokensRects, e.y)) void paint();
     else if (hitTestCard(state, tree.cardRects, e.y)) void paint();
   }
+}
+
+/**
+ * Ctrl+C 按键决策（导出供快照/探针复用同一真实代码路径；startTui 注册）：
+ * 输入框有内容 → 清空输入框并返回 'clear'（不退出，shell readline 习惯）；
+ * 输入框为空或不存在（单任务模式）→ 返回 'exit'（调用方负责 destroy 退出进程）；
+ * 非 Ctrl+C 按键 → null（不消费）。
+ */
+export function handleCtrlCKey(key: TuiKey, input: TextareaRenderable | null): 'clear' | 'exit' | null {
+  if (!(key.ctrl && key.name === 'c')) return null;
+  if (input && input.plainText !== '') {
+    input.setText('');
+    return 'clear';
+  }
+  return 'exit';
 }
 
 /**
@@ -1423,7 +1464,9 @@ export function submitAsk(state: TuiState): void {
 
 /** 创建 TUI 会话：建树 + 首帧，返回 paint/stop/input/onKeyPress */
 export async function startTui(state: TuiState, opts?: { withInput?: boolean }): Promise<TuiSession> {
-  const renderer = await createCliRenderer({ exitOnCtrlC: true });
+  // exitOnCtrlC 关闭：Ctrl+C 不再直接退出，由下方 onCtrlC 接管——输入框有内容时
+  // 清空输入框（readline 语义），输入框为空/单任务模式才退出进程（destroy 恢复终端）
+  const renderer = await createCliRenderer({ exitOnCtrlC: false });
   const ctx = renderer as unknown as RenderContext; // CliRenderer 实现了 RenderContext
   // 跟踪 onKeyPress/主题订阅：stop() 时统一清理，避免订阅泄漏
   const keyUnsubs = new Set<() => void>();
@@ -1457,6 +1500,37 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   };
   keyUnsubs.add(unsubAsk);
   renderer.keyInput.on('keypress', onAskKey);
+  // Ctrl+C：不直接退出进程（原 exitOnCtrlC 语义改由这里接管）——输入框有内容时
+  // 清空输入框（shell readline 习惯，清空后仍可继续输入/发送），输入框为空或
+  // 单任务模式（无输入框）才退出。注册在能力协商前（与审批同因：OpenTUI 协商后
+  // 注册的 keypress 监听收不到按键）。
+  const onCtrlC = (key: TuiKey): void => {
+    const r = handleCtrlCKey(key, tree.input);
+    if (!r) return;
+    key.preventDefault(); // 消费按键：不让输入框/其它 handler 处理 ctrl+c
+    if (r === 'clear') {
+      void paint(); // 清空输入框后重绘（自动增高复位、联想/提及同步隐藏）
+      return;
+    }
+    // 退出：destroy 恢复终端（退出备用屏）并移除监听后进程自然退出（与 exitOnCtrlC 相同）。
+    // 终端恢复后打印会话恢复提示（omni -s <id> 可继续本次会话）——必须在 destroy 之后：
+    // 提示写在主屏，若还停在备用屏会画进看不见的屏幕（用户要求 Ctrl+C 退出时给出恢复命令）。
+    stopped = true; // 先置位：destroy 会使渲染树失效，迟到的 paint 直接 no-op
+    const hint = state.restoreHint;
+    process.nextTick(() => {
+      try {
+        (renderer as unknown as { destroy(): void }).destroy();
+      } catch (err) {
+        logCrash('destroy-on-ctrl-c', err);
+      }
+      if (hint) process.stdout.write(`\n${dim(`💬 恢复此会话：${hint}`)}\n`);
+    });
+  };
+  const unsubCtrlC = () => {
+    renderer.keyInput.off('keypress', onCtrlC);
+  };
+  keyUnsubs.add(unsubCtrlC);
+  renderer.keyInput.on('keypress', onCtrlC);
   // 主题检测：OpenTUI 通过 OSC 10/11 查询终端背景色并按亮度推断亮/暗。
   // 结果存 detectedTheme（themeMode=system 时取色用）；超时/不支持保持默认深色。
   try {
@@ -1511,7 +1585,27 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
   // （模块级导出函数：快照可复用同一真实代码路径）。在根 Box 上挂处理器（实例属性
   // 遮蔽原型 onMouseEvent 方法，属刻意为之——OpenTUI 把鼠标事件沿渲染树冒泡到根）。
   (tree.root as unknown as { onMouseEvent?: (e: MouseEventLike) => void }).onMouseEvent = (e) => {
-    handleTuiMouseEvent(e, tree, state, (ctx as { width?: number }).width ?? 80, paint, { paint });
+    // 本地文件链接点击（对话流行内代码路径）：挂起 TUI（恢复终端/退出 raw mode）→
+    // $EDITOR 打开（stdio inherit，用户读完退出）→ 恢复 TUI + 重绘。编辑器启动失败
+    // 时在对话流提示（如 $EDITOR 未设置且无 vi）；suspend/resume 异常写崩溃日志不打断
+    const openFile = (file: string): void => {
+      try {
+        renderer.suspend();
+      } catch (err) {
+        logCrash('suspend-for-editor', err);
+      }
+      const ok = openInEditor(file);
+      if (!ok) {
+        pushLine(state, { kind: 'warn', text: `无法启动编辑器打开 ${file}（设置 $EDITOR）` });
+      }
+      try {
+        renderer.resume();
+      } catch (err) {
+        logCrash('resume-after-editor', err);
+      }
+      void paint(); // 恢复后整帧重绘（编辑器期间流式内容也一并补上）
+    };
+    handleTuiMouseEvent(e, tree, state, (ctx as { width?: number }).width ?? 80, paint, { paint }, 1500, openFile);
   };
 
   await paint();
@@ -1535,6 +1629,14 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
       for (const unsub of keyUnsubs) unsub();
       keyUnsubs.clear();
       renderer.stop();
+      // 恢复终端（退出备用屏 + 退出 raw mode）：renderer.stop() 只停渲染循环、不写
+      // `?1049l`——/exit 正常退出路径若不 destroy，备用屏残留、退出后的提示画进看不见
+      // 的屏幕（pty 实测抓到）。destroy() 才恢复终端（Ctrl+C 路径一直用 destroy 退出）。
+      try {
+        (renderer as unknown as { destroy(): void }).destroy();
+      } catch (err) {
+        logCrash('destroy-after-stop', err);
+      }
     },
     input: tree.input,
     onKeyPress: (cb) => {

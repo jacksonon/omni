@@ -1,14 +1,32 @@
 /**
  * @ 提及文件选择：输入框内容含 @ 时列出候选文件/目录供选择（对标 IDE 的文件提及）。
  *
- * 候选规则：
- *   · 只列当前工作目录下的条目（支持一层目录前缀导航：`@src/ma` → src/ 下 ma 开头）；
- *   · 目录排在文件前，名称排序；隐藏文件（. 开头）默认隐藏（查询以 . 开头才显示）；
+ * 候选规则（v2：模糊匹配 + 跨目录检索）：
+ *   · **空查询**（`@` / `@src/`）：列出当前（或指定）目录顶层条目——保留逐层浏览
+ *     （选目录后保留 / 继续进入下一层）；目录排在文件前，名称排序；隐藏文件默认隐藏。
+ *   · **非空查询**（`@rend` / `@tuirend`）：从 cwd **递归检索整个项目**（不再一级一级
+ *     选择下去）——查询对**相对路径**做大小写不敏感模糊匹配，四级评分：文件名前缀 >
+ *     文件名包含 > 路径包含 > fzf 风格模糊子序列（跳过任意字符按序命中）；目录优先、
+ *     路径浅优先、名称排序；结果上限 50 条。
+ *   · 查询可含目录前缀（`@src/ma` → 只在 src/ 下递归检索）。
  *   · 目录以 / 结尾 —— 选中后保留 / 继续进入下一层；文件插入后加空格结束提及。
+ *   · 递归跳过噪音目录（node_modules/.git/dist 等）+ 条目/深度上限，防超大仓库卡顿。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import type { MentionSuggestion } from './state.js';
+
+/** 递归检索时跳过的噪音目录（依赖/产物/版本库等） */
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.hg', '.svn', '.venv', 'dist', 'build', '__pycache__',
+  '.next', '.turbo', 'coverage', '.idea', '.cache', '.DS_Store', 'target', 'vendor',
+]);
+/** 递归遍历条目上限（防超大仓库每次按键扫描卡顿） */
+const MAX_MENTION_WALK = 4000;
+/** 候选结果上限（列表可滚动到全部；超出截断，避免渲染/滚动过载） */
+const MAX_MENTION_RESULTS = 50;
+/** 递归深度上限 */
+const MAX_MENTION_DEPTH = 8;
 
 /**
  * 从输入文本与光标位置检测提及。
@@ -31,32 +49,96 @@ export function detectMention(
 }
 
 /**
- * 按查询列出候选（返回带目录前缀的路径；目录以 / 结尾）。查询可为空（列出全部）。
- * 查询含 / 时在对应子目录内过滤（`src/ma` → src/ 下 ma 前缀），返回项带目录前缀。
+ * 查询 → 模糊匹配评分（大小写不敏感；null = 不匹配）。
+ * 0 文件名前缀 / 1 文件名包含 / 2 路径包含 / 3 fzf 风格模糊子序列
+ *（跳过任意字符、查询字符按顺序出现即命中——`@tuirend` 命中 `src/tui/render.ts`）。
  */
-export function listMentionCandidates(cwd: string, query: string): string[] {
-  const lastSlash = query.lastIndexOf('/');
-  const dirPart = lastSlash >= 0 ? query.slice(0, lastSlash) : '';
-  const prefix = query.slice(lastSlash + 1);
-  const dir = dirPart ? path.resolve(cwd, dirPart) : cwd;
+function mentionScore(query: string, rel: string, name: string): number | null {
+  const q = query.toLowerCase();
+  const n = name.toLowerCase();
+  const r = rel.toLowerCase();
+  if (n.startsWith(q)) return 0;
+  if (n.includes(q)) return 1;
+  if (r.includes(q)) return 2;
+  let i = 0;
+  for (const ch of r) {
+    if (ch === q[i]) i++;
+    if (i === q.length) return 3;
+  }
+  return null;
+}
+
+/** 列出目录顶层条目（空查询：逐层浏览用；目录以 / 结尾，隐藏文件默认隐藏） */
+function listTopLevelMentions(baseDir: string, dirPart: string): string[] {
   let entries: string[];
   try {
     entries = fs
-      .readdirSync(dir, { withFileTypes: true })
+      .readdirSync(baseDir, { withFileTypes: true })
       .map((d) => d.name + (d.isDirectory() ? '/' : ''));
   } catch {
     return []; // 目录不存在/无权限 → 无候选
   }
-  const showHidden = prefix.startsWith('.');
-  const filtered = entries.filter(
-    (e) => (showHidden || !e.startsWith('.')) && (!prefix || e.toLowerCase().startsWith(prefix.toLowerCase()))
-  );
+  const filtered = entries.filter((e) => !e.startsWith('.') && !(e.endsWith('/') && SKIP_DIRS.has(e.slice(0, -1))));
   filtered.sort((a, b) => {
     const ad = a.endsWith('/') ? 0 : 1;
     const bd = b.endsWith('/') ? 0 : 1;
     return ad - bd || a.localeCompare(b);
   });
   return filtered.map((e) => (dirPart ? `${dirPart}/${e}` : e));
+}
+
+/**
+ * 按查询列出候选（返回带目录前缀的路径；目录以 / 结尾）。
+ *
+ * **空查询**：列出（dirPart 或 cwd）顶层条目——保留逐层浏览能力（选目录后保留 /
+ * 继续进入下一层）。**非空查询**：从 baseDir（dirPart 或 cwd）**递归模糊检索整个项目**
+ * （跨目录——不用一级一级选择下去）：对相对路径做模糊评分，目录优先 + 路径浅优先 +
+ * 名称排序；跳过噪音目录、隐藏文件（查询以 . 开头才显示）、条目/深度上限。
+ */
+export function listMentionCandidates(cwd: string, query: string): string[] {
+  const lastSlash = query.lastIndexOf('/');
+  const dirPart = lastSlash >= 0 ? query.slice(0, lastSlash) : '';
+  const q = query.slice(lastSlash + 1);
+  const baseDir = dirPart ? path.resolve(cwd, dirPart) : cwd;
+  if (!q) return listTopLevelMentions(baseDir, dirPart); // 空查询：顶层浏览
+  // 非空查询：baseDir 下递归模糊搜索（跨目录）
+  const showHidden = q.startsWith('.');
+  const hits: { rel: string; isDir: boolean; name: string; score: number }[] = [];
+  const walk = (rel: string, depth: number): void => {
+    if (depth > MAX_MENTION_DEPTH || hits.length >= MAX_MENTION_WALK) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(rel ? path.join(baseDir, rel) : baseDir, { withFileTypes: true });
+    } catch {
+      return; // 目录不存在/无权限 → 跳过该分支
+    }
+    for (const d of entries) {
+      if (hits.length >= MAX_MENTION_WALK) return;
+      const name = d.name;
+      if (!showHidden && name.startsWith('.')) continue;
+      const childRel = rel ? `${rel}/${name}` : name;
+      const score = mentionScore(q, childRel, name);
+      if (d.isDirectory()) {
+        if (SKIP_DIRS.has(name)) continue;
+        if (score !== null) hits.push({ rel: childRel, isDir: true, name, score });
+        walk(childRel, depth + 1);
+      } else if (d.isFile() && score !== null) {
+        hits.push({ rel: childRel, isDir: false, name, score });
+      }
+    }
+  };
+  walk('', 0);
+  // 评分优先（命中质量）→ 目录优先 → 路径浅优先 → 名称排序
+  hits.sort(
+    (a, b) =>
+      a.score - b.score ||
+      (a.isDir === b.isDir ? 0 : a.isDir ? -1 : 1) ||
+      a.rel.length - b.rel.length ||
+      a.rel.localeCompare(b.rel)
+  );
+  return hits
+    .slice(0, MAX_MENTION_RESULTS)
+    .map((h) => `${dirPart ? `${dirPart}/${h.rel}` : h.rel}${h.isDir ? '/' : ''}`);
 }
 
 /**

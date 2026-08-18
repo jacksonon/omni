@@ -43,18 +43,20 @@ export function parseArgs(args: string[]): ParsedArgs {
         overrides.model = takeValue();
         break;
       case '--config':
-      case '-c':
+      case '-C':
         overrides.configPath = takeValue();
         break;
       case '--no-tui':
         flags.noTui = true;
         break;
       case '--continue':
-        // 恢复当前项目最近一次会话（-c 已被 --config 占用，故只用长选项）
+      case '-c':
+        // 恢复当前项目最近一次会话（-c 已从 --config 让位给继续；config 用 -C）
         flags.continueSession = true;
         break;
       case '--resume':
       case '-r':
+      case '-s':
         resumeId = takeValue() ?? null;
         break;
       case '--list-sessions':
@@ -85,14 +87,16 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   omni mcp-server                作为 MCP server（stdio JSON-RPC：omni_exec / omni_reply 工具）
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
 
-会话持久化（跨进程恢复对话）：
-  omni --continue "继续任务"      恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
-  omni -r <会话id> "继续任务"      恢复指定会话（id 见 --list-sessions 输出）
-  omni -l / --list-sessions       列出已保存的会话
+会话持久化（跨进程恢复对话；Ctrl+C / /exit 退出 TUI 时会提示恢复命令）：
+  omni -c "继续任务"           恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
+  omni -s <会话id> "继续任务"    恢复指定会话（id 见 --list-sessions 输出；-r 为同义别名）
+  omni -l / --list-sessions    列出已保存的会话
 
 参数：
   -m, --model <名称>    指定模型（覆盖配置文件）
-  -c, --config <路径>   指定配置文件（覆盖自动发现；-c 已被占用，会话恢复用 --continue）
+  -c, --continue        恢复当前项目最近一次会话（-c 已从 --config 让位；config 用 -C）
+  -C, --config <路径>   指定配置文件（覆盖自动发现）
+  -s, -r, --resume <会话id>   恢复指定会话
       --no-tui          禁用全屏 TUI（默认：bun + 终端时自动启用）
   -h, --help            显示帮助
   -v, --version         显示版本

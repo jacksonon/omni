@@ -222,9 +222,11 @@ export interface CmdSuggestion {
  * 非模态：可继续输入（列表按光标前最后一个 @ 后的文本过滤，无匹配自动隐藏）；
  * ↑/↓ 移动高亮、Tab/Enter 选中插入、Esc 关闭；目录以 / 结尾（选中后保留 / 继续
  * 进入下一层浏览），文件插入后加空格结束提及。
+ * 查询为**模糊匹配 + 跨目录递归检索**：非空查询从 cwd 递归整个项目（文件名前缀 >
+ * 文件名包含 > 路径包含 > fzf 模糊子序列）；空查询（或 @dir/）只列该目录顶层。
  */
 export interface MentionSuggestion {
-  /** @ 后的查询（过滤用；可含 / 进入子目录，如 src/ma → src/ 下 ma 前缀） */
+  /** @ 后的查询（可含 / 限定目录，如 src/ma → 只在 src/ 下检索）；空 = 顶层浏览 */
   query: string;
   /** @ 在输入文本中的起始下标（插入时替换 @query 整段） */
   atIndex: number;
@@ -302,6 +304,11 @@ export interface TuiState {
    * 会话级状态，/clear 不清除；渲染层不读它，仅 interactive.ts 作「生成一次」的守卫。
    */
   sessionTitle: string | null;
+  /**
+   * 退出提示恢复命令（如 `omni -s <会话id>`）：交互循环 persistTurn 落盘真实消息后
+   * 设置；/exit 或 Ctrl+C 退出、终端恢复后打印给用户（不空会话不提示）。
+   */
+  restoreHint: string | null;
   /** 会话累计 token 用量（footer 右下角显示，来自每次响应的 usage） */
   tokens: TokenUsage;
   /**
@@ -499,6 +506,7 @@ export function createTuiState(): TuiState {
     cwd: process.cwd(),
     models: [],
     sessionTitle: null,
+    restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, cached: 0 },
     themeMode: 'system',

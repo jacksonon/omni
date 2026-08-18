@@ -26,7 +26,7 @@ import { runTuiInteractive } from './tui/interactive.js';
 import { startTui, type TuiSession } from './tui/render.js';
 import { TuiOutput } from './tui/output.js';
 import { createTuiState } from './tui/state.js';
-import { isBun, isTTY, red } from './ui.js';
+import { dim, isBun, isTTY, red } from './ui.js';
 import { VERSION } from './version.js';
 
 // 崩溃处理器：先于任何异步逻辑安装。未捕获异常落盘 + 尽力恢复终端后退出；
@@ -131,6 +131,11 @@ async function run(): Promise<void> {
       // 渲染已停止时忽略刷新错误，继续走退出清理
     }
     await session.stop();
+    // 退出后（终端已恢复，见 stop() 内 destroy）打印会话恢复提示：
+    // /exit 与 Ctrl+C（render.ts onCtrlC）退出时都给用户 omni -s <id> 恢复命令
+    if (state.restoreHint) {
+      process.stdout.write(`\n${dim(`💬 恢复此会话：${state.restoreHint}`)}\n`);
+    }
   }
 }
 
