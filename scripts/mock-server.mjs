@@ -255,8 +255,8 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // 编排流水线固定角色（/orchestrate /loop 离线 e2e）：worker / 汇总器 / 对抗审查员 /
-    // 验收判定器——按 system 提示词前缀识别，返回固定输出（worker 直接答、不调工具）
+    // 编排流水线固定角色（/orchestrate /goal 离线 e2e）：worker / 汇总器 / 对抗审查员 /
+    // 目标拆解器 / 验收判定器——按 system 提示词前缀识别，返回固定输出（worker 直接答、不调工具）
     const sys0 = typeof messages[0]?.content === 'string' ? messages[0].content : '';
     if (sys0.startsWith('你是 Omni 编排流水线的一个子代理')) {
       // worker：直接返回固定结果（e2e 确定性；真实场景 worker 会正常调工具）
@@ -318,8 +318,28 @@ const server = http.createServer((req, res) => {
       res.end();
       return;
     }
+    if (sys0.startsWith('你是 Omni 目标拆解器')) {
+      // 目标拆解器（/goal 缺省自动推导验收标准）：返回固定验收条款
+      sendChunk({
+        id: 'mock-accept',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '1) 功能完整可运行 2) 关键路径验证通过 3) 无明显缺陷' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-accept-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
     if (sys0.startsWith('你是 Omni 验收判定器')) {
-      // 验收判定器：第一次「不满足」（验证 /loop 继续迭代）、第二次起「满足」（验证提前结束）
+      // 验收判定器：第一次「不满足」（验证 /goal 继续迭代）、第二次起「满足」（验证提前结束）
       let goalChecks = Number(process.env.MOCK_GOAL_CHECKS ?? '0');
       goalChecks += 1;
       process.env.MOCK_GOAL_CHECKS = String(goalChecks);

@@ -20,6 +20,7 @@ import type { TuiOutput } from './output.js';
 import type { TuiKey, TuiSession } from './render.js';
 import type { PermissionTier } from '../safety/policy.js';
 import { applyUndo, type UndoStack } from '../tools/undo.js';
+import { truncateToWidth } from '../output/format.js';
 import {
   discoverSkills,
   loadSkillContent,
@@ -27,7 +28,7 @@ import {
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
-import { runLoop, runOrchestrate } from '../agent/orchestrate.js';
+import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { collectDiff, detectCheckCommand, reviewCode, captureCommand } from '../agent/review.js';
 import {
   configReport,
@@ -54,7 +55,7 @@ import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
 import { refreshTrace } from './trace.js';
 import { setTerminalTitle } from '../ui.js';
-import { openCmdPanel, pushCmdLine, type StatuslinePanel, type TuiState, type TuiThemeMode } from './state.js';
+import { openCmdPanel, pushCmdLine, pushLine, type StatuslinePanel, type TuiLine, type TuiState, type TuiThemeMode } from './state.js';
 import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
 
 /** 命令执行上下文（interactive.ts 组装） */
@@ -83,7 +84,7 @@ export interface TuiCommandContext {
   architectModel?: string;
   editorModel?: string;
   /**
-   * 完整运行选项（/orchestrate /loop 用：worker 的安全闸/工具链/hooks/模型路由/轨迹
+   * 完整运行选项（/orchestrate /goal 用：worker 的安全闸/工具链/hooks/模型路由/轨迹
    * 记录器；由 interactive.ts 传入真实 runOpts）。
    */
   runOpts?: import('../agent/types.js').RunOptions;
@@ -547,7 +548,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       pushCmdLine(ctx.state, {
         kind: 'meta',
-        text: '说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门，权限与主代理一致（定义子代理可配独立权限）。/orchestrate 并行编排、/loop 循环执行见 /help。',
+        text: '说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门，权限与主代理一致（定义子代理可配独立权限）。/orchestrate 并行编排、/goal 目标机制见 /help。',
       });
     },
   },
@@ -593,39 +594,66 @@ export const TUI_COMMANDS: TuiCommand[] = [
     },
   },
   {
-    name: 'loop',
-    description: '循环任务：重复执行直至达标（/loop <任务> [--goal <验收标准>]，上限 5 次）',
-    descriptionEn: 'Loop task: repeat until goal met (/loop <task> [--goal <criterion>])',
+    name: 'goal',
+    aliases: ['loop'], // 旧名兼容（/loop 习惯）
+    description: '目标机制：自动推导验收标准并循环执行直至达标（/goal <目标> [--accept <验收标准>] [--max N]，上限 5 次）',
+    descriptionEn: 'Goal mechanism: derive acceptance criteria and execute until met (/goal <goal> [--accept <criteria>] [--max N])',
     run: async (ctx) => {
-      // /loop：循环执行任务直至验收标准满足（每次迭代 = 一个 worker 子代理，带上一轮
-      // 结果作上下文）；--goal 配置时用 LLM 验收判定器检查达标，否则跑满上限。
+      // /goal：目标驱动循环——缺省由「目标拆解器」LLM 自动推导验收标准（--accept 显式
+      // 指定可跳过）；每轮 worker 子代理带「上一轮结果 + 判定反馈」继续推进，验收判定器
+      // 检查达标，不满足的理由反馈进下一轮；--max 调整迭代上限（默认 5）。
       const { client, model } = ctx;
       if (!client || !model) {
-        pushCmdLine(ctx.state, { kind: 'warn', text: '/loop 需要 LLM 客户端（当前环境不可用）' });
+        pushCmdLine(ctx.state, { kind: 'warn', text: '/goal 需要 LLM 客户端（当前环境不可用）' });
         return;
       }
-      const log = (text: string): void => pushCmdLine(ctx.state, { kind: 'meta', text });
+      // /goal 是长流程干活型命令：执行过程（目标/推导/迭代/判定）**实时流进对话流**
+      // （meta 行，可见可回看），不用命令面板——面板由 runCommand 打开、因无输出自动收起。
+      // 推导/验收判定等 LLM 输出经 onStream **逐字流式**累积到同一 meta 行（打字机效果），
+      // 而非整行一次性出现。
+      const log = (text: string): void => pushLine(ctx.state, { kind: 'meta', text });
       const tick = async (): Promise<void> => {
         await ctx.session.paint().catch(() => {});
       };
+      // 流式 sink：start 开新 meta 行（前缀即显示），chunk 原位累积（buildBody 每次
+      // paint 从 state.lines 重建，mutate line.text 即可流式更新），end 复位。
+      const stream = (() => {
+        let line: TuiLine | null = null;
+        return {
+          start(prefix: string): void {
+            line = { kind: 'meta', text: prefix };
+            pushLine(ctx.state, line);
+            void tick();
+          },
+          chunk(text: string): void {
+            if (line) {
+              line.text += text;
+              void tick();
+            }
+          },
+          end(): void {
+            line = null;
+          },
+        };
+      })();
       try {
         if (!ctx.runOpts) {
-          pushCmdLine(ctx.state, { kind: 'warn', text: '/loop 运行选项不可用（当前环境异常）' });
+          pushCmdLine(ctx.state, { kind: 'warn', text: '/goal 运行选项不可用（当前环境异常）' });
           return;
         }
-        const result = await runLoop(ctx.args ?? '', {
+        const result = await runGoal(ctx.args ?? '', {
           client,
           model,
           runOpts: ctx.runOpts,
           log,
           tick,
+          onStream: () => stream,
           onSubagentEvent: (ev) => ctx.out.onSubagentEvent?.(ev),
         });
-        pushCmdLine(ctx.state, { kind: 'meta', text: '' });
-        pushCmdLine(ctx.state, { kind: 'meta', text: '═══ 循环最终结果 ═══' });
-        pushCmdLine(ctx.state, { kind: 'answer', text: result });
+        // 结果 = worker 总结 + 达成标记（[目标达成：第 N 轮]），直接进对话流收尾
+        pushLine(ctx.state, { kind: 'answer', text: result });
       } catch (err) {
-        pushCmdLine(ctx.state, { kind: 'warn', text: String((err as Error)?.message ?? err) });
+        pushLine(ctx.state, { kind: 'warn', text: String((err as Error)?.message ?? err) });
       }
     },
   },
@@ -743,6 +771,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
           baseURL: parsed.baseURL ?? cfg?.baseURL,
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
+          // per-model variants 缺省回退全局（/model add 不带思考级别 flag——配置文件是配置途径）
+          reasoningEffortOptions: cfg?.reasoningEffortOptions,
+          reasoningEffort: cfg?.reasoningEffort,
         };
         const err = ctx.onAddModel?.(endpoint);
         if (err) {
@@ -772,7 +803,13 @@ export const TUI_COMMANDS: TuiCommand[] = [
       if (err) pushCmdLine(ctx.state, { kind: 'warn', text: err });
       else {
         ctx.state.modelSave = args;
-        pushCmdLine(ctx.state, { kind: 'meta', text: `已切换模型 → ${args}` });
+        // per-model variants 提示：该模型配置了专属思考级别时随切换带出
+        const ep = (ctx.runOpts?.models ?? []).find((m) => m.name === args);
+        const effort = ep?.reasoningEffort;
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `已切换模型 → ${args}${effort ? `（思考级别 ${effort}）` : ''}`,
+        });
       }
     },
   },
@@ -1119,13 +1156,16 @@ export function openThemeMenu(state: TuiState): void {
     options: THEME_OPTIONS.map((o) => ({ label: menuLabel(state, 'theme', o), value: o.value })),
     selectedIndex: idx,
     currentValue: current,
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.theme.status');
 }
 
 /**
  * 处理面板键盘输入（interactive.ts 在全局 keypress 里调用；返回是否消费了按键）。
- * ↑/↓/数字：移动选择；Enter：确认；Esc：取消。
+ * ↑/↓：移动选择（选中项由渲染层 menuPanelRows 兜底收敛进窗口 = 窗口跟随滚动）；
+ * 数字：选中**窗口内**第 N 项（与面板视觉一致；窗口外条目用 ↓ 滚动到达）；
+ * Enter：确认；Esc：取消。
  */
 export function handleMenuKey(key: TuiKey, state: TuiState): boolean {
   const menu = state.menu;
@@ -1147,10 +1187,10 @@ export function handleMenuKey(key: TuiKey, state: TuiState): boolean {
       closeMenu(state);
       return true;
     default: {
-      // 数字键 1..9 直接选中
+      // 数字键 1..9 直接选中（窗口内第 N 项；scrollTop 由渲染层收敛）
       const n = Number(key.name);
-      if (Number.isInteger(n) && n >= 1 && n <= menu.options.length) {
-        menu.selectedIndex = n - 1;
+      if (Number.isInteger(n) && n >= 1 && n <= 9 && menu.scrollTop + n - 1 < menu.options.length) {
+        menu.selectedIndex = menu.scrollTop + n - 1;
         confirmMenu(state);
         return true;
       }
@@ -1169,6 +1209,7 @@ export function openPermissionMenu(state: TuiState): void {
     options: PERMISSION_OPTIONS.map((o) => ({ label: menuLabel(state, 'permission', o), value: o.value })),
     selectedIndex: idx,
     currentValue: current,
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.permission.status');
 }
@@ -1176,6 +1217,8 @@ export function openPermissionMenu(state: TuiState): void {
 /**
  * 打开会话面板（/session）：列出**当前目录**（同目录 = 创建会话时的 cwd 与当前一致）的
  * 历史会话供选择继续，高亮当前正在继续的会话（若在列表内）；↑/↓/数字 + Enter/Esc 操作。
+ * 列表**全量**放入 options——面板高度有限，渲染层按窗口滚动（menuPanelRows maxVisible），
+ * 窗口外条目经 ↑/↓ 滚动到达（上下提示行显示剩余条数）。
  * 异步：面板选项需要先 listSessions 扫描磁盘。确认后 confirmMenu 只记录 intent
  * （state.sessionPick），interactive 每轮异步加载并恢复（与 /model 同模式）。
  */
@@ -1188,10 +1231,9 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
     });
     return;
   }
-  // 面板高度有限（menuPanelRows 逐行渲染），最多列 9 条——其余用 /session <id> 或 /session all；
   // 排除当前正在进行的会话（它的历史就是当前对话，继续它是无意义的）
   const currentId = sessionPath ? sessionIdFromPath(sessionPath) : '';
-  const shown = list.filter((s) => s.id !== currentId).slice(0, 9);
+  const shown = list.filter((s) => s.id !== currentId);
   if (shown.length === 0) {
     pushCmdLine(state, {
       kind: 'warn',
@@ -1203,11 +1245,15 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
     id: 'session',
     title: t(state.language, 'menu.session.title'),
     options: shown.map((s) => ({
-      label: `${s.title || s.id.slice(0, 16)} · ${s.messages} 条 · ${s.model}`,
+      // 只显示「标题 · N 条」—— 不显示模型名：对选择会话信息量低，且模型名
+      // 超长会撑破面板（用户反馈「模型过长超出显示范围」；cardContentLine 另有兜底截断）。
+      // 标题按显示列截断（CJK 全角 2 列）+ 省略号；无标题回退 id 前 16 字符。
+      label: `${truncateToWidth(s.title || s.id.slice(0, 16), 24)} · ${s.messages} 条`,
       value: s.id,
     })),
     selectedIndex: 0,
     currentValue: '',
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.session.status');
 }
@@ -1226,6 +1272,7 @@ export function openModelMenu(state: TuiState, models: string[] = state.models):
     options,
     selectedIndex: idx,
     currentValue: current,
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.model.status');
 }
@@ -1244,6 +1291,7 @@ export function openVariantsMenu(state: TuiState): void {
     options,
     selectedIndex: idx,
     currentValue: current,
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.variants.status');
 }
@@ -1273,6 +1321,7 @@ export function openSettingsMenu(state: TuiState): void {
     ],
     selectedIndex: 0,
     currentValue: '',
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.settings.status');
 }
@@ -1285,6 +1334,7 @@ export function openLanguageMenu(state: TuiState): void {
     options: TUI_LANGS.map((lg) => ({ label: TUI_LANG_LABELS[lg], value: lg })),
     selectedIndex: Math.max(0, TUI_LANGS.indexOf(state.language)),
     currentValue: state.language,
+    scrollTop: 0,
   };
   state.status = t(state.language, 'menu.language.status');
 }

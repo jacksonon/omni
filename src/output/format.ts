@@ -225,7 +225,10 @@ export function cardTitleLine(title: string, mark: string, inner: number): strin
 
 /** 卡片内容行：`│ 内容 │`（文本区 = inner-1，总宽 = contentWidth） */
 export function cardContentLine(text: string, inner: number): string {
-  return `│ ${padInner(text, inner - 1)}│`;
+  // 超出文本区宽度的内容**截断 + 省略号**（padInner 原本原样返回会把右侧 `│` 挤出——
+  // 用户反馈 session 面板模型名过长「超出显示范围」的根因）。调用方应自行折行
+  // （wrapText）或截断（truncateToWidth）；这里兜底保证**任何内容行总宽恒为 contentWidth**。
+  return `│ ${padInner(truncateToWidth(text, inner - 1), inner - 1)}│`;
 }
 
 /** 卡片分隔行：`│ ─…─ │`（总宽 = contentWidth） */
@@ -476,8 +479,9 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
   return lines;
 }
 
-/** 按显示宽度截断（省略号结尾） */
-function truncateToWidth(text: string, width: number): string {
+/** 按显示宽度截断（省略号结尾；**未超宽时原样返回不加省略号**——旧实现无条件拼 `…`，
+ *  新调用点 cardContentLine 无条件调用时短文本也被追加省略号（用户实测面板行全带 `…`）） */
+export function truncateToWidth(text: string, width: number): string {
   if (width < 2) return text.slice(0, Math.max(1, width));
   let cols = 0;
   let i = 0;
@@ -486,6 +490,7 @@ function truncateToWidth(text: string, width: number): string {
     if (cols + w > width - 1) break;
     cols += w;
   }
+  if (i === text.length) return text; // 未超宽：原样返回
   while (i > 0 && i < text.length) {
     const code = text.charCodeAt(i);
     if (code >= 0xdc00 && code <= 0xdfff) i--;

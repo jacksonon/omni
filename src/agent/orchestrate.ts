@@ -1,12 +1,14 @@
 /**
- * 编排流水线（第六节 P2「动态工作流轻量版」+「/loop 循环任务」+「agent teams 并行协调」）。
+ * 编排流水线（第六节 P2「动态工作流轻量版」+「/goal 目标机制」+「agent teams 并行协调」）。
  *
  * 固定 pipeline（对标 Claude Code dynamic workflows / Qwen Code 的轻量版，暂不支持
  * 模型写 JS 脚本）：
  *   · /orchestrate——fan-out 并行 delegate（多个 worker 子代理，可选按已定义
  *     SubagentDef 分工）→ 汇总器合并 → 对抗审查员找漏洞 → 输出「综合 + 审查」结论；
- *   · /loop + /goal——循环执行任务直至验收标准满足（每次迭代 = 一个 worker 子代理，
- *     可选 LLM 验收判定器检查是否达标），上限 5 次防失控。
+ *   · /goal（别名 /loop）——**目标机制**：循环执行直至目标达成。缺省由「目标拆解器」
+ *     LLM 从目标自动推导 2-3 条可验证验收标准（--accept 显式指定可跳过）；
+ *     每轮迭代 = 一个 worker 子代理（带目标 + 验收标准 + 上一轮结果与判定反馈），
+ *     「验收判定器」LLM 检查是否达标，不满足的理由反馈进下一轮，上限 --max（默认 5）防失控。
  *
  * 与既有能力复用：worker 走 runSubagent（隔离上下文 + 共用安全闸 + 进度事件），
  * 汇总/审查/验收是独立轻量 LLM 请求（不进 messages 历史，对标 /review）。
@@ -53,17 +55,33 @@ const REVIEW_SYSTEM =
 export const GOAL_PREFIX = '你是 Omni 验收判定器';
 const GOAL_SYSTEM = `${GOAL_PREFIX}。判定以下结果是否满足验收标准，只回答「满足」或「不满足」，并附一句理由。`;
 
-/** 默认并行 worker 数（未指定 --agents 时按角度 fan-out） */
-const DEFAULT_WORKERS = 3;
-/** /loop 最大迭代次数（防失控） */
+/** 目标拆解器系统提示（mock 识别前缀）：缺省从目标自动推导验收标准（用户不必手写） */
+export const GOAL_ACCEPT_PREFIX = '你是 Omni 目标拆解器';
+const GOAL_ACCEPT_SYSTEM =
+  `${GOAL_ACCEPT_PREFIX}。从给定目标提炼 2-3 条可验证的验收标准（可检查、可判断的具体条款），` +
+  '直接列出标准，不要复述目标。';
+
+/** 默认最大迭代次数（防失控） */
 const MAX_ITERATIONS = 5;
 
-/** 编排进度回调（TUI 命令面板 / CLI stdout；worker 进度事件可复用 Output.onSubagentEvent） */
+/** 流式输出通道：推导/验收判定等 LLM 调用逐字展示（TUI 累积 meta 行 / CLI stdout 内联打印） */
+export interface StreamSink {
+  /** 开启新段落：prefix 立即显示，随后 chunk 逐字追加 */
+  start(prefix: string): void;
+  /** 追加一段内容（LLM 的 delta.content） */
+  chunk(text: string): void;
+  /** 结束段落（TUI 收尾 / CLI 换行） */
+  end(): void;
+}
+
+/** 编排进度回调（TUI 对话流 / CLI stdout；worker 进度事件可复用 Output.onSubagentEvent） */
 export interface PipelineCallbacks {
   /** 状态/进度行 */
   log(text: string): void;
   /** 等待一帧（TUI session.paint；CLI no-op） */
   tick?(): Promise<void>;
+  /** 流式输出通道：每个 LLM 流式段（推导/验收判定）开始时调用一次，返回 sink 持续接收 */
+  onStream?(): StreamSink;
   /** 子代理进度事件（复用 Output.onSubagentEvent 链路 / CLI dim 行） */
   onSubagentEvent?(ev: SubagentEvent): void;
 }
@@ -74,7 +92,8 @@ async function completeText(
   model: string,
   system: string,
   user: string,
-  maxTokens?: number
+  maxTokens?: number,
+  onChunk?: (text: string) => void
 ): Promise<string> {
   let content = '';
   try {
@@ -89,7 +108,10 @@ async function completeText(
     });
     for await (const chunk of stream) {
       const d = chunk.choices[0]?.delta;
-      if (d?.content) content += d.content;
+      if (d?.content) {
+        content += d.content;
+        onChunk?.(d.content);
+      }
     }
   } catch (err: any) {
     return `（请求失败：${err?.message ?? err}）`;
@@ -97,27 +119,32 @@ async function completeText(
   return content.trim();
 }
 
-/** 解析 /orchestrate 与 /loop 的参数（任务 + 可选 --agents a,b,c / --goal <标准>） */
+/** 解析 /orchestrate 与 /goal 的参数（任务 + 可选 --agents a,b,c / --accept <验收标准> / --max N / --parallel N） */
 export function parsePipelineArgs(
   raw: string
-): { task: string; agents?: string[]; goal?: string; parallel?: number } {
+): { task: string; agents?: string[]; accept?: string; parallel?: number; max?: number } {
   const agentsM = raw.match(/--agents\s+([\w,-]+)/);
-  const goalM = raw.match(/--goal\s+(.+?)(?=\s+--|$)/);
+  // --accept = 显式验收标准（/goal；缺省由目标拆解器自动推导）
+  const acceptM = raw.match(/--accept\s+(.+?)(?=\s+--|$)/);
   const parallelM = raw.match(/--parallel\s+(\d+)/);
+  const maxM = raw.match(/--max\s+(\d+)/);
   // 任务 = 去掉已识别的 flag 段后的剩余文本（首段）
   let task = raw
     .replace(/--agents\s+[\w,-]+/, '')
-    .replace(/--goal\s+.+?(?=\s+--|$)/, '')
+    .replace(/--accept\s+.+?(?=\s+--|$)/, '')
     .replace(/--parallel\s+\d+/, '')
+    .replace(/--max\s+\d+/, '')
     .trim();
   // 多 flag 时去掉重复空格
   task = task.replace(/\s{2,}/g, ' ').trim();
   const n = parallelM ? Number(parallelM[1]) : undefined;
+  const m = maxM ? Number(maxM[1]) : undefined;
   return {
     task,
     agents: agentsM ? agentsM[1].split(',').map((s) => s.trim()).filter(Boolean) : undefined,
-    goal: goalM ? goalM[1].trim() : undefined,
+    accept: acceptM ? acceptM[1].trim() : undefined,
     parallel: n && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined,
+    max: m && Number.isFinite(m) && m >= 1 ? Math.floor(m) : undefined,
   };
 }
 
@@ -228,63 +255,104 @@ export async function runOrchestrate(
 }
 
 /**
- * /loop [/goal]：循环执行任务直至验收标准满足。
- * 每次迭代 = 一个 worker 子代理（带上一轮结果作上下文）；配置了 --goal 时用
- * 验收判定器 LLM 检查是否达标（回答含「满足」即停），否则跑满 MAX_ITERATIONS。
+ * /goal（别名 /loop）：**目标机制**——循环执行直至目标达成。
+ * 流程：目标 →（缺省由「目标拆解器」LLM 自动推导验收标准，--accept 显式指定可跳过）
+ * → 迭代 1..N（每轮 = 一个 worker 子代理，prompt 带目标 + 验收标准 + 上一轮结果与
+ * 判定反馈）→「验收判定器」LLM 判定达标（回答含「满足」且未被「不」否定即停），
+ * 不满足的理由反馈进下一轮；--max 调整迭代上限（默认 5 防失控）。
+ *
+ * 输出（对话流程式叙事，无树形框线）：`🎯 目标` → `🧠 推导` → `📋 验收标准`
+ * （流式）→ `⏱ 最大迭代` → 每轮 `🔁 第 i/N 轮` + worker 卡片（onSubagentEvent）
+ * + `🧪 验收判定（流式）` → 不满足 `↻ 未达标…` / 达成 `✅ 目标达成（第 i 轮）`。
  */
-export async function runLoop(
+export async function runGoal(
   raw: string,
   opts: { client: OpenAI; model: string; runOpts: RunOptions } & PipelineCallbacks
 ): Promise<string> {
-  const { task, goal } = parsePipelineArgs(raw);
-  if (!task) throw new Error('用法：/loop <任务> [--goal <验收标准>]（循环执行直至达标，上限 5 次）');
+  const { task, accept, max } = parsePipelineArgs(raw);
+  if (!task) throw new Error('用法：/goal <目标> [--accept <验收标准>] [--max N]（自动推导验收标准并循环执行直至达标）');
   const runOpts = opts.runOpts;
   const workerModel = runOpts.editorModel ?? opts.model;
   const workerTools = (runOpts.tools ?? []).filter((t) => t.name !== 'delegate');
   const gate = runOpts.safetyGate;
   if (!gate) throw new Error('安全闸未初始化（当前环境不可用）');
   const hooks = runOpts.hooks;
+  const iterations = max ?? MAX_ITERATIONS;
 
-  opts.log(`╭─ 循环任务：${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`);
-  if (goal) opts.log(`├─ 验收标准：${goal.slice(0, 80)}`);
-  opts.log(`├─ 最大迭代：${MAX_ITERATIONS} 次`);
+  opts.log(`🎯 目标：${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`);
+
+  // 验收标准：--accept 显式指定，缺省由目标拆解器自动推导（不让用户手写判定条款）
+  let acceptCriteria = accept;
+  if (!acceptCriteria) {
+    opts.log('🧠 推导验收标准…');
+    await opts.tick?.();
+    // 推导结果**流式**展示（sink 段：📋 前缀 + 拆解器输出逐字累积）
+    const sink = opts.onStream?.();
+    sink?.start('📋 验收标准：');
+    acceptCriteria = await completeText(
+      opts.client,
+      opts.model,
+      GOAL_ACCEPT_SYSTEM,
+      `目标：${task}`,
+      300,
+      (t) => sink?.chunk(t)
+    );
+    sink?.end();
+    // 推导失败（请求错误等）：降级以目标本身为验收依据，不阻塞任务
+    if (!acceptCriteria || acceptCriteria.startsWith('（请求失败')) {
+      acceptCriteria = task;
+      opts.log('⚠️ 验收标准推导失败，回退以目标本身为验收依据');
+    }
+  } else {
+    opts.log(`📋 验收标准：${acceptCriteria.slice(0, 80)}${acceptCriteria.length > 80 ? '…' : ''}`);
+  }
+  opts.log(`⏱ 最大迭代：${iterations} 次`);
   await opts.tick?.();
 
   let lastResult = '';
-  for (let i = 1; i <= MAX_ITERATIONS; i++) {
-    opts.log(`│  ├─ 迭代 ${i}/${MAX_ITERATIONS} 开始`);
+  let lastFeedback = '';
+  for (let i = 1; i <= iterations; i++) {
+    opts.log(`🔁 第 ${i}/${iterations} 轮`);
     await opts.tick?.();
-    const prompt = `${task}${lastResult ? `\n\n上一轮结果（${i - 1} 轮）：\n${lastResult}\n\n请在此基础上继续推进，不要重复已完成的工作。` : ''}`;
+    // 每轮 prompt：目标 + 验收标准 + 上一轮结果 + 判定反馈（差距导向，不重复已完成工作）
+    let prompt = `目标：${task}\n验收标准：${acceptCriteria}`;
+    if (lastResult) prompt += `\n\n上一轮结果（第 ${i - 1} 轮）：\n${lastResult}`;
+    if (lastFeedback) prompt += `\n\n上一轮验收判定：${lastFeedback}\n请针对判定指出的差距继续推进，不要重复已完成的工作。`;
     const id = nextSubagentId();
     const answer = await runSubagent(opts.client, workerModel, prompt, {
       tools: workerTools,
       gate,
       maxSteps: runOpts.maxSubagentSteps,
       hooks,
-      name: 'loop-worker',
+      name: 'goal-worker',
       onEvent: workerEvent(runOpts.events, opts.onSubagentEvent),
       id,
       parentId: null,
       depth: 0,
     });
     lastResult = answer;
-    // 验收判定（--goal 配置时）：LLM 判定是否达标
-    if (goal) {
-      opts.log(`│  ├─ 验收判定（第 ${i} 轮）…`);
-      await opts.tick?.();
-      const verdict = await completeText(opts.client, opts.model, GOAL_SYSTEM, `验收标准：${goal}\n\n结果：\n${answer}`, 200);
-      // 「不满足」含「满足」子串——精确判「满足」且未被「不」否定
-      const met = verdict.includes('满足') && !verdict.includes('不满足');
-      opts.log(`│  ├─ 判定：${met ? '✓ 满足' : '✗ 不满足'}（${verdict.replace(/\n/g, ' ').slice(0, 80)}）`);
-      await opts.tick?.();
-      if (met) {
-        opts.log(`╰─ 第 ${i} 轮达成验收标准，循环结束`);
-        return `${answer}\n\n[验收达成：第 ${i} 轮] ${verdict}`;
-      }
-    } else {
-      opts.log(`│  ├─ 迭代 ${i} 完成`);
+    // 验收判定：LLM 检查是否达标；结果**流式**展示（判定行直接以正文出现，无需 ✗/✓ 前缀——
+    // 「满足/不满足」是正文首词）；不满足的理由存进 lastFeedback 驱动下一轮
+    const sink = opts.onStream?.();
+    sink?.start(`🧪 验收判定（第 ${i} 轮）：`);
+    const verdict = await completeText(
+      opts.client,
+      opts.model,
+      GOAL_SYSTEM,
+      `验收标准：${acceptCriteria}\n\n结果：\n${answer}`,
+      200,
+      (t) => sink?.chunk(t)
+    );
+    sink?.end();
+    // 「不满足」含「满足」子串——精确判「满足」且未被「不」否定
+    const met = verdict.includes('满足') && !verdict.includes('不满足');
+    lastFeedback = `${met ? '满足' : '不满足'}（${verdict.replace(/\n/g, ' ').slice(0, 120)}）`;
+    await opts.tick?.();
+    if (met) {
+      opts.log(`✅ 目标达成（第 ${i} 轮）`);
+      return `${answer}\n\n[目标达成：第 ${i} 轮]`;
     }
+    opts.log('↻ 未达标，下一轮按判定反馈继续推进');
   }
-  opts.log(`╰─ 达到迭代上限（${MAX_ITERATIONS}），任务可能未完全达标`);
-  return `${lastResult}\n\n[达到迭代上限 ${MAX_ITERATIONS} 次，未配置验收标准或未达标]`;
+  return `${lastResult}\n\n[达到迭代上限 ${iterations} 次，未达成]`;
 }

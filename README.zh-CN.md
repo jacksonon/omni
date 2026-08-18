@@ -285,7 +285,7 @@ omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 | `/compact` | 手动压缩上下文（旧消息合并摘要，保留最近 8 条原文） |
 | `/agents` | 查看子代理配置 + 已发现子代理定义（`.agents/subagents/*.md`） |
 | `/orchestrate` | 编排：fan-out 并行 delegate → 汇总 → 对抗审查 → 最终报告 |
-| `/loop`（别名 `/goal`） | 循环执行任务直至验收标准满足（含迭代日志） |
+| `/goal`（别名 `/loop`） | 目标机制：自动推导验收标准并循环执行直至达标（含迭代日志与判定反馈） |
 | `/review` | 代码审查：typecheck + git diff → LLM 审查 |
 | `/status` · `/context` | 会话状态汇总 · 上下文用量与压缩建议 |
 | `/session` | 列出当前目录历史会话并继续（`/session <id>` 前缀匹配；`all` 跨目录） |

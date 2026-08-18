@@ -116,6 +116,12 @@ export interface TuiMenu {
   selectedIndex: number;
   /** 当前生效的值（✓ 标记） */
   currentValue: string;
+  /**
+   * 窗口滚动：可见窗口首项下标（选项超面板高度时滚动查看，同联想浮层 suggest.top 模式）。
+   * 由渲染层（menuPanelRows）每帧收敛——选中项必须保持在窗口内（交互层 ↑/↓ 移动
+   * selectedIndex，渲染兜底把窗口跟随到选中项）。
+   */
+  scrollTop: number;
 }
 
 /**

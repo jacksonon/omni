@@ -97,7 +97,7 @@ export interface RunOptions {
    * 可用模型端点列表（顶层 model + config `models`；/model 切换用）。
    * attachRuntime 从 cfg 展开注入；interactive 按名字找到目标端点重建 client。
    */
-  models?: { name: string; baseURL?: string; apiKey?: string; userAgent?: string }[];
+  models?: { name: string; baseURL?: string; apiKey?: string; userAgent?: string; reasoningEffortOptions?: string[]; reasoningEffort?: string }[];
   /**
    * 当前模型运行时引用（主循环与 delegate 子代理共用）：
    * /model 切换时重建 client 并更新此引用 → 子代理与主循环模型一致。

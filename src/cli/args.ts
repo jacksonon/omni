@@ -73,7 +73,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 export function printHelp(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
-  omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排（fan-out+汇总+对抗审查）；/loop [--goal] 循环任务；/compact 压缩上下文；/status 状态；/context 上下文用量；/session 会话管理（列出/继续当前目录历史会话）；/resume 恢复会话；/export 导出；/diff 查看改动；/review 审查；/mcp MCP 管理；/skill 技能；/doctor 诊断；/help 帮助）
+  omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排（fan-out+汇总+对抗审查）；/goal 目标机制（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/compact 压缩上下文；/status 状态；/context 上下文用量；/session 会话管理（列出/继续当前目录历史会话）；/resume 恢复会话；/export 导出；/diff 查看改动；/review 审查；/mcp MCP 管理；/skill 技能；/doctor 诊断；/help 帮助）
 
 Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p）：
   omni exec "<任务>"                非交互执行：stdout 只输出最终结果，进度走 stderr

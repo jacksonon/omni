@@ -286,7 +286,7 @@ omni mcp-server     # stdio JSON-RPC: initialize / tools/list / tools/call
 | `/compact` | manually compress context (old messages → summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`) |
 | `/orchestrate` | orchestration: fan-out parallel delegates → merge → adversarial review → final report |
-| `/loop` (alias `/goal`) | loop a task until acceptance criteria are met (with iteration log) |
+| `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop a task until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` · `/context` | session status summary · context usage with compression advice |
 | `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |

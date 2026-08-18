@@ -3,11 +3,11 @@
  *
  *   A    单元：parseSubagentFrontmatter（name/description/model/permission/tools/skills/maxSteps）
  *   B    单元：discoverSubagents（临时目录 .agents/subagents/*.md；非法跳过/项目优先全局）
- *   C    单元：parsePipelineArgs（任务 / --agents / --goal / --parallel）
+ *   C    单元：parsePipelineArgs（任务 / --agents / --accept / --parallel / --max）
  *   D    e2e：MOCK_SUBAGENT 主代理 delegate 委托——子代理跑 run_command → 结果回传，
  *        轨迹事件含 subagent/start·step·end，foldTrace 渲染嵌套树行
  *   E    e2e：/orchestrate——fan-out 3 worker 并行 → 汇总器 → 对抗审查（mock 固定输出）
- *   F    e2e：/loop --goal——第一次验收「不满足」→ 第二次「满足」→ 提前结束（2 次迭代）
+ *   F    e2e：/goal——缺省自动推导验收标准；第一次验收「不满足」→ 第二次「满足」→ 提前结束（2 次迭代）
  *
  * 用法：npx tsx scripts/probe-tmp/probe-subagent.ts
  */
@@ -22,7 +22,7 @@ import { runAgent } from '../../src/agent/loop.js';
 import { EventRecorder } from '../../src/agent/events.js';
 import { foldTrace } from '../../src/agent/trace.js';
 import { parseSubagentFrontmatter, discoverSubagents } from '../../src/agent/subagent-defs.js';
-import { parsePipelineArgs, runOrchestrate, runLoop } from '../../src/agent/orchestrate.js';
+import { parsePipelineArgs, runGoal, runOrchestrate } from '../../src/agent/orchestrate.js';
 import { ExecOutput } from '../../src/exec.js';
 
 const PORT = 8813;
@@ -113,13 +113,15 @@ async function main(): Promise<void> {
 
   // ── C. 编排参数解析 ──────────────────────────────────────────────────
   {
-    const p = parsePipelineArgs('完成登录功能 --agents a,b --goal 测试通过 --parallel 2');
+    const p = parsePipelineArgs('完成登录功能 --agents a,b --accept 测试通过 --parallel 2');
     ok(p.task === '完成登录功能', `C1 task=${p.task}`);
     ok(p.agents?.length === 2 && p.agents[1] === 'b', 'C2 agents 列表');
-    ok(p.goal === '测试通过', `C3 goal=${p.goal}`);
+    ok(p.accept === '测试通过', `C3 accept=${p.accept}`);
     ok(p.parallel === 2, 'C4 parallel');
     const p2 = parsePipelineArgs('普通任务');
-    ok(p2.task === '普通任务' && p2.agents === undefined && p2.goal === undefined, 'C5 无 flag');
+    ok(p2.task === '普通任务' && p2.agents === undefined && p2.accept === undefined, 'C5 无 flag');
+    const p3 = parsePipelineArgs('完成部署 --max 3 --accept 发布成功');
+    ok(p3.max === 3 && p3.accept === '发布成功', 'C6 --max 上限解析');
   }
 
   // ── D. 主代理 delegate 委托 e2e（MOCK_SUBAGENT）──────────────────────
@@ -164,21 +166,37 @@ async function main(): Promise<void> {
     ok(subRows.length === 3 && subRows.every((r) => r.text.includes('worker')), `E5 子代理行（${subRows.length} 行，depth 0 无树形缩进）`);
   }
 
-  // ── F. /loop --goal e2e（第一次不满足 → 第二次满足提前结束）──────────
+  // ── F. /goal e2e（第一次不满足 → 第二次满足提前结束 + 自动推导验收标准）──
   {
     const ctx = await makeCtx({ MOCK_GOAL_CHECKS: '0' });
     ctx.runOpts.events = await EventRecorder.open(null);
     const logs: string[] = [];
-    const result = await runLoop('完成部署 --goal 部署通过', {
+    const streams: string[] = []; // 流式段（推导/验收判定逐字）
+    const result = await runGoal('完成部署', {
       client: ctx.client,
       model: ctx.model,
       runOpts: ctx.runOpts,
       log: (t) => logs.push(t),
+      onStream: () => ({
+        start(prefix: string) {
+          streams.push(prefix);
+        },
+        chunk(text: string) {
+          streams[streams.length - 1] += text;
+        },
+        end() {},
+      }),
       onSubagentEvent: () => {},
     });
-    const met = logs.filter((l) => l.includes('达成验收标准'));
+    const met = logs.filter((l) => l.includes('目标达成'));
     ok(met.length === 1 && met[0].includes('第 2 轮'), `F1 第二次迭代验收达成（logs: ${met[0] ?? '无'}）`);
-    ok(result.includes('[验收达成：第 2 轮]'), 'F2 返回结果含验收达成标记');
+    ok(result.includes('[目标达成：第 2 轮]'), 'F2 返回结果含目标达成标记');
+    ok(logs.some((l) => l.includes('推导验收标准')), 'F3 缺省自动推导验收标准');
+    ok(streams.some((s) => s.includes('验收标准：1) 功能完整可运行')), 'F4 推导固定条款走流式段');
+    ok(
+      streams.some((s) => s.includes('验收判定（第 1 轮）：') && s.includes('不满足：结果尚未完整')),
+      `F5 判定反馈进下一轮（streams: ${streams.find((s) => s.includes('不满足')) ?? '无'}）`
+    );
   }
 
   // ── G. 三层预览：step.tool 当前动作 + 卡片结果摘要 + /agents <name> 展开 ──

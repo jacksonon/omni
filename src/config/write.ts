@@ -210,23 +210,50 @@ export function persistModelDefaultToConfig(model: string, cfg: OmniConfig): Per
 }
 
 /**
- * 把思考级别写入配置文件顶层 reasoningEffort 字段（/variants 面板确认持久化）。
+ * 把思考级别写入配置文件（/variants 面板确认持久化）。
+ * 现在思考级别是 **per-model**（第一百四十次后）：当前模型在配置文件 models 表里有
+ * 专属条目 → 写入 models.<模型名>.reasoningEffort（该模型专属，切换回其他模型不影响）；
+ * 否则写入顶层 reasoningEffort（全局默认，所有未配置专属级别的模型共用）。
  * 运行时已即时生效（interactive 每轮同步进 runOpts.reasoningEffort），这里只落盘供下次会话加载。
  */
-export function persistReasoningEffortToConfig(effort: string, cfg: OmniConfig): PersistModelResult {
+export function persistReasoningEffortToConfig(
+  effort: string,
+  cfg: OmniConfig,
+  modelName?: string
+): PersistModelResult {
   const res = loadConfigObject(cfg);
   if (!res.ok) {
-    return { ok: false, file: null, message: `${res.message}（reasoningEffort 字段手动添加："${effort}"）` };
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（reasoningEffort 字段手动添加${modelName ? `：models."${modelName}".reasoningEffort` : ''} = "${effort}"）`,
+    };
   }
-  res.obj.reasoningEffort = effort;
+  const cfgObj = res.obj;
+  const models =
+    cfgObj.models && typeof cfgObj.models === 'object' && !Array.isArray(cfgObj.models)
+      ? (cfgObj.models as Record<string, unknown>)
+      : null;
+  const modelEntry = modelName ? models?.[modelName] : undefined;
+  if (modelName && modelEntry && typeof modelEntry === 'object') {
+    // per-model：当前模型在 models 表有专属条目（自定义端点模型）→ 写模型专属级别
+    (modelEntry as Record<string, unknown>).reasoningEffort = effort;
+  } else {
+    // 全局默认：models 表没有该模型条目（或未指定模型）→ 顶层 reasoningEffort
+    cfgObj.reasoningEffort = effort;
+  }
   try {
-    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+    writeFileSync(res.file, `${JSON.stringify(cfgObj, null, 2)}\n`);
   } catch (err) {
     return {
       ok: false,
       file: null,
-      message: `写入配置失败：${(err as Error)?.message ?? err}（reasoningEffort 字段手动添加："${effort}"）`,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（reasoningEffort 字段手动添加${modelName ? `：models."${modelName}".reasoningEffort` : ''} = "${effort}"）`,
     };
   }
-  return { ok: true, file: res.file, message: `已保存思考级别 → ${res.file}（重启后同样生效）` };
+  return {
+    ok: true,
+    file: res.file,
+    message: `已保存思考级别 → ${res.file}（重启后同样生效${modelName && modelEntry && typeof modelEntry === 'object' ? `；仅对模型 ${modelName} 生效` : '；全局默认'}）`,
+  };
 }

@@ -118,6 +118,8 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   ctx.runOpts.permission = cfg.permission;
   // 可用模型列表（顶层 model + config models 展开；/model 切换用）
   // 默认模型端点同样优先取 models.<model>（与 prepareRun 的解析一致）
+  // 顶层 model 已在列表首位；models 表里同名的条目跳过，避免 /model 面板重复列出
+  // （常见于先 /model add <名> 再 /model <名> 切换——顶层与 models 表各留一份）
   const defModel = cfg.models?.[cfg.model];
   const modelEndpoints: ModelEndpoint[] = [
     {
@@ -125,13 +127,21 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
       baseURL: defModel?.baseURL ?? cfg.baseURL,
       apiKey: defModel?.apiKey ?? cfg.apiKey,
       userAgent: defModel?.userAgent ?? cfg.userAgent,
+      // per-model variants：端点展开时把模型的思考级别配置（缺省回退全局）"烘焙"进端点——
+      // /model 切换时 applyEndpoint / switchModel 直接从端点取，无需再查 cfg
+      reasoningEffortOptions: defModel?.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
+      reasoningEffort: defModel?.reasoningEffort ?? cfg.reasoningEffort,
     },
-    ...Object.entries(cfg.models ?? {}).map(([name, e]) => ({
-      name,
-      baseURL: e.baseURL ?? cfg.baseURL,
-      apiKey: e.apiKey ?? cfg.apiKey,
-      userAgent: e.userAgent ?? cfg.userAgent,
-    })),
+    ...Object.entries(cfg.models ?? {})
+      .filter(([name]) => name !== cfg.model)
+      .map(([name, e]) => ({
+        name,
+        baseURL: e.baseURL ?? cfg.baseURL,
+        apiKey: e.apiKey ?? cfg.apiKey,
+        userAgent: e.userAgent ?? cfg.userAgent,
+        reasoningEffortOptions: e.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
+        reasoningEffort: e.reasoningEffort ?? cfg.reasoningEffort,
+      })),
   ];
   ctx.runOpts.models = modelEndpoints;
   // 完整配置（/status /context /doctor /config 等命令读取；interactive 透传给 ctx）

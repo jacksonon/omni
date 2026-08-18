@@ -450,6 +450,9 @@ export async function runTuiInteractive(
     state.permission = runOpts.permission ?? state.permission;
     // 思考级别：初始取入口配置（runOpts.reasoningEffort = cfg.reasoningEffort），/variants 面板切换
     state.reasoningEffort = runOpts.reasoningEffort ?? state.reasoningEffort;
+    // 思考级别选项：初始取入口配置（runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions）；
+    // /model 切换模型时 applyEndpoint 按该模型配置联动（per-model variants）
+    state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? state.reasoningEffortOptions;
     // 可用模型列表：顶层 model + config `models`（/model 面板列出）；当前模型初始取运行时
     state.models = (runOpts.models ?? []).map((m) => m.name);
     state.model = runOpts.modelRuntime?.model ?? model;
@@ -466,6 +469,13 @@ export async function runTuiInteractive(
         runOpts.modelRuntime.client = currentClient;
         runOpts.modelRuntime.model = endpoint.name;
       }
+      // per-model variants 联动：切换到该模型时，思考级别与 /variants 面板选项
+      // 自动跟随该模型的配置（端点已在 modelEndpoints 展开时回退全局缺省）——
+      // loop 请求（runOpts.reasoningEffort）与面板（state）立即反映新模型
+      runOpts.reasoningEffort = endpoint.reasoningEffort;
+      runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
+      state.reasoningEffort = endpoint.reasoningEffort ?? '';
+      if (endpoint.reasoningEffortOptions) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
     };
     const syncModel = (): void => {
       // 对比 state.model（/model 面板确认后变更）与当前运行时模型，变了才真正切换：
@@ -547,13 +557,15 @@ export async function runTuiInteractive(
         }
       }
       // /variants 思考级别保存意图：切换已即时生效（interactive 每轮同步进
-      // runOpts.reasoningEffort）——这里把配置**持久化**（顶层 reasoningEffort 字段）
+      // runOpts.reasoningEffort）——这里把配置**持久化**。per-model：当前模型在配置
+      // 文件 models 表有专属条目时写 models.<模型>.reasoningEffort（仅该模型生效），
+      // 否则写顶层全局默认（persistReasoningEffortToConfig 内部按 modelName 分流）
       if (state.variantsSave) {
         const v = state.variantsSave;
         state.variantsSave = null;
         const cfg = runOpts.cfg;
         if (cfg) {
-          const res = persistReasoningEffortToConfig(v, cfg);
+          const res = persistReasoningEffortToConfig(v, cfg, currentModel);
           if (res.ok) {
             pushCmdLine(state, { kind: 'meta', text: res.message }, '/variants');
           } else {

@@ -382,8 +382,12 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     backgroundColor: theme.suggestBg,
   });
   root.add(menuOverlay);
+  // 细胞池预分配**充足**行数：窗口滚动后菜单面板行数 = 标题 1 + 窗口（≤12）+
+  // 上下提示 ≤2 + 操作提示 1 + 底边 1 ≤ 17；60 行覆盖超高视口（与 cmdPanel 同策略）。
+  // 池不足时超出部分不渲染 = 面板「展示不全」（用户实测反馈：/session 面板有提示行
+  // 但选项/底边被裁）——快照只断言纯函数行数、从未验证 pool 容量，回归靠这个注释防。
   const menuCells: TextRenderable[] = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 60; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     menuOverlay.add(c);
     menuCells.push(c);
@@ -921,21 +925,23 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.menuRowMap = [];
     } else {
       const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 44);
-      const panelRows = menu ? menuPanelRows(menu, panelW, state.language) : settingsPanelRows(settings!, panelW, state.language);
+      // 窗口滚动预算：面板总高（标题 1 + 窗口 + 上下提示 ≤2 + 操作提示 1 + 底边 1）≤ footerTop - 2
+      // （footerTop = 灰色块顶部——面板永不遮住输入区）；上限 12 行（联想浮层 8 行更紧凑）
+      const menuMaxVisible = Math.max(2, Math.min(12, footerTop - 7));
+      const panelRows = menu
+        ? menuPanelRows(menu, panelW, state.language, menuMaxVisible)
+        : settingsPanelRows(settings!, panelW, state.language);
       tree.menuOverlay.visible = true;
       // 底边钳制在灰色块上方（同 cmdPanel 面板）：内容少时居中，多时贴灰块上缘
       const centeredTopMenu = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
       tree.menuOverlay.top = Math.min(centeredTopMenu, Math.max(1, footerTop - panelRows.length - 1));
       tree.menuOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
       // 菜单行 → 选项下标映射（点击命中用；标题 0 / 提示 / 底边 = -1）：
-      // 面板行下标 i（0=标题边框行）→ 选项下标 i-1；事件坐标 y = overlay.top + 1 + i
-      // （与联想浮层 suggestRect 同一坐标系：浮层顶边框占 1 行）
+      // 直接取每行自带的 menuIdx（窗口滚动后行与下标不再连续，逐行标记最稳）；
+      // 事件坐标 y = overlay.top + 1 + i（与联想浮层 suggestRect 同一坐标系：浮层顶边框占 1 行）
       const rowMap: number[] = [];
       if (menu) {
-        for (let i = 0; i < panelRows.length; i++) {
-          const optIdx = i - 1;
-          rowMap.push(optIdx >= 0 && optIdx < menu.options.length ? optIdx : -1);
-        }
+        for (const r of panelRows) rowMap.push(r.menuIdx ?? -1);
       }
       tree.menuRowMap = rowMap;
       for (let i = 0; i < tree.menuCells.length; i++) {

@@ -402,7 +402,7 @@ a separate panel and never pollutes the conversation flow):
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`, per-agent model/permission/tool whitelist/skills) |
 | `/orchestrate` | orchestration: fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report |
-| `/loop` (alias `/goal`) | loop a task until acceptance criteria are met (with iteration log) |
+| `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` | session status summary (model / permission / plan mode / tokens / session file / scaffolds) |
 | `/context` | context usage (message counts + token estimate + compression-threshold advice) |
@@ -676,7 +676,7 @@ the current model when unset (no config = always the current model).
 
 ```bash
 /orchestrate <task>   # fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report
-/loop <goal>          # loop a task until acceptance criteria are met (with iteration log; alias /goal)
+/goal <goal>          # goal mechanism: derive acceptance criteria and loop until met (iteration log + verdict feedback; alias /loop)
 ```
 
 ---

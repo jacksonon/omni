@@ -41,7 +41,7 @@ import {
   statusReport,
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
-import { runLoop, runOrchestrate } from '../agent/orchestrate.js';
+import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { createClient } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
@@ -85,6 +85,9 @@ export async function runInteractive(
       runOpts.modelRuntime.client = currentClient;
       runOpts.modelRuntime.model = name;
     }
+    // per-model variants 联动：切换后思考级别/选项跟随该模型配置（端点展开时已回退全局缺省）
+    runOpts.reasoningEffort = endpoint.reasoningEffort;
+    runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
     return null;
   };
   // 会话持久化：增量追加每轮新增消息。
@@ -319,7 +322,7 @@ export async function runInteractive(
       } else {
         console.log(dim('· 已定义子代理：无（.agents/subagents/ 下可放 <name>.md 声明命名子代理）'));
       }
-      console.log(dim('说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门。/orchestrate 并行编排、/loop 循环执行。'));
+      console.log(dim('说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门。/orchestrate 并行编排、/goal 目标机制。'));
       safePrompt();
       continue;
     }
@@ -349,21 +352,42 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/loop' || cmd.startsWith('/loop ')) {
-      // /loop：循环执行任务直至验收标准满足（--goal 配置时 LLM 判定；上限 5 次）
+    const goalCmd = cmd === '/goal' || cmd.startsWith('/goal ') || cmd === '/loop' || cmd.startsWith('/loop ');
+    if (goalCmd) {
+      // /goal（别名 /loop）：目标机制——自动推导验收标准并循环执行直至达标（--accept 显式标准，--max 上限）
       if (!runOpts.safetyGate) {
-        console.log(red('/loop 需要安全闸（当前环境异常）'));
+        console.log(red('/goal 需要安全闸（当前环境异常）'));
       } else {
         try {
-          const result = await runLoop(cmd.slice('/loop'.length).trim(), {
+          const raw = (cmd.startsWith('/goal') ? cmd.slice('/goal'.length) : cmd.slice('/loop'.length)).trim();
+          // 流式输出：推导/验收判定逐字打印（dim 内联，段结束换行）——无树形框线
+          const stream = (() => {
+            let opened = false;
+            return {
+              start(prefix: string) {
+                opened = true;
+                process.stdout.write(dim(prefix));
+              },
+              chunk(text: string) {
+                if (opened) process.stdout.write(dim(text));
+              },
+              end() {
+                if (opened) {
+                  opened = false;
+                  process.stdout.write('\n');
+                }
+              },
+            };
+          })();
+          const result = await runGoal(raw, {
             client: currentClient,
             model: currentModel,
             runOpts,
             log: (t) => console.log(dim(t)),
+            onStream: () => stream,
             onSubagentEvent: (ev) => out.onSubagentEvent?.(ev),
           });
           console.log('');
-          console.log(green('═══ 循环最终结果 ═══'));
           console.log(result);
         } catch (err) {
           console.log(red(String((err as Error)?.message ?? err)));
@@ -408,10 +432,12 @@ export async function runInteractive(
       } else {
         runOpts.reasoningEffort = want;
         console.log(green(`已切换思考级别 → ${want}`));
-        // 持久化：切换后下次启动仍是新思考级别（纯 JSON 配置文件自动改写；JSONC 提示手动）
+        // 持久化：切换后下次启动仍是新思考级别。per-model：当前模型在配置文件 models
+        // 表有专属条目时写 models.<模型>.reasoningEffort（仅该模型生效），否则写顶层全局
+        // （persistReasoningEffortToConfig 内部按 modelName 分流）
         const cfg = runOpts.cfg;
         if (cfg) {
-          const res = persistReasoningEffortToConfig(want, cfg);
+          const res = persistReasoningEffortToConfig(want, cfg, currentModel);
           console.log(res.ok ? dim(res.message) : yellow(res.message));
         }
       }
@@ -447,6 +473,9 @@ export async function runInteractive(
           baseURL: parsed.baseURL ?? cfg?.baseURL,
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
+          // per-model variants 缺省回退全局（/model add 不带思考级别 flag——配置文件是配置途径）
+          reasoningEffortOptions: cfg?.reasoningEffortOptions,
+          reasoningEffort: cfg?.reasoningEffort,
         };
         // 注册进运行时模型表（同名覆盖）：子代理/主循环经 modelRuntime 用新端点
         const existing = models.find((m) => m.name === parsed.name);
@@ -473,7 +502,7 @@ export async function runInteractive(
           console.log(dim(`已是当前模型 ${want}`));
         } else {
           switchModel(want); // 重建 client + 更新 modelRuntime（子代理同步）
-          console.log(green(`已切换模型 → ${want}${ep.baseURL ? `（${ep.baseURL}）` : ''}`));
+          console.log(green(`已切换模型 → ${want}${ep.baseURL ? `（${ep.baseURL}）` : ''}${ep.reasoningEffort ? `（思考级别 ${ep.reasoningEffort}）` : ''}`));
           // 持久化：切换后下次启动默认就是新模型（纯 JSON 配置文件自动改写；JSONC 提示手动）
           const cfg = runOpts.cfg;
           if (cfg) {
@@ -599,7 +628,7 @@ export async function runInteractive(
           console.log(dim('没有已保存的会话（交互模式退出时自动落盘；/resume <id> 恢复）'));
         } else {
           console.log(dim(`已保存 ${list.length} 个会话（/resume <id> 恢复）：`));
-          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息 · ${s.model}）`));
+          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
           if (list.length > 15) console.log(dim(`… 还有 ${list.length - 15} 个`));
         }
         safePrompt();
@@ -616,7 +645,7 @@ export async function runInteractive(
       }
       if (cands.length > 1) {
         console.log(red(`「${id}」匹配 ${cands.length} 个会话，请用完整 id 恢复：`));
-        for (const c of cands.slice(0, 9)) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}（${c.messages} 条消息 · ${c.model}）`));
+        for (const c of cands.slice(0, 9)) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}（${c.messages} 条消息）`));
         safePrompt();
         continue;
       }
@@ -655,7 +684,7 @@ export async function runInteractive(
           console.log(dim(isAll ? '没有已保存的会话（交互模式退出时自动落盘；/session 查看当前目录）' : '当前目录没有历史会话（交互模式退出时自动落盘；/session all 查看全部）'));
         } else {
           console.log(dim(isAll ? `已保存 ${list.length} 个会话（/session <id> 继续）：` : `当前目录 ${list.length} 个历史会话（/session <id> 继续 · /session all 查看全部）：`));
-          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息 · ${s.model}）`));
+          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
           if (list.length > 15) console.log(dim(`… 还有 ${list.length - 15} 个`));
         }
         safePrompt();
@@ -672,7 +701,7 @@ export async function runInteractive(
       }
       if (cands.length > 1) {
         console.log(red(`「${arg}」匹配 ${cands.length} 个会话，请用完整 id 继续：`));
-        for (const c of cands.slice(0, 9)) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}（${c.messages} 条消息 · ${c.model}）`));
+        for (const c of cands.slice(0, 9)) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}（${c.messages} 条消息）`));
         safePrompt();
         continue;
       }

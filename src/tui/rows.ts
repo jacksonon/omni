@@ -68,6 +68,8 @@ export interface Row {
   approvalId?: number;
   /** 本行内的可点击本地文件链接（行内代码里的真实文件路径）：{ 行内起始列, 显示宽度, 绝对路径 } */
   fileLinks?: { col: number; width: number; path: string }[];
+  /** 菜单面板行的选项下标（menuPanelRows 窗口内选项行；标题/提示/底边行 = undefined，点击忽略） */
+  menuIdx?: number;
 }
 
 /**
@@ -163,17 +165,53 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme): R
  *   │ ↑/↓ 选择 · Enter 确认 · Esc 取消 │
  *   ╰───────────────────╯
  */
-export function menuPanelRows(menu: TuiMenu, contentWidth: number, lang: TuiLang = 'zh'): Row[] {
+/**
+ * 菜单面板行（/theme /permission /variants /model /session 等）：圆角方框 + 选项列表。
+ * 选项超面板高度时**窗口滚动**（同联想浮层 suggestBox 模式）：`menu.scrollTop` 记录
+ * 窗口首项下标，渲染时收敛到合法区间且**选中项恒在窗口内**（交互层 ↑/↓ 移动
+ * selectedIndex，这里兜底跟随滚动——连续按键逐帧重绘即连续滚动）；窗口外上下各一条
+ * 「↑/↓ 还有 N 个（↑/↓ 滚动）」提示行。maxVisible 缺省 = 全部（无滚动，旧行为）。
+ */
+export function menuPanelRows(
+  menu: TuiMenu,
+  contentWidth: number,
+  lang: TuiLang = 'zh',
+  maxVisible?: number
+): Row[] {
   const inner = cardInnerWidth(contentWidth);
+  // 窗口大小：全部放得下就不滚；否则按预算收缩（至少 1 行，且不超过选项总数）
+  const win = maxVisible === undefined ? menu.options.length : Math.max(1, Math.min(maxVisible, menu.options.length));
+  // 滚动位置收敛：选中项必须保持在窗口内（交互层已维护，这里兜底外部状态变更）
+  const maxTop = Math.max(0, menu.options.length - win);
+  let top = Math.min(menu.scrollTop ?? 0, maxTop);
+  if (menu.selectedIndex < top) top = menu.selectedIndex;
+  else if (menu.selectedIndex >= top + win) top = Math.max(0, Math.min(maxTop, menu.selectedIndex - win + 1));
+  menu.scrollTop = top;
+  const above = top; // 窗口上方还有的项数
+  const below = Math.max(0, menu.options.length - (top + win)); // 窗口下方还有的项数
   const rows: Row[] = [{ text: cardTitleLine(menu.title, '', inner), style: { fg: 'cyan' } }];
-  menu.options.forEach((opt, i) => {
-    const cursor = i === menu.selectedIndex ? '› ' : '  ';
+  if (above > 0) {
+    rows.push({
+      text: cardContentLine(tf(lang, 'suggest.hint', { arrow: '↑', n: above }), inner),
+      style: { dim: true },
+    });
+  }
+  for (let k = top; k < top + win; k++) {
+    const opt = menu.options[k]!;
+    const cursor = k === menu.selectedIndex ? '› ' : '  ';
     const check = opt.value === menu.currentValue ? ' ✓' : '';
     rows.push({
       text: cardContentLine(`${cursor}${opt.label}${check}`, inner),
-      style: i === menu.selectedIndex ? { fg: 'cyan', bold: true } : {},
+      style: k === menu.selectedIndex ? { fg: 'cyan', bold: true } : {},
+      menuIdx: k,
     });
-  });
+  }
+  if (below > 0) {
+    rows.push({
+      text: cardContentLine(tf(lang, 'suggest.hint', { arrow: '↓', n: below }), inner),
+      style: { dim: true },
+    });
+  }
   rows.push({ text: cardContentLine(t(lang, 'menu.hint'), inner), style: { dim: true } });
   rows.push({ text: cardBottomLine(inner), style: { dim: true } });
   return rows;

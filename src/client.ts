@@ -17,6 +17,10 @@ export interface ModelEndpoint {
   apiKey?: string;
   /** 自定义 User-Agent（部分网关 WAF 需要；缺省回退顶层 userAgent） */
   userAgent?: string;
+  /** 该模型 /variants 支持的思考级别选项（per-model variants；缺省回退顶层 reasoningEffortOptions） */
+  reasoningEffortOptions?: string[];
+  /** 该模型的当前思考级别（per-model variants；缺省回退顶层 reasoningEffort） */
+  reasoningEffort?: string;
 }
 
 /** 按端点配置创建 OpenAI 客户端（timeout/maxRetries 与主入口一致） */

@@ -55,11 +55,23 @@ export interface OmniConfig {
   /** /variants 支持的思考级别选项（默认 low/medium/high，可自行配置支持哪些） */
   reasoningEffortOptions: string[];
   /**
-   * 多模型配置：{ 模型名: { baseURL?, apiKey?, userAgent? } }（/model 切换）。
+   * 多模型配置：{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffortOptions?, reasoningEffort? } }（/model 切换）。
    * 每个模型可有自己的端点/密钥/UA；缺省字段回退到顶层 baseURL/apiKey/userAgent。
+   * **per-model variants**：reasoningEffortOptions = 该模型 /variants 支持的思考级别选项、
+   * reasoningEffort = 该模型的当前思考级别——两者缺省回退顶层同名字段（只配置了端点
+   * 的模型自动继承全局思考级别配置）。/model 切换到该模型时自动带出（面板选项/请求同步）。
    * 顶层 `model` 为默认模型（总是可用）。
    */
-  models?: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string }>;
+  models?: Record<
+    string,
+    {
+      baseURL?: string;
+      apiKey?: string;
+      userAgent?: string;
+      reasoningEffortOptions?: string[];
+      reasoningEffort?: string;
+    }
+  >;
   /** 最多预载文件数（默认 5） */
   preloadMaxFiles: number;
   /** 单文件预载字节上限（默认 30KB） */
@@ -186,7 +198,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.reasoningEffort = data.reasoningEffort.trim();
   }
   if (data.models && typeof data.models === 'object' && !Array.isArray(data.models)) {
-    const models: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string }> = {};
+    const models: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string; reasoningEffortOptions?: string[]; reasoningEffort?: string }> = {};
     for (const [name, v] of Object.entries(data.models as Record<string, unknown>)) {
       if (!v || typeof v !== 'object') continue;
       const e = v as Record<string, unknown>;
@@ -194,6 +206,17 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
         ...(typeof e.baseURL === 'string' ? { baseURL: e.baseURL } : {}),
         ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey } : {}),
         ...(typeof e.userAgent === 'string' ? { userAgent: e.userAgent } : {}),
+        // per-model variants：只收非空字符串数组/字符串；非法值丢弃（回退顶层）
+        ...(Array.isArray(e.reasoningEffortOptions)
+          ? {
+              reasoningEffortOptions: (e.reasoningEffortOptions as unknown[]).filter(
+                (x): x is string => typeof x === 'string' && !!x.trim()
+              ),
+            }
+          : {}),
+        ...(typeof e.reasoningEffort === 'string' && e.reasoningEffort.trim()
+          ? { reasoningEffort: e.reasoningEffort.trim() }
+          : {}),
       };
     }
     if (Object.keys(models).length > 0) cfg.models = models;

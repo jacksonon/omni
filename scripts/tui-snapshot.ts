@@ -1415,7 +1415,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/loop', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/trace', '/help']) {
+  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/trace', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -2981,8 +2981,16 @@ async function main(): Promise<void> {
       model: 'deepseek-chat',
       baseURL: 'https://api.deepseek.com/v1',
       apiKey: 'sk-top',
+      // per-model variants：顶层全局思考级别 + glm 专属级别/选项（moonshot 只配端点 → 回退全局）
+      reasoningEffort: 'medium',
+      reasoningEffortOptions: ['low', 'medium', 'high'],
       models: {
-        'glm-4-flash': { baseURL: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-glm' },
+        'glm-4-flash': {
+          baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+          apiKey: 'sk-glm',
+          reasoningEffortOptions: ['low', 'high'],
+          reasoningEffort: 'high',
+        },
         'moonshot-v1-8k': { baseURL: 'https://api.moonshot.cn/v1' },
       },
     })
@@ -3014,6 +3022,19 @@ async function main(): Promise<void> {
   }
   if (moon34.apiKey !== 'sk-top' || moon34.baseURL !== 'https://api.moonshot.cn/v1') {
     console.error(`✗ 场景 34 moonshot 未回退顶层 apiKey: ${JSON.stringify(moon34)}`);
+    process.exit(1);
+  }
+  // b2) per-model variants 展开：端点携带解析后的思考级别（缺省回退顶层全局）
+  const def34 = models34[0];
+  if (
+    def34.reasoningEffort !== 'medium' ||
+    JSON.stringify(def34.reasoningEffortOptions) !== JSON.stringify(['low', 'medium', 'high']) ||
+    glm34.reasoningEffort !== 'high' ||
+    JSON.stringify(glm34.reasoningEffortOptions) !== JSON.stringify(['low', 'high']) ||
+    moon34.reasoningEffort !== 'medium' ||
+    JSON.stringify(moon34.reasoningEffortOptions) !== JSON.stringify(['low', 'medium', 'high'])
+  ) {
+    console.error(`✗ 场景 34 per-model variants 展开失败: def=${JSON.stringify(def34)} glm=${JSON.stringify(glm34)} moon=${JSON.stringify(moon34)}`);
     process.exit(1);
   }
   if (runCtx34.runOpts.modelRuntime?.model !== 'deepseek-chat') {
@@ -3228,11 +3249,59 @@ async function main(): Promise<void> {
     console.error('✗ 场景 34 JSONC 文件被破坏（注释丢失）');
     process.exit(1);
   }
+  // h2) per-model variants 持久化：当前模型在 models 表有专属条目 → 写 models.<模型>.reasoningEffort；
+  //     未指定模型 / 未知模型 → 写顶层全局（models 表既有专属级别不被破坏）
+  const tmp34e = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-eff-model-'));
+  const jsonFile3 = path.join(tmp34e, 'omni.json');
+  fs.writeFileSync(
+    jsonFile3,
+    JSON.stringify({
+      model: 'a',
+      reasoningEffort: 'medium',
+      models: { a: { baseURL: 'https://a.com/v1' }, b: { baseURL: 'https://b.com/v1' } },
+    })
+  );
+  const resEffModel = persistReasoningEffortToConfig('high', { sources: [jsonFile3] } as never, 'a');
+  if (!resEffModel.ok || !resEffModel.message.includes('仅对模型 a 生效')) {
+    console.error(`✗ 场景 34 per-model 持久化失败: ${JSON.stringify(resEffModel)}`);
+    process.exit(1);
+  }
+  const writtenEff = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
+  if (
+    writtenEff.models?.a?.reasoningEffort !== 'high' ||
+    writtenEff.reasoningEffort !== 'medium' ||
+    writtenEff.models?.b?.reasoningEffort !== undefined ||
+    writtenEff.models?.a?.baseURL !== 'https://a.com/v1'
+  ) {
+    console.error(`✗ 场景 34 per-model 持久化内容错误: ${JSON.stringify(writtenEff)}`);
+    process.exit(1);
+  }
+  const resEffGlobal = persistReasoningEffortToConfig('low', { sources: [jsonFile3] } as never);
+  if (!resEffGlobal.ok) {
+    console.error(`✗ 场景 34 全局持久化失败: ${JSON.stringify(resEffGlobal)}`);
+    process.exit(1);
+  }
+  const writtenEff2 = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
+  if (writtenEff2.reasoningEffort !== 'low' || writtenEff2.models?.a?.reasoningEffort !== 'high') {
+    console.error(`✗ 场景 34 全局持久化污染模型专属级别: ${JSON.stringify(writtenEff2)}`);
+    process.exit(1);
+  }
+  const resEffUnknown = persistReasoningEffortToConfig('medium', { sources: [jsonFile3] } as never, 'nope');
+  if (!resEffUnknown.ok) {
+    console.error(`✗ 场景 34 未知模型持久化失败: ${JSON.stringify(resEffUnknown)}`);
+    process.exit(1);
+  }
+  const writtenEff3 = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
+  if (writtenEff3.reasoningEffort !== 'medium' || writtenEff3.models?.a?.reasoningEffort !== 'high') {
+    console.error(`✗ 场景 34 未知模型误写 models 表: ${JSON.stringify(writtenEff3)}`);
+    process.exit(1);
+  }
+  fs.rmSync(tmp34e, { recursive: true, force: true });
   fs.rmSync(tmp34d, { recursive: true, force: true });
   fs.rmSync(tmp34, { recursive: true, force: true });
   fs.rmSync(tmp34b, { recursive: true, force: true });
   fs.rmSync(tmp34c, { recursive: true, force: true });
-  console.log('✓ 场景 34 通过：config models 多端点解析/attachRuntime 展开+modelRuntime/createClient 重建//model 面板选择确认/数字键/Esc/无列表回退 + /model add 解析/持久化（纯 JSON 改写·JSONC 跳过·无配置新建）/TUI 分发');
+  console.log('✓ 场景 34 通过：config models 多端点解析/attachRuntime 展开+modelRuntime/createClient 重建//model 面板选择确认/数字键/Esc/无列表回退 + /model add 解析/持久化（纯 JSON 改写·JSONC 跳过·无配置新建）/TUI 分发 + per-model variants（展开缺省回退全局·persist 按模型分流写 models.<名>.reasoningEffort）');
 
   // 场景 35：/status /context /export /config /mcp /diff /rename /resume /redo 九个命令 + /settings doctor 诊断
   console.log('=== 场景 35：批量新命令 ===');
@@ -3657,7 +3726,121 @@ async function main(): Promise<void> {
   process.env.XDG_CONFIG_HOME = oldXdg37;
   fs.rmSync(tmp37, { recursive: true, force: true });
   fs.rmSync(tmp37b, { recursive: true, force: true });
-  console.log('✓ 场景 37 通过：/session（面板只列同目录/确认意图/列出全部/继续恢复/前缀匹配/未知提示/空目录提示）');
+  // h) 面板窗口滚动（修复「/session 显示不全」）：列表全量进 options（不再截 9 条），
+  //    渲染层按窗口滚动（menuPanelRows maxVisible）——窗口外条目 ↑/↓ 滚动到达
+  const rows37 = await import('../src/tui/rows.js');
+  const tmp37c = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-session-many-'));
+  process.env.XDG_CONFIG_HOME = tmp37c;
+  const sessDir37c = path.join(tmp37c, 'omni', 'sessions');
+  fs.mkdirSync(sessDir37c, { recursive: true });
+  for (let i = 0; i < 20; i++) {
+    // 第 0 个会话故意用超长模型名（用户反馈「模型过长超出显示范围」的复现素材）
+    fs.writeFileSync(
+      path.join(sessDir37c, `20260813-many-${String(i).padStart(2, '0')}xx.jsonl`),
+      [
+        JSON.stringify({ t: 'meta', id: `many-${i}`, project: process.cwd(), model: i === 0 ? 'super-long-model-name-'.repeat(6) : 'mock-model', created: i, updated: i, title: `会话 ${i}` }),
+        JSON.stringify({ t: 'm', m: { role: 'user', content: `消息 ${i}` } }),
+        '',
+      ].join('\n')
+    );
+  }
+  const s37h = createTuiState();
+  await cmd37.openSessionMenu(s37h, null);
+  if (!s37h.menu || s37h.menu.options.length !== 20) {
+    console.error(`✗ 场景 37 面板未全量列出 20 个会话: options=${s37h.menu?.options.length}`);
+    process.exit(1);
+  }
+  // h1) 窗口渲染：maxVisible=5 → 标题 + 5 选项 + 下方提示 + 操作提示 + 底边 = 9 行；menuIdx 逐行标记
+  const rowsH = rows37.menuPanelRows(s37h.menu, 44, 'zh', 5);
+  if (rowsH.length !== 9) {
+    console.error(`✗ 场景 37 窗口行数错误: ${rowsH.length}（期望 9）`);
+    process.exit(1);
+  }
+  const idxH = rowsH.map((r: { menuIdx?: number }) => r.menuIdx ?? -1);
+  if (JSON.stringify(idxH) !== JSON.stringify([-1, 0, 1, 2, 3, 4, -1, -1, -1])) {
+    console.error(`✗ 场景 37 窗口行映射错误: ${JSON.stringify(idxH)}`);
+    process.exit(1);
+  }
+  if (!String(rowsH[6]!.text).includes('↓ 还有 15 个')) {
+    console.error(`✗ 场景 37 窗口下方提示缺失: ${String(rowsH[6]!.text)}`);
+    process.exit(1);
+  }
+  // h2) 滚动收敛：↓ 15 次后选中项 15，渲染时窗口跟随（scrollTop 11，选项 15 在窗口内）+ 上下提示
+  for (let i = 0; i < 15; i++) handleMenuKey37({ name: 'down' } as never, s37h);
+  const rowsH2 = rows37.menuPanelRows(s37h.menu, 44, 'zh', 5);
+  if (s37h.menu.selectedIndex !== 15 || s37h.menu.scrollTop !== 11 || rowsH2.length !== 10) {
+    console.error(`✗ 场景 37 窗口未跟随选中项: idx=${s37h.menu.selectedIndex} top=${s37h.menu.scrollTop} rows=${rowsH2.length}`);
+    process.exit(1);
+  }
+  const idxH2 = rowsH2.map((r: { menuIdx?: number }) => r.menuIdx ?? -1);
+  if (JSON.stringify(idxH2) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
+    console.error(`✗ 场景 37 滚动后行映射错误: ${JSON.stringify(idxH2)}`);
+    process.exit(1);
+  }
+  if (!String(rowsH2[1]!.text).includes('↑ 还有 11 个') || !String(rowsH2[7]!.text).includes('↓ 还有 4 个')) {
+    console.error(`✗ 场景 37 滚动后上下提示缺失: ${String(rowsH2[1]!.text)} / ${String(rowsH2[7]!.text)}`);
+    process.exit(1);
+  }
+  // h3) 数字键 = 窗口内第 N 项：scrollTop 5 时按 2 → selectedIndex 6（列表按 updated 倒序：many-19 → many-0，第 6 个 = many-13）
+  const s37h3 = createTuiState();
+  await cmd37.openSessionMenu(s37h3, null);
+  s37h3.menu!.scrollTop = 5;
+  if (!handleMenuKey37({ name: '2' } as never, s37h3) || s37h3.menu !== null || s37h3.sessionPick !== 'many-13') {
+    console.error(`✗ 场景 37 数字键窗口内语义错误: pick=${s37h3.sessionPick} menu=${JSON.stringify(s37h3.menu)}`);
+    process.exit(1);
+  }
+  // h4) 渲染层集成：repaintTree 后浮层 menuRowMap 含窗口行映射（点击命中窗口内选项）
+  const t37h = await createTestRenderer({ width: 64, height: 20 });
+  const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
+  await repaintTree(t37h.renderer, tree37h, s37h, 64, 20);
+  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
+    console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
+    process.exit(1);
+  }
+  // h5) 浮层细胞池容量防回归（修复「有上下但展示不全」：menuCells 池只有 8 个 cell，
+  //     窗口滚后面板行数 = 标题1+窗口(≤12)+上下提示≤2+操作提示1+底边1 ≤ 17，超池不渲染）
+  if (tree37h.menuCells.length < 17) {
+    console.error(`✗ 场景 37 菜单浮层细胞池不足: ${tree37h.menuCells.length}（需要 ≥17）`);
+    process.exit(1);
+  }
+  // h6) 帧级断言：窗口内选项、上下提示、底边全部真实渲染（池容量足够的直接证据）。
+  //     注意窗口 options[11..15] = 会话 8..4（升序 title 与降序 updated 反向映射）——
+  //     「会话 15/9/3」等窗口外标签不得泄漏进帧
+  await t37h.renderOnce();
+  const frame37h = t37h.captureCharFrame() as string;
+  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 4 个', '╰']) {
+    if (!frame37h.includes(expect)) {
+      console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
+      process.exit(1);
+    }
+  }
+  for (const outside of ['会话 9 ·', '会话 3 ·', '会话 15 ·']) {
+    if (frame37h.includes(outside)) {
+      console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
+      process.exit(1);
+    }
+  }
+  // h7) 面板不显示模型名（用户确认「session 不需要显示模型名称」）+ 超长文本不撑破布局：
+  //     cardContentLine 对超宽内容兜底截断（省略号），行总宽恒 = contentWidth
+  const s37h7 = createTuiState();
+  await cmd37.openSessionMenu(s37h7, null);
+  if (
+    !s37h7.menu ||
+    s37h7.menu.options.some((o) => o.label.includes('super-long-model-name')) ||
+    !s37h7.menu.options.some((o) => o.label.includes('会话 0 · 1 条'))
+  ) {
+    console.error(`✗ 场景 37 面板仍显示模型名或 label 格式错误: ${JSON.stringify(s37h7.menu?.options)}`);
+    process.exit(1);
+  }
+  const fmt37 = await import('../src/output/format.js');
+  const lc37 = fmt37.cardContentLine('超长模型名占位文本'.repeat(50), fmt37.cardInnerWidth(44));
+  if (visualWidth(lc37) !== 44 || !lc37.includes('…') || !lc37.endsWith('│')) {
+    console.error(`✗ 场景 37 cardContentLine 未截断超宽文本: w=${visualWidth(lc37)} line=${JSON.stringify(lc37)}`);
+    process.exit(1);
+  }
+  process.env.XDG_CONFIG_HOME = oldXdg37;
+  fs.rmSync(tmp37c, { recursive: true, force: true });
+  console.log('✓ 场景 37 通过：/session（面板只列同目录/确认意图/列出全部/继续恢复/前缀匹配/未知提示/空目录提示/窗口滚动全量可达）');
 
   // 场景 38：执行型命令面板自动收起（无需按 Esc）——autoClose 标记 + scheduleCmdPanelAutoClose 定时收起
   console.log('=== 场景 38：执行型命令面板自动收起 ===');
@@ -4344,7 +4527,7 @@ async function main(): Promise<void> {
   const { approvalPanelRows, cmdPanelRows, menuPanelRows, settingsPanelRows } = await import('../src/tui/rows.js');
   const { persistLanguageToConfig } = await import('../src/config/write.js');
   // a) i18n 字典：中英对照 + 缺失回退（都缺 → key 本身）
-  if (ti18n('zh', 'menu.hint') !== '↑/↓ 或数字选择 · Enter 确认 · Esc 取消' || ti18n('en', 'menu.hint') !== '↑/↓ or number · Enter confirm · Esc cancel') {
+  if (ti18n('zh', 'menu.hint') !== '↑/↓ 或数字选择 · Enter 确认 · Esc 取消' || ti18n('en', 'menu.hint') !== '↑/↓ select · Enter confirm · Esc cancel') {
     console.error(`✗ 场景 43 i18n menu.hint 中英不符: ${JSON.stringify([ti18n('zh', 'menu.hint'), ti18n('en', 'menu.hint')])}`);
     process.exit(1);
   }
@@ -4432,7 +4615,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const stRows43 = settingsPanelRows({ items: [{ id: 'rounds', label: 'Rounds/Steps', enabled: true }], selected: 0 }, 44, 'en');
-  if (!stRows43.some((r) => r.text.includes('Settings: Status line')) || !stRows43.some((r) => r.text.includes('Space toggle'))) {
+  if (!stRows43.some((r) => r.text.includes('Settings: Status line')) || !stRows43.some((r) => r.text.includes('Space ·'))) {
     console.error('✗ 场景 43 settingsPanelRows 英文错误');
     process.exit(1);
   }

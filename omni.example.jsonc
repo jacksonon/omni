@@ -78,9 +78,18 @@
   // 缺省字段回退到顶层对应字段；顶层 model 总是可用（默认模型）
   // 也可以在交互模式用 /model add <名称> [--base-url] [--api-key] [--user-agent] 运行时添加并持久化
   // （自动写入配置文件 models 字段；带注释的 JSONC 文件不自动改，需手动添加）
-  // 示例（智谱 + Moonshot 两个端点）:
+  // **per-model variants**：每个模型可配自己的思考级别——reasoningEffortOptions（该模型
+  // /variants 面板支持的选项）与 reasoningEffort（该模型的当前思考级别），两者缺省回退顶层
+  // 同名字段（只配端点的模型自动继承全局）；/model 切换到该模型时自动带出，/variants 切换
+  // 会持久化到 models."<模型名>".reasoningEffort（仅该模型生效，其他模型不受影响）
+  // 示例（智谱 + Moonshot 两个端点，glm 专属级别 low/high）:
   // "models": {
-  //   "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
+  //   "glm-4-flash": {
+  //     "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+  //     "apiKey": "sk-glm",
+  //     "reasoningEffortOptions": ["low", "high"],
+  //     "reasoningEffort": "high"
+  //   },
   //   "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1", "apiKey": "sk-moonshot" }
   // }
 
