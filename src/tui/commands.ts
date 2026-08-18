@@ -27,6 +27,7 @@ import {
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
+import { runLoop, runOrchestrate } from '../agent/orchestrate.js';
 import { collectDiff, detectCheckCommand, reviewCode, captureCommand } from '../agent/review.js';
 import {
   configReport,
@@ -74,6 +75,18 @@ export interface TuiCommandContext {
   args?: string;
   /** 子代理最大循环步数（/agents 展示用；attachRuntime 注入 runOpts） */
   maxSubagentSteps?: number;
+  /** 已发现的子代理定义（.agents/subagents/*.md；/agents 列表 /orchestrate --agents 用） */
+  subagents?: import('../agent/subagent-defs.js').SubagentDef[];
+  /** 子代理最大嵌套深度（/agents 展示用） */
+  maxSubagentDepth?: number;
+  /** architect/editor 模型路由（/agents 展示用；attachRuntime 注入 runOpts） */
+  architectModel?: string;
+  editorModel?: string;
+  /**
+   * 完整运行选项（/orchestrate /loop 用：worker 的安全闸/工具链/hooks/模型路由/轨迹
+   * 记录器；由 interactive.ts 传入真实 runOpts）。
+   */
+  runOpts?: import('../agent/types.js').RunOptions;
   /** /undo 撤销栈（attachRuntime 创建，写入工具已包装快照；interactive 从 runOpts 传入） */
   undoStack?: UndoStack;
   /** 会话文件路径（/status 显示；interactive 从 runOpts.sessionPath 传入） */
@@ -476,22 +489,144 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'agents',
-    description: '查看子代理配置（模型 / 步骤上限 / 可用工具）',
-    descriptionEn: 'View subagent config (model / max steps / tools)',
+    description: '查看子代理配置（模型 / 步骤上限 / 嵌套深度 / 已定义子代理 / 模型路由）',
+    descriptionEn: 'View subagent config (model / max steps / depth / defined agents / routing)',
     run: (ctx) => {
-      // /agents：展示当前子代理（delegate）配置——是否启用、模型、步骤上限、
-      // 子代理可用工具。只读查看，不改变任何配置。
+      // /agents：展示当前子代理（delegate）配置——是否启用、模型路由（architect/editor）、
+      // 步骤上限、嵌套深度、可用工具、已定义子代理（.agents/subagents/*.md）。
+      // 只读查看，不改变任何配置。
+      // 可选参数：`/agents <name>` 展开查看某个已定义子代理的角色全文（frontmatter + 正文）。
+      const show = (ctx.args ?? '').trim();
+      if (show) {
+        const defs = ctx.subagents ?? [];
+        const def = defs.find((d) => d.name === show);
+        if (!def) {
+          const avail = defs.map((d) => d.name).join('、');
+          pushCmdLine(ctx.state, { kind: 'warn', text: `未找到子代理定义「${show}」${avail ? `。可用：${avail}` : '（.agents/subagents/ 下未定义任何子代理）'}` });
+          return;
+        }
+        pushCmdLine(ctx.state, { kind: 'meta', text: `子代理定义：${def.name} — ${def.description}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 模型：${def.model ?? '（继承主代理）'}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 权限：${def.permission ?? '（继承主代理）'}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 工具白名单：${def.tools?.length ? def.tools.join('、') : '（全部默认工具）'}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 技能预载：${def.skills?.length ? def.skills.join('、') : '（无）'}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 步数上限：${def.maxSteps ?? '（继承主代理）'}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `· 定义文件：${def.path}` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '· 角色指令：' });
+        for (const l of def.instructions.split('\n')) pushCmdLine(ctx.state, { kind: 'meta', text: `  ${l}` });
+        return;
+      }
       const tools = ctx.tools ?? [];
       const hasDelegate = tools.some((t) => t.name === 'delegate');
       const subTools = tools.filter((t) => t.name !== 'delegate');
       pushCmdLine(ctx.state, { kind: 'meta', text: `子代理配置（delegate）：${hasDelegate ? '已启用' : '未启用（allowSubagents=false）'}` });
-      pushCmdLine(ctx.state, { kind: 'meta', text: `· 模型：${ctx.model ?? '（未知）'}` });
-      pushCmdLine(ctx.state, { kind: 'meta', text: `· 最大循环步数：${ctx.maxSubagentSteps ?? '（默认 10）'}` });
-      pushCmdLine(ctx.state, { kind: 'meta', text: `· 子代理可用工具（${subTools.length}）：${subTools.map((t) => t.name).join('、')}` });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `· 当前模型：${ctx.model ?? '（未知）'}` });
+      // architect/editor 模型路由（第六节 P1）：/plan 用 architect 强模型、执行用 editor 轻模型
       pushCmdLine(ctx.state, {
         kind: 'meta',
-        text: '说明：模型在任务中可用 delegate 工具把独立子任务委托给子代理（隔离上下文）；子代理共用安全闸门，权限与主代理一致。',
+        text: `· 模型路由：${ctx.architectModel || ctx.editorModel ? `architect=${ctx.architectModel ?? ctx.model}（/plan）· editor=${ctx.editorModel ?? ctx.model}（执行）` : '未配置（全部用当前模型）'}`,
       });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `· 最大循环步数：${ctx.maxSubagentSteps ?? '（默认 10）'}` });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `· 最大嵌套深度：${ctx.maxSubagentDepth ?? '（默认 5）'}` });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `· 子代理可用工具（${subTools.length}）：${subTools.map((t) => t.name).join('、')}` });
+      // 已定义子代理（.agents/subagents/*.md）：delegate 的 agent 参数可用；/orchestrate --agents 分工
+      const defs = ctx.subagents ?? [];
+      if (defs.length > 0) {
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `· 已定义子代理（${defs.length}，.agents/subagents/*.md；delegate agent= 或 /orchestrate --agents 选用）：`,
+        });
+        for (const d of defs) {
+          pushCmdLine(ctx.state, {
+            kind: 'meta',
+            text: `  · ${d.name} — ${d.description}${d.model ? `（模型 ${d.model}）` : ''}${d.permission ? `（权限 ${d.permission}）` : ''}${d.tools ? `（工具 ${d.tools.join(',')}）` : ''}${d.skills ? `（技能 ${d.skills.join(',')}）` : ''}${d.maxSteps ? `（步数 ${d.maxSteps}）` : ''}`,
+          });
+        }
+      } else {
+        pushCmdLine(ctx.state, { kind: 'meta', text: '· 已定义子代理：无（.agents/subagents/ 下可放 <name>.md 声明命名子代理，frontmatter 配 model/permission/tools/skills/maxSteps）' });
+      }
+      pushCmdLine(ctx.state, {
+        kind: 'meta',
+        text: '说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门，权限与主代理一致（定义子代理可配独立权限）。/orchestrate 并行编排、/loop 循环执行见 /help。',
+      });
+    },
+  },
+  {
+    name: 'orchestrate',
+    description: '并行编排：fan-out 多个子代理 → 汇总 → 对抗审查（/orchestrate <任务> [--agents a,b,c] [--parallel N]）',
+    descriptionEn: 'Orchestrate: fan-out subagents → combine → adversarial review',
+    run: async (ctx) => {
+      // /orchestrate：固定 pipeline——fan-out 并行 delegate（--agents 按定义子代理分工，
+      // 缺省 3 个角度 worker）→ 汇总器合并 → 对抗审查找漏洞（第六节 P2 轻量版）。
+      // 全程独立于 messages 历史（编排是一次性输出，不污染对话上下文）。
+      const { client, model } = ctx;
+      if (!client || !model) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '/orchestrate 需要 LLM 客户端（当前环境不可用）' });
+        return;
+      }
+      const log = (text: string): void => pushCmdLine(ctx.state, { kind: 'meta', text });
+      const tick = async (): Promise<void> => {
+        await ctx.session.paint().catch(() => {}); // 先刷一帧：进度行在子代理/LLM 调用期间可见
+      };
+      try {
+        if (!ctx.runOpts) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '/orchestrate 运行选项不可用（当前环境异常）' });
+          return;
+        }
+        const { combined, review } = await runOrchestrate(ctx.args ?? '', ctx.subagents, {
+          client,
+          model,
+          runOpts: ctx.runOpts,
+          log,
+          tick,
+          onSubagentEvent: (ev) => ctx.out.onSubagentEvent?.(ev),
+        });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '' });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '═══ 综合结果 ═══' });
+        pushCmdLine(ctx.state, { kind: 'answer', text: combined });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '' });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '═══ 对抗审查 ═══' });
+        pushCmdLine(ctx.state, { kind: 'answer', text: review });
+      } catch (err) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: String((err as Error)?.message ?? err) });
+      }
+    },
+  },
+  {
+    name: 'loop',
+    description: '循环任务：重复执行直至达标（/loop <任务> [--goal <验收标准>]，上限 5 次）',
+    descriptionEn: 'Loop task: repeat until goal met (/loop <task> [--goal <criterion>])',
+    run: async (ctx) => {
+      // /loop：循环执行任务直至验收标准满足（每次迭代 = 一个 worker 子代理，带上一轮
+      // 结果作上下文）；--goal 配置时用 LLM 验收判定器检查达标，否则跑满上限。
+      const { client, model } = ctx;
+      if (!client || !model) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '/loop 需要 LLM 客户端（当前环境不可用）' });
+        return;
+      }
+      const log = (text: string): void => pushCmdLine(ctx.state, { kind: 'meta', text });
+      const tick = async (): Promise<void> => {
+        await ctx.session.paint().catch(() => {});
+      };
+      try {
+        if (!ctx.runOpts) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '/loop 运行选项不可用（当前环境异常）' });
+          return;
+        }
+        const result = await runLoop(ctx.args ?? '', {
+          client,
+          model,
+          runOpts: ctx.runOpts,
+          log,
+          tick,
+          onSubagentEvent: (ev) => ctx.out.onSubagentEvent?.(ev),
+        });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '' });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '═══ 循环最终结果 ═══' });
+        pushCmdLine(ctx.state, { kind: 'answer', text: result });
+      } catch (err) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: String((err as Error)?.message ?? err) });
+      }
     },
   },
   {

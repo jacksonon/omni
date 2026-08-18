@@ -166,6 +166,22 @@ export class ConsoleOutput implements Output {
     for (const l of lines) console.log(dim(`⚡ hook[${event}] ${l}`));
   }
 
+  /** 子代理进度事件（第六节 P1 可视化）：dim 行打印到 stderr（不污染 stdout 结果/管道） */
+  onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {
+    if (!this.opts.stream) return;
+    const indent = '  '.repeat(ev.depth);
+    if (ev.type === 'start') {
+      console.log(dim(`${indent}⠙ 子代理 ${ev.name} 开始：${(ev.task ?? '').split('\n')[0]}`));
+    } else if (ev.type === 'step') {
+      // step 事件带当前动作（工具名，执行前补发）：`子代理 X · ⠙ run_command 3/10`
+      console.log(dim(`${indent}⠙ 子代理 ${ev.name} · ${ev.tool ?? '思考中'} ${ev.step}/${ev.maxSteps}`));
+    } else {
+      console.log(
+        dim(`${indent}${ev.status === 'ok' ? '✓' : '✗'} 子代理 ${ev.name} 完成 · ${ev.steps} 步 · ${((ev.durationMs ?? 0) / 1000).toFixed(1)}s`)
+      );
+    }
+  }
+
   /**
    * 工具调用审批（安全护栏）：TTY 下用 readline 在 stderr 询问（不污染 stdout 管道），
    * y/回车 = 允许，其余 = 拒绝；非 TTY（管道）自动拒绝（fail-safe）。

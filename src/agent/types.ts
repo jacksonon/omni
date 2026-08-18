@@ -128,6 +128,60 @@ export interface RunOptions {
    * loop 拼进每个 system 提示（与 SessionStart 注入同位置，不污染消息历史）。
    */
   systemNote?: string;
+  /**
+   * architect/editor 模型路由（第六节 P1）：
+   * · architect —— /plan 计划模式使用的强推理模型（缺省 = 当前模型）
+   * · editor   —— 执行模式使用的轻量模型（缺省 = 当前模型）
+   * loop 每轮按 planMode 选模型名（同一客户端/端点下发——不同端点模型的路由
+   * 需重建 client，超出 MVP，见 /model 多端点）；delegate 子代理同规则。
+   * 来自配置 architect / editor 字段；attachRuntime 注入。
+   */
+  architectModel?: string;
+  editorModel?: string;
+  /**
+   * 已发现的子代理定义（.agents/subagents/*.md；delegate 的 agent 参数选用）。
+   * attachRuntime 注入。
+   */
+  subagents?: import('./subagent-defs.js').SubagentDef[];
+  /**
+   * 子代理最大嵌套深度（第六节 P1：子代理可再委托，5 层上限；默认 5）。
+   * attachRuntime 注入；delegate 工具按深度决定是否给子代理再挂 delegate。
+   */
+  maxSubagentDepth?: number;
+}
+
+/**
+ * 子代理进度事件（第六节 P1 可视化）：delegate 子代理生命周期——
+ * start（开始）/ step（内部每步 LLM 请求）/ end（完成，含结果摘要）。
+ * 由 runSubagent 直驱，经 delegate 工具闭包分发：
+ *  · Output.onSubagentEvent（TUI 更新 delegate 卡片 live 状态 / console 打印 dim 行）
+ *  · EventRecorder（/trace 面板嵌套树——subagent/start·step·end 轨迹事件）
+ * 嵌套子代理的 parentId 关联父代理 id，depth 表达层级（0 = 主代理直接委托）。
+ */
+export interface SubagentEvent {
+  type: 'start' | 'step' | 'end';
+  /** 子代理实例 id（每次调用递增，进程内唯一） */
+  id: string;
+  /** 父代理 id（null = 主代理直接委托） */
+  parentId: string | null;
+  /** 嵌套深度（0 = 主代理直接委托；每层 +1） */
+  depth: number;
+  /** 子代理名（delegate 的 agent 参数选用的定义名；缺省 'delegate'） */
+  name: string;
+  /** 委托任务（start 事件携带） */
+  task?: string;
+  /** step 事件：当前步数 / 步数上限 */
+  step?: number;
+  maxSteps?: number;
+  /** step 事件（工具执行前补发）：当前正在执行的工具名（思考/请求中无此字段） */
+  tool?: string;
+  /** end 事件：成功 / 失败 */
+  status?: 'ok' | 'err';
+  /** end 事件：结论文本摘要 */
+  summary?: string;
+  /** end 事件：实际步数 / 耗时 ms */
+  steps?: number;
+  durationMs?: number;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */

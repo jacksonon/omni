@@ -69,6 +69,20 @@ export interface OmniConfig {
   /** 子代理最大循环步数（默认 10） */
   maxSubagentSteps: number;
   /**
+   * 子代理最大嵌套深度（第六节 P1：子代理可再委托，默认 5 层上限）。
+   * 嵌套层级由 delegate 工具按深度注入新 delegate 控制。
+   */
+  maxSubagentDepth: number;
+  /**
+   * architect/editor 模型路由（第六节 P1，对标 Aider 双模型成本优化）：
+   * · architect —— /plan 计划模式使用的强推理模型（缺省 = model）
+   * · editor   —— 执行模式使用的轻量模型（缺省 = model）
+   * 成本省 30-50%（强模型只规划、便宜模型执行）；同一端点下发模型名切换
+   *（不同端点的 architect/editor 需配 models 表，MVP 不做跨端点路由）。
+   */
+  architect?: string;
+  editor?: string;
+  /**
    * TUI 底部状态行（输入区域下方的对话信息）显示哪些段、按什么顺序：
    * 段 id 数组，如 ['rounds','llm','speed','cache','tokens']；空数组 = 不显示状态行。
    * /settings statusline 可视化配置（空格勾选、←/→ 排序、Enter 保存生效并持久化）。
@@ -123,6 +137,7 @@ const DEFAULTS = {
   preloadMaxBytes: 30 * 1024,
   allowSubagents: true,
   maxSubagentSteps: 10,
+  maxSubagentDepth: 5,
   statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
   language: 'zh' as 'zh' | 'en',
 };
@@ -197,6 +212,11 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.maxSubagentSteps === 'number' && Number.isFinite(data.maxSubagentSteps)) {
     cfg.maxSubagentSteps = Math.max(1, Math.floor(data.maxSubagentSteps));
   }
+  if (typeof data.maxSubagentDepth === 'number' && Number.isFinite(data.maxSubagentDepth)) {
+    cfg.maxSubagentDepth = Math.max(1, Math.min(10, Math.floor(data.maxSubagentDepth)));
+  }
+  if (typeof data.architect === 'string' && data.architect.trim()) cfg.architect = data.architect.trim();
+  if (typeof data.editor === 'string' && data.editor.trim()) cfg.editor = data.editor.trim();
   // 状态行段配置：只保留合法 id（非法/未知 id 丢弃，避免渲染层找不到段）；
   // 空数组 = 不显示状态行（用户全部取消勾选）；未配置保持默认全段
   if (Array.isArray(data.statusline)) {

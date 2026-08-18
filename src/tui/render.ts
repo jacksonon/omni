@@ -369,7 +369,14 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
 
   // 命令面板浮层（/theme alert）：绝对定位居中（top/left 每帧重算），zIndex 高于内容；
   // 独立于会话流——菜单不占内容行、不参与滚动（用户要求「额外显示一个 alert」）。
-  const menuOverlay = new BoxRenderable(ctx, { position: 'absolute', zIndex: 10, visible: false });
+  // **面板底色**：菜单/设置面板的圆角边框是行文本（╭─╮），行本身无背景——透明会
+  // 透出对话流文字（用户反馈 command/设置界面与对话流文本重合看不清），整体填主题面板底色。
+  const menuOverlay = new BoxRenderable(ctx, {
+    position: 'absolute',
+    zIndex: 10,
+    visible: false,
+    backgroundColor: theme.suggestBg,
+  });
   root.add(menuOverlay);
   const menuCells: TextRenderable[] = [];
   for (let i = 0; i < 8; i++) {
@@ -381,7 +388,14 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   // 命令输出面板浮层（所有 / 命令的独立窗口）：绝对定位居中（top/left 每帧重算），
   // 与 /theme 菜单浮层同级（zIndex 10，二者不同时打开）。细胞池预分配充足行数
   // （可见主体行 ≤ 视口-6，60 行覆盖超高视口；不参与内容流/滚动）。
-  const cmdPanelOverlay = new BoxRenderable(ctx, { position: 'absolute', zIndex: 10, visible: false });
+  // **面板底色**：输出行（cardContentLine）无独立背景，透明会透出对话流文字
+  // （用户反馈 command 界面与对话流文本重合看不清）——整体填主题面板底色。
+  const cmdPanelOverlay = new BoxRenderable(ctx, {
+    position: 'absolute',
+    zIndex: 10,
+    visible: false,
+    backgroundColor: theme.suggestBg,
+  });
   root.add(cmdPanelOverlay);
   const cmdPanelCells: TextRenderable[] = [];
   for (let i = 0; i < 60; i++) {
@@ -894,6 +908,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 绝对定位、水平垂直居中、zIndex 高于内容；每帧按视口重算位置，行内容原地更新
   // （细胞池复用，不重建 TextRenderable）。二者互斥（不同时打开）。
   if (tree.menuOverlay) {
+    tree.menuOverlay.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到），面板底色跟随刷新
     const menu = state.menu;
     const settings = state.settingsPanel;
     if (!menu && !settings) {
@@ -937,6 +952,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 命令输出面板浮层（所有 / 命令的独立窗口）：绝对定位、水平垂直居中；
   // 行内容原地更新（细胞池复用）。超高时 cmdPanelRows 折行 + 垂直滚动。
   if (tree.cmdPanelOverlay) {
+    tree.cmdPanelOverlay.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到），面板底色跟随刷新
     const panel = state.cmdPanel;
     if (!panel) {
       tree.cmdPanelOverlay.visible = false;

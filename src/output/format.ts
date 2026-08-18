@@ -112,6 +112,8 @@ export interface ToolCardView {
   paths?: string[];
   /** write_file 写入前后对比（新增=original null / 修改=左右对比；无对比数据为 null/undefined） */
   diff?: WriteDiff | null;
+  /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示 `✓ N 步 · 结果首行` */
+  subagent?: { name: string; ok: boolean; steps: number; summary?: string };
 }
 
 /**
@@ -458,6 +460,17 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
   // 点击展开才显示（用户要求「执行命令默认只显示完整的执行命令，执行的结果等需要
   // 点击展开才显示」），且**不提示可以点击展开**（无需「点击展开」文案，卡片本身
   // 可点击切换——上方 cmd 行已输出，这里什么都不加）。
+  //
+  // **delegate 例外**（第六节 P1 预览增强）：子代理**结果**比命令重要（对标 write diff
+  // 的改动摘要）——收起态追加一行 `✓ N 步 · 结果首行`（省略展开才能看的完整输出）。
+  if (card.name === 'delegate' && card.subagent && card.status !== 'running') {
+    const sa = card.subagent;
+    const first = sa.summary ? ` · ${truncateToWidth(sa.summary, Math.max(8, inner - 16))}` : '';
+    lines.push({
+      text: padInner(` ${sa.ok ? '✓' : '✗'} 子代理 ${sa.name} · ${sa.steps} 步${first}`, contentWidth),
+      role: 'exec',
+    });
+  }
 
   lines.push({ text: ' '.repeat(Math.max(1, contentWidth)), role: 'bottom' });
   return lines;

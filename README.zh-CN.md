@@ -13,7 +13,7 @@
 - **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
-- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、26 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
+- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、28 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/编排/循环任务/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
 - **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单，模型用 `skill` 工具按需加载；`/skill` 命令列出 / `find <词>` 网络检索 skills.sh / `add` 安装
 - **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目 / `/init --global` 全局一键生成，会话结束自动提取新偏好写入全局记忆（偏好去重/矛盾合并）
 - **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
@@ -107,6 +107,8 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "skills": true,                        // 技能（SKILL.md）发现与 skill 工具（默认 true）
   "reasoningEffort": "medium",            // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
   "reasoningEffortOptions": ["low", "medium", "high"], // /variants 支持的思考级别选项（可自定义）
+  "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
+  "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
   "models": {                           // 多模型端点（/model 切换/添加）：不同模型可配不同 baseURL/apiKey/userAgent；缺省字段回退顶层；/model add 可运行时添加并持久化
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
@@ -281,7 +283,9 @@ omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 | `/init` | 扫描项目生成 AGENTS.md（`/init --global` 全局记忆；已存在不覆盖） |
 | `/skill` | 技能管理：列表 / `find <词>` 网络检索 / `add <repo>` 安装 / `show <名>` 查看 |
 | `/compact` | 手动压缩上下文（旧消息合并摘要，保留最近 8 条原文） |
-| `/agents` | 查看子代理配置（启用/模型/步数上限/可用工具） |
+| `/agents` | 查看子代理配置 + 已发现子代理定义（`.agents/subagents/*.md`） |
+| `/orchestrate` | 编排：fan-out 并行 delegate → 汇总 → 对抗审查 → 最终报告 |
+| `/loop`（别名 `/goal`） | 循环执行任务直至验收标准满足（含迭代日志） |
 | `/review` | 代码审查：typecheck + git diff → LLM 审查 |
 | `/status` · `/context` | 会话状态汇总 · 上下文用量与压缩建议 |
 | `/session` | 列出当前目录历史会话并继续（`/session <id>` 前缀匹配；`all` 跨目录） |
@@ -334,7 +338,7 @@ src/
   exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
   version.ts            # 版本号常量
-  cli/                  # 参数解析 / banner / 交互模式（26 个 / 命令）
+  cli/                  # 参数解析 / banner / 交互模式（28 个 / 命令）
   agent/
     loop.ts             # Agent 主循环：流式调 LLM → 并行工具调用 → 执行 → 回传
     thinking.ts         # 思考过程：流式显示 / 落盘

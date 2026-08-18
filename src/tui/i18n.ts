@@ -74,7 +74,7 @@ const ZH: Record<string, string> = {
   'ask.hint': '↑↓ 选择 · 空格 勾选 · 输入自定义后 Enter 提交 · Esc 取消',
   'help.title': '帮助',
   'help.intro': '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。',
-  'help.commands': '/settings 设置（状态行 / 语言 / 主题 / token 统计 / 诊断） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /init [--global] 生成项目/全局记忆 · /exit 退出 · /clear 清空上下文 · /help 显示帮助',
+  'help.commands': '/settings 设置（状态行 / 语言 / 主题 / token 统计 / 诊断） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /init [--global] 生成项目/全局记忆 · /agents 子代理配置 · /orchestrate 并行编排（fan-out+汇总+对抗审查） · /loop [--goal] 循环任务 · /exit 退出 · /clear 清空上下文 · /help 显示帮助',
   'help.scroll': '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部',
   'help.more': '完整命令参考：omni --help（控制台）',
 
@@ -165,7 +165,7 @@ const EN: Record<string, string> = {
   'ask.hint': '↑↓ select · space toggle · type custom + Enter submit · Esc cancel',
   'help.title': 'Help',
   'help.intro': 'Type a message to chat, Enter to send; Shift+Enter for newline (needs terminal modifier support; auto-grows for multi-line).',
-  'help.commands': '/settings settings (statusline / language / theme / token stats / diagnostics) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /init [--global] generate AGENTS.md · /exit quit · /clear clear context · /help help',
+  'help.commands': '/settings settings (statusline / language / theme / token stats / diagnostics) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /init [--global] generate AGENTS.md · /agents subagent config · /orchestrate parallel pipeline (fan-out+combine+review) · /loop [--goal] loop task · /exit quit · /clear clear context · /help help',
   'help.scroll': 'Scroll: mouse wheel / PgUp/PgDn pages · Ctrl+U/Ctrl+D pages (empty input) · ↑/↓ per line (empty input) · End to bottom',
   'help.more': 'Full command list: omni --help (console)',
 

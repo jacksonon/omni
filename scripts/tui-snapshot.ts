@@ -1331,8 +1331,8 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 26 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 26、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 28 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 28、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1402,8 +1402,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 20 个」提示行
-  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 20 个'];
+  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 22 个」提示行
+  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '展开 / 折叠全部思考过程', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 22 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1415,7 +1415,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/trace', '/help']) {
+  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/loop', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/resume', '/session', '/redo', '/trace', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1483,13 +1483,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = context/export/config/mcp/diff/rename；上下各一条提示行（↑ 15 个 · ↓ 5 个，26 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 5 个') || frame19s.includes('/review')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 5 个」、无 /review）');
+  // items[15..20] = model/status/context/export/config/mcp；上下各一条提示行（↑ 15 个 · ↓ 7 个，28 条命令）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 7 个') || frame19s.includes('/review')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 7 个」、无 /review）');
     process.exit(1);
   }
-  if (!frame19s.includes('/context') || !frame19s.includes('/export') || !frame19s.includes('/rename')) {
-    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /context /export /rename 等）');
+  if (!frame19s.includes('/model') || !frame19s.includes('/config') || !frame19s.includes('/mcp')) {
+    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /model /config /mcp 等）');
     process.exit(1);
   }
   console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/圆角浮层/不挤动内容区）');
@@ -3143,7 +3143,13 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 无配置时未新建 omni.json: ${JSON.stringify(resNew)}`);
     process.exit(1);
   }
-  // g) TUI /model add 分发：runCommand 经 ctx.onAddModel 注册 + state.models 更新 + 切换
+  // g) TUI /model add 分发：runCommand 经 ctx.onAddModel 注册 + state.models 更新 + 切换。
+  //     **必须切到临时 cwd**：cfg.sources 为空 → persistModelToConfig 在 cwd 新建
+  //     ./omni.json（无配置新建语义）。测试 cwd 是项目根，会把测试模型写进项目 omni.json、
+  //     覆盖用户配置——实测事故：跑快照后项目根 omni.json 被 glm-4-flash fixture 覆盖。
+  const tmp34g = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-add-dispatch-'));
+  const oldCwd34g = process.cwd();
+  process.chdir(tmp34g);
   const s34c = createTuiState();
   s34c.version = '0.1.0';
   s34c.model = 'deepseek-chat';
@@ -3160,10 +3166,20 @@ async function main(): Promise<void> {
     },
   } as never;
   await cmd34.runCommand(runCtx34add, '/model add glm-4-flash --base-url https://open.bigmodel.cn/api/paas/v4 --api-key sk-glm');
+  process.chdir(oldCwd34g);
+  // 持久化目标落在临时目录：项目根不被污染，临时目录出现测试 fixture
+  const gWritten = fs.existsSync(path.join(tmp34g, 'omni.json'))
+    ? JSON.parse(fs.readFileSync(path.join(tmp34g, 'omni.json'), 'utf8'))
+    : null;
+  if (!gWritten || gWritten.models?.['glm-4-flash']?.baseURL !== 'https://open.bigmodel.cn/api/paas/v4') {
+    console.error(`✗ 场景 34 /model add 分发未持久化到临时 cwd: ${JSON.stringify(gWritten)}`);
+    process.exit(1);
+  }
   if (s34c.model !== 'glm-4-flash' || !s34c.models.includes('glm-4-flash') || !(s34c.cmdPanel?.lines ?? []).some((l) => String(l).includes('已添加并切换模型 → glm-4-flash'))) {
     console.error(`✗ 场景 34 TUI /model add 分发未生效: ${JSON.stringify({ model: s34c.model, models: s34c.models, panel: s34c.cmdPanel?.lines })}`);
     process.exit(1);
   }
+  fs.rmSync(tmp34g, { recursive: true, force: true });
   // /model <名称> 直接切换：onSwitchModel 回调被调用
   const s34d = createTuiState();
   s34d.version = '0.1.0';

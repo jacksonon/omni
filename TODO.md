@@ -94,22 +94,21 @@
 
 ## 六、子代理与编排（✅ 基线：delegate 隔离上下文小循环、共用安全闸、计划模式只读）
 
-- [ ] **P1 子代理嵌套 + 技能预载**（Claude Code：subagents 可 spawn subagents（5 层上限）、
-      `skills` 字段注入全文、per-agent 模型/权限/工具白名单）：现有 delegate 单层、无配置实体——
-      支持 `.agents/subagents/*.md` frontmatter 定义（Claude Code `~/.claude/agents/` JSON 方案
-      亦可），`Tools/Task/Agent` 工具让子代理再委托。
-- [ ] **P1 子代理进度可视化**（现 P2 上调）：delegate 无 UI；复用 /trace 面板与轨迹事件，
-      TUI 呈现子代理卡片（状态/步数/结果摘要）+ 嵌套树（Claude Code /agents 视图）。
-- [ ] **P1 模型路由：architect/editor 双模型**（Aider：强推理模型规划 + 便宜模型执行，成本省
-      30-50%）：`/plan` 模式用强模型、执行阶段切轻模型；或 config 配置
-      `{ "architect": "gpt-5", "editor": "gpt-5-mini" }`——现有 /model 多端点已铺路。
-- [ ] **P2 动态工作流轻量版**（Claude Code dynamic workflows / Qwen Code）：先做固定 pipeline——
-      fan-out 并行 delegate → 综合结果 → 对抗验证（adversarial review）的编排命令
-      （`/orchestrate`），暂不支持模型写 JS 脚本（重投入后置）。
+- [x] **P1 子代理嵌套 + 技能预载**（第一百三十五次）：`.agents/subagents/*.md` frontmatter 定义
+      （name/description/model/permission/tools/skills/maxSteps），per-agent 模型/权限/工具白名单，
+      delegate `agent` 参数按名加载、`skills` 注入 SKILL.md 全文；嵌套委托（深度上限 5，父链传导）。
+- [x] **P1 子代理进度可视化**（第一百三十五次）：`SubagentEvent` 轨迹事件（start/step/end + step 带
+      当前动作工具名）+ foldTrace 嵌套树行（缩进 + ✓ 步数 + 耗时 + 结果摘要）；TUI delegate 卡片复用
+      tool 卡片（运行中 `子代理 X · ⠋ run_command 3/10`、收起态命令行 + `✓ N 步 · 结果首行`），
+      /trace 面板展示嵌套树；/agents 命令列出已发现定义 + `/agents <name>` 展开查看角色全文。
+- [x] **P1 模型路由：architect/editor 双模型**（第一百三十五次）：config `architect`/`editor` 字段——
+      `/plan` 计划模式自动用 architect（强模型）、执行阶段用 editor（轻模型）；缺省回退当前模型。
+- [x] **P2 动态工作流轻量版**（第一百三十五次）：`/orchestrate` 固定 pipeline——fan-out 并行 delegate
+      （默认 3 worker）→ 汇总器 → 对抗审查（adversarial review），暂不支持模型写 JS 脚本。
 - [ ] **P2 agent teams / 多会话并行协调**（Claude Code）：跨会话树形协调，依赖第五节跨会话消息
       与第六节可视化；需多会话运行能力（opencode multi-session）。
-- [ ] **P2 /loop 循环任务 + /goal 硬性完成要求**（Qwen Code / Claude Code）：定时/条件循环执行
-      任务直至验收标准满足（可复用现有 eval 判定逻辑）。
+- [x] **P2 /loop 循环任务 + /goal 硬性完成要求**（第一百三十五次）：`/loop` 命令循环执行任务直至
+      验收标准满足（内置目标循环模块：执行 → 校验满足 → 不满足带反馈继续），含迭代日志输出。
 
 ## 七、模型与多端点（✅ 基线：models 多端点、/model 切换与添加、/variants 思考级别、持久化）
 

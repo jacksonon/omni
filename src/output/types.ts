@@ -98,4 +98,10 @@ export interface Output {
    * 可选：缺省时 hook 输出静默（仍按决策生效）。
    */
   onHookOutput?(event: HookEventName, lines: string[]): void;
+  /**
+   * 子代理进度事件（第六节 P1 可视化）：delegate 委托的 start/step/end。
+   * TUI 用它更新 delegate 卡片 live 状态（summary = 子代理名/步数，结果到达前
+   * 可见进度）；console 打印 dim 进度行。可选：缺省 = 静默（子代理过程不可见）。
+   */
+  onSubagentEvent?(ev: import('../agent/types.js').SubagentEvent): void;
 }

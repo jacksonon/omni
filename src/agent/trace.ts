@@ -20,13 +20,15 @@
  *   · request LLM 请求
  *   · answer  assistant 消息
  *   · tool    工具调用
+ *   · subagent 子代理生命周期（第六节 P1：嵌套树——start/step/end 折叠成一行
+ *             带缩进与完成标记，text 前缀按 depth 画树形连接线）
  *   · compact 上下文压缩
  *   · empty   空白分隔
  */
 import type { TrajEvent } from './events.js';
 
 /** 轨迹行类型 */
-export type TraceRowKind = 'turn' | 'user' | 'request' | 'answer' | 'tool' | 'compact' | 'empty';
+export type TraceRowKind = 'turn' | 'user' | 'request' | 'answer' | 'tool' | 'subagent' | 'compact' | 'empty';
 
 /** 折叠后的一条轨迹行 */
 export interface TraceRow {
@@ -86,6 +88,10 @@ function eventText(e: TrajEvent): string {
       return `${e.ok ? '✓' : '✗'} ${e.chars} 字符`;
     case 'compact':
       return `上下文压缩 · 移除 ${e.removed} 条`;
+    case 'subagent/start':
+      return `子代理 ${e.name} · ${e.task.split('\n')[0]}`;
+    case 'subagent/end':
+      return `${e.ok ? '✓' : '✗'} ${e.steps} 步 · ${fmtMs(e.durationMs)}`;
     default:
       return e.k;
   }
@@ -99,6 +105,10 @@ export function foldTrace(events: TrajEvent[]): TraceRow[] {
   const rows: TraceRow[] = [];
   let curTurn = 0;
   const toolByCall = new Map<string, { step: number; name: string; args: string; time: number }>();
+  // 子代理（第六节 P1）：id → 当前折叠行下标 + 信息（step 事件更新进度、end 收尾）
+  const subById = new Map<string, { rowIdx: number; depth: number; name: string }>();
+  /** 按 depth 画树形缩进：`└─ ` 一层一层（子代理嵌套树） */
+  const indent = (depth: number, mark: string): string => `${'  '.repeat(depth)}${depth > 0 ? mark : ''}`;
 
   for (const e of events) {
     switch (e.k) {
@@ -181,6 +191,39 @@ export function foldTrace(events: TrajEvent[]): TraceRow[] {
       case 'compact':
         rows.push({ kind: 'compact', turn: curTurn, text: eventText(e) });
         break;
+      case 'subagent/start':
+        // 嵌套树根节点：带缩进的行（深度用树形连接线表达）；detail 存完整任务文本
+        rows.push({
+          kind: 'subagent',
+          turn: curTurn,
+          text: `${indent(e.depth, '└─ ')}${e.name} · ${e.task.split('\n')[0] || '（委托任务）'}`,
+          detail: e.task.split('\n').length > 1 ? e.task.split('\n').slice(1) : undefined,
+        });
+        subById.set(e.id, { rowIdx: rows.length - 1, depth: e.depth, name: e.name });
+        break;
+      case 'subagent/step': {
+        // 更新进行中的子代理行：`⠋ 步 N/M`（同 id 行内更新，不新增行）
+        const s = subById.get(e.id);
+        if (!s) break;
+        const row = rows[s.rowIdx];
+        if (row && row.kind === 'subagent') {
+          row.text = `${indent(s.depth, '└─ ')}${s.name} · ⠋ 步 ${e.step}/${e.maxSteps}`;
+        }
+        break;
+      }
+      case 'subagent/end': {
+        // 收尾：`✓/✗ N 步 · 耗时`（完成标记 + 结果摘要做 detail）
+        const s = subById.get(e.id);
+        if (!s) break;
+        const row = rows[s.rowIdx];
+        if (row && row.kind === 'subagent') {
+          row.text = `${indent(s.depth, '└─ ')}${s.name} · ${e.ok ? '✓' : '✗'} ${e.steps} 步 · ${fmtMs(e.durationMs)}`;
+          row.sub = e.summary.split('\n')[0] || undefined;
+          row.detail = [...(row.detail ?? []), ...e.summary.split('\n').slice(1).filter(Boolean)];
+        }
+        subById.delete(e.id);
+        break;
+      }
       default:
         break;
     }
@@ -229,6 +272,11 @@ export function buildTraceTextLines(events: TrajEvent[], opts: { full?: boolean 
         if (opts.full && r.sub) lines.push(`      ${r.sub}`);
         break;
       case 'tool':
+        lines.push(`  · ${r.text}${r.sub ? '  ' + r.sub : ''}`);
+        if (opts.full && r.detail) for (const d of r.detail) lines.push(`      ${d}`);
+        break;
+      case 'subagent':
+        // 子代理嵌套树（text 已含缩进树形线）：主行 + 副行（结果摘要）+ 详情（完整任务/摘要）
         lines.push(`  · ${r.text}${r.sub ? '  ' + r.sub : ''}`);
         if (opts.full && r.detail) for (const d of r.detail) lines.push(`      ${d}`);
         break;

@@ -54,7 +54,12 @@ export type TrajEvent =
   | (TrajBase & { k: 'tool/call'; step: number; callId: string; name: string; args: string })
   | (TrajBase & { k: 'tool/result'; callId: string; ok: boolean; chars: number })
   | (TrajBase & { k: 'request/header'; step: number; model: string; tools: string[]; messages: number })
-  | (TrajBase & { k: 'compact'; removed: number });
+  | (TrajBase & { k: 'compact'; removed: number })
+  // 子代理（第六节 P1 编排）：生命周期轨迹——parentId 关联嵌套层级，depth 表达深度，
+  // /trace 面板据此画嵌套树（subagent/start·step·end 三种事件）
+  | (TrajBase & { k: 'subagent/start'; id: string; parentId: string | null; depth: number; name: string; task: string })
+  | (TrajBase & { k: 'subagent/step'; id: string; depth: number; step: number; maxSteps: number })
+  | (TrajBase & { k: 'subagent/end'; id: string; depth: number; ok: boolean; summary: string; steps: number; durationMs: number });
 
 /** 事件（去元数据版，供记录入参使用）：分发保留 k 判别——`Omit<联合, ...>` 会把
  *  联合折叠成单对象类型（keyof 是并集），对象字面量判别失效；distribute 后逐成员 Omit */
@@ -166,6 +171,21 @@ export class EventRecorder {
 
   compact(removed: number): void {
     this.push({ k: 'compact', removed });
+  }
+
+  /** 子代理开始（delegate 委托；parentId = 父代理 id，null = 主代理直接委托） */
+  subagentStart(id: string, parentId: string | null, depth: number, name: string, task: string): void {
+    this.push({ k: 'subagent/start', id, parentId, depth, name, task: task.slice(0, 300) });
+  }
+
+  /** 子代理内部一步 LLM 请求 */
+  subagentStep(id: string, depth: number, step: number, maxSteps: number): void {
+    this.push({ k: 'subagent/step', id, depth, step, maxSteps });
+  }
+
+  /** 子代理结束（结论摘要 + 实际步数 + 耗时） */
+  subagentEnd(id: string, depth: number, ok: boolean, summary: string, steps: number, durationMs: number): void {
+    this.push({ k: 'subagent/end', id, depth, ok, summary: summary.slice(0, 300), steps, durationMs });
   }
 
   /** 把尚未落盘的事件批量追加进会话文件（失败静默——轨迹丢失不影响会话恢复） */

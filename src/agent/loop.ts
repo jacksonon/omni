@@ -162,6 +162,10 @@ export async function runAgent(
   // 计划模式（/plan）：只暴露只读工具 + 系统提示词追加只读说明（由 buildToolSchemas 过滤）
   const planMode = opts.planMode === true;
   const toolSchemas = buildToolSchemas(opts.tools, planMode);
+  // architect/editor 模型路由（第六节 P1，对标 Aider 双模型）：/plan 用 architect
+  // 强推理模型、执行模式用 editor 轻模型（缺省 = 当前模型；同一端点下发模型名）。
+  // 每轮按 planMode 决定——/plan 切换即时生效；delegate 子代理同规则（delegate.ts）
+  const routedModel = planMode ? (opts.architectModel ?? model) : (opts.editorModel ?? model);
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
   const safety = new Safety({
@@ -198,12 +202,12 @@ export async function runAgent(
     // 调试开关：OMNI_DEBUG=1 时打印发往 LLM 的请求体（用 stderr，避免污染流式输出）
     if (process.env.OMNI_DEBUG) {
       console.error(`\n[OMNI_DEBUG] 第 ${step + 1} 轮请求 → POST {baseURL}/chat/completions`);
-      console.error(`[OMNI_DEBUG] model=${model} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
+      console.error(`[OMNI_DEBUG] model=${routedModel} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
       console.error(JSON.stringify({ model, messages: requestMessages, tools: toolSchemas }, null, 2).slice(0, 6000));
     }
 
     // 轨迹事件：LLM 请求快照（模型 + 可调工具名 + 消息数；轻量版，不存提示词全文）
-    opts.events?.requestHeader(step, model, toolSchemas.map((s) => s.function.name), requestMessages.length);
+    opts.events?.requestHeader(step, routedModel, toolSchemas.map((s) => s.function.name), requestMessages.length);
 
     output.onRound(step, maxSteps);
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
@@ -218,7 +222,7 @@ export async function runAgent(
       try {
         stream = await waitAbort(
           client.chat.completions.create({
-            model,
+            model: routedModel,
             messages: requestMessages,
             tools: toolSchemas,
             stream: true,
@@ -235,7 +239,7 @@ export async function runAgent(
       } catch {
         stream = await waitAbort(
           client.chat.completions.create({
-            model,
+            model: routedModel,
             messages: requestMessages,
             tools: toolSchemas,
             stream: true,

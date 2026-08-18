@@ -28,6 +28,7 @@ import { Safety, type ApprovalRequest } from './safety/index.js';
 import { runExec, runMcpServer } from './exec.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
+import { discoverSubagents } from './agent/subagent-defs.js';
 import { tools } from './tools/index.js';
 import { closeMcpClients, discoverMcpTools } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
@@ -164,7 +165,26 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   if (cfg.skills === false) tracked = tracked.filter((t) => t.name !== 'skill');
   const toolchain = [...tracked];
   if (cfg.allowSubagents) {
-    toolchain.push(createDelegateTool({ modelRuntime: ctx.runOpts.modelRuntime!, tools: tracked, gate, maxSteps: cfg.maxSubagentSteps, hooks: ctx.runOpts.hooks }));
+    // delegate：子代理委托工具——嵌套/agent 参数/模型路由/进度事件（第六节 P1）。
+    // runOpts 传引用：/plan、/model、/settings 等运行时切换即时生效；
+    // onEvent 把子代理生命周期分发给 Output（TUI 卡片 live 状态 / console dim 行）
+    toolchain.push(
+      createDelegateTool({
+        modelRuntime: ctx.runOpts.modelRuntime!,
+        tools: tracked,
+        gate,
+        maxSteps: cfg.maxSubagentSteps,
+        hooks: ctx.runOpts.hooks,
+        runOpts: ctx.runOpts, // planMode/architectModel/editorModel/maxSubagentDepth/subagents/events
+        subagents: ctx.runOpts.subagents,
+        depth: 0,
+        maxDepth: cfg.maxSubagentDepth,
+        onEvent: (ev) => output.onSubagentEvent?.(ev),
+        auditLog: cfg.auditLog,
+        requestApproval,
+        summarize: formatToolCall,
+      })
+    );
   }
   // ask_user：运行时注入提问回调（非交互输出（管道/单任务无 UI）时仍注册——工具
   // 返回「无法询问」让模型自行决定，不打断任务）
@@ -173,6 +193,12 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   if (cfg.reasoningEffort) ctx.runOpts.reasoningEffort = cfg.reasoningEffort;
   ctx.runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions;
   ctx.runOpts.maxSubagentSteps = cfg.maxSubagentSteps;
+  // 第六节「子代理与编排」配置：architect/editor 模型路由（/plan 用 architect、执行用
+  // editor，缺省 = 当前模型）+ 嵌套深度上限 + 已发现子代理定义（delegate 的 agent 参数）
+  if (cfg.architect) ctx.runOpts.architectModel = cfg.architect;
+  if (cfg.editor) ctx.runOpts.editorModel = cfg.editor;
+  ctx.runOpts.maxSubagentDepth = cfg.maxSubagentDepth;
+  ctx.runOpts.subagents = await discoverSubagents();
   // 基础工具链（静态 + delegate，不含 MCP）：/mcp 重连时以此为基底重建 tools
   ctx.runOpts.baseTools = toolchain;
   ctx.runOpts.mcpServers = cfg.mcpServers;

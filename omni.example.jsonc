@@ -69,6 +69,11 @@
   // /variants 支持的思考级别选项（可自行配置支持哪些）
   "reasoningEffortOptions": ["low", "medium", "high"],
 
+  // 模型路由（architect/editor）：/plan 计划模式自动用 architect（强模型规划）、
+  // 执行阶段用 editor（轻模型执行）；缺省回退当前模型（不配置 = 始终用当前模型）
+  // "architect": "gpt-5",
+  // "editor": "gpt-5-mini",
+
   // 多模型端点（/model 命令切换）：不同模型可配不同 baseURL/apiKey/userAgent；
   // 缺省字段回退到顶层对应字段；顶层 model 总是可用（默认模型）
   // 也可以在交互模式用 /model add <名称> [--base-url] [--api-key] [--user-agent] 运行时添加并持久化

@@ -25,7 +25,8 @@
 12. [MCP External Tools](#12-mcp-external-tools)
 13. [Hooks Lifecycle Automation](#13-hooks-lifecycle-automation)
 14. [Skills (SKILL.md)](#14-skills-skillmd)
-15. [FAQ & Troubleshooting](#15-faq--troubleshooting)
+15. [Subagents & Orchestration](#15-subagents--orchestration)
+16. [FAQ & Troubleshooting](#16-faq--troubleshooting)
 
 ---
 
@@ -399,7 +400,9 @@ a separate panel and never pollutes the conversation flow):
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites existing) |
 | `/skill` | skill management: list / `find <word>` online search on skills.sh / `add <repo>` install / `show <name>` view |
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
-| `/agents` | view subagent config (enabled / model / step cap / available tools) |
+| `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`, per-agent model/permission/tool whitelist/skills) |
+| `/orchestrate` | orchestration: fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report |
+| `/loop` (alias `/goal`) | loop a task until acceptance criteria are met (with iteration log) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` | session status summary (model / permission / plan mode / tokens / session file / scaffolds) |
 | `/context` | context usage (message counts + token estimate + compression-threshold advice) |
@@ -624,7 +627,60 @@ name via the `skill` tool — a long manifest never bloats the context.
 
 ---
 
-## 15. FAQ & Troubleshooting
+## 15. Subagents & Orchestration
+
+The `delegate` tool hands an independent subtask to an **isolated-context mini-loop** (separate
+message history, no UI, shared safety gate). Subagents support **nesting** (a subagent may delegate
+again, depth cap 5), **skill preload**, and **per-agent configuration**.
+
+### Subagent definitions (`.agents/subagents/*.md`)
+
+Drop a Markdown file with frontmatter into the project `.agents/subagents/` (or global
+`~/.config/omni/subagents/`) to define a named subagent; `delegate` loads it by name via the
+`agent` parameter (see `examples/subagents/reviewer.md`):
+
+```markdown
+---
+name: reviewer          # must match the filename
+model: ""               # optional: per-agent model (falls back to current model)
+permission: read        # optional: full / safe / ask / read (defaults to parent's permission)
+tools:                  # optional: tool whitelist (default = full default tool chain)
+  - read_file
+  - list_directory
+  - search_code
+maxSteps: 15            # optional: step cap (defaults to the main loop's maxSteps)
+skills: []              # optional: skill names to preload (SKILL.md full text injected into system)
+---
+
+(Body = the subagent's system prompt, i.e. its role definition)
+```
+
+`/agents` lists discovered definitions; `/agents <name>` expands a definition's full role
+(frontmatter + tool whitelist + instruction body) before delegating. `delegate` without the `agent`
+parameter behaves like the legacy generic subagent.
+
+**Execution preview**: while delegating, the delegate card in the conversation stream shows the
+current action live (`subagent X · ⠋ run_command 3/10` — the tool being called + step count); on
+completion the collapsed card shows the result summary directly (command line + `✓ subagent X · 2
+steps · first line of result`), click to expand for full output; the precise nesting tree lives in
+the `/trace` panel.
+
+### Model routing (architect / editor)
+
+Config accepts `architect` (strong model for planning) and `editor` (cheap model for execution):
+`/plan` plan mode automatically uses the architect, execution uses the editor; both fall back to
+the current model when unset (no config = always the current model).
+
+### Orchestration & loop tasks
+
+```bash
+/orchestrate <task>   # fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report
+/loop <goal>          # loop a task until acceptance criteria are met (with iteration log; alias /goal)
+```
+
+---
+
+## 16. FAQ & Troubleshooting
 
 ### Q1: Startup error "API key not found"?
 

@@ -65,6 +65,10 @@ export interface ToolCard {
   paths?: string[];
   /** write_file 写入前后对比（新增=original null / 修改=左右对比；无对比数据为 null） */
   diff?: WriteDiff | null;
+  /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示命令行 + `✓ N 步 · 结果首行` */
+  subagent?: { name: string; ok: boolean; steps: number; summary?: string };
+  /** delegate 原命令行快照（onSubagentEvent start 保存，end 还原——运行中 summary 被进度覆盖） */
+  _cmd?: string;
 }
 
 export interface TuiLine {

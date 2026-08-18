@@ -41,6 +41,7 @@ import {
   statusReport,
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
+import { runLoop, runOrchestrate } from '../agent/orchestrate.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import { createClient } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
@@ -277,15 +278,97 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/agents') {
-      // /agents：展示子代理（delegate）配置（只读查看）
+      // /agents：展示子代理（delegate）配置 + 已定义子代理 + 嵌套深度 + 模型路由（只读查看）
+      // 可选参数：`/agents <name>` 展开查看某个已定义子代理的角色全文
+      const showName = cmd.slice('/agents'.length).trim();
+      if (showName) {
+        const defs = runOpts.subagents ?? [];
+        const def = defs.find((d) => d.name === showName);
+        if (!def) {
+          const avail = defs.map((d) => d.name).join('、');
+          console.log(red(`未找到子代理定义「${showName}」${avail ? `。可用：${avail}` : '（.agents/subagents/ 下未定义任何子代理）'}`));
+        } else {
+          console.log(dim(`子代理定义：${def.name} — ${def.description}`));
+          console.log(dim(`· 模型：${def.model ?? '（继承主代理）'}`));
+          console.log(dim(`· 权限：${def.permission ?? '（继承主代理）'}`));
+          console.log(dim(`· 工具白名单：${def.tools?.length ? def.tools.join('、') : '（全部默认工具）'}`));
+          console.log(dim(`· 技能预载：${def.skills?.length ? def.skills.join('、') : '（无）'}`));
+          console.log(dim(`· 步数上限：${def.maxSteps ?? '（继承主代理）'}`));
+          console.log(dim(`· 定义文件：${def.path}`));
+          console.log(dim('· 角色指令：'));
+          for (const l of def.instructions.split('\n')) console.log(dim(`  ${l}`));
+        }
+        safePrompt();
+        continue;
+      }
       const tools = runOpts.tools ?? [];
       const hasDelegate = tools.some((t) => t.name === 'delegate');
       const subTools = tools.filter((t) => t.name !== 'delegate');
       console.log(dim(`子代理配置（delegate）：${hasDelegate ? '已启用' : '未启用（allowSubagents=false）'}`));
-      console.log(dim(`· 模型：${currentModel}`));
+      console.log(dim(`· 当前模型：${currentModel}`));
+      console.log(dim(`· 模型路由：${runOpts.architectModel || runOpts.editorModel ? `architect=${runOpts.architectModel ?? currentModel}（/plan）· editor=${runOpts.editorModel ?? currentModel}（执行）` : '未配置（全部用当前模型）'}`));
       console.log(dim(`· 最大循环步数：${runOpts.maxSubagentSteps ?? '（默认 10）'}`));
+      console.log(dim(`· 最大嵌套深度：${runOpts.maxSubagentDepth ?? '（默认 5）'}`));
       console.log(dim(`· 子代理可用工具（${subTools.length}）：${subTools.map((t) => t.name).join('、')}`));
-      console.log(dim('说明：模型在任务中可用 delegate 工具把独立子任务委托给子代理（隔离上下文）；子代理共用安全闸门，权限与主代理一致。'));
+      const defs = runOpts.subagents ?? [];
+      if (defs.length > 0) {
+        console.log(dim(`· 已定义子代理（${defs.length}，.agents/subagents/*.md；delegate agent= 或 /orchestrate --agents 选用）：`));
+        for (const d of defs) {
+          console.log(dim(`  · ${d.name} — ${d.description}${d.model ? `（模型 ${d.model}）` : ''}${d.permission ? `（权限 ${d.permission}）` : ''}${d.tools ? `（工具 ${d.tools.join(',')}）` : ''}${d.skills ? `（技能 ${d.skills.join(',')}）` : ''}${d.maxSteps ? `（步数 ${d.maxSteps}）` : ''}`));
+        }
+      } else {
+        console.log(dim('· 已定义子代理：无（.agents/subagents/ 下可放 <name>.md 声明命名子代理）'));
+      }
+      console.log(dim('说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门。/orchestrate 并行编排、/loop 循环执行。'));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/orchestrate' || cmd.startsWith('/orchestrate ')) {
+      // /orchestrate：fan-out 并行 delegate → 汇总 → 对抗审查（第六节 P2 轻量版）。
+      // 独立于 messages 历史（编排是一次性输出，不污染对话上下文）。
+      if (!runOpts.safetyGate) {
+        console.log(red('/orchestrate 需要安全闸（当前环境异常）'));
+      } else {
+        try {
+          const { combined, review } = await runOrchestrate(cmd.slice('/orchestrate'.length).trim(), runOpts.subagents, {
+            client: currentClient,
+            model: currentModel,
+            runOpts,
+            log: (t) => console.log(dim(t)),
+            onSubagentEvent: (ev) => out.onSubagentEvent?.(ev),
+          });
+          console.log('');
+          console.log(green('═══ 综合结果 ═══'));
+          console.log(combined);
+          console.log(green('═══ 对抗审查 ═══'));
+          console.log(review);
+        } catch (err) {
+          console.log(red(String((err as Error)?.message ?? err)));
+        }
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/loop' || cmd.startsWith('/loop ')) {
+      // /loop：循环执行任务直至验收标准满足（--goal 配置时 LLM 判定；上限 5 次）
+      if (!runOpts.safetyGate) {
+        console.log(red('/loop 需要安全闸（当前环境异常）'));
+      } else {
+        try {
+          const result = await runLoop(cmd.slice('/loop'.length).trim(), {
+            client: currentClient,
+            model: currentModel,
+            runOpts,
+            log: (t) => console.log(dim(t)),
+            onSubagentEvent: (ev) => out.onSubagentEvent?.(ev),
+          });
+          console.log('');
+          console.log(green('═══ 循环最终结果 ═══'));
+          console.log(result);
+        } catch (err) {
+          console.log(red(String((err as Error)?.message ?? err)));
+        }
+      }
       safePrompt();
       continue;
     }

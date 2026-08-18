@@ -107,6 +107,8 @@ Config fields (see `omni.example.jsonc` for a full example):
   "skills": true,                        // skill (SKILL.md) discovery and the skill tool (default true)
   "reasoningEffort": "medium",            // current reasoning level (reasoning_effort; unset = not sent, model default)
   "reasoningEffortOptions": ["low", "medium", "high"], // options supported by /variants (customizable)
+  "architect": "gpt-5",                  // model routing: /plan uses a strong model (falls back to current)
+  "editor": "gpt-5-mini",                // model routing: execution uses a light model (falls back to current)
   "models": {                           // multi-model endpoints (/model switch/add): per-model baseURL/apiKey/userAgent; missing fields fall back to top level; /model add adds at runtime and persists
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
@@ -282,7 +284,9 @@ omni mcp-server     # stdio JSON-RPC: initialize / tools/list / tools/call
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites) |
 | `/skill` | skill management: list / `find <word>` online search / `add <repo>` install / `show <name>` |
 | `/compact` | manually compress context (old messages → summary, last 8 kept verbatim) |
-| `/agents` | view subagent config (enabled / model / step cap / available tools) |
+| `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`) |
+| `/orchestrate` | orchestration: fan-out parallel delegates → merge → adversarial review → final report |
+| `/loop` (alias `/goal`) | loop a task until acceptance criteria are met (with iteration log) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` · `/context` | session status summary · context usage with compression advice |
 | `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |

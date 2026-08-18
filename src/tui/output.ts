@@ -11,7 +11,7 @@ import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
-import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState } from './state.js';
+import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState, type ToolStatus } from './state.js';
 import { t, tf } from './i18n.js';
 
 const NOOP_THINKING: ThinkingDisplay = {
@@ -376,6 +376,55 @@ export class TuiOutput implements Output {
   onHookOutput(event: HookEventName, lines: string[]): void {
     for (const l of lines) pushLine(this.state, { kind: 'meta', text: `⚡ hook[${event}] ${l}` });
     this.schedulePaint();
+  }
+
+  /**
+   * 子代理进度事件（第六节 P1 可视化）：更新**最近一个执行中的 delegate 卡片**——
+   * 委托中可见 live 状态（`子代理 X · ⠋ search_code 3/10`——step 事件带当前动作），
+   * 完成后把**结果摘要**存进 card.subagent（收起态显示命令行 + `✓ 5 步 · 结果首行`，
+   * 不覆盖命令行）。嵌套子代理的事件沿同一回调链汇聚到同一张卡片（只显示最内层
+   * 活跃子代理的进度——精确嵌套树在 /trace 面板，见 foldTrace 的 subagent 行）。
+   * 并行多委托时各事件按到达顺序更新同一卡片，最终 onToolResult 填各自结果。
+   */
+  onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {
+    const card = this.findRunningDelegateCard();
+    if (!card) return;
+    if (ev.type === 'start') {
+      // start：保存原命令行（onToolStep 的 argsPreview），运行中显示进度；
+      // end 时还原命令行（end 事件不带 task，不能靠它重建）
+      if (card._cmd === undefined) card._cmd = card.summary;
+      card.summary = `子代理 ${ev.name} · 运行中${ev.depth > 0 ? `（深度 ${ev.depth}）` : ''}`;
+    } else if (ev.type === 'step') {
+      card.summary = `子代理 ${ev.name} · ⠋ ${ev.tool ?? '思考中'} ${ev.step}/${ev.maxSteps}`;
+      card.status = 'running';
+      this.state.spinnerIndex = 0; // 委托中保持卡片 loading 帧
+    } else {
+      // end：结果摘要存进 card.subagent + 还原命令行；收起态渲染
+      // 命令行 + `✓ N 步 · 结果首行`（第二层预览：结果比命令重要，对标 write diff）
+      card.subagent = {
+        name: ev.name,
+        ok: ev.status === 'ok',
+        steps: ev.steps ?? 0,
+        summary: (ev.summary ?? '').split('\n')[0] || undefined,
+      };
+      if (card._cmd !== undefined) card.summary = card._cmd;
+    }
+    this.schedulePaint();
+  }
+
+  /** 找最近一个执行中的 delegate 卡片（子代理进度事件的目标；无则返回 null） */
+  private findRunningDelegateCard(): {
+    name: string;
+    summary: string;
+    status: ToolStatus;
+    _cmd?: string;
+    subagent?: { name: string; ok: boolean; steps: number; summary?: string };
+  } | null {
+    for (let i = this.state.lines.length - 1; i >= 0; i--) {
+      const l = this.state.lines[i];
+      if (l.kind === 'tool' && l.card?.name === 'delegate' && l.card.status === 'running') return l.card;
+    }
+    return null;
   }
 
   /**

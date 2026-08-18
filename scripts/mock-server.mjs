@@ -21,6 +21,8 @@ const MOCK_ASK = process.env.MOCK_ASK === '1';
 // MOCK_MULTIREAD=1 时第一轮**并行发 3 个 read_file 调用**（TUI 多读合并展示 e2e 验证：
 // `→ Read 3 files` 一张卡、点击展开逐条 ⤷）
 const MOCK_MULTIREAD = process.env.MOCK_MULTIREAD === '1';
+// MOCK_SUBAGENT=1 时第一轮发 delegate 调用（子代理委托 e2e 验证：嵌套/进度事件/结果回传）
+const MOCK_SUBAGENT = process.env.MOCK_SUBAGENT === '1';
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -77,6 +79,12 @@ const server = http.createServer((req, res) => {
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是资深代码审查员');
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
+    // 子代理请求识别：首条用户消息以子代理提示词开头（runSubagent 的 messages[0] 是 user 角色
+    // ——系统提示拼在 prompt 里）——MOCK_SUBAGENT 的 delegate 只发给主代理，子代理内部
+    // 走普通 run_command 流程（否则每层 mock 都返回 delegate → 无限嵌套）
+    const isSubagentReq =
+      typeof messages[0]?.content === 'string' &&
+      messages[0].content.startsWith('你是 Omni 的子代理，负责独立完成一项被委托的子任务');
     // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）；
     // MOCK_DANGEROUS=1 时发危险命令（full 直通 / safe 审批 e2e）。
     // 注意用 JSON.stringify 生成 arguments——单引号字符串里的 \n 是真实换行，会让 JSON 非法
@@ -89,7 +97,9 @@ const server = http.createServer((req, res) => {
               name: 'ask_user',
               arguments: JSON.stringify({ question: '接下来怎么做？', options: ['继续执行', '先总结', '换个方案'] }),
             }
-          : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
+          : MOCK_SUBAGENT && !isSubagentReq
+            ? { name: 'delegate', arguments: JSON.stringify({ task: '检查项目根目录并总结发现', agent: '' }) }
+            : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
     // 第一轮的完整 tool_calls 数组：MOCK_MULTIREAD=1 时并行 3 个 read_file（其余单调用）
     const firstToolCalls = MOCK_MULTIREAD
       ? [
@@ -240,6 +250,88 @@ const server = http.createServer((req, res) => {
         ],
       });
       sendChunk(usageChunk('mock-plan-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    // 编排流水线固定角色（/orchestrate /loop 离线 e2e）：worker / 汇总器 / 对抗审查员 /
+    // 验收判定器——按 system 提示词前缀识别，返回固定输出（worker 直接答、不调工具）
+    const sys0 = typeof messages[0]?.content === 'string' ? messages[0].content : '';
+    if (sys0.startsWith('你是 Omni 编排流水线的一个子代理')) {
+      // worker：直接返回固定结果（e2e 确定性；真实场景 worker 会正常调工具）
+      sendChunk({
+        id: 'mock-worker',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '（worker 结果）已从分配角度完成检查：mock 项目结构清晰，无阻塞问题。' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-worker-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+    if (sys0.startsWith('把以下多个子代理的独立结果汇总')) {
+      // 汇总器：返回固定综合结论
+      sendChunk({
+        id: 'mock-combine',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '（综合结论）各 worker 结论一致：mock 项目可以继续推进，无需额外处理。' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-combine-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+    if (sys0.startsWith('你是 Omni 编排的对抗审查员')) {
+      // 对抗审查员：返回固定审查意见
+      sendChunk({
+        id: 'mock-review',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '（审查）未发现明显问题；建议补充验收测试。\n总体结论：可采纳' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-review-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+    if (sys0.startsWith('你是 Omni 验收判定器')) {
+      // 验收判定器：第一次「不满足」（验证 /loop 继续迭代）、第二次起「满足」（验证提前结束）
+      let goalChecks = Number(process.env.MOCK_GOAL_CHECKS ?? '0');
+      goalChecks += 1;
+      process.env.MOCK_GOAL_CHECKS = String(goalChecks);
+      const verdict = goalChecks === 1 ? '不满足：结果尚未完整' : '满足：验收标准已达成';
+      sendChunk({
+        id: 'mock-goal',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', content: verdict }, finish_reason: null }],
+      });
+      sendChunk(usageChunk('mock-goal-done'));
       res.write('data: [DONE]\n\n');
       res.end();
       return;
