@@ -267,6 +267,38 @@ Web features (reusing the existing agent stack: props/memory, sessions, safety, 
 
 Implementation notes: one running agent at a time (safe global run lock over shared `runOpts`/gate/undo-stack); static pages are served from the `web/` directory in dev (hot reload) and embedded in the bundle for `npm i -g` / compiled builds (`npm run web:sync` regenerates `src/web/assets.ts`). `npm run probe:web` runs an offline end-to-end test of the full protocol against the mock API.
 
+### Local run & test (Web / Electron)
+
+**Web — run & test locally** (no real API key needed for the protocol tests, only for the actual agent work):
+
+```bash
+npm run dev:web            # dev server: tsx src/index.ts web --no-open (default http://127.0.0.1:3080)
+npm run probe:web          # offline e2e probe (mock API): sessions / streaming / approvals / ask_user / cancel / model switch / session delete
+npm run web:sync           # regenerate src/web/assets.ts from web/ (needed after editing the UI, before bundling)
+```
+
+**Electron desktop app — run & test locally:**
+
+```bash
+npm run build              # produces dist/omni.cjs (the packaged app runs this as its backend via Electron's bundled Node)
+npm run electron:dev       # launch the desktop window against the backend (dev mode, tsx source)
+npm run electron:build     # package with electron-builder → release-electron/ (current platform only)
+# targeting other platforms in CI: see .github/workflows/release.yml (mac arm64+x64 dmg / win x64 exe / linux x64 AppImage)
+```
+
+> npm installs `electron` + `electron-builder` as devDependencies. For networks that cannot reach
+> GitHub downloads, the repo ships an `.npmrc` pointing Electron binaries at the npmmirror mirror
+> (`electron_mirror` / `electron_builder_binaries_mirror`); the CI workflow sets the same env vars.
+
+**Standard regression suite** (run before pushing a release):
+
+```bash
+npm run typecheck && npm run build   # types + console bundle (includes web assets)
+npm run probe:web                    # web protocol e2e (offline)
+npm run eval:mock                    # core agent-loop evaluation (offline, deterministic)
+npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
+```
+
 ### CI integration
 
 `examples/ci/omni-fix-ci.yml` — an "agent fixes the CI failure" workflow modeled on anthropics/claude-code-action: a **read-only job** (only `OMNI_API_KEY` exposed) reproduces the failure, pipes the output into `omni exec "修复…"`, uploads the resulting `git diff` as an artifact; a **separate job with write permissions** applies the patch, pushes a branch and opens a PR — keys never enter the job that generates the patch. See `examples/ci/README.md` for the security boundary, usage steps and variants.

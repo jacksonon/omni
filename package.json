@@ -1,14 +1,64 @@
 {
   "name": "omni",
-  "version": "0.5.15",
+  "version": "0.6.0",
   "description": "Omni — Agent 工程（终端型 AI 编程助手）",
+  "author": "Omni Contributors",
   "type": "module",
+  "main": "electron/main.cjs",
   "bin": {
     "omni": "dist/omni.cjs"
   },
   "files": [
     "dist/omni.cjs"
   ],
+  "build": {
+    "appId": "ai.omni.web",
+    "productName": "Omni Web",
+    "asar": false,
+    "files": [
+      "dist/omni.cjs",
+      "electron/**/*",
+      "web/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release-electron"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "maintainer": "Omni Contributors"
+    }
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:tui": "bun run ./src/tui-entry.ts",
@@ -27,7 +77,10 @@
     "mock": "node scripts/mock-server.mjs",
     "eval": "tsx scripts/eval/run-eval.ts",
     "eval:mock": "tsx scripts/eval/run-eval.ts --mock",
-    "prepack": "npm run web:sync && npm run build"
+    "prepack": "npm run web:sync && npm run build",
+    "electron:dev": "npm run bundle && electron .",
+    "electron:pack": "npm run web:sync && npm run bundle && electron-builder --dir",
+    "electron:build": "npm run web:sync && npm run bundle && electron-builder"
   },
   "engines": {
     "node": ">=18"
@@ -39,6 +92,8 @@
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1",
     "@types/node": "^20.0.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "solid-js": "^1.9.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"

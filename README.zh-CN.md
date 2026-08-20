@@ -267,6 +267,38 @@ Web 功能（复用现有 Agent 栈：记忆/会话/护栏/工具/子代理/hook
 
 实现要点：同一时刻只跑一个 Agent（全局运行锁，共享 runOpts/闸门/撤销栈无并发交错）；静态页面开发时直接读 `web/` 目录（热更新），发布时内嵌进产物（`npm run web:sync` 生成 `src/web/assets.ts`）。`npm run probe:web` 跑一次离线全链路 e2e（mock API，覆盖对话流/审批/提问/取消/模型切换/会话管理）。
 
+### 本地运行与测试（Web / Electron）
+
+**Web —— 本地运行 / 测试**（协议测试无需真实 API Key；只有真正跑 Agent 任务才需要）：
+
+```bash
+npm run dev:web             # 开发服务：tsx src/index.ts web --no-open（默认 http://127.0.0.1:3080）
+npm run probe:web           # 离线 e2e 探针（mock API）：会话/流式/审批/提问/取消/模型切换/会话删除
+npm run web:sync            # 从 web/ 重新生成 src/web/assets.ts（改过页面在打包前执行）
+```
+
+**Electron 桌面应用 —— 本地运行 / 测试：**
+
+```bash
+npm run build               # 产出 dist/omni.cjs（桌面应用以它作后端，走 Electron 自带的 Node 执行）
+npm run electron:dev        # 打开桌面窗口跑本地后端（开发模式，tsx 源码）
+npm run electron:build      # electron-builder 打包 → release-electron/（当前平台）
+# 其它平台打包在 CI 里：见 .github/workflows/release.yml（mac arm64+x64 dmg / win x64 exe / linux x64 AppImage）
+```
+
+> `electron` 与 `electron-builder` 以 devDependencies 安装。下载受限的网络环境里，仓库自带的
+> `.npmrc` 已把 Electron 二进制指向 npmmirror 镜像（`electron_mirror` / `electron_builder_binaries_mirror`）；
+> CI workflow 也设置了同样的镜像环境变量。
+
+**提交发布前的标准回归：**
+
+```bash
+npm run typecheck && npm run build   # 类型 + console 包（含 web 页面资源）
+npm run probe:web                    # web 协议 e2e（离线）
+npm run eval:mock                    # 核心 Agent 回路评估（离线、确定性）
+npm run tui:snapshot                 # TUI 渲染快照
+```
+
 ### CI 集成
 
 `examples/ci/omni-fix-ci.yml` —— 对标 anthropics/claude-code-action 的「agent 修 CI」工作流：**只读 job**（只暴露 `OMNI_API_KEY`）复现失败 → 把失败输出管道进 `omni exec "修复…"` → 把 `git diff` 作为 artifact 上传；**独立的有写权限 job** 应用补丁、推送分支、开 PR——生成补丁的 job 里没有任何密钥。安全边界、使用步骤与变体见 `examples/ci/README.md`。

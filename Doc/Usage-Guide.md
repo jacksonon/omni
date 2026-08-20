@@ -555,6 +555,28 @@ Implementation notes: one running agent at a time (a global run lock protects th
 (hot reload) and embedded in the bundle (`npm run web:sync` regenerates `src/web/assets.ts`).
 `npm run probe:web` runs an offline full-protocol e2e against the mock API.
 
+### Local run & test (Web / Electron)
+
+```bash
+# Web — dev server (no API key needed until the agent actually runs a task)
+npm run dev:web        # tsx src/index.ts web --no-open  (default http://127.0.0.1:3080)
+npm run probe:web      # offline e2e probe (mock API): sessions / streaming / approvals / ask / cancel / model switch / delete
+
+# Electron desktop app
+npm run build          # dist/omni.cjs — the packaged app runs this as its backend via Electron's bundled Node
+npm run electron:dev   # open the desktop window against the backend (dev mode)
+npm run electron:build # electron-builder package → release-electron/ (current platform; other platforms via CI)
+npm run web:sync       # regenerate src/web/assets.ts after editing web/ (before bundling)
+
+# Standard regression before release
+npm run typecheck && npm run build
+npm run probe:web && npm run eval:mock && npm run tui:snapshot
+```
+
+> `electron` / `electron-builder` are devDependencies. If GitHub downloads are unreachable, the repo
+> ships an `.npmrc` pointing Electron binaries at the npmmirror mirror; the CI workflow sets the same
+> `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` env vars.
+
 ---
 
 ## 12. MCP External Tools
