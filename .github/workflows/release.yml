@@ -180,10 +180,10 @@ jobs:
       - name: Collect distributable artifacts
         shell: bash
         run: |
-          # 只收集最终可分发的产物（dmg/exe/AppImage/zip + 校验文件），
+          # 只收集最终可分发的产物（zip/exe/AppImage + 校验文件），
           # 不带整个 app 包目录（asar 关闭后含 node_modules，会拖出数千个源文件）
           mkdir -p dist-desktop
-          find release-electron -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.zip' -o -name '*.blockmap' -o -name '*.yml' \) -exec cp {} dist-desktop/ \;
+          find release-electron -type f \( -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.blockmap' -o -name '*.yml' \) -exec cp {} dist-desktop/ \;
           ls -la dist-desktop/
 
       - name: Upload Electron artifacts

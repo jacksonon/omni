@@ -283,7 +283,7 @@ npm run web:sync           # regenerate src/web/assets.ts from web/ (needed afte
 npm run build              # produces dist/omni.cjs (the packaged app runs this as its backend via Electron's bundled Node)
 npm run electron:dev       # launch the desktop window against the backend (dev mode, tsx source)
 npm run electron:build     # package with electron-builder → release-electron/ (current platform only)
-# targeting other platforms in CI: see .github/workflows/release.yml (mac arm64+x64 dmg / win x64 exe / linux x64 AppImage)
+# targeting other platforms in CI: see .github/workflows/release.yml (mac arm64+x64 zip / win x64 exe / linux x64 AppImage)
 ```
 
 > npm installs `electron` + `electron-builder` as devDependencies. For networks that cannot reach

@@ -283,7 +283,7 @@ npm run web:sync            # 从 web/ 重新生成 src/web/assets.ts（改过�
 npm run build               # 产出 dist/omni.cjs（桌面应用以它作后端，走 Electron 自带的 Node 执行）
 npm run electron:dev        # 打开桌面窗口跑本地后端（开发模式，tsx 源码）
 npm run electron:build      # electron-builder 打包 → release-electron/（当前平台）
-# 其它平台打包在 CI 里：见 .github/workflows/release.yml（mac arm64+x64 dmg / win x64 exe / linux x64 AppImage）
+# 其它平台打包在 CI 里：见 .github/workflows/release.yml（mac arm64+x64 zip / win x64 exe / linux x64 AppImage）
 ```
 
 > `electron` 与 `electron-builder` 以 devDependencies 安装。下载受限的网络环境里，仓库自带的
