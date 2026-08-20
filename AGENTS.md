@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **Beta 阶段（功能完备）**：单 Agent 循环 + 6 个基础工具 + 安全护栏 + 上下文管理 + 子代理/并行工具 + MCP 外部工具 + 记忆系统/会话持久化/技能系统 + 全屏 TUI，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项已全部完成，仅剩进阶项（SWE-bench 评测、MCP 资源/提示协议、记忆渐进披露/TTL、嵌套 AGENTS.md）。
+当前为 **Beta 阶段（功能完备）**：单 Agent 循环 + 6 个基础工具 + 安全护栏 + 上下文管理 + 子代理/并行工具 + MCP 外部工具 + 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项已全部完成，仅剩进阶项（SWE-bench 评测、MCP 资源/提示协议、记忆渐进披露/TTL、嵌套 AGENTS.md、Web 多会话并发）。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -130,6 +130,15 @@ src/
                         #   （SSE 发 request，客户端按钮 POST 路由 resolve 后 loop 继续）
     events.ts           # **Web 事件协议**：事件名与 payload 的单一来源（客户端 web/app.js 按名渲染）
     assets.ts           # **内嵌页面资源**（web/ 的副本，scripts/web-sync.mjs 生成；bundle 单文件发布免外部文件）
+  electron/
+    main.cjs            # **Electron 桌面应用（Omni Web）**：主进程以 Electron 自带 Node（ELECTRON_RUN_AS_NODE=1）
+                        #   执行 `dist/omni.cjs web --no-open --port <p>`（无需系统 Node）→ 轮询 /api/status 就绪 →
+                        #   开 BrowserWindow 加载 http://127.0.0.1:<p> · 单实例锁 · 应用菜单（选择工作目录/重载/DevTools/
+                        #   退出）· 退出时终止后端子进程 · 自动找空闲端口 · 开发模式（OMNI_WEB_DEV=1）走 tsx 源码
+                        #   打包配置在 package.json `build` 字段（electron-builder：mac zip（arm64+x64，dmg 在 CI runner
+                        #   上 hdiutil 产物校验损坏不可用）· win nsis exe x64 · linux AppImage x64）
+  web/                  # **浏览器页面（仓库根目录）**：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；
+                        #   src/web/assets.ts 的源，`npm run web:sync` 重新生成内嵌副本）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -300,7 +309,9 @@ for step in 1..maxSteps:
 - [x] **/undo 文件撤销**：write_file 自动快照 + `/undo` / `/undo all` 回滚本次会话修改
 - [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换（共用闸门 setTier 同步，子代理一致）
 - [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果/stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
-- [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
+- [x] **本地后端服务 + Web 界面（`omni web`）**：REST + SSE 后端（零依赖）+ 浏览器 UI——多会话/实时流式/审批与提问卡片/模型权限设置/会话持久化（复用 session JSONL）/运行统计；同一 Agent 栈同时服务 CLI 与网页（multi 前端共享后端）
+- [x] **Electron 桌面应用（Omni Web）**：独立 mac/win/linux 应用（内置后端，Electron 自带 Node 无需系统 Node）——GitHub Actions 打 tag 自动构建（mac zip / win exe / linux AppImage）并附 GitHub Release + npm 发布（5 平台子包 + 主包）
+- [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md、Web 多会话并发运行（per-session runOpts 克隆 + 独立闸门/撤销栈）
 
 ## 演进日志
 

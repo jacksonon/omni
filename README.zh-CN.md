@@ -19,8 +19,10 @@
 - **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
 - **Hooks（生命周期自动化）**：在生命周期事件上挂 shell 命令——改写用户 prompt（`UserPromptSubmit`）、硬拦截工具调用（`PreToolUse`）、把工具后的输出回传模型（`PostToolUse`，如 lint 结果）、要求 agent 修完再停（`Stop`）、会话完成通知（`Notification`），另有 `SessionStart` 注入上下文、子代理 hooks（`SubagentStart`/`SubagentStop` + 子代理工具 Pre/Post）、`PreCompact`；JSON 协议（stdin 喂入 / stdout 返回），matcher 工具名通配，配置分层合并（全局+项目），stderr 捕获，超时/失败降级放行
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
+- **Web 模式（`omni web`）**：本地后端服务（REST + SSE，零新增依赖）+ 浏览器界面——多会话侧栏、思考/工具/回答实时流式、审批与提问卡片、模型/权限/思考级别设置、取消、每轮 token 统计；浏览器与 Electron 桌面应用均可使用
+- **Electron 桌面应用**（macOS / Windows / Linux）：独立桌面应用，内置 web 后端（走 Electron 自带的 Node，无需系统安装 Node）；GitHub Actions 打 tag 自动构建（mac arm64/x64 zip、win x64 exe、linux x64 AppImage）并附到 GitHub Release
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
-- **四种产物**：单文件 JS 包（`dist/omni.cjs`，console 版）、原生二进制（`release/omni`，TUI 版）、console npm 包（`omni-<版本>.tgz`）、TUI npm 包（`omni-tui-<版本>.tgz`，需 bun）；GitHub Actions 打 tag 自动构建发布
+- **构建产物**：单文件 JS 包（`dist/omni.cjs`，console 版）· 原生二进制（`release/omni`，TUI 版）· console npm 包（`omni-<版本>.tgz`）· TUI npm 包（`omni-tui-<版本>.tgz`，需 bun）· web 页面资源内嵌（`npm run web:sync` → `src/web/assets.ts`）· **Electron 桌面应用**（`npm run electron:build` → `release-electron/`）；GitHub Actions 打 tag 自动构建发布
 
 ## 快速开始
 
@@ -50,12 +52,18 @@ npm install
 npm run dev -- "列出当前目录的文件"
 ```
 
-### 方式四：TUI 开发运行（需 bun）
+### 方式五：Electron 桌面应用（macOS / Windows / Linux，无需 Node）
 
-```bash
-npm run dev:tui -- "任务描述"     # 单任务
-npm run dev:tui                   # 交互式多轮对话
-```
+「Omni Web」是独立桌面应用，内置 web 后端（Electron 自带的 Node 运行时）——去 **GitHub Releases** 页下载对应平台的产物（每次打 `v*` tag 都会自动构建）：
+
+| 平台 | 产物 |
+|---|---|
+| macOS（Apple Silicon） | `Omni.Web-<版本>-arm64-mac.zip` —— 解压后把 `Omni Web.app` 拖入「应用程序」 |
+| macOS（Intel） | `Omni.Web-<版本>-mac.zip` —— 同上 |
+| Windows | `Omni.Web.Setup.<版本>.exe`（安装版）或 `Omni.Web.exe`（免安装版） |
+| Linux | `Omni.Web-<版本>.AppImage` —— `chmod +x` 后双击运行 |
+
+应用启动即拉起本地后端并打开 Web 界面窗口；菜单「文件 → 选择工作目录…」设定 Agent 读写文件的目录；模型 / API Key 在应用内 ⚙ 设置里配置（本次运行有效；永久配置请用 `omni.json` / 环境变量）。
 
 ### 配置 API Key
 
@@ -395,6 +403,10 @@ src/
   exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
 
   web/                  # **Web 模式（`omni web`）**：本地后端服务（REST+SSE，零依赖）+ 浏览器界面——index.ts（入口：参数 + prepareRun + attachRuntime + 自动开浏览器）· server.ts（http 服务：SSE 事件广播 + 会话/消息/审批/提问/设置路由 + 静态页面托管（内嵌 assets 回退））· output.ts（WebOutput：Output 事件带 sessionId 广播；审批/提问经 pending 注册表）· events.ts（事件协议名）· assets.ts（web/ 内嵌副本，`npm run web:sync` 生成）
+
+  electron/             # **Electron 桌面应用（Omni Web）**：main.cjs（Electron 主进程：以 Electron 自带 Node（ELECTRON_RUN_AS_NODE）执行 `dist/omni.cjs web --no-open` → 轮询 /api/status → 开 BrowserWindow；单实例锁 · 应用菜单（选择工作目录）· 退出杀后端；开发模式走 tsx 源码）+ package.json `build` 字段（electron-builder：mac zip arm64/x64 / win nsis x64 / linux AppImage x64）；GitHub Actions 打 tag 全平台构建
+
+  web/                  # 浏览器页面（仓库根目录）：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；是 src/web/assets.ts 的源——`npm run web:sync` 重新生成内嵌副本）
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
   version.ts            # 版本号常量
   cli/                  # 参数解析 / banner / 交互模式（28 个 / 命令）
