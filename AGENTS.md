@@ -22,6 +22,9 @@ npm start -- "<任务>"     # 运行 tsc 产物（node dist/index.js）
 npm run mock              # 启动本地 mock API 服务器（无 Key 端到端验证，端口 8787）
 npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
+npm run dev:web           # Web 服务（本地后端 + 网页界面，默认 3080 端口，不自动开浏览器）
+npm run web:sync          # 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本）
+npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
 npm run eval              # 评估：真实 API 跑任务集 + 完成率报告（eval-report.json）
 npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 npm run dev -- exec "<任务>" --output-format json   # Headless：stdout 只出结果、进度走 stderr（可 | jq / 管道分支）
@@ -104,7 +107,7 @@ npm run dev -- mcp-server # Headless：作为 MCP server（omni_exec / omni_repl
 
 ```
 src/
-  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server）
+  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web）
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用（主循环/子代理）
   version.ts            # 版本号常量
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
@@ -114,6 +117,17 @@ src/
                         #   --output-schema（JSON Schema 子集校验，不符 → 非零退出）· exit code 0/1 管道分支 ·
                         #   exec resume <id> 会话续跑（复用 session JSONL）· MCP server 暴露 omni_exec/omni_reply
                         #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
+  web/
+    index.ts            # **Web 服务入口（`omni web`）**：解析 web 参数（--port/--host/--no-open）→ prepareRun +
+                        #   attachRuntime（routingOutput 路由审批/提问到当前运行会话）→ startWebService；自动打开浏览器
+    server.ts           # **REST + SSE 本地后端**：Node 内置 http（零依赖）；SSE（/api/events）广播运行事件
+                        #   （thinking/tool/answer/approval/ask/usage/status…）· REST（会话创建/列表/历史/发送/取消/审批/提问/设置）·
+                        #   **全局单运行**（同时只有一个会话在跑，共享 runOpts/闸门/撤销栈无并发交错）· 会话落盘复用 session.ts
+                        #   JSONL + 首轮后自动生成标题 · 静态页面优先读 web/ 目录（开发热更新）否则回退内嵌 assets.ts
+    output.ts           # **WebOutput**：Output 实现——所有事件带 sessionId 广播；审批/提问经 PendingRegistry 注册
+                        #   （SSE 发 request，客户端按钮 POST 路由 resolve 后 loop 继续）
+    events.ts           # **Web 事件协议**：事件名与 payload 的单一来源（客户端 web/app.js 按名渲染）
+    assets.ts           # **内嵌页面资源**（web/ 的副本，scripts/web-sync.mjs 生成；bundle 单文件发布免外部文件）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -287,6 +301,8 @@ for step in 1..maxSteps:
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
 
 ## 演进日志
+
+- **2026-08-20（第一百四十五次）**：**`omni web` 本地后端服务 + 网页界面（对标 dsh web / opencode serve）**——用户要求「AI 服务作为本地后端，前端由 CLI 与 web 网页共同访问；开一个 worktree 做这个工作；网页像 deepseek harness 那样」。**① 新模块**（`src/web/`）：`index.ts`（`omni web [--port|--host|--no-open]` 入口：prepareRun + attachRuntime（routingOutput 把审批/提问路由到当前运行会话）→ startWebService + 自动开浏览器）；`server.ts`（**Node 内置 http，零依赖**：REST + SSE（GET /api/events 广播 thinking/tool/answer/approval/ask/usage/status…）· 会话创建/列表/历史/发送/取消/审批/提问/设置/删除 + 静态页面服务——**优先读 web/ 目录（开发热更新）否则回退内嵌 assets.ts**；**全局单运行**——同一时刻只有一个会话在跑（共享 runOpts/闸门/撤销栈无并发交错，其它会话可浏览但发送被 409 拒绝，可取消）；会话落盘复用 session.ts JSONL + 首轮后自动生成标题；`events.ts`（Web 事件协议单一来源）；`output.ts`（WebOutput：Output 全事件带 sessionId 广播，审批/提问经 PendingRegistry 注册由 REST 路由 resolve）；`assets.ts`（web/ 内嵌副本，`scripts/web-sync.mjs` 自动生成，`npm run web:sync`，bundle 单文件发布免外部文件）。**② Web UI**（`web/`，vanilla HTML/CSS/JS 零框架）：深色主题 + 左侧会话栏（新会话/列表/设置）+ 头部状态（模型/权限/运行指示）+ 消息流（用户气泡 / 流式 Markdown 回答 / 可折叠思考块（💭 字数）/ 淡黄工具卡片（命令+展开输出+v1.1 完成状态） / 统计 meta 行）/ 输入区（Enter 发送·Shift+Enter 换行·计划模式开关·取消按钮）/ 交互卡片（审批允许/拒绝按钮、ask 选项+自定义+确认）/ 设置弹窗（模型切换/权限/思考级别/工作目录与工具清单）；SSE 断线自动重连、重连后从服务器拉取历史。**③ 接线**：`main.ts` 在 exec/mcp-server 之后加 `taskArgs[0]==='web'` 分发（TUI 入口的 console 回退路径共用）；`cli/args.ts` 帮助补 Web 段。**④ 测试**：`scripts/probe-web.ts`（`npm run probe:web`，mock 离线全链路 e2e）：A 服务启动+静态页面+status · B 正常对话流（thinking/tool/answer/usage/run.end + 历史回读）· C 审批（permission=ask → approval.request → 批准 → 继续完成）· D 提问（ask 模式 → ask.request → 提交选项 → 用户选择回显）· E 取消（mock 慢速分支内取消 → run.end aborted）· F 模型切换（回答带 [模型 mock-model]）· G 会话列表· H 删除会话——全部通过；mock-server.mjs 新增 POST /__mock/config 运行时切换模式+slow 分支（审批/提问/取消场景复用同一 mock 进程）。**⑤ 验证**：typecheck ✓ + `npm run build`（bundle 1.0MB 含内嵌 assets，`node dist/omni.cjs web` 实测页面与对话全通）+ 快照 45 场景 24 过（场景 25 因 worktree 目录名非 `omni` 的环境假设误报，主仓通过）+ eval:mock 100%（2/2）。**⑥ 设计取舍**：不引入 socket.io/Cordis 等框架，SSE+REST 协议即可满足单机多标签页/脚本客户端（exec/mcp-server 已是另一种程序化接口）；多会话并发运行留待后续（需 per-session runOpts 克隆 + 独立闸门/撤销栈）。git worktree：`git worktree add -b feature/web-service ../omni-web HEAD`。
 
 - **2026-08-19（第一百四十四次）**：**per-model variants：每个模型可配自己的思考级别（models.<名>.reasoningEffortOptions / reasoningEffort）**——用户问「配置文件里如何设置某个模型支持的 variants」。**① config schema**（`config/index.ts`）：`models.<名>` 条目新增 `reasoningEffortOptions?: string[]`（该模型 /variants 面板支持的级别选项）与 `reasoningEffort?: string`（该模型的当前思考级别）——**缺省都回退顶层同名字段**（只配端点的模型自动继承全局；apply 校验：非法值丢弃：非字符串数组/空串回退）；`ModelEndpoint`（client.ts）/`RunOptions.models`（agent/types.ts）同步扩展。**② modelEndpoints 展开**（`main.ts`）：默认模型与 models 表每条都在展开时把解析后的级别「烘焙」进端点（`e.reasoningEffort ?? cfg.reasoningEffort`）——/model 切换时 applyEndpoint / switchModel 直接从端点取，无需再查 cfg。**③ 切换联动**（`tui/interactive.ts` applyEndpoint + `cli/interactive.ts` switchModel）：切到某模型时 `runOpts.reasoningEffort/reasoningEffortOptions` 与 `state.reasoningEffort/reasoningEffortOptions` 自动跟随该模型配置——loop 请求与 /variants 面板立即反映新模型的级别与选项（TUI 状态初始化也补 options 同步）；`/model <名称>` 切换消息带出 `（思考级别 X）`（TUI pushCmdLine meta + CLI green 行）。**④ 持久化按模型分流**（`config/write.ts` `persistReasoningEffortToConfig(effort, cfg, modelName?)`）：当前模型在配置文件 models 表有专属条目 → 写 `models."<名>".reasoningEffort`（仅该模型生效，消息「仅对模型 X 生效」）；无条目/未指定模型/未知模型 → 写顶层 reasoningEffort（全局默认）。TUI variantsSave 消费与 CLI /variants 分支传 `currentModel`；**models 表既有专属级别不被全局写入污染**（探针/快照断言）。**⑤ /model add 端点带级别回退**（TUI commands.ts + CLI interactive.ts）：运行时添加的端点把全局 reasoningEffortOptions/reasoningEffort 烘焙进端点——避免 applyEndpoint 切到新模型时把级别同步成 undefined 清空当前设置。**⑥ 文档**：omni.example.jsonc models 注释（per-model variants 说明 + 带专属级别的示例）；AGENTS.md 配置字段 models 注释同步。验证：typecheck ✓ + 快照 **45 场景**全绿（场景 34 扩展：fixture 加顶层/glm 专属级别 → 展开断言（默认模型 medium/glm high+low|high/moonshot 回退全局 medium）；h2 段 per-model 持久化往返——写 models.a.reasoningEffort=high 且顶层不动/无模型名写顶层且专属级别保留/未知模型写顶层不误写 models 表）+ eval:mock 100%（2/2）+ 新探针 `scripts/probe-tmp/probe-permodel-variants.ts`（A config 解析含非法字段丢弃；B attachRuntime 展开三态回退；C **CLI 子进程 e2e**：/variants → /model mock-high（联动 high+low|high）→ /variants low（「仅对模型 mock-high 生效」持久化）→ /model mock-model（回退全局 medium）→ 配置文件终态：顶层 reasoningEffort 未被污染、models.mock-high.reasoningEffort=low）全绿。排障：spawn('npx') 在临时 cwd 下 npx 交互式提示安装导致子进程挂起超时——改 spawn 绝对路径 node_modules/.bin/tsx；断言重复期望串用 indexOf(fromIndex) 按序取后续出现。
 

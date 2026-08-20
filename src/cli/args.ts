@@ -87,6 +87,12 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   omni mcp-server                作为 MCP server（stdio JSON-RPC：omni_exec / omni_reply 工具）
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
 
+Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访问同一个后端）：
+  omni web                       启动后端服务（REST + SSE）并托管 Web UI（默认 http://127.0.0.1:3080）
+  omni web --port 4000           指定端口
+  omni web --no-open             不自动打开浏览器
+  · Web UI 支持多会话 / 流式回复 / 思考与工具卡片 / 审批与提问卡片 / 模型与权限设置
+
 会话持久化（跨进程恢复对话；Ctrl+C / /exit 退出 TUI 时会提示恢复命令）：
   omni -c "继续任务"           恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
   omni -s <会话id> "继续任务"    恢复指定会话（id 见 --list-sessions 输出；-r 为同义别名）

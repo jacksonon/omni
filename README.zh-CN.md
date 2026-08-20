@@ -243,6 +243,30 @@ omni exec resume <session_id> "接着上次继续"
 omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 ```
 
+### Web 模式（`omni web`）
+
+把 omni 跑成**本地后端服务**（REST + SSE，零新增依赖）并托管浏览器界面——对标 `dsh web` / `opencode serve`：同一个 Agent 栈现在既可以从 CLI（`omni` / `omni exec`）访问，也可以从网页访问。
+
+```bash
+omni web                     # 启动服务 + Web 界面（默认 http://127.0.0.1:3080，自动打开浏览器）
+omni web --port 4000         # 指定端口
+omni web --no-open           # 不自动打开浏览器
+```
+
+Web 功能（复用现有 Agent 栈：记忆/会话/护栏/工具/子代理/hooks）：
+
+| 功能 | 说明 |
+|---|---|
+| **会话** | 左侧栏列出已保存会话（与 CLI `omni -c` / `/resume` 共用 JSONL 落盘）；新建 / 切换 / 删除 |
+| **实时流式** | 思考（可折叠块）/ 工具调用（淡黄卡片，命令 + 展开输出）/ 最终 Markdown 回答——全部经 SSE 实时推送 |
+| **审批** | 权限档位下需要审批的操做在输入区上方弹卡片（**允许 / 拒绝** 按钮）——Agent 停下等您决定 |
+| **提问 ask_user** | Agent 提问时卡片给出选项（可多选）+ 自定义输入行 + 确认按钮 |
+| **设置** | 模型切换（含不同端点）、权限档位、思考级别（/variants）、计划模式开关——不用重启即时生效 |
+| **取消** | 运行中一键「取消」中止当前回合 |
+| **统计** | 每轮 token 用量与运行摘要行 |
+
+实现要点：同一时刻只跑一个 Agent（全局运行锁，共享 runOpts/闸门/撤销栈无并发交错）；静态页面开发时直接读 `web/` 目录（热更新），发布时内嵌进产物（`npm run web:sync` 生成 `src/web/assets.ts`）。`npm run probe:web` 跑一次离线全链路 e2e（mock API，覆盖对话流/审批/提问/取消/模型切换/会话管理）。
+
 ### CI 集成
 
 `examples/ci/omni-fix-ci.yml` —— 对标 anthropics/claude-code-action 的「agent 修 CI」工作流：**只读 job**（只暴露 `OMNI_API_KEY`）复现失败 → 把失败输出管道进 `omni exec "修复…"` → 把 `git diff` 作为 artifact 上传；**独立的有写权限 job** 应用补丁、推送分支、开 PR——生成补丁的 job 里没有任何密钥。安全边界、使用步骤与变体见 `examples/ci/README.md`。
@@ -337,6 +361,8 @@ src/
   main.ts               # attachRuntime：Safety 闸门 + MCP 工具发现 + delegate 注入 + 上下文准备
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用
   exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
+
+  web/                  # **Web 模式（`omni web`）**：本地后端服务（REST+SSE，零依赖）+ 浏览器界面——index.ts（入口：参数 + prepareRun + attachRuntime + 自动开浏览器）· server.ts（http 服务：SSE 事件广播 + 会话/消息/审批/提问/设置路由 + 静态页面托管（内嵌 assets 回退））· output.ts（WebOutput：Output 事件带 sessionId 广播；审批/提问经 pending 注册表）· events.ts（事件协议名）· assets.ts（web/ 内嵌副本，`npm run web:sync` 生成）
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
   version.ts            # 版本号常量
   cli/                  # 参数解析 / banner / 交互模式（28 个 / 命令）

@@ -22,6 +22,7 @@
 9. [Memory System (AGENTS.md)](#9-memory-system-agentsmd)
 10. [Session Management](#10-session-management)
 11. [Headless & CI Integration](#11-headless--ci-integration)
+11.5. [Web Mode (`omni web`)](#115-web-mode-omni-web)
 12. [MCP External Tools](#12-mcp-external-tools)
 13. [Hooks Lifecycle Automation](#13-hooks-lifecycle-automation)
 14. [Skills (SKILL.md)](#14-skills-skillmd)
@@ -505,6 +506,54 @@ omni mcp-server                                     # act as an MCP server for e
 
 **Keys never enter the patch-generating job** — a compromised agent cannot exfiltrate keys. See
 `examples/ci/README.md` for details.
+
+---
+
+## 11.5 Web Mode (`omni web`)
+
+Runs omni as a **local backend service** (REST + SSE, zero new dependencies) and hosts a browser UI —
+modeled on `dsh web` / `opencode serve`. The same agent stack is reachable from both the CLI
+(`omni` / `omni exec`) and the web page.
+
+```bash
+omni web                   # start service + Web UI at http://127.0.0.1:3080 (opens browser)
+omni web --port 4000       # custom port
+omni web --no-open         # don't auto-open the browser
+```
+
+### What the UI provides
+
+| Feature | Description |
+|---|---|
+| **Sessions** | left sidebar lists persisted sessions (shared JSONL files with CLI `-c` / `/resume`); create / switch / delete |
+| **Live streaming** | thinking (collapsible blocks), tool calls (amber cards: command + expandable output), and the final markdown answer all stream over SSE |
+| **Approvals** | when a tool needs approval under the active permission tier, a card above the composer offers **允许/拒绝** — the agent pauses until you decide |
+| **ask_user** | when the agent asks a question, a card shows options with a custom-input row and a confirm button |
+| **Settings** | model switching (including per-model endpoints), permission tier, reasoning effort, plan-mode toggle — applied live |
+| **Cancel** | one click cancels the running turn |
+| **Stats** | per-turn token usage plus a run summary line after each turn |
+
+### Protocol (for scripted/frontend clients)
+
+The backend exposes a small HTTP API — any client can drive it, not just the bundled UI:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET  /api/status` | current model / permission / tools / running state |
+| `GET  /api/events` | SSE stream of all run events (thinking/tool/answer/approval/ask/usage/status…) |
+| `POST /api/sessions` | create a new session (optionally resume by id) |
+| `GET  /api/sessions/:id/messages` | message history for a session |
+| `POST /api/sessions/:id/messages` | send a message (returns 202; the run streams via SSE) |
+| `POST /api/sessions/:id/cancel` | abort the running turn |
+| `POST /api/sessions/:id/approval` | answer an approval request (`{ approvalId, allow }`) |
+| `POST /api/sessions/:id/ask` | answer an ask_user request (`{ askId, choices }`) |
+| `POST /api/settings` | change model / permission / reasoning effort / plan mode live |
+| `DELETE /api/sessions/:id/delete` | delete a session |
+
+Implementation notes: one running agent at a time (a global run lock protects the shared
+`runOpts`/safety gate/undo stack); the static pages are served from the `web/` directory in dev
+(hot reload) and embedded in the bundle (`npm run web:sync` regenerates `src/web/assets.ts`).
+`npm run probe:web` runs an offline full-protocol e2e against the mock API.
 
 ---
 

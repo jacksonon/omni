@@ -23,6 +23,15 @@ const MOCK_ASK = process.env.MOCK_ASK === '1';
 const MOCK_MULTIREAD = process.env.MOCK_MULTIREAD === '1';
 // MOCK_SUBAGENT=1 时第一轮发 delegate 调用（子代理委托 e2e 验证：嵌套/进度事件/结果回传）
 const MOCK_SUBAGENT = process.env.MOCK_SUBAGENT === '1';
+// 运行时可变副本（POST /__mock/config 切换；默认跟随环境变量）
+let curWrite = MOCK_WRITE;
+let curDangerous = MOCK_DANGEROUS;
+let curAsk = MOCK_ASK;
+let curMultiread = MOCK_MULTIREAD;
+let curSubagent = MOCK_SUBAGENT;
+// curSlow：第一轮工具调用 chunk 前延迟 2s（web 服务取消运行 e2e 用——让 run 停在流中可被 abort）
+let curSlow = process.env.MOCK_SLOW_TOOL === '1';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 思考内容可配置：MOCK_REASONING=long 时输出一长段无换行文本（模拟 grok 等模型把
 // reasoning 一次性塞进一个 delta、且不带换行的真实场景，用于验证流式显示）
 const LONG_REASONING = '我需要仔细分析这个任务的要求和当前环境。首先确认用户想要什么，然后规划出最合理的执行步骤，确保每一步都有明确的验证方式。这个思考过程可能很长而且没有换行，正好用来验证终端上的流式输出是否逐字显示。';
@@ -45,6 +54,29 @@ const JSON_ANSWER = '{"verdict":"safe","summary":"任务完成 ✅ mock 端到�
 const FINAL_ANSWER = MOCK_JSON ? JSON_ANSWER : MARKDOWN_ANSWER;
 
 const server = http.createServer((req, res) => {
+  // 运行时调整 mock 行为（e2e 探针用）：POST /__mock/config { write|dangerous|ask|multiread|subagent: bool }
+  // 让同一个 mock 进程可以连续跑多个场景（默认行为 / 审批 / 提问），无需重启
+  if (req.method === 'POST' && req.url?.endsWith('/__mock/config')) {
+    let cb = '';
+    req.on('data', (c) => (cb += c));
+    req.on('end', () => {
+      try {
+        const cfg = JSON.parse(cb || '{}');
+        if (typeof cfg.write === 'boolean') curWrite = cfg.write;
+        if (typeof cfg.dangerous === 'boolean') curDangerous = cfg.dangerous;
+        if (typeof cfg.ask === 'boolean') curAsk = cfg.ask;
+        if (typeof cfg.multiread === 'boolean') curMultiread = cfg.multiread;
+        if (typeof cfg.subagent === 'boolean') curSubagent = cfg.subagent;
+        if (typeof cfg.slow === 'boolean') curSlow = cfg.slow;
+      } catch {
+        /* ignore malformed config */
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+
   // 兼容 baseURL 带 /v1 与不带 /v1 两种情况
   const isChat = req.url?.endsWith('/chat/completions') ?? false;
   if (req.method !== 'POST' || !isChat) {
@@ -54,7 +86,7 @@ const server = http.createServer((req, res) => {
 
   let body = '';
   req.on('data', (c) => (body += c));
-  req.on('end', () => {
+  req.on('end', async () => {
     const parsed = JSON.parse(body);
     const messages = parsed.messages ?? [];
     // 请求里的模型名（/model 切换 e2e：非默认 mock 时在回答里带 [模型 X] 标记）
@@ -88,20 +120,20 @@ const server = http.createServer((req, res) => {
     // 第一轮的工具调用：默认 run_command；MOCK_WRITE=1 时改发 write_file（/undo e2e）；
     // MOCK_DANGEROUS=1 时发危险命令（full 直通 / safe 审批 e2e）。
     // 注意用 JSON.stringify 生成 arguments——单引号字符串里的 \n 是真实换行，会让 JSON 非法
-    const firstToolCall = MOCK_WRITE
+    const firstToolCall = curWrite
       ? { name: 'write_file', arguments: JSON.stringify({ path: 'undo-test.txt', content: 'mock-write-content\n' }) }
-      : MOCK_DANGEROUS
+      : curDangerous
         ? { name: 'run_command', arguments: '{"command":"git push origin main"}' }
-        : MOCK_ASK
+        : curAsk
           ? {
               name: 'ask_user',
               arguments: JSON.stringify({ question: '接下来怎么做？', options: ['继续执行', '先总结', '换个方案'] }),
             }
-          : MOCK_SUBAGENT && !isSubagentReq
+          : curSubagent && !isSubagentReq
             ? { name: 'delegate', arguments: JSON.stringify({ task: '检查项目根目录并总结发现', agent: '' }) }
             : { name: 'run_command', arguments: '{"command":"echo mock-ok"}' };
     // 第一轮的完整 tool_calls 数组：MOCK_MULTIREAD=1 时并行 3 个 read_file（其余单调用）
-    const firstToolCalls = MOCK_MULTIREAD
+    const firstToolCalls = curMultiread
       ? [
           { index: 0, id: 'call_mock_0', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'AGENTS.md' }) } },
           { index: 1, id: 'call_mock_1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'README.md' }) } },
@@ -443,7 +475,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (!hasToolResult) {
-      // 第一轮：先输出思考过程，再要求调用 run_command 执行 echo
+      // 第一轮：先输出思考过程，再要求调用工具（curSlow 时工具调用前停顿 2s——web 取消 e2e）
       sendChunk({
         id: 'mock-0',
         object: 'chat.completion.chunk',
@@ -457,6 +489,9 @@ const server = http.createServer((req, res) => {
           },
         ],
       });
+      if (curSlow) {
+        await sleep(2000);
+      }
       sendChunk({
         id: 'mock-1',
         object: 'chat.completion.chunk',

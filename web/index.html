@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>omni · Web</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2327272a'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%233b82f6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <span class="logo">◉</span>
+      <div class="brand-text">
+        <div class="name">omni</div>
+        <div class="ver" id="ver">…</div>
+      </div>
+    </div>
+    <button id="btn-new" class="new-session">＋ 新会话</button>
+    <div id="session-list" class="session-list"></div>
+    <div class="sidebar-foot">
+      <button id="btn-settings" class="ghost">⚙ 设置</button>
+      <div class="cwd" id="cwd" title=""></div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="chat-header">
+      <div class="chat-head-left">
+        <div class="chat-title" id="chat-title">新会话</div>
+        <div class="status">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">连接中…</span>
+        </div>
+      </div>
+      <div class="model" id="header-model"></div>
+    </header>
+
+    <section id="messages" class="messages"></section>
+
+    <footer id="composer-wrap">
+      <div id="interaction-stack"></div>
+      <div class="composer">
+        <textarea id="input" rows="1"
+          placeholder="输入消息，Enter 发送 · Shift+Enter 换行 · 运行中可点击「取消」"></textarea>
+        <div class="composer-bar">
+          <div class="bar-left">
+            <label class="toggle"><input type="checkbox" id="plan-mode"> 计划模式（只读调研）</label>
+            <span class="note" id="composer-note"></span>
+          </div>
+          <div class="bar-right">
+            <button id="btn-cancel" class="danger hidden">取消</button>
+            <button id="btn-send" class="primary">发送</button>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="settings-modal" class="modal hidden" role="dialog">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>设置</h2>
+      <button class="icon-btn" id="btn-close-settings" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <section>
+        <label for="set-model">模型</label>
+        <select id="set-model"></select>
+        <p class="dim">切换模型（含不同端点）即时生效，无需重启。</p>
+      </section>
+      <section>
+        <label for="set-apikey">API Key（可选）</label>
+        <div class="apikey-row">
+          <input type="password" id="set-apikey" placeholder="sk-…（留空沿用配置/环境变量）" autocomplete="off">
+          <button id="btn-save-apikey" class="ghost">保存</button>
+        </div>
+        <p class="dim">保存后立即用于当前模型（不写入配置文件，本次运行有效）。</p>
+      </section>
+      <section>
+        <label for="set-permission">权限级别</label>
+        <select id="set-permission">
+          <option value="safe">safe · 危险命令询问（默认）</option>
+          <option value="full">full · 全量直通</option>
+          <option value="ask">ask · 全部询问</option>
+          <option value="read">read · 只读</option>
+        </select>
+        <p class="dim">高危操作需要审批时，Web 会弹出确认卡片。</p>
+      </section>
+      <section>
+        <label for="set-effort">思考级别（reasoning_effort）</label>
+        <select id="set-effort"></select>
+        <p class="dim">网关不支持时自动回退，不影响使用。</p>
+      </section>
+      <section class="about">
+        <div>工作目录：<code id="about-cwd"></code></div>
+        <div class="dim">工具：<code id="about-tools"></code></div>
+        <div class="dim">服务：<code id="about-server"></code></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

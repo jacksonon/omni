@@ -26,6 +26,7 @@ import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
 import { runExec, runMcpServer } from './exec.js';
+import { runWeb } from './web/index.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { discoverSubagents } from './agent/subagent-defs.js';
@@ -295,12 +296,20 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // Headless 子命令（把 omni 变成可组合 Unix 命令）：
   //   omni exec "<任务>"  —— 非交互执行（stdout 结果 / stderr 进度；--output-format json|stream-json）
   //   omni mcp-server     —— 作为 MCP server（stdio JSON-RPC，omni_exec / omni_reply 工具）
+  // Web 服务（本地后端 + 网页界面，对标 dsh web / opencode serve）：
+  //   omni web            —— 启动 REST+SSE 后端服务并托管 Web UI（默认 http://127.0.0.1:3080）
   if (taskArgs[0] === 'exec') {
     process.exitCode = await runExec(taskArgs.slice(1), overrides);
     return;
   }
   if (taskArgs[0] === 'mcp-server') {
     await runMcpServer(overrides);
+    return;
+  }
+  // omni web：启动本地后端服务（REST + SSE）+ Web 界面——前端可以由 CLI 与网页
+  // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
+  if (taskArgs[0] === 'web') {
+    await runWeb(taskArgs.slice(1), overrides);
     return;
   }
 

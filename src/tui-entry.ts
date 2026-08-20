@@ -68,8 +68,8 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Headless 子命令（exec / mcp-server）恒走 console 路径——TUI 全屏没有机器可读输出
-  const headlessCmd = taskArgs[0] === 'exec' || taskArgs[0] === 'mcp-server';
+  // Headless 子命令（exec / mcp-server / web）恒走 console 路径——TUI 全屏没有机器可读输出、web 是服务模式
+  const headlessCmd = taskArgs[0] === 'exec' || taskArgs[0] === 'mcp-server' || taskArgs[0] === 'web';
   const useTui = !headlessCmd && isBun && isTTY && !flags.noTui;
   if (!useTui) {
     await main((cfg) => new ConsoleOutput({ stream: true, showThinking: cfg.showThinking }));

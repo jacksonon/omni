@@ -12,6 +12,9 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:tui": "bun run ./src/tui-entry.ts",
+    "dev:web": "tsx src/index.ts web --no-open",
+    "web:sync": "node scripts/web-sync.mjs",
+    "probe:web": "tsx scripts/probe-web.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && tsc && npm run bundle",
     "start": "node dist/index.js",
@@ -24,7 +27,7 @@
     "mock": "node scripts/mock-server.mjs",
     "eval": "tsx scripts/eval/run-eval.ts",
     "eval:mock": "tsx scripts/eval/run-eval.ts --mock",
-    "prepack": "npm run build"
+    "prepack": "npm run web:sync && npm run build"
   },
   "engines": {
     "node": ">=18"
