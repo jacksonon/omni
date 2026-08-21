@@ -63,6 +63,10 @@ npm run dev -- "列出当前目录的文件"
 | Windows | `omni-<版本>-win-x64.exe` —— 运行安装程序 |
 | Linux | `omni-<版本>-linux-x64.AppImage` —— `chmod +x` 后双击运行 |
 
+> **macOS（首次打开）**：应用为 ad-hoc 签名但未 Apple 公证，下载版本首次打开时 Gatekeeper 可能提示
+> 「omni 已损坏，无法打开」——这是未公证应用的正常现象（app 本身完好），执行一次
+> `xattr -cr "/Applications/omni.app"` 清除下载隔离标记即可正常打开（或右键 → 打开 → 仍要打开）。
+
 应用启动即拉起本地后端并打开 Web 界面窗口；菜单「文件 → 选择工作目录…」设定 Agent 读写文件的目录；模型 / API Key 在应用内 ⚙ 设置里配置（本次运行有效；永久配置请用 `omni.json` / 环境变量）。
 
 ### 配置 API Key

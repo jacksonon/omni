@@ -70,6 +70,11 @@ npm run dev:tui                        # interactive multi-turn conversation
 | Windows | `omni-<version>-win-x64.exe` — run the installer |
 | Linux | `omni-<version>-linux-x64.AppImage` — `chmod +x` and run |
 
+> **macOS (first launch)**: the app is signed with an ad-hoc signature but not Apple-notarized, so
+> Gatekeeper may show *"omni is damaged and cannot be opened"* when you first open a downloaded copy.
+> This is expected for unsigned apps — clear the download quarantine flag once and it runs normally:
+> `xattr -cr "/Applications/omni.app"` (or right-click → Open → Open).
+
 The app launches the local backend service and opens the web UI in its own window; the 菜单「文件 → 选择工作目录…」sets the workspace where the agent reads/writes files. Configure the model/API key in the app's ⚙ Settings (they persist for the current run; use `omni.json`/env vars for permanent config).
 
 ### Configure the API Key
