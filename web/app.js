@@ -30,6 +30,7 @@ const state = {
   trace: [],
   view: 'chat',
   selectedTool: null,
+  expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -404,28 +405,177 @@ function renderSessionList() {
   const list = $('#session-list');
   list.innerHTML = '';
   const filter = state.sessionFilter.trim().toLowerCase();
-  const sessions = filter ? state.sessions.filter((s) => (s.title || s.id).toLowerCase().includes(filter)) : state.sessions;
+  const all = filter ? state.sessions.filter((s) => (s.title || s.id).toLowerCase().includes(filter)) : state.sessions;
   $('#session-count').textContent = String(state.sessions.length);
-  if (!sessions.length) {
+  if (!all.length) {
     list.appendChild(el('div', 'empty', '暂无会话'));
     return;
   }
-  sessions.forEach((s) => {
-    const item = el('div', 'session-item' + (s.id === state.session ? ' active' : ''));
-    const d = new Date(s.updated || s.created);
-    const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    item.appendChild(el('span', 'session-icon', s.id === state.session ? '●' : '○'));
-    const copy = el('div', 'session-copy');
-    copy.appendChild(el('div', 'stitle', s.title || '新会话'));
-    const meta = el('div', 'smeta');
-    meta.appendChild(el('span', '', `${s.messages || 0} 条消息`));
-    meta.appendChild(el('span', '', ts));
-    copy.appendChild(meta);
-    item.appendChild(copy);
-    item.appendChild(el('span', 'session-more', '⋯'));
-    item.addEventListener('click', () => selectSession(s.id));
-    list.appendChild(item);
+
+  // 按工作区分组（组=工作区，组内元素=会话）；当前工作区组排最前且默认展开
+  const cwd = state.status?.cwd || '';
+  const groups = new Map();
+  for (const s of all) {
+    const p = s.project || '(未知工作区)';
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(s);
+  }
+  const projects = [...groups.keys()].sort((a, b) => {
+    if (a === cwd) return -1;
+    if (b === cwd) return 1;
+    return (groups.get(b)[0].updated || 0) - (groups.get(a)[0].updated || 0);
   });
+
+  for (const project of projects) {
+    const items = groups.get(project).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    const isCwd = project === cwd;
+    const expanded = state.expandedGroups.has(project) || (isCwd && !state.expandedGroups.has(`!${project}`));
+    // 组头：原工作区图标 + 名称 + 会话数 + ＋（在该工作区新建会话）；chevron 旋转表示展开
+    const head = el('button', 'ws-group-head' + (isCwd ? ' current' : '') + (expanded ? ' expanded' : ''));
+    head.type = 'button';
+    head.title = project;
+    const chev = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    chev.setAttribute('class', 'ws-chev');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', '#i-chevron-down');
+    chev.appendChild(use);
+    head.appendChild(chev);
+    const ficon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ficon.setAttribute('class', 'ws-gicon');
+    const fuse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    fuse.setAttribute('href', '#i-folder');
+    ficon.appendChild(fuse);
+    head.appendChild(ficon);
+    head.appendChild(el('span', 'ws-gname', projectName(project)));
+    head.appendChild(el('span', 'ws-gcount', String(items.length)));
+    const addBtn = el('span', 'ws-gadd', '＋');
+    addBtn.title = `在 ${projectName(project)} 新建会话`;
+    addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchWorkspace(project)
+        .then(() => newSession())
+        .catch((err) => alert(`切换工作目录失败：${err.message}`));
+    });
+    head.appendChild(addBtn);
+    const moreBtn = el('span', 'ws-gadd', '⋯');
+    moreBtn.title = '工作区操作';
+    moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showWorkspaceActions(e, project, items.length);
+    });
+    head.appendChild(moreBtn);
+    head.addEventListener('click', () => {
+      // 展开记忆：展开集合语义 = 强制展开的组；点击当前工作区组时用「!前缀」记录强制收起
+      if (expanded) state.expandedGroups.delete(project) || state.expandedGroups.add(`!${project}`);
+      else state.expandedGroups.delete(`!${project}`) || state.expandedGroups.add(project);
+      renderSessionList();
+    });
+    list.appendChild(head);
+
+    if (!expanded) continue;
+    for (const s of items) {
+      const item = el('div', 'session-item' + (s.id === state.session ? ' active' : ''));
+      const d = new Date(s.updated || s.created);
+      const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      item.appendChild(el('span', 'session-icon', s.id === state.session ? '●' : '○'));
+      const copy = el('div', 'session-copy');
+      copy.appendChild(el('div', 'stitle', s.title || '新会话'));
+      const meta = el('div', 'smeta');
+      meta.appendChild(el('span', '', `${s.messages || 0} 条消息`));
+      meta.appendChild(el('span', '', ts));
+      copy.appendChild(meta);
+      item.appendChild(copy);
+      const more = el('span', 'session-more', '⋯');
+      more.title = '会话操作';
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showSessionActions(e, s);
+      });
+      item.appendChild(more);
+      // 点击跨工作区的会话：先切到该工作区（工具/记忆/系统提示跟随），再加载对话
+      item.addEventListener('click', () => {
+        const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
+        const needSwitch = target && target !== (state.status?.cwd || '');
+        const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
+        if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => alert(`打开会话失败：${err.message}`));
+        else doSelect();
+      });
+      list.appendChild(item);
+    }
+  }
+}
+
+/** 工作区分组显示名：目录 basename（根目录显示 /） */
+function projectName(p) {
+  if (!p || p === '(未知工作区)') return p || '(未知工作区)';
+  const parts = p.split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '/';
+}
+
+/* ---------------- 会话操作（⋯ 菜单：重命名 / 删除） ---------------- */function closeSessionActions() {
+  document.querySelectorAll('.ctx-menu').forEach((m) => m.remove());
+  document.removeEventListener('click', closeSessionActions, true);
+  document.removeEventListener('keydown', escSessionActions, true);
+}
+function escSessionActions(e) {
+  if (e.key === 'Escape') closeSessionActions();
+}
+
+function showSessionActions(e, s) {
+  closeSessionActions();
+  const menu = el('div', 'ctx-menu');
+  const ren = el('button', 'ctx-item', '重命名');
+  ren.type = 'button';
+  ren.addEventListener('click', () => {
+    closeSessionActions();
+    const t = prompt('会话标题', s.title || '');
+    if (t === null) return;
+    const title = t.trim();
+    if (!title) return;
+    api(`/api/sessions/${s.id}/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+      .then(() => {
+        s.title = title;
+        const live = state.sessions.find((x) => x.id === s.id);
+        if (live) live.title = title;
+        if (state.session === s.id) $('#chat-title').textContent = title;
+        renderSessionList();
+      })
+      .catch((err) => alert(`重命名失败：${err.message}`));
+  });
+  const del = el('button', 'ctx-item danger', '删除会话');
+  del.type = 'button';
+  del.addEventListener('click', () => {
+    closeSessionActions();
+    if (!confirm(`删除会话「${s.title || s.id}」？此操作不可恢复。`)) return;
+    api(`/api/sessions/${s.id}/delete`, { method: 'DELETE' })
+      .then(() => {
+        state.sessions = state.sessions.filter((x) => x.id !== s.id);
+        if (state.session === s.id) {
+          state.session = null;
+          clearMessages();
+          renderWelcome();
+          updateComposer();
+          updateStatusText();
+        }
+        renderSessionList();
+      })
+      .catch((err) => alert(`删除失败：${err.message}`));
+  });
+  menu.append(ren, del);
+  document.body.appendChild(menu);
+  // 定位到点击点附近并钳制在视口内
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(e.clientX, window.innerWidth - rect.width - 8)}px`;
+  menu.style.top = `${Math.min(e.clientY, window.innerHeight - rect.height - 8)}px`;
+  // 延迟注册：避免本次 click 冒泡立即关闭
+  setTimeout(() => {
+    document.addEventListener('click', closeSessionActions, true);
+    document.addEventListener('keydown', escSessionActions, true);
+  }, 0);
 }
 
 function clearMessages() {
@@ -604,6 +754,31 @@ function updateComposer() {
   if (state.running) note.textContent = '任务运行中…';
   else if (!state.session) note.textContent = '输入消息开始新对话';
   else note.textContent = '';
+}
+
+/** 浏览新工作区：Electron 原生对话框；纯浏览器 → 页面内文件夹浏览器 */
+function browseWorkspace() {
+  if (window.omni && typeof window.omni.pickDirectory === 'function') {
+    window.omni.pickDirectory()
+      .then((dir) => {
+        if (dir) switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
+      })
+      .catch(() => {});
+  } else {
+    openDirPicker(state.status?.cwd || '/');
+  }
+}
+
+/** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
+async function switchWorkspace(dir) {
+  await api('/api/workspace', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dir }),
+  });
+  await refreshStatus();
+  state.sessions = await api('/api/sessions');
+  renderSessionList();
 }
 
 function applySettings(patch) {
@@ -932,9 +1107,8 @@ function closeSettings() {
 
 $('#btn-new').addEventListener('click', () => newSession().catch((e) => console.error(e)));
 $('#btn-new-brand').addEventListener('click', () => newSession().catch((e) => console.error(e)));
-$('#btn-session-add').addEventListener('click', () => newSession().catch((e) => console.error(e)));
+$('#btn-session-add').addEventListener('click', () => browseWorkspace());
 $('#btn-settings').addEventListener('click', () => openSettings());
-$('#btn-workspace').addEventListener('click', () => openSettings());
 $('#btn-composer-settings').addEventListener('click', () => openSettings());
 $('#btn-header-model').addEventListener('click', () => openSettings(true));
 $('#composer-model').addEventListener('click', () => openSettings(true));
@@ -985,37 +1159,6 @@ $('#btn-save-apikey').addEventListener('click', () => {
 });
 $('#plan-mode').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
-});
-/** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
-async function switchWorkspace(dir) {
-  await api('/api/workspace', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ dir }),
-  });
-  $('#set-workspace').value = '';
-  await refreshStatus();
-  state.sessions = await api('/api/sessions');
-  renderSessionList();
-}
-$('#btn-change-workspace').addEventListener('click', () => {
-  const dir = $('#set-workspace').value.trim();
-  if (!dir) return;
-  switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
-});
-$('#btn-browse-workspace').addEventListener('click', () => {
-  // Electron：原生文件夹选择对话框；纯浏览器 → 页面内文件夹浏览器
-  if (window.omni && typeof window.omni.pickDirectory === 'function') {
-    window.omni.pickDirectory()
-      .then((dir) => {
-        if (!dir) return;
-        $('#set-workspace').value = dir;
-        return switchWorkspace(dir);
-      })
-      .catch((err) => alert(`切换工作目录失败：${err.message}`));
-  } else {
-    openDirPicker(state.status?.cwd || '/');
-  }
 });
 
 /* ---------------- 文件夹浏览器（页面内，服务端列目录） ---------------- */

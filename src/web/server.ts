@@ -18,6 +18,7 @@
  */
 import http from 'node:http';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import os from 'node:os';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +47,7 @@ import {
 import type { RunContext } from '../main.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import type { ConfigOverrides } from '../config/index.js';
-import { persistWebWorkspaceToConfig } from '../config/write.js';
+import { persistWebWorkspaceToConfig, removeWebWorkspaceFromConfig } from '../config/write.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -71,6 +72,24 @@ function getAsset(name: string): string | null {
     }
   }
   return WEB_ASSETS[name] ?? null;
+}
+
+/** 读取应用图标 PNG：开发模式优先 web/icon.png，bundle 回退内嵌 base64 */
+function getIconPng(): Buffer | null {
+  const candidates = process.env.OMNI_WEB_DIR ? [process.env.OMNI_WEB_DIR] : [SRC_WEB_DIR, CWD_WEB_DIR];
+  for (const dir of candidates) {
+    try {
+      const f = path.join(dir, 'icon.png');
+      if (existsSync(f)) return readFileSync(f);
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+  const embedded = WEB_ASSETS['icon.png'];
+  if (embedded && embedded.startsWith('data:image/png;base64,')) {
+    return Buffer.from(embedded.slice('data:image/png;base64,'.length), 'base64');
+  }
+  return null;
 }
 
 const MIME: Record<string, string> = {
@@ -220,6 +239,8 @@ function buildStatus(runOpts: RunContext['runOpts']): Record<string, unknown> {
     running: running !== null,
     runningSession: running?.sessionId ?? null,
     tools: runOpts.tools?.map((t) => t.name) ?? [],
+    // 已知工作区列表（设置面板一键切换用）
+    workspaces: runOpts.cfg?.webWorkspaces ?? [],
   };
 }
 
@@ -373,6 +394,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   async function listWebSessions(): Promise<
     Array<{ id: string; title: string; messages: number; created: number; updated: number; project?: string }>
   > {
+    // 返回**全部**会话（含 project 字段）——侧栏按工作区分组展示（组=工作区、
+    // 组内元素=会话），由前端分组渲染；不再按 cwd 过滤
     const persisted = await listSessions();
     const out = persisted.map((s) => {
       const live = sessions.get(s.id);
@@ -394,12 +417,32 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     return out.sort((a, b) => b.updated - a.updated);
   }
 
+  /** 按需取会话（内存没有时从磁盘加载——服务重启后历史会话只在磁盘上） */
+  async function ensureSession(sessionId: string): Promise<WebSession> {
+    const existing = sessions.get(sessionId);
+    if (existing) return existing;
+    const file = await findSessionById(sessionId);
+    if (!file) throw new NotFoundError(`会话不存在：${sessionId}`);
+    const loaded = await loadSession(file);
+    if (!loaded) throw new NotFoundError('会话文件损坏，无法读取');
+    const ws: WebSession = {
+      id: loaded.meta.id,
+      file,
+      messages: [...loaded.messages],
+      persisted: persistableMessages(loaded.messages).length,
+      title: loaded.meta.title ?? '',
+      created: loaded.meta.created,
+      updated: loaded.meta.updated,
+    };
+    sessions.set(ws.id, ws);
+    return ws;
+  }
+
   /** 取会话消息（过滤脚手架 system；供客户端刷历史/重连恢复） */
   async function sessionMessages(
     sessionId: string
   ): Promise<{ meta: { title: string | null } | null; messages: ChatCompletionMessageParam[] }> {
-    const s = sessions.get(sessionId);
-    if (!s) throw new NotFoundError(`会话不存在：${sessionId}`);
+    const s = await ensureSession(sessionId);
     return { meta: { title: s.title || null }, messages: s.messages.filter(isPersistable) };
   }
 
@@ -444,6 +487,17 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const ext = path.extname(name);
         res.writeHead(200, { 'content-type': MIME[ext] ?? 'text/plain; charset=utf-8' });
         res.end(asset);
+        return;
+      }
+      if (req.method === 'GET' && p === '/icon.png') {
+        const buf = getIconPng();
+        if (!buf) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end('icon.png 缺失（npm run web:sync 重新生成）');
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+        res.end(buf);
         return;
       }
       if (req.method === 'GET' && p === '/favicon.ico') {
@@ -534,6 +588,21 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           entry.resolve(result);
           broadcast('ask.resolved', { sessionId: entry.sessionId, askId: id, choices: raw });
           json(res, 200, { ok: true });
+          return;
+        }
+        if (p === sessionPath('rename') && req.method === 'POST') {
+          // 重命名会话（⋯ 菜单）：更新内存 + 会话文件 meta + 广播
+          const body = await readBody(req);
+          const title = typeof body.title === 'string' ? body.title.trim().slice(0, 60) : '';
+          if (!title) {
+            json(res, 400, { error: '标题不能为空' });
+            return;
+          }
+          const s = await ensureSession(sid);
+          s.title = title;
+          if (s.file) await updateSessionTitle(s.file, title).catch(() => {});
+          broadcast('title', { sessionId: sid, title });
+          json(res, 200, { ok: true, title });
           return;
         }
         if (p === sessionPath('delete') && req.method === 'DELETE') {
@@ -629,6 +698,74 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         // 持久化到全局配置（webWorkspace 字段）——下次启动 web/Electron 自动应用
         const persistRes = persistWebWorkspaceToConfig(dir);
         json(res, 200, { cwd: process.cwd(), persisted: persistRes.ok, persistMessage: persistRes.message });
+        return;
+      }
+
+      if (p === '/api/workspace/remove' && req.method === 'POST') {
+        // 移除工作区：从持久化清单去掉 + 删除该工作区的全部会话记录；
+        // **绝不删除用户的项目目录本身**。若移除的是当前工作区，回退 home 并重建运行时。
+        const body = await readBody(req);
+        const dir = typeof body.dir === 'string' ? body.dir.trim() : '';
+        if (running) {
+          json(res, 409, { error: '当前有任务运行中，请先取消' });
+          return;
+        }
+        if (!dir) {
+          json(res, 400, { error: '缺少 dir' });
+          return;
+        }
+        const target = path.resolve(dir);
+        const persistRes = removeWebWorkspaceFromConfig(target);
+        cfg.webWorkspaces = persistRes.workspaces;
+        // 删除该工作区的全部会话文件 + 内存映射
+        const deletedIds = new Set<string>();
+        try {
+          const sdir = sessionsDir();
+          if (existsSync(sdir)) {
+            for (const f of readdirSync(sdir)) {
+              if (!f.endsWith('.jsonl')) continue;
+              const fp = path.join(sdir, f);
+              const loaded = await loadSession(fp).catch(() => null);
+              if (!loaded) continue;
+              if (path.resolve(loaded.meta.project || '') !== target) continue;
+              await rm(fp, { force: true }).catch(() => {});
+              deletedIds.add(sessionIdFromPath(fp));
+            }
+          }
+        } catch {
+          // 尽力而为
+        }
+        for (const id of deletedIds) sessions.delete(id);
+        // 移除的是当前工作区 → 回退 home 并重建运行时（与切换同流程）
+        let switched = false;
+        if (path.resolve(process.cwd()) === target) {
+          let prev = '';
+          try {
+            prev = process.cwd();
+            process.chdir(os.homedir());
+            const newCtx = prepareRun(overrides);
+            const oldMcp = (runOpts as { mcpServers?: unknown }).mcpServers;
+            if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
+              await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
+            }
+            await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
+            ctx.cfg = newCtx.cfg;
+            Object.assign(runOpts, newCtx.runOpts);
+            cfg = newCtx.cfg;
+            switched = true;
+          } catch (e) {
+            try {
+              if (prev) process.chdir(prev);
+            } catch {
+              // 回滚失败保持现状
+            }
+            json(res, 400, { error: `已从清单移除，但回退默认工作区失败：${e instanceof Error ? e.message : String(e)}` });
+            return;
+          }
+        }
+        broadcast('workspace.changed', { cwd: process.cwd() });
+        broadcast('status', buildStatus(runOpts));
+        json(res, 200, { ok: true, removedSessions: deletedIds.size, switched, cwd: process.cwd(), workspaces: cfg.webWorkspaces ?? [] });
         return;
       }
 

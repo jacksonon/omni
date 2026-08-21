@@ -117,6 +117,11 @@ export interface OmniConfig {
    */
   webWorkspace?: string;
   /**
+   * 已知工作区列表（界面切换过的工作区都会记进来，去重、上限 20）。
+   * 设置面板据此渲染可一键切换的工作区清单，无需每次重新浏览/输入。
+   */
+  webWorkspaces?: string[];
+  /**
    * Hooks 生命周期自动化（对标 Claude Code）：{ 事件: [{ matcher?, command, timeoutMs? }] }。
    * 事件：UserPromptSubmit（改写 prompt）/ PreToolUse（硬拦截/改写参数）/ PostToolUse（输出回传上下文）/ Stop（要求继续修）/ Notification（通知）。
    * JSON 协议：事件上下文经 stdin 喂入，stdout 返回 JSON 决策（decision/updatedPrompt/updatedInput/hookSpecificOutput）。
@@ -259,6 +264,14 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   // Web/Electron 上次工作目录（界面切换时持久化；启动时自动应用）
   if (typeof data.webWorkspace === 'string' && data.webWorkspace.trim()) {
     cfg.webWorkspace = data.webWorkspace.trim();
+  }
+  // 已知工作区列表：只收非空字符串、去重、上限 20
+  if (Array.isArray(data.webWorkspaces)) {
+    const arr: string[] = [];
+    for (const x of data.webWorkspaces as unknown[]) {
+      if (typeof x === 'string' && x.trim() && !arr.includes(x.trim())) arr.push(x.trim());
+    }
+    if (arr.length > 0) cfg.webWorkspaces = arr.slice(0, 20);
   }
   if (data.hooks && typeof data.hooks === 'object' && !Array.isArray(data.hooks)) {
     // **分层叠加合并**（全局 → 项目 → 自定义）：同一事件各层的 hook 全部保留并按层顺序运行

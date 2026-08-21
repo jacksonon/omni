@@ -292,8 +292,44 @@ export function readPersistedWebWorkspace(): string | null {
 }
 
 /**
- * 把 Web/Electron 工作目录写入**全局配置**的 webWorkspace 字段（界面切换时调用）。
- * 运行时已即时生效（chdir + 重建运行时），这里只落盘供下次启动应用。
+ * 从全局配置的 webWorkspaces 清单移除一个工作区（界面「移除工作区」时调用）。
+ * 若被移除的是当前记录的 webWorkspace，则顺带指向剩余清单的第一项（无则删字段）。
+ * 返回移除后的完整清单（调用方同步内存态）。
+ */
+export function removeWebWorkspaceFromConfig(dir: string): PersistModelResult & { workspaces: string[] } {
+  const empty: string[] = [];
+  const file = globalConfigFile();
+  if (!existsSync(file)) return { ok: false, file: null, message: '全局配置不存在', workspaces: empty };
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return { ok: false, file: null, message: `「${file}」为 JSONC 或格式异常，未自动修改——请手动编辑 webWorkspaces 字段`, workspaces: empty };
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: '全局配置格式异常', workspaces: empty };
+  }
+  const list = Array.isArray(obj.webWorkspaces)
+    ? (obj.webWorkspaces as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim())
+    : [];
+  const next = list.filter((x) => x !== dir);
+  obj.webWorkspaces = next;
+  if (obj.webWorkspace === dir) {
+    if (next.length > 0) obj.webWorkspace = next[0];
+    else delete obj.webWorkspace;
+  }
+  try {
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入配置失败：${(err as Error)?.message ?? err}`, workspaces: list };
+  }
+  return { ok: true, file, message: `已移除工作区 ${dir}`, workspaces: next };
+}
+
+/**
+ * 把 Web/Electron 工作目录写入**全局配置**的 webWorkspace 字段（界面切换时调用），
+ * 并同步维护 webWorkspaces 已知工作区列表（去重、最新在前、上限 20）——
+ * 侧栏分组据此渲染。运行时已即时生效，这里只落盘。
  */
 export function persistWebWorkspaceToConfig(dir: string): PersistModelResult {
   const file = globalConfigFile();
@@ -316,6 +352,13 @@ export function persistWebWorkspaceToConfig(dir: string): PersistModelResult {
     return { ok: false, file: null, message: `全局配置格式异常（顶层不是对象），未自动修改——请手动添加 "webWorkspace": "${dir}"` };
   }
   obj.webWorkspace = dir;
+  // 维护已知工作区列表：旧列表（缺省时从当前 webWorkspace 播种）+ 新目录置顶
+  const prev = Array.isArray(obj.webWorkspaces)
+    ? (obj.webWorkspaces as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim())
+    : typeof obj.webWorkspace === 'string' && obj.webWorkspace.trim()
+      ? [obj.webWorkspace.trim()]
+      : [];
+  obj.webWorkspaces = [dir, ...prev.filter((x) => x !== dir)].slice(0, 20);
   try {
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);

@@ -91,7 +91,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .logo-row { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 60px; padding: 8px 0 8px 4px; margin-bottom: 8px; overflow: hidden; }
 .brand { flex: 1; min-width: 0; height: 28px; display: inline-flex; align-items: center; gap: 8px; padding: 0; overflow: hidden; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .fish-logo { display: inline-block; flex: none; color: var(--text); }
-.brand-fish { width: 24px; height: 18px; }
+.brand-fish { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
 .brand-name { overflow: hidden; font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
 .build-revision { flex: none; height: 16px; padding: 0 4px; border-radius: 3px; color: #fff; background: var(--text); font: 500 8px/16px var(--mono); white-space: nowrap; }
 .icon-button { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
@@ -255,7 +255,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .empty-session .messages, .empty-session .trajectory-view { display: none; }
 .empty-session .composer-wrap { position: relative; bottom: auto; width: 100%; padding: 0 16px 32px; background: none; overflow: visible; }
 .empty-session .hero-heading { z-index: 1; display: grid; grid-template-columns: 34px auto auto; align-items: center; justify-content: center; column-gap: 10px; width: 100%; max-width: var(--composer-width); margin-bottom: 12px; color: var(--text); font-size: 26px; line-height: 32px; font-weight: 500; }
-.hero-fish { width: 34px; height: 25px; }
+.hero-fish { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; }
 .preview-badge { align-self: start; margin: 2px 0 0 -3px; padding: 1px 7px 0; border: 1px solid var(--surface-hover); border-radius: 24px; background: #edf3fe; color: #34415b; font: 500 12px/18px var(--mono); white-space: nowrap; }
 .empty-session .hero-workspace { z-index: 1; display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; max-width: min(360px, 100%); min-height: 28px; margin-bottom: 12px; padding: 0 8px; border-radius: 16px; color: var(--text); font-size: 13px; line-height: 20px; font-weight: 500; }
 .empty-session .hero-workspace svg { width: 16px; height: 16px; }
@@ -331,6 +331,27 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .dir-empty { padding: 24px 12px; color: var(--text-tertiary); font-size: 13px; text-align: center; }
 .dirpicker-actions { display: flex; align-items: center; gap: 8px; }
 .dirpicker-spacer { flex: 1; }
+
+/* 侧栏工作区分组树（组=工作区，组内元素=会话） */
+.ws-group-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 500; text-align: left; user-select: none; }
+.ws-group-head:hover { background: var(--surface-hover); }
+.ws-group-head.current { color: var(--text); }
+.ws-chev { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); transform: rotate(-90deg); transition: transform .15s var(--ease); }
+.ws-group-head.expanded .ws-chev { transform: none; }
+.ws-gicon { width: 14px; height: 14px; flex: none; color: var(--blue); }
+.ws-gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-group-head.current .ws-gname { color: var(--blue); }
+.ws-gcount { flex: none; min-width: 18px; text-align: center; padding: 0 5px; border-radius: 9px; background: var(--surface-hover-solid); color: var(--text-tertiary); font-size: 11px; line-height: 18px; }
+.ws-gadd { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--text-tertiary); font-size: 14px; }
+.ws-gadd:hover { background: var(--surface-hover-solid); color: var(--text); }
+/* 组内会话缩进 */
+#session-list .session-item { margin-left: 14px; }
+
+/* 会话操作菜单（⋯ → 重命名/删除） */
+.ctx-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 128px; padding: 4px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 40px rgba(0, 0, 0, .16); }
+.ctx-item { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.ctx-item:hover { background: var(--surface-hover-solid); }
+.ctx-item.danger { color: var(--red, #d92d20); }
 .settings-about { display: flex; flex-direction: column; gap: 6px; padding-top: 14px; border-top: 1px solid var(--line-2); color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .settings-about code { margin-left: 5px; color: var(--text-secondary); font: 11px/18px var(--mono); overflow-wrap: anywhere; }
 
@@ -386,7 +407,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .composer-wrap { padding-inline: 8px; }
   .empty-session .composer-wrap { padding-inline: 8px; }
   .empty-session .hero-heading { grid-template-columns: 30px auto; column-gap: 8px; font-size: 22px; line-height: 28px; }
-  .hero-fish { width: 30px; height: 22px; }
+  .hero-fish { width: 36px; height: 36px; }
   .preview-badge { display: none; }
   .details-panel { display: none; }
   .composer-tools { gap: 4px; }

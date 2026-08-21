@@ -19,6 +19,10 @@ for (const n of names) {
   entries.push(`  ${JSON.stringify(n)}: ${JSON.stringify(text)},`);
 }
 
+// 应用图标（二进制）：以 data URL 形式内嵌，服务端 /icon.png 回退时解码返回
+const iconBuf = await readFile(path.join(webDir, 'icon.png'));
+entries.push(`  ${JSON.stringify('icon.png')}: ${JSON.stringify('data:image/png;base64,' + iconBuf.toString('base64'))},`);
+
 const ts = `/**
  * Web UI 静态资源（web/ 目录的嵌入副本，bundle 单文件发布时无需外部文件）。
  *
