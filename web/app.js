@@ -637,9 +637,9 @@ function renderWelcome() {
 
 function updateDetails() {
   const st = state.status || {};
-  // 模型名 + 思考级别（未设置级别只显示模型名）
+  // 模型名 + 思考级别（未设置级别只显示模型名）；写进 label span，保留 chevron svg
   const eff = st.reasoningEffort;
-  $('#composer-model').textContent = st.model ? (eff ? `${st.model} · ${eff}` : st.model) : '—';
+  $('#composer-model-label').textContent = st.model ? (eff ? `${st.model} · ${eff}` : st.model) : '—';
   $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
   const selected = state.selectedTool;
   $('#details-title').textContent = selected?._data?.name || '详情';

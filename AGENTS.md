@@ -315,6 +315,8 @@ for step in 1..maxSteps:
 
 ## 演进日志
 
+- **2026-08-21（第一百五十五次）**：**修复 composer/disclosure 行图标与文本垂直居中**——用户反馈「下拉图标和文本不居中（思考/工具调用/模型选择）」。根因：指示符全是**文本字符**（模型按钮 `::after` 的 `⌄`、思考/工具行 `::before` 的 `›`），字符自带基线偏移与字体度量，视觉上永远差几像素。修复：全部换几何居中的 SVG——模型按钮加真 chevron svg 节点（模型名改写入独立 label span 防覆盖）；disclosure 箭头改 CSS mask 绘制 chevron（currentColor 着色、mask center 绝对居中、展开旋转 90° 不变）。教训：装饰性符号用字符是脆弱方案，图标一律 SVG/mask。
+
 - **2026-08-21（第一百五十四次）**：**无标题会话显示首条消息缩略标题**——用户反馈「不要都显示为新会话，显示为缩略标题」。根因：自动标题是首轮后的一次独立轻量 LLM 请求，用户网关对该辅助请求失败时静默返回 null（设计上不打扰对话），meta.title 永远为空 → 列表兜底「新会话」无法分辨。修复：`listWebSessions` 对无标题会话用**首条用户消息前 30 字符**作展示标题（`firstUserSnippet`，空白折叠 + 省略号；内存会话直接取、磁盘会话 loadSession 兜底）——**不落盘**，之后自动标题成功仍可覆盖；`maybeAutoTitle` 链路补 `.catch` 杜绝未处理拒绝。验证：typecheck ✓ · 重启后列表显示缩略标题（如「在吗」「将当前文件夹在所有的图片大小修改为…」）✓。
 
 - **2026-08-21（第一百五十三次）**：**修复分组树两处点击报错**——用户反馈「工作区右侧三点按钮点击无效」「移除失败：Cannot set properties of null」。**① ⋯ 无效**：`showWorkspaceActions` 只写了调用、漏了函数定义（上轮被服务重启打断），点击抛 ReferenceError——补全（confirm 提示会话数 → `POST /api/workspace/remove` → 刷新状态与会话列表，当前打开会话属被移除区则回草稿态）。**② 移除报 null**：删除顶部工作区按钮时未同步清理 `refreshStatus` 里对已不存在的 `#workspace-name` 的 textContent 赋值——移除流程一触发 refreshStatus 即抛 TypeError；删掉该行（保留 hero 空态的 `#hero-workspace-name`）。教训：删 DOM 元素时必须 grep 其 id 的全部 JS 引用一并清理。验证：node --check ✓ · 服务端 app.js 已含新函数 ✓。

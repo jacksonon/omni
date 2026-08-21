@@ -208,7 +208,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* Reasoning and tools use Harness disclosure-row geometry. */
 .thinking, .tool-card { display: flex; flex-direction: column; min-width: 0; }
 .th-head, .tc-head { position: relative; display: flex; align-items: center; min-width: 0; height: 24px; overflow: hidden; border-radius: 6px; color: var(--text-secondary); font-size: 14px; line-height: 24px; cursor: pointer; }
-.th-head::before, .tc-head::before { content: "›"; flex: none; display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 6px; color: var(--text-secondary); font-size: 18px; transition: transform .12s var(--ease); }
+.th-head::before, .tc-head::before { content: ""; flex: none; display: inline-block; width: 14px; height: 14px; margin-right: 5px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m9 6 6 6-6 6' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 11px 11px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m9 6 6 6-6 6' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 11px 11px no-repeat; transition: transform .12s var(--ease); }
 .thinking:has(.th-body:not(.hidden)) .th-head::before, .tool-card:has(.tc-body:not(.hidden)) .tc-head::before { transform: rotate(90deg); }
 .thinking.running .th-head::after, .tool-card.running .tc-head::after { content: ""; position: absolute; inset-block: 0; left: -300px; width: 300px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 60%, transparent) 55%, transparent); animation: sweep 2.6s ease-out infinite; pointer-events: none; }
 @keyframes sweep { 90%, 100% { left: 100%; } }
@@ -242,7 +242,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mode-button, .model-select-face { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; height: 28px; padding: 0 8px; overflow: hidden; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font-size: 13px; line-height: 20px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .mode-button:hover, .model-select-face:hover { background: var(--surface-hover); }
 .mode-button svg { width: 14px; height: 14px; }
-.model-select-face::after { content: "⌄"; margin-left: 3px; color: var(--text-caption); }
+.model-select-face .chev { width: 12px; height: 12px; flex: none; color: var(--text-caption); }
 .send-button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 999px; background: var(--blue-fill); color: #fff; cursor: pointer; transform: translateY(-2px); }
 .send-button:hover:not(:disabled) { background: var(--blue-hover); }
 .send-button:disabled { opacity: .4; cursor: default; }
