@@ -217,12 +217,16 @@ function maybeAutoTitle(s: WebSession, client: OpenAI, model: string): void {
   if (s.title) return;
   const hasAnswer = s.messages.some((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content);
   if (!hasAnswer) return;
-  void generateSessionTitle(client, model, s.messages).then((title) => {
-    if (!title || s.title) return;
-    s.title = title;
-    if (s.file) void updateSessionTitle(s.file, title);
-    for (const l of listeners) l('title', { sessionId: s.id, title });
-  });
+  void generateSessionTitle(client, model, s.messages)
+    .then((title) => {
+      if (!title || s.title) return;
+      s.title = title;
+      if (s.file) void updateSessionTitle(s.file, title);
+      for (const l of listeners) l('title', { sessionId: s.id, title });
+    })
+    .catch(() => {
+      // 标题是可选增强，任何异常静默忽略
+    });
 }
 
 /* ---------------- 状态快照 ---------------- */
@@ -391,23 +395,43 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     return ws;
   }
 
+  /** 无标题会话的展示兜底：取首条用户消息前 30 字符作缩略标题（不落盘） */
+  function firstUserSnippet(messages: ChatCompletionMessageParam[], max = 30): string {
+    const m = messages.find((x) => x.role === 'user' && typeof x.content === 'string' && x.content.trim());
+    const text = m ? (m.content as string).replace(/\s+/g, ' ').trim() : '';
+    if (!text) return '';
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
   async function listWebSessions(): Promise<
     Array<{ id: string; title: string; messages: number; created: number; updated: number; project?: string }>
   > {
     // 返回**全部**会话（含 project 字段）——侧栏按工作区分组展示（组=工作区、
-    // 组内元素=会话），由前端分组渲染；不再按 cwd 过滤
+    // 组内元素=会话），由前端分组渲染；不再按 cwd 过滤。
+    // 自动标题生成失败的会话（网关不支持辅助请求等）用首条用户消息缩略兜底，
+    // 避免列表里全是「新会话」无法分辨。
     const persisted = await listSessions();
-    const out = persisted.map((s) => {
+    const out = [];
+    for (const s of persisted) {
       const live = sessions.get(s.id);
-      return {
+      let title = s.title ?? '';
+      if (!title) {
+        const fromMemory = live ? firstUserSnippet(live.messages) : '';
+        title = fromMemory;
+        if (!fromMemory && s.path) {
+          const loaded = await loadSession(s.path).catch(() => null);
+          title = loaded ? firstUserSnippet(loaded.messages) : '';
+        }
+      }
+      out.push({
         id: s.id,
-        title: s.title ?? '',
+        title,
         messages: live ? live.messages.length : s.messages,
         created: s.created,
         updated: live ? live.updated : s.updated,
         project: s.project,
-      };
-    });
+      });
+    }
     // 内存中尚未落盘会话（防御性兜底——创建即落盘，正常不会出现）
     for (const s of sessions.values()) {
       if (!out.some((o) => o.id === s.id)) {
