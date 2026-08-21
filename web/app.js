@@ -521,6 +521,47 @@ function escSessionActions(e) {
   if (e.key === 'Escape') closeSessionActions();
 }
 
+/** 工作区操作菜单（组头 ⋯）：移除工作区（清单去掉 + 删该区全部会话记录，目录本身不动） */
+function showWorkspaceActions(e, project, count) {
+  closeSessionActions();
+  const menu = el('div', 'ctx-menu');
+  const del = el('button', 'ctx-item danger', '移除工作区');
+  del.type = 'button';
+  del.addEventListener('click', () => {
+    closeSessionActions();
+    if (!confirm(`移除工作区「${projectName(project)}」？\n其下 ${count} 个会话将被一并删除（目录本身不受影响）。`)) return;
+    api('/api/workspace/remove', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dir: project }),
+    })
+      .then(() => refreshStatus())
+      .then(() => api('/api/sessions'))
+      .then((list) => {
+        state.sessions = list;
+        // 当前打开的会话若属于被移除的工作区，回草稿态
+        if (state.session && !state.sessions.some((x) => x.id === state.session)) {
+          state.session = null;
+          clearMessages();
+          renderWelcome();
+          updateComposer();
+          updateStatusText();
+        }
+        renderSessionList();
+      })
+      .catch((err) => alert(`移除失败：${err.message}`));
+  });
+  menu.append(del);
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(e.clientX, window.innerWidth - rect.width - 8)}px`;
+  menu.style.top = `${Math.min(e.clientY, window.innerHeight - rect.height - 8)}px`;
+  setTimeout(() => {
+    document.addEventListener('click', closeSessionActions, true);
+    document.addEventListener('keydown', escSessionActions, true);
+  }, 0);
+}
+
 function showSessionActions(e, s) {
   closeSessionActions();
   const menu = el('div', 'ctx-menu');
@@ -710,7 +751,6 @@ function refreshStatus() {
     fillEffortSelect(s);
     $('#set-permission').value = s.permission || 'safe';
     const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || '当前工作区' : '当前工作区';
-    $('#workspace-name').textContent = workspaceName;
     $('#hero-workspace-name').textContent = workspaceName;
     updateDetails();
     updateComposer();
