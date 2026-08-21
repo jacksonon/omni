@@ -275,6 +275,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .ic-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .ic-actions button, .secondary-button { min-height: 32px; padding: 0 13px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); cursor: pointer; }
 .ic-actions button:hover, .secondary-button:hover { background: var(--surface-hover-solid); }
+.primary-button { min-height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--blue); color: #fff; font-weight: 500; cursor: pointer; }
+.primary-button:hover { filter: brightness(1.08); }
 .ic-actions .primary { border-color: var(--blue); background: var(--blue); color: #fff; }
 .ic-actions .danger { color: var(--red); }
 .ask-options { display: grid; gap: 6px; margin-top: 12px; }
@@ -317,6 +319,18 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .settings-section p { margin: 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .apikey-row { display: flex; gap: 8px; }
 .apikey-row input { flex: 1; }
+
+/* 文件夹浏览器（设置 → 工作目录 → 浏览…） */
+.dirpicker-path { padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface-muted); overflow-wrap: anywhere; }
+.dirpicker-path code { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); }
+.dir-list { display: flex; flex-direction: column; min-height: 200px; max-height: 320px; overflow: auto; border: 1px solid var(--line-1); border-radius: 10px; }
+.dir-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--line-1); background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.dir-item:last-child { border-bottom: 0; }
+.dir-item:hover { background: var(--surface-hover-solid); }
+.dir-item .dir-name { font-family: var(--mono); }
+.dir-empty { padding: 24px 12px; color: var(--text-tertiary); font-size: 13px; text-align: center; }
+.dirpicker-actions { display: flex; align-items: center; gap: 8px; }
+.dirpicker-spacer { flex: 1; }
 .settings-about { display: flex; flex-direction: column; gap: 6px; padding-top: 14px; border-top: 1px solid var(--line-2); color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .settings-about code { margin-left: 5px; color: var(--text-secondary); font: 11px/18px var(--mono); overflow-wrap: anywhere; }
 

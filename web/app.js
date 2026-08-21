@@ -511,12 +511,17 @@ async function selectSession(id, silent) {
   }
 }
 
+/** 新会话：仅进入草稿态（不落盘）——首条消息发出时才真正创建会话文件，
+ *  避免反复点「新会话」/ Cmd+K 在磁盘上积累大量空会话 */
 async function newSession() {
-  const data = await api('/api/sessions', { method: 'POST' });
-  if (!state.sessions.some((s) => s.id === data.id)) {
-    state.sessions.unshift({ id: data.id, title: '新会话', messages: 0, created: Date.now(), updated: Date.now() });
-  }
-  await selectSession(data.id);
+  state.session = null;
+  clearMessages();
+  $('#chat-title').textContent = '新会话';
+  renderSessionList();
+  renderWelcome();
+  updateComposer();
+  updateStatusText();
+  $('#app').classList.remove('sidebar-open');
 }
 
 /* ---------------- 服务器状态 / 设置 ---------------- */
@@ -593,11 +598,11 @@ function updateComposer() {
   const send = $('#btn-send');
   const cancel = $('#btn-cancel');
   const note = $('#composer-note');
-  send.disabled = state.running || !state.session;
+  send.disabled = state.running;
   send.title = state.running ? '运行中' : '发送消息';
   cancel.classList.toggle('hidden', !state.running);
   if (state.running) note.textContent = '任务运行中…';
-  else if (!state.session) note.textContent = '请先新建或选择会话';
+  else if (!state.session) note.textContent = '输入消息开始新对话';
   else note.textContent = '';
 }
 
@@ -866,7 +871,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     $('#session-search').focus();
   } else if (e.key === 'Escape') {
-    if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
+    if (!$('#dirpicker-modal').classList.contains('hidden')) closeDirPicker();
+    else if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
     else if ($('#app').classList.contains('sidebar-open')) $('#app').classList.remove('sidebar-open');
     else if (state.detailsOpen) {
       state.detailsOpen = false;
@@ -875,25 +881,36 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-function sendMessage() {
+async function sendMessage() {
   const text = input.value.trim();
-  if (!text || state.running || !state.session) return;
+  if (!text || state.running) return;
   input.value = '';
   autoResize();
   state.running = true;
   setEmptyState(false);
   updateComposer();
   updateStatusText();
-  api(`/api/sessions/${state.session}/messages`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
-  }).catch((e) => {
+  try {
+    // 懒创建：草稿态（未选会话）下首条消息才真正创建会话文件
+    if (!state.session) {
+      const data = await api('/api/sessions', { method: 'POST' });
+      state.session = data.id;
+      if (!state.sessions.some((s) => s.id === data.id)) {
+        state.sessions.unshift({ id: data.id, title: '新会话', messages: 0, created: Date.now(), updated: Date.now() });
+      }
+      renderSessionList();
+    }
+    await api(`/api/sessions/${state.session}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) {
     state.running = false;
-    metaLine(state.session, [`✗ 发送失败：${e.message}`]);
+    if (state.session) metaLine(state.session, [`✗ 发送失败：${e.message}`]);
     updateComposer();
     updateStatusText();
-  });
+  }
 }
 
 $('#btn-send').addEventListener('click', sendMessage);
@@ -969,24 +986,90 @@ $('#btn-save-apikey').addEventListener('click', () => {
 $('#plan-mode').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
 });
-$('#btn-change-workspace').addEventListener('click', () => {
-  const dir = $('#set-workspace').value.trim();
-  if (!dir) return;
-  api('/api/workspace', {
+/** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
+async function switchWorkspace(dir) {
+  await api('/api/workspace', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ dir }),
-  })
-    .then(() => {
-      $('#set-workspace').value = '';
-      return refreshStatus();
-    })
-    .then(() => api('/api/sessions'))
-    .then((list) => {
-      state.sessions = list;
-      renderSessionList();
-    })
-    .catch((err) => alert(`切换工作目录失败：${err.message}`));
+  });
+  $('#set-workspace').value = '';
+  await refreshStatus();
+  state.sessions = await api('/api/sessions');
+  renderSessionList();
+}
+$('#btn-change-workspace').addEventListener('click', () => {
+  const dir = $('#set-workspace').value.trim();
+  if (!dir) return;
+  switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
+});
+$('#btn-browse-workspace').addEventListener('click', () => {
+  // Electron：原生文件夹选择对话框；纯浏览器 → 页面内文件夹浏览器
+  if (window.omni && typeof window.omni.pickDirectory === 'function') {
+    window.omni.pickDirectory()
+      .then((dir) => {
+        if (!dir) return;
+        $('#set-workspace').value = dir;
+        return switchWorkspace(dir);
+      })
+      .catch((err) => alert(`切换工作目录失败：${err.message}`));
+  } else {
+    openDirPicker(state.status?.cwd || '/');
+  }
+});
+
+/* ---------------- 文件夹浏览器（页面内，服务端列目录） ---------------- */
+let dirPickerPath = null;
+
+function openDirPicker(startPath) {
+  dirPickerPath = startPath;
+  $('#dirpicker-modal').classList.remove('hidden');
+  navigateDirPicker(startPath);
+}
+
+function closeDirPicker() {
+  $('#dirpicker-modal').classList.add('hidden');
+}
+
+async function navigateDirPicker(p) {
+  const list = $('#dirpicker-list');
+  list.innerHTML = '';
+  list.appendChild(el('div', 'dir-empty', '加载中…'));
+  try {
+    const data = await api(`/api/fs/dirs?path=${encodeURIComponent(p)}`);
+    dirPickerPath = data.current;
+    $('#dirpicker-current').textContent = data.current;
+    list.innerHTML = '';
+    if (!data.dirs.length) {
+      list.appendChild(el('div', 'dir-empty', '此目录下没有子目录'));
+      return;
+    }
+    for (const name of data.dirs) {
+      const item = el('button', 'dir-item');
+      item.type = 'button';
+      item.appendChild(el('span', null, '📁'));
+      item.appendChild(el('span', 'dir-name', name));
+      item.addEventListener('click', () => navigateDirPicker(`${data.current}/${name}`.replace(/\/+/g, '/')));
+      list.appendChild(item);
+    }
+  } catch (e) {
+    list.innerHTML = '';
+    list.appendChild(el('div', 'dir-empty', `无法读取目录：${e.message}`));
+  }
+}
+
+$('#btn-dir-up').addEventListener('click', () => {
+  if (dirPickerPath && dirPickerPath !== '/') navigateDirPicker(dirPickerPath.replace(/\/[^/]+\/?$/, '') || '/');
+});
+$('#btn-dir-select').addEventListener('click', () => {
+  if (!dirPickerPath) return;
+  closeDirPicker();
+  switchWorkspace(dirPickerPath).catch((err) => alert(`切换工作目录失败：${err.message}`));
+});
+$('#btn-dir-cancel').addEventListener('click', closeDirPicker);
+$('#btn-close-dirpicker').addEventListener('click', closeDirPicker);
+$('#dirpicker-modal').addEventListener('click', (e) => {
+  if (e.target === $('#dirpicker-modal')) closeDirPicker();
 });
 
 /* 会话消息区点击空白时聚焦输入 */

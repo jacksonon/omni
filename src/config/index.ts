@@ -111,6 +111,12 @@ export interface OmniConfig {
    * MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
   /**
+   * Web / Electron 上次使用的工作目录（`omni web` 与桌面应用启动时自动应用，
+   * 界面「设置 → 工作目录」切换时持久化到这里）。优先级：OMNI_WEB_WORKSPACE
+   * 环境变量 > 该字段 > 启动 cwd（cwd 为 "/" 时回退 home——Dock/Finder 启动场景）。
+   */
+  webWorkspace?: string;
+  /**
    * Hooks 生命周期自动化（对标 Claude Code）：{ 事件: [{ matcher?, command, timeoutMs? }] }。
    * 事件：UserPromptSubmit（改写 prompt）/ PreToolUse（硬拦截/改写参数）/ PostToolUse（输出回传上下文）/ Stop（要求继续修）/ Notification（通知）。
    * JSON 协议：事件上下文经 stdin 喂入，stdout 返回 JSON 决策（decision/updatedPrompt/updatedInput/hookSpecificOutput）。
@@ -250,6 +256,10 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   }
   // 界面语言：只认 zh/en，其余回退默认中文
   if (data.language === 'zh' || data.language === 'en') cfg.language = data.language;
+  // Web/Electron 上次工作目录（界面切换时持久化；启动时自动应用）
+  if (typeof data.webWorkspace === 'string' && data.webWorkspace.trim()) {
+    cfg.webWorkspace = data.webWorkspace.trim();
+  }
   if (data.hooks && typeof data.hooks === 'object' && !Array.isArray(data.hooks)) {
     // **分层叠加合并**（全局 → 项目 → 自定义）：同一事件各层的 hook 全部保留并按层顺序运行
     //（低层在前）——项目 hook 与全局 hook 共存，无需在单层重复声明。

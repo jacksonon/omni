@@ -17,7 +17,7 @@
  * （bundle 单文件发布时无需外部文件）。
  */
 import http from 'node:http';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,12 +38,15 @@ import {
   listSessions,
   loadSession,
   persistableMessages,
+  removeEmptySession,
   sessionIdFromPath,
+  sessionsDir,
   updateSessionTitle,
 } from '../agent/session.js';
 import type { RunContext } from '../main.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import type { ConfigOverrides } from '../config/index.js';
+import { persistWebWorkspaceToConfig } from '../config/write.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -623,7 +626,32 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         broadcast('workspace.changed', { cwd: process.cwd() });
         broadcast('status', buildStatus(runOpts));
-        json(res, 200, { cwd: process.cwd() });
+        // 持久化到全局配置（webWorkspace 字段）——下次启动 web/Electron 自动应用
+        const persistRes = persistWebWorkspaceToConfig(dir);
+        json(res, 200, { cwd: process.cwd(), persisted: persistRes.ok, persistMessage: persistRes.message });
+        return;
+      }
+
+      if (p === '/api/fs/dirs' && req.method === 'GET') {
+        // 列出目录下的子目录（供页面内文件夹浏览器使用；本机单用户服务，
+        // Agent 本身已有全盘读写能力，列目录不构成额外风险）
+        const q = url.searchParams.get('path') || process.cwd();
+        const target = path.resolve(q);
+        if (!existsSync(target) || !statSync(target).isDirectory()) {
+          json(res, 400, { error: '目录不存在或不是文件夹' });
+          return;
+        }
+        let dirs: string[] = [];
+        try {
+          for (const e of readdirSync(target, { withFileTypes: true })) {
+            // 隐藏目录默认不显示（减少噪音；需要时仍可手动输入路径）
+            if (e.isDirectory() && !e.name.startsWith('.')) dirs.push(e.name);
+          }
+        } catch {
+          // 无权限等——返回空列表，「上级/选择此目录」仍可用
+        }
+        dirs.sort((a, b) => a.localeCompare(b));
+        json(res, 200, { current: target, parent: path.dirname(target), dirs: dirs.slice(0, 500) });
         return;
       }
 
@@ -633,6 +661,31 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       json(res, code, { error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  // 启动时清理历史空会话（仅 meta 行、0 条消息）：「新会话」懒创建上线前的
+  // 遗留 + 各种中断残留——否则会话列表被空会话淹没。清理失败不阻塞启动。
+  // 注意：0 字节文件 loadSession 解析不出 meta 返回 null，removeEmptySession
+  // 不会删——这里对空白文件单独处理。
+  try {
+    const dir = sessionsDir();
+    if (existsSync(dir)) {
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.jsonl')) continue;
+        const fp = path.join(dir, f);
+        try {
+          if (statSync(fp).size === 0) {
+            await rm(fp, { force: true });
+            continue;
+          }
+        } catch {
+          // stat 失败按原路径走
+        }
+        await removeEmptySession(fp);
+      }
+    }
+  } catch {
+    // 静默——清理是尽力而为
+  }
 
   // 优雅退出：关连接、清 MCP 客户端
   const handleExit = (): void => {

@@ -114,8 +114,23 @@
       <section class="settings-section"><label for="set-apikey">API Key <em>可选</em></label><div class="apikey-row"><input type="password" id="set-apikey" placeholder="沿用当前配置" autocomplete="off"><button id="btn-save-apikey" class="secondary-button" type="button">保存</button></div><p>仅保存在当前进程。</p></section>
       <section class="settings-section"><label for="set-permission">权限级别</label><select id="set-permission"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select></section>
       <section class="settings-section"><label for="set-effort">思考级别</label><select id="set-effort"></select></section>
-      <section class="settings-section"><label for="set-workspace">工作目录</label><div class="apikey-row"><input type="text" id="set-workspace" placeholder="输入绝对路径，如 /Users/me/project" autocomplete="off"><button id="btn-change-workspace" class="secondary-button" type="button">切换</button></div><p>切换后新会话将使用该目录作为工作区；已有会话保留。</p></section>
+      <section class="settings-section"><label for="set-workspace">工作目录</label><div class="apikey-row"><input type="text" id="set-workspace" placeholder="输入绝对路径，如 /Users/me/project" autocomplete="off"><button id="btn-browse-workspace" class="secondary-button" type="button">浏览…</button><button id="btn-change-workspace" class="secondary-button" type="button">切换</button></div><p>切换后新会话将使用该目录作为工作区并记住（下次启动自动应用）；已有会话保留。</p></section>
       <section class="settings-about"><div>工作目录 <code id="about-cwd"></code></div><div>工具 <code id="about-tools"></code></div><div>服务 <code id="about-server"></code></div></section>
+    </div>
+  </div>
+</div>
+<div id="dirpicker-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dirpicker-title">
+  <div class="modal-card">
+    <div class="modal-head"><h2 id="dirpicker-title">选择工作目录</h2><button class="icon-button" id="btn-close-dirpicker" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="dirpicker-path"><code id="dirpicker-current"></code></div>
+      <div class="dir-list" id="dirpicker-list"></div>
+      <div class="dirpicker-actions">
+        <button class="secondary-button" id="btn-dir-up" type="button">上级</button>
+        <span class="dirpicker-spacer"></span>
+        <button class="secondary-button" id="btn-dir-cancel" type="button">取消</button>
+        <button class="primary-button" id="btn-dir-select" type="button">选择此目录</button>
+      </div>
     </div>
   </div>
 </div>

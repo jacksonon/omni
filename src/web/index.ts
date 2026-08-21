@@ -5,9 +5,12 @@
  * 解析 web 专属参数后启动本地后端服务（REST + SSE）并托管 Web UI。
  */
 import { spawn } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import os from 'node:os';
 import { attachRuntime, prepareRun } from '../main.js';
 import { routingOutput, startWebService } from './server.js';
 import type { ConfigOverrides } from '../config/index.js';
+import { readPersistedWebWorkspace } from '../config/write.js';
 
 export interface WebArgs {
   port: number;
@@ -75,6 +78,25 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
   if (parsed.help || args.includes('--help') || args.includes('-h')) {
     printWebHelp();
     return;
+  }
+
+  // 工作目录（优先级高→低）：OMNI_WEB_WORKSPACE 环境变量 > 持久化的 webWorkspace
+  // （上次在界面里切换的）> 启动 cwd；cwd 为 "/"（Finder/Dock 启动）回退 home。
+  // chdir 后再 prepareRun——配置发现/记忆/系统提示全部跟随新工作区，与运行时切换语义一致。
+  const envWs = process.env.OMNI_WEB_WORKSPACE?.trim();
+  const target = envWs ?? readPersistedWebWorkspace();
+  if (target && existsSync(target) && statSync(target).isDirectory()) {
+    try {
+      process.chdir(target);
+    } catch {
+      // chdir 失败保持原目录
+    }
+  } else if (process.cwd() === '/') {
+    try {
+      process.chdir(os.homedir());
+    } catch {
+      // 同上
+    }
   }
 
   const ctx = prepareRun(overrides);

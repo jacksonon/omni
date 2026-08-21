@@ -10,7 +10,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
@@ -27,19 +27,45 @@ const WEB_PORT = process.env.OMNI_WEB_PORT ? Number(process.env.OMNI_WEB_PORT) :
 
 let mainWindow = null;
 let serverProc = null;
-let workspace = process.env.OMNI_WEB_WORKSPACE || process.cwd();
+let serverPort = null; // 当前后端端口（菜单选目录走 REST 切换用）
+// 从 Finder/Dock 启动时 process.cwd() 是 "/"——会话会被记到根目录且 AGENTS.md/
+// 配置发现全部失效，此时回退到用户主目录
+let workspace = process.env.OMNI_WEB_WORKSPACE
+  || (process.cwd() === '/' ? require('os').homedir() : process.cwd());
 
 /* ---------- 工具 ---------- */
-function pickWorkspace() {
+/** 原生文件夹选择对话框（菜单与页面 preload 共用），返回绝对路径或 null */
+function pickDir() {
   const choice = dialog.showOpenDialogSync(mainWindow, {
     title: '选择工作目录（Agent 的工作区）',
+    defaultPath: workspace,
     properties: ['openDirectory', 'createDirectory'],
   });
-  if (choice && choice.filePaths[0]) {
-    workspace = choice.filePaths[0];
-    return true;
+  return choice && choice.filePaths[0] ? choice.filePaths[0] : null;
+}
+
+// 页面（Web UI 设置 → 工作目录 → 浏览…）经 preload 触发原生选择
+ipcMain.handle('omni:pick-directory', () => pickDir());
+
+/**
+ * 菜单「选择工作目录…」：首选调后端 REST /api/workspace 切换（chdir + 重建运行时 +
+ * 持久化到全局配置，页面经 SSE 自动刷新，无需重启）；后端不可达时回退进程重启。
+ */
+async function pickAndSwitchWorkspace() {
+  const dir = pickDir();
+  if (!dir) return;
+  workspace = dir;
+  try {
+    const res = await fetch(`http://127.0.0.1:${serverPort}/api/workspace`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dir }),
+    });
+    if (res.ok) return;
+  } catch {
+    // 后端不可达（极端）→ 回退重启
   }
-  return false;
+  await restartWithWorkspace(dir);
 }
 
 /** 轮询 /api/status 直到服务就绪（或超时） */
@@ -111,6 +137,7 @@ function stopServer() {
 
 async function createWindow() {
   const port = await findFreePort(WEB_PORT);
+  serverPort = port;
   await startServer(port);
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -122,6 +149,7 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
   mainWindow.loadURL(`http://127.0.0.1:${port}/`);
@@ -130,11 +158,16 @@ async function createWindow() {
   });
 }
 
-async function restartWithWorkspace() {
-  if (pickWorkspace()) {
-    stopServer();
-    await createWindow();
+async function restartWithWorkspace(dir) {
+  if (dir) {
+    workspace = dir;
+  } else {
+    const picked = pickDir();
+    if (!picked) return;
+    workspace = picked;
   }
+  stopServer();
+  await createWindow();
 }
 
 function buildMenu() {
@@ -144,7 +177,7 @@ function buildMenu() {
     {
       label: '文件',
       submenu: [
-        { label: '选择工作目录…', click: () => void restartWithWorkspace() },
+        { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit', label: '退出' },
       ],

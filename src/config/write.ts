@@ -6,9 +6,11 @@
  *   · 持久化：把新模型追加到配置文件 models 字段（纯 JSON 文件自动改写；
  *     带注释的 JSONC 不自动改，避免破坏注释，提示手动添加）。
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { OmniConfig } from './index.js';
+import { parseJsonc } from './jsonc.js';
 
 /** /model add 解析结果：ok=true 时携带模型名与端点字段（缺省字段不在结果里，调用方回退顶层） */
 export type ModelAddArgs =
@@ -256,4 +258,69 @@ export function persistReasoningEffortToConfig(
     file: res.file,
     message: `已保存思考级别 → ${res.file}（重启后同样生效${modelName && modelEntry && typeof modelEntry === 'object' ? `；仅对模型 ${modelName} 生效` : '；全局默认'}）`,
   };
+}
+
+/* ---------------- Web / Electron 工作目录持久化 ---------------- */
+
+/**
+ * 全局配置文件路径（$XDG_CONFIG_HOME/omni/ 或 ~/.config/omni/ 下）。
+ * 工作目录是机器级偏好，**只写全局配置**——不能进项目配置（切换工作区后
+ * "项目"就变了，写进新目录的项目配置会形成循环）。已存在 omni.jsonc 时返回它
+ * （读取兼容；写入会因 JSONC 注释拒绝自动改并提示手动添加）。
+ */
+function globalConfigFile(): string {
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const dir = path.join(configHome, 'omni');
+  const json = path.join(dir, 'omni.json');
+  if (existsSync(json)) return json;
+  const jsonc = path.join(dir, 'omni.jsonc');
+  if (existsSync(jsonc)) return jsonc;
+  return json; // 都不存在 → 新建 omni.json
+}
+
+/** 读取持久化的 Web/Electron 工作目录（webWorkspace 字段；无/非法返回 null） */
+export function readPersistedWebWorkspace(): string | null {
+  try {
+    const file = globalConfigFile();
+    if (!existsSync(file)) return null;
+    const data = parseJsonc(readFileSync(file, 'utf8')) as Record<string, unknown> | null;
+    const v = data?.webWorkspace;
+    return typeof v === 'string' && v.trim() ? v.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 Web/Electron 工作目录写入**全局配置**的 webWorkspace 字段（界面切换时调用）。
+ * 运行时已即时生效（chdir + 重建运行时），这里只落盘供下次启动应用。
+ */
+export function persistWebWorkspaceToConfig(dir: string): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return {
+          ok: false,
+          file: null,
+          message: `「${file}」带注释（JSONC），未自动修改——请手动添加 "webWorkspace": "${dir}"`,
+        };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常（顶层不是对象），未自动修改——请手动添加 "webWorkspace": "${dir}"` };
+  }
+  obj.webWorkspace = dir;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入配置失败：${(err as Error)?.message ?? err}（可手动添加 "webWorkspace": "${dir}"）` };
+  }
+  return { ok: true, file, message: `已保存工作目录 → ${file}（下次启动自动应用）` };
 }
