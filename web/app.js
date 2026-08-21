@@ -31,6 +31,8 @@ const state = {
   view: 'chat',
   selectedTool: null,
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
+  messageQueue: [],     // 运行中 Enter 入队的消息
+  steerText: null,      // 运行中 Cmd+Enter 打断消息（仅一条，优先于 queue）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -65,7 +67,7 @@ const bus = new EventEmitter();
 
 function setEmptyState(empty) {
   $('#app').classList.toggle('empty-session', empty);
-  $('#input').placeholder = empty ? '描述你想要构建的内容' : '给智能体发消息';
+  $('#input').placeholder = '随心输入';
 }
 
 /* ---------------- Markdown 渲染 ---------------- */
@@ -651,19 +653,385 @@ function updateDetails() {
     $('#details-output').textContent = selected._output || '运行中…';
     $('#details-output').classList.toggle('error', !!selected._error);
   }
+  updateComposerContext();
 }
 
+function updateComposerContext() {
+  const st = state.status || {};
+  const cwd = st.cwd || '';
+  const proj = cwd ? (cwd.split('/').filter(Boolean).pop() || cwd) : '—';
+  const pj = $('#ctx-project-label');
+  if (pj) pj.textContent = proj;
+  const br = st.gitBranch || st.branch || '';
+  const bl = $('#ctx-branch-label');
+  if (bl) bl.textContent = br || '—';
+  const perm = st.permission || 'safe';
+  const map = { full: '完全访问', safe: '帮我批准', ask: '请求批准', read: '只读' };
+  const pl = $('#perm-label');
+  if (pl) pl.textContent = map[perm] || perm;
+  const pill = $('#btn-permission');
+  if (pill) pill.className = 'perm-pill' + (perm === 'full' ? ' full' : perm === 'ask' ? ' ask' : perm === 'read' ? ' ask' : '');
+}
+
+/* —— 权限 / 添加 / 上下文 pop 渲染 —— */
+function closeAllComposerPops() {
+  ['#permission-pop', '#add-menu', '#model-pop', '#project-pop', '#location-pop', '#branch-pop'].forEach((sel) => {
+    const n = $(sel);
+    if (n) n.classList.add('hidden');
+  });
+}
+function togglePop(sel) {
+  const n = $(sel);
+  if (!n) return;
+  const wasHidden = n.classList.contains('hidden');
+  closeAllComposerPops();
+  if (wasHidden) n.classList.remove('hidden');
+}
+function renderPermissionPop() {
+  const st = state.status || {};
+  const perm = st.permission || 'safe';
+  const pop = $('#permission-pop');
+  if (!pop) return;
+  pop.innerHTML = '';
+  const head = el('div', 'pp-head');
+  head.appendChild(el('span', '', '应如何批准操作？'));
+  const more = el('a', '', '了解更多');
+  more.href = 'javascript:void(0)';
+  more.addEventListener('click', (e) => { e.preventDefault(); closeAllComposerPops(); openSettings(); });
+  head.appendChild(more);
+  pop.appendChild(head);
+  const list = el('div', 'pp-list');
+  const items = [
+    { v: 'ask', title: '请求批准', desc: '编辑外部文件和使用互联网时始终询问', icon: 'i-shield' },
+    { v: 'safe', title: '帮我批准', desc: '仅对检测到的风险操作请求批准', icon: 'i-shield' },
+    { v: 'full', title: '完全访问权限', desc: '可不受限制地访问互联网和你电脑上的任何文件', icon: 'i-shield' },
+  ];
+  items.forEach((it) => {
+    const btn = el('button', 'pp-item' + (perm === it.v ? ' active' : ''));
+    btn.type = 'button';
+    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ic.setAttribute('class', 'pp-icon');
+    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u.setAttribute('href', `#${it.icon}`);
+    ic.appendChild(u);
+    btn.appendChild(ic);
+    const main = el('div', 'pp-main');
+    main.appendChild(el('div', 'pp-title', it.title));
+    main.appendChild(el('div', 'pp-desc', it.desc));
+    btn.appendChild(main);
+    if (perm === it.v) {
+      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      ck.setAttribute('class', 'pp-check');
+      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      cu.setAttribute('href', '#i-check');
+      ck.appendChild(cu);
+      btn.appendChild(ck);
+    }
+    btn.addEventListener('click', () => {
+      applySettings({ permission: it.v }).catch((err) => alert(`设置失败：${err.message}`));
+      closeAllComposerPops();
+    });
+    list.appendChild(btn);
+  });
+  pop.appendChild(list);
+}
+function renderAddMenu() {
+  const pop = $('#add-menu');
+  if (!pop) return;
+  pop.innerHTML = '';
+  const searchRow = el('div', 'am-search');
+  const sIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const sUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  sUse.setAttribute('href', '#i-search');
+  sIcon.appendChild(sUse);
+  searchRow.appendChild(sIcon);
+  const inp = document.createElement('input');
+  inp.placeholder = '添加';
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllComposerPops(); });
+  searchRow.appendChild(inp);
+  // 让输入占位为 "文件和文件夹" 的搜索
+  inp.placeholder = '文件和文件夹';
+  const fIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const fUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  fUse.setAttribute('href', '#i-folder');
+  fIcon.appendChild(fUse);
+  // placeholder icon before input? already sIcon is search; keep.
+  pop.appendChild(searchRow);
+  pop.appendChild(el('div', 'am-section', '添加'));
+  const mkItem = (icon, title, desc, onClick, active) => {
+    const b = el('button', 'am-item' + (active ? ' active' : ''));
+    b.type = 'button';
+    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u.setAttribute('href', `#${icon}`);
+    ic.appendChild(u);
+    b.appendChild(ic);
+    const main = el('div', 'am-main');
+    main.appendChild(el('div', 'am-title', title));
+    if (desc) main.appendChild(el('div', 'am-desc', desc));
+    b.appendChild(main);
+    if (active) {
+      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      ck.setAttribute('class', 'am-check');
+      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      cu.setAttribute('href', '#i-check');
+      ck.appendChild(cu);
+      b.appendChild(ck);
+    }
+    if (onClick) b.addEventListener('click', onClick);
+    return b;
+  };
+  pop.appendChild(mkItem('i-folder', '在项目中使用 Work', '为新聊天选择项目', () => { closeAllComposerPops(); browseWorkspace(); }));
+  pop.appendChild(mkItem('i-target', '目标', '设置要持续追求的目标', () => { closeAllComposerPops(); const t = prompt('输入目标'); if (t) { $('#input').value = t; sendMessage(); } }));
+  const planActive = !!state.planMode;
+  pop.appendChild(mkItem('i-spark', '计划模式', planActive ? '已开启' : '开启计划模式', () => {
+    applySettings({ planMode: !planActive }).then(() => renderAddMenu()).catch((e) => alert(e.message));
+  }, planActive));
+  pop.appendChild(mkItem('i-check', '录制技能', '', () => {
+    closeAllComposerPops();
+    const name = prompt('技能名（小写字母+连字符，如 my-skill）');
+    if (!name || !name.trim()) return;
+    const desc = prompt('技能描述（可选）') || '';
+    api('/api/skills/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), description: desc.trim() }),
+    })
+      .then((data) => alert(`技能「${data.name}」已创建于 ${data.path}`))
+      .catch((e) => alert(`创建技能失败：${e.message}`));
+  }));
+  const tip = el('div', 'am-section', '提示：输入 @ 提及文件');
+  tip.style.textTransform = 'none';
+  tip.style.fontWeight = '400';
+  pop.appendChild(tip);
+}
+function renderProjectPop() {
+  const pop = $('#project-pop');
+  if (!pop) return;
+  pop.innerHTML = '';
+  const srow = el('div', 'pop-search');
+  const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  u.setAttribute('href', '#i-search');
+  ic.appendChild(u);
+  srow.appendChild(ic);
+  const inp = document.createElement('input');
+  inp.placeholder = '搜索项目';
+  srow.appendChild(inp);
+  pop.appendChild(srow);
+  const list = el('div', 'pop-list');
+  const cwd = state.status?.cwd || '';
+  const workspaces = (state.status?.workspaces || []).length ? state.status.workspaces : [cwd].filter(Boolean);
+  // 也加入最近会话的 project 去重
+  const extra = [...new Set(state.sessions.map((s) => s.project).filter(Boolean))];
+  const all = [...new Set([...workspaces, ...extra])];
+  all.forEach((p) => {
+    const active = p === cwd;
+    const b = el('button', 'pop-item' + (active ? ' active' : ''));
+    b.type = 'button';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('class', 'pi-icon');
+    const iu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    iu.setAttribute('href', '#i-folder');
+    icon.appendChild(iu);
+    b.appendChild(icon);
+    b.appendChild(el('span', 'pi-main', p.split('/').filter(Boolean).pop() || p));
+    if (active) {
+      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      ck.setAttribute('class', 'pi-check');
+      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      cu.setAttribute('href', '#i-check');
+      ck.appendChild(cu);
+      b.appendChild(ck);
+    }
+    b.addEventListener('click', () => {
+      closeAllComposerPops();
+      if (!active) switchWorkspace(p).catch((e) => alert(e.message));
+    });
+    list.appendChild(b);
+  });
+  const more = el('button', 'pop-item');
+  more.type = 'button';
+  more.innerHTML = '<span class="pi-main">＋ 新建项目</span>';
+  more.addEventListener('click', () => { closeAllComposerPops(); browseWorkspace(); });
+  list.appendChild(more);
+  const none = el('button', 'pop-item');
+  none.type = 'button';
+  none.innerHTML = '<span class="pi-main">× 不在项目中工作</span>';
+  none.addEventListener('click', () => closeAllComposerPops());
+  list.appendChild(none);
+  pop.appendChild(list);
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    list.querySelectorAll('.pop-item').forEach((row) => {
+      const t = row.textContent?.toLowerCase() || '';
+      row.style.display = !q || t.includes(q) ? '' : 'none';
+    });
+  });
+}
+function renderLocationPop() {
+  const pop = $('#location-pop');
+  if (!pop) return;
+  pop.innerHTML = '';
+  const head = el('div', 'pop-section', '工作位置');
+  pop.appendChild(head);
+  const list = el('div', 'pop-list');
+  const mk = (icon, title, active, onClick, extra) => {
+    const b = el('button', 'pop-item' + (active ? ' active' : ''));
+    b.type = 'button';
+    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ic.setAttribute('class', 'pi-icon');
+    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u.setAttribute('href', `#${icon}`);
+    ic.appendChild(u);
+    b.appendChild(ic);
+    b.appendChild(el('span', 'pi-main', title));
+    if (extra) {
+      const e = el('span', 'pi-sub', extra);
+      e.style.marginLeft = 'auto';
+      b.appendChild(e);
+    }
+    if (active) {
+      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      ck.setAttribute('class', 'pi-check');
+      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      cu.setAttribute('href', '#i-check');
+      ck.appendChild(cu);
+      b.appendChild(ck);
+    }
+    if (onClick) b.addEventListener('click', onClick);
+    return b;
+  };
+  list.appendChild(mk('i-laptop', '本地', true, () => closeAllComposerPops()));
+  list.appendChild(mk('i-branch', '新建本地工作树', false, () => {
+    closeAllComposerPops();
+    const branch = prompt('输入新分支名（将在父目录创建 worktree）');
+    if (!branch || !branch.trim()) return;
+    api('/api/git/worktree', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ branch: branch.trim() }),
+    })
+      .then(() => refreshStatus().then(() => { state.sessions = []; renderSessionList(); }).catch(() => {}))
+      .catch((e) => alert(`创建工作树失败：${e.message}`));
+  }));
+  pop.appendChild(list);
+}
+function renderBranchPop() {
+  const pop = $('#branch-pop');
+  if (!pop) return;
+  pop.innerHTML = '';
+  const st = state.status || {};
+  const cur = st.gitBranch || st.branch || 'main';
+  const dirty = st.gitDirty || 0;
+  const head = el('div', 'pop-search');
+  const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  u.setAttribute('href', '#i-search');
+  ic.appendChild(u);
+  head.appendChild(ic);
+  const inp = document.createElement('input');
+  const cwdName = (st.cwd || '').split('/').filter(Boolean).pop() || '项目';
+  inp.placeholder = `搜索 ${cwdName} 分支`;
+  head.appendChild(inp);
+  pop.appendChild(head);
+  const sec = el('div', 'pop-section', '分支');
+  pop.appendChild(sec);
+  const list = el('div', 'pop-list');
+  const branches = st.gitBranches && Array.isArray(st.gitBranches) && st.gitBranches.length ? st.gitBranches : [cur, 'master', 'develop'].filter(Boolean);
+  const uniq = [...new Set(branches)];
+  uniq.forEach((b) => {
+    const active = b === cur;
+    const row = el('button', 'pop-item' + (active ? ' active' : ''));
+    row.type = 'button';
+    const ic2 = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ic2.setAttribute('class', 'pi-icon');
+    const u2 = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u2.setAttribute('href', '#i-branch');
+    ic2.appendChild(u2);
+    row.appendChild(ic2);
+    const main = el('div', 'pi-main');
+    main.textContent = b;
+    if (active && dirty) {
+      const sub = el('span', 'pi-sub', `未提交：${dirty} 个文件`);
+      sub.style.display = 'block';
+      sub.style.fontSize = '11px';
+      const wrap = el('div', '');
+      wrap.appendChild(main);
+      wrap.appendChild(sub);
+      wrap.style.flex = '1';
+      row.appendChild(wrap);
+    } else {
+      row.appendChild(main);
+    }
+    if (active) {
+      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      ck.setAttribute('class', 'pi-check');
+      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      cu.setAttribute('href', '#i-check');
+      ck.appendChild(cu);
+      row.appendChild(ck);
+    }
+    row.addEventListener('click', () => {
+      closeAllComposerPops();
+      if (!active) {
+        api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: b }) })
+          .then(() => refreshStatus().catch(()=>{}))
+          .catch((e) => alert(`切换分支失败：${e.message}`));
+      }
+    });
+    list.appendChild(row);
+  });
+  pop.appendChild(list);
+  const foot = el('div', 'pop-divider');
+  pop.appendChild(foot);
+  const add = el('button', 'pop-item');
+  add.type = 'button';
+  add.innerHTML = '<span class="pi-main">＋ 创建并检出新分支…</span>';
+  add.addEventListener('click', () => {
+    const nb = prompt('新分支名');
+    if (!nb) return;
+    api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: nb, create: true }) })
+      .then(() => { closeAllComposerPops(); refreshStatus().catch(()=>{}); })
+      .catch((e) => alert(`创建分支失败：${e.message}`));
+  });
+  pop.appendChild(add);
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    list.querySelectorAll('.pop-item').forEach((r) => {
+      const t = r.textContent?.toLowerCase() || '';
+      r.style.display = !q || t.includes(q) ? '' : 'none';
+    });
+  });
+}
+
+const TRACE_ICONS = {
+  user: '→', thinking: '💭', tool: '⚙', answer: '✓', turn: '◆', usage: '⚡',
+  'thinking-end': '', lap: '⏱',
+};
+const TRACE_LABELS = {
+  user: '用户', thinking: '思考', tool: '工具', answer: '回答', turn: '轮次', usage: '用量',
+  'thinking-end': '', lap: '计时',
+};
 function renderTrajectory() {
   const view = $('#trajectory-view');
   view.innerHTML = '';
   if (!state.trace.length) {
-    view.appendChild(el('div', 'empty', '当前会话还没有运行轨迹'));
+    view.appendChild(el('div', 'empty', '当前会话还没有运行轨迹——发送消息后这里会记录每一步运行过程'));
     return;
   }
   state.trace.forEach((row) => {
-    const line = el('div', 'trace-row');
-    line.appendChild(el('span', 'trace-kind', row.kind));
-    line.appendChild(el('span', 'trace-text', row.kind === 'tool' ? `${row.name || 'tool'}  ${row.args || ''}` : row.text || ''));
+    if (row.kind === 'thinking-end') return; // 分隔标记不显示
+    const line = el('div', 'trace-row trace-' + row.kind);
+    line.dataset.kind = row.kind;
+    const icon = TRACE_ICONS[row.kind] || '·';
+    const label = TRACE_LABELS[row.kind] || row.kind;
+    let text = '';
+    if (row.kind === 'tool') text = `${row.name || 'tool'}  ${row.args || ''}`;
+    else if (row.kind === 'usage') text = `⚡ 输入 ${row.prompt || 0} · 输出 ${row.completion || 0}${row.cached ? ' · 缓存 ' + row.cached : ''}`;
+    else text = (row.text || '').slice(0, 200);
+    line.appendChild(el('span', 'trace-kind', `${icon} ${label}`));
+    line.appendChild(el('span', 'trace-text', text));
     view.appendChild(line);
   });
 }
@@ -766,10 +1134,16 @@ function updateComposer() {
   const send = $('#btn-send');
   const cancel = $('#btn-cancel');
   const note = $('#composer-note');
+  // 按钮形态：空闲 ↑ 发送 / 运行中显示独立停止按钮
+  const use = send.querySelector('use');
+  if (use) use.setAttribute('href', '#i-arrow-up');
+  send.title = '发送消息';
+  send.classList.toggle('paused', state.running);
   send.disabled = state.running;
-  send.title = state.running ? '运行中' : '发送消息';
-  cancel.classList.toggle('hidden', !state.running);
+  // 运行中显示停止按钮，空闲时隐藏
+  if (cancel) cancel.classList.toggle('hidden', !state.running);
   if (state.running) note.textContent = '任务运行中…';
+  else if (state.messageQueue.length) note.textContent = `⏳ 排队中（${state.messageQueue.length}）`;
   else if (!state.session) note.textContent = '输入消息开始新对话';
   else note.textContent = '';
 }
@@ -858,9 +1232,10 @@ function connectSSE() {
   [
     'status', 'session.created', 'user.message', 'thinking.start', 'thinking.chunk',
     'thinking.end', 'tool.start', 'tool.result', 'answer.chunk', 'answer.end',
-    'usage', 'error', 'run.end', 'approval.request', 'approval.resolved',
-    'ask.request', 'ask.resolved', 'subagent', 'title', 'meta.add', 'clear',
-    'workspace.changed',
+    'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
+    'error', 'run.end', 'approval.request', 'approval.resolved',
+    'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
+    'workspace.changed', 'thinking.toggle',
   ].forEach(on);
   es.onerror = () => {
     $('#status-dot').classList.add('error');
@@ -933,6 +1308,17 @@ bus.on('thinking.chunk', (ev) => {
 bus.on('thinking.end', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
+  // 标记思考段结束（下一条 trace 不再追加到此条）
+  state.trace.push({ kind: 'thinking-end' });
+  if (state.view === 'trajectory') renderTrajectory();
+});
+
+// /thinking 切换：隐藏/显示所有思考块
+bus.on('thinking.toggle', (ev) => {
+  const hidden = ev.hidden;
+  document.querySelectorAll('.thinking').forEach((box) => {
+    box.style.display = hidden ? 'none' : '';
+  });
 });
 
 let currentAssistant = null;
@@ -981,6 +1367,9 @@ bus.on('usage', (ev) => {
   state.turnTokens.prompt += ev.prompt || 0;
   state.turnTokens.completion += ev.completion || 0;
   state.turnTokens.cached += ev.cached || 0;
+  // 记录 token 用量轨迹
+  state.trace.push({ kind: 'usage', prompt: ev.prompt || 0, completion: ev.completion || 0, cached: ev.cached || 0 });
+  if (state.view === 'trajectory') renderTrajectory();
 });
 
 bus.on('subagent', (ev) => {
@@ -1001,8 +1390,6 @@ bus.on('run.end', (ev) => {
     currentAssistant.stopCursor();
     currentAssistant = null;
   }
-  updateComposer();
-  updateStatusText();
   // 本轮统计行
   const t = state.turnTokens;
   const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -1016,6 +1403,52 @@ bus.on('run.end', (ev) => {
   state.inFlight = 0;
   refreshSessions().then(updateDetails);
   if (state.view === 'trajectory') renderTrajectory();
+
+  // 消费 steer（优先）→ queue → 下一轮自动发送
+  const next = state.steerText || (state.messageQueue.length ? state.messageQueue.shift() : null);
+  if (next) {
+    state.steerText = null;
+    doSend(next);
+  } else {
+    updateComposer();
+    updateStatusText();
+  }
+});
+
+// turn.step：本轮第 N 步
+bus.on('turn.step', (ev) => {
+  if (ev.sessionId !== state.session) return;
+  state.trace.push({ kind: 'turn', text: `第 ${ev.step} 步 / ${ev.maxSteps}` });
+  if (state.view === 'trajectory') renderTrajectory();
+});
+
+// lap：LLM 请求墙钟 / 首 token
+bus.on('lap', (ev) => {
+  if (ev.sessionId !== state.session) return;
+  if (ev.llmMs) {
+    const ms = ev.llmMs;
+    const fmt = ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+    state.trace.push({ kind: 'lap', text: `LLM ${fmt} · 首 token ${ev.firstTokenMs || 0}ms` });
+    if (state.view === 'trajectory') renderTrajectory();
+  }
+});
+
+// toolsLap：工具执行墙钟
+bus.on('toolsLap', (ev) => {
+  if (ev.sessionId !== state.session) return;
+  if (ev.toolsMs) {
+    const ms = ev.toolsMs;
+    const fmt = ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+    state.trace.push({ kind: 'lap', text: `工具执行 ${fmt}` });
+    if (state.view === 'trajectory') renderTrajectory();
+  }
+});
+
+// hook.output：Hook 输出回显
+bus.on('hook.output', (ev) => {
+  if (!ev.lines || !ev.lines.length) return;
+  if (ev.sessionId && ev.sessionId !== state.session) return;
+  metaLine(ev.sessionId || state.session, [`📎 ${ev.event || 'hook'}: ${ev.lines[0]}`]);
 });
 
 bus.on('error', (ev) => {
@@ -1084,17 +1517,299 @@ function refreshSessions() {
   }).catch(() => {});
 }
 
+/* ---------------- 斜杠命令 ---------------- */
+const SLASH_COMMANDS = [
+  { name: '/help', desc: '查看所有可用命令' },
+  { name: '/status', desc: '会话状态汇总' },
+  { name: '/context', desc: '上下文用量（消息/token 估算）' },
+  { name: '/clear', desc: '清空当前会话上下文' },
+  { name: '/plan', desc: '切换计划模式（只读调研）' },
+  { name: '/permission', desc: '切换安全权限档位（低/中/高/全量）' },
+  { name: '/model', desc: '查看/切换/添加模型' },
+  { name: '/variants', desc: '切换思考级别（low/medium/high）' },
+  { name: '/undo', desc: '撤销最近的文件修改（all = 全部）' },
+  { name: '/redo', desc: '重做上次撤销（all = 全部）' },
+  { name: '/compact', desc: '手动压缩上下文为摘要' },
+  { name: '/review', desc: '代码审查（typecheck + git diff）' },
+  { name: '/diff', desc: '查看未提交改动' },
+  { name: '/trace', desc: '查看运行轨迹账本' },
+  { name: '/agents', desc: '查看子代理配置与定义' },
+  { name: '/orchestrate', desc: '并行编排（fan-out delegate → 汇总 → 审查）' },
+  { name: '/goal', desc: '目标机制（自动推导验收标准并循环执行）' },
+  { name: '/loop', desc: '/goal 别名' },
+  { name: '/thinking', desc: '切换思考过程显示（展开/折叠）' },
+  { name: '/skill', desc: '技能管理（列出/find/add/show）' },
+  { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
+  { name: '/export', desc: '导出会话为 Markdown' },
+  { name: '/config', desc: '查看配置文件路径' },
+  { name: '/mcp', desc: '管理 MCP 服务器（reconnect 重连）' },
+  { name: '/rename', desc: '修改会话标题' },
+  { name: '/session', desc: '会话管理（列出/恢复/all 全部）' },
+  { name: '/resume', desc: '恢复历史会话（列出/恢复）' },
+  { name: '/doctor', desc: '环境诊断（Node/API/配置）' },
+  { name: '/settings', desc: '打开设置面板' },];
+
+const cmdPalette = $('#cmd-palette');
+const mentionPop = $('#mention-pop');
+let cmdSelIdx = 0;
+let cmdFiltered = [];
+let mentionItems = [];
+let mentionSelIdx = 0;
+let mentionAtPos = -1; // @ 符在输入框中的位置
+
+/* ---------------- @ 提及文件 ---------------- */
+let mentionCache = {};
+let mentionCacheTimer = null;
+async function listMentionCandidates(query) {
+  // 简单防抖：避免每次按键都请求服务器
+  if (mentionCacheTimer) clearTimeout(mentionCacheTimer);
+  const cacheKey = query;
+  if (mentionCache[cacheKey]) return mentionCache[cacheKey];
+  try {
+    const results = await api('/api/files?q=' + encodeURIComponent(query));
+    mentionCache[cacheKey] = results;
+    // 缓存 2s 后过期
+    mentionCacheTimer = setTimeout(() => { delete mentionCache[cacheKey]; }, 2000);
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+let mentionRenderId = 0; // 防止异步竞态
+async function renderMention(query) {
+  const myId = ++mentionRenderId;
+  const items = await listMentionCandidates(query);
+  // 如果在等待期间用户又输入了新字符，丢弃这次结果
+  if (myId !== mentionRenderId) return;
+  mentionItems = items;
+  mentionSelIdx = 0;
+  if (!mentionItems.length) {
+    mentionPop.classList.add('hidden');
+    return;
+  }
+  mentionPop.innerHTML = '';
+  mentionItems.forEach((item, i) => {
+    const row = el('div', 'mention-item' + (i === 0 ? ' selected' : ''));
+    const icon = item.isDir ? '📁' : '📄';
+    const label = item.isDir ? item.name + '/' : item.name;
+    row.innerHTML = '<span class="mention-icon">' + icon + '</span><span class="mention-label">' + esc(label) + '</span>';
+    if (!item.isDir) {
+      const sub = el('span', 'mention-path', item.path);
+      row.appendChild(sub);
+    }
+    row.addEventListener('click', () => {
+      insertMention(item);
+    });
+    mentionPop.appendChild(row);
+  });
+  mentionPop.classList.remove('hidden');
+}
+
+function moveMentionSel(delta) {
+  if (!mentionItems.length) return;
+  mentionSelIdx = (mentionSelIdx + delta + mentionItems.length) % mentionItems.length;
+  const items = mentionPop.querySelectorAll('.mention-item');
+  items.forEach((n, i) => n.classList.toggle('selected', i === mentionSelIdx));
+}
+
+function acceptMention() {
+  if (mentionSelIdx < mentionItems.length) {
+    insertMention(mentionItems[mentionSelIdx]);
+  }
+}
+
+function insertMention(item) {
+  // 从 mentionAtPos+1 到 selectionStart 替换为路径
+  const before = input.value.slice(0, mentionAtPos + 1);
+  const after = input.value.slice(input.selectionStart);
+  const insert = item.path + (item.isDir ? '/' : ' ');
+  input.value = before + insert + after;
+  const newCursor = (before + insert).length;
+  input.setSelectionRange(newCursor, newCursor);
+  mentionPop.classList.add('hidden');
+  mentionItems = [];
+  autoResize();
+  input.focus();
+}
+
+function renderCmdPalette(query) {
+  const q = query.toLowerCase();
+  cmdFiltered = SLASH_COMMANDS.filter((c) =>
+    c.name.toLowerCase().startsWith(q) || c.desc.toLowerCase().includes(q)
+  );
+  cmdSelIdx = 0;
+  if (!cmdFiltered.length) {
+    cmdPalette.classList.add('hidden');
+    return;
+  }
+  cmdPalette.innerHTML = '';
+  cmdFiltered.slice(0, 10).forEach((c, i) => {
+    const item = el('div', 'cmd-item' + (i === 0 ? ' selected' : ''));
+    item.innerHTML = '<span class="cmd-name">' + esc(c.name) + '</span><span class="cmd-desc">' + esc(c.desc) + '</span>';
+    item.addEventListener('click', () => {
+      input.value = c.name + ' ';
+      cmdPalette.classList.add('hidden');
+      autoResize();
+      input.focus();
+    });
+    cmdPalette.appendChild(item);
+  });
+  cmdPalette.classList.remove('hidden');
+}
+
+function moveCmdSel(delta) {
+  const max = Math.min(cmdFiltered.length, 10);
+  if (!max) return;
+  cmdSelIdx = (cmdSelIdx + delta + max) % max;
+  const items = cmdPalette.querySelectorAll('.cmd-item');
+  items.forEach((n, i) => n.classList.toggle('selected', i === cmdSelIdx));
+}
+
+function acceptCmdSel() {
+  const items = cmdPalette.querySelectorAll('.cmd-item');
+  if (cmdSelIdx < items.length) {
+    const name = cmdFiltered[cmdSelIdx].name;
+    input.value = name + ' ';
+    cmdPalette.classList.add('hidden');
+    autoResize();
+  }
+}
+
+function openCmdPanel(lines) {
+  const body = $('#cmd-panel-body');
+  body.innerHTML = '';
+  if (lines.length === 0) {
+    body.appendChild(el('div', 'cmd-empty', '命令执行完成（无输出）'));
+  } else {
+    const pre = el('pre', 'cmd-output');
+    pre.textContent = lines.join('\n');
+    body.appendChild(pre);
+  }
+  $('#cmd-panel').classList.remove('hidden');
+  document.body.classList.add('cmd-open');
+  // 自动滚动到顶部
+  body.scrollTop = 0;
+}
+function closeCmdPanel() {
+  const panel = $('#cmd-panel');
+  panel.style.animation = 'none';
+  panel.style.opacity = '0';
+  panel.style.transform = 'translate(-50%, -52%) scale(.96)';
+  panel.style.transition = 'opacity .15s var(--ease), transform .15s var(--ease)';
+  setTimeout(() => {
+    panel.classList.add('hidden');
+    panel.style.cssText = '';
+    document.body.classList.remove('cmd-open');
+  }, 150);
+}
+$('#btn-close-cmd').addEventListener('click', closeCmdPanel);
+$('#cmd-panel').addEventListener('click', (e) => {
+  if (e.target === $('#cmd-panel')) closeCmdPanel();
+});
+
+async function runSlashCommand(cmd) {
+  // 某些命令在前端直接处理，避免不必要的往返
+  if (cmd === '/settings') {
+    openSettings();
+    return;
+  }
+  // 显示加载状态
+  openCmdPanel([]);
+  $('#cmd-panel-body').innerHTML = '';
+  const loader = el('div', 'cmd-empty');
+  loader.innerHTML = '<span class="spin">' + SPIN[spinIdx % SPIN.length] + '</span> 执行中…';
+  $('#cmd-panel-body').appendChild(loader);
+  // 发送到后端执行
+  try {
+    const result = await api('/api/command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: cmd, sessionId: state.session, background: true }),
+    });
+    if (result.lines && result.lines.length > 0) {
+      openCmdPanel(result.lines);
+    } else {
+      openCmdPanel(['命令已执行。']);
+    }
+    // 某些命令改变了状态/会话列表，刷新
+    const statusCmds = ['/plan', '/permission', '/variants', '/model', '/clear', '/thinking', '/mcp reconnect'];
+    if (statusCmds.some((c) => cmd.startsWith(c))) {
+      refreshStatus().catch(() => {});
+    }
+    const refreshCmds = ['/session', '/resume', '/rename', '/init', '/skill add', '/undo', '/redo', '/compact'];
+    if (refreshCmds.some((c) => cmd.startsWith(c))) {
+      refreshSessions().catch(() => {});
+    }
+    // /session <id> 或 /resume <id>：直接加载会话
+    if (state.session && (cmd.startsWith('/session ') || cmd.startsWith('/resume ')) && !cmd.includes('all') && !cmd.includes('list')) {
+      const arg = cmd.split(/\s+/)[1];
+      if (arg) selectSession(arg).catch(() => {});
+    }
+  } catch (e) {
+    openCmdPanel(['✗ 命令执行失败：' + e.message]);
+  }
+}
+
 /* ---------------- 输入 / 发送 ---------------- */
 const input = $('#input');
 function autoResize() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 200) + 'px';
 }
-input.addEventListener('input', autoResize);
+input.addEventListener('input', () => {
+  autoResize();
+  const text = input.value;
+  // 斜杠命令联想
+  if (text.startsWith('/') && !text.includes('\n')) {
+    renderCmdPalette(text);
+    mentionPop.classList.add('hidden');
+    return;
+  }
+  cmdPalette.classList.add('hidden');
+  // @ 提及文件
+  const atMatch = text.slice(0, input.selectionStart).match(/@([^\s@]*)$/);
+  if (atMatch) {
+    mentionAtPos = input.selectionStart - atMatch[0].length;
+    renderMention(atMatch[1]);
+  } else {
+    mentionPop.classList.add('hidden');
+    mentionItems = [];
+  }
+});
 input.addEventListener('keydown', (e) => {
+  // 斜杠命令 palette 导航
+  if (!cmdPalette.classList.contains('hidden')) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveCmdSel(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveCmdSel(-1); return; }
+    if (e.key === 'Tab') { e.preventDefault(); acceptCmdSel(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); cmdPalette.classList.add('hidden'); return; }
+  }
+  // @ 提及导航
+  if (!mentionPop.classList.contains('hidden')) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionSel(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionSel(-1); return; }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); acceptMention(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); mentionPop.classList.add('hidden'); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    sendMessage();
+    const text = input.value.trim();
+    if (!text) return;
+    // 斜杠命令：直接执行（不发送给 Agent）
+    if (text.startsWith('/')) {
+      cmdPalette.classList.add('hidden');
+      input.value = '';
+      autoResize();
+      runSlashCommand(text);
+      return;
+    }
+    if (state.running) {
+      if (e.metaKey || e.ctrlKey) steerMessage(text);
+      else queueMessage(text);
+    } else {
+      sendMessage();
+    }
   }
 });
 document.addEventListener('keydown', (e) => {
@@ -1106,9 +1821,13 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     $('#session-search').focus();
   } else if (e.key === 'Escape') {
+    const anyPopOpen = ['#permission-pop', '#add-menu', '#project-pop', '#location-pop', '#branch-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
+    if (anyPopOpen) { closeAllComposerPops(); return; }
     if (!$('#dirpicker-modal').classList.contains('hidden')) closeDirPicker();
-    else if (!$('#model-pop').classList.contains('hidden')) closeModelPop();
     else if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
+    else if (!$('#cmd-panel').classList.contains('hidden')) closeCmdPanel();
+    else if (cmdPalette && !cmdPalette.classList.contains('hidden')) cmdPalette.classList.add('hidden');
+    else if (mentionPop && !mentionPop.classList.contains('hidden')) mentionPop.classList.add('hidden');
     else if ($('#app').classList.contains('sidebar-open')) $('#app').classList.remove('sidebar-open');
     else if (state.detailsOpen) {
       state.detailsOpen = false;
@@ -1117,9 +1836,8 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-async function sendMessage() {
-  const text = input.value.trim();
-  if (!text || state.running) return;
+/* 纯发送（不检查 running 状态，由调用方保证） */
+async function doSend(text) {
   input.value = '';
   autoResize();
   state.running = true;
@@ -1127,7 +1845,6 @@ async function sendMessage() {
   updateComposer();
   updateStatusText();
   try {
-    // 懒创建：草稿态（未选会话）下首条消息才真正创建会话文件
     if (!state.session) {
       const data = await api('/api/sessions', { method: 'POST' });
       state.session = data.id;
@@ -1146,6 +1863,41 @@ async function sendMessage() {
     if (state.session) metaLine(state.session, [`✗ 发送失败：${e.message}`]);
     updateComposer();
     updateStatusText();
+  }
+}
+
+/* 空闲发送 */
+function sendMessage() {
+  const text = input.value.trim();
+  if (!text) return;
+  if (state.running) return; // 运行中不再发送（用独立停止按钮）
+  doSend(text);
+}
+
+/* 运行中 Enter → 入队 */
+function queueMessage(text) {
+  state.messageQueue.push(text);
+  input.value = '';
+  autoResize();
+  updateComposer();
+}
+
+/* 运行中 Cmd/Ctrl+Enter → steer（打断，插入当前轮） */
+function steerMessage(text) {
+  input.value = '';
+  autoResize();
+  updateComposer();
+  if (state.session) {
+    // 调用 steer 端点：服务端写入 interruptPending + abort，loop 取走消息插入同一轮
+    api(`/api/sessions/${state.session}/steer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).catch(() => {
+      // steer 失败则回退为取消 + 排队
+      state.steerText = text;
+      api(`/api/sessions/${state.session}/cancel`, { method: 'POST' }).catch(() => {});
+    });
   }
 }
 
@@ -1176,11 +1928,54 @@ $('#composer-model').addEventListener('click', (e) => {
   if (pop.classList.contains('hidden')) openModelPop();
   else closeModelPop();
 });
+$('#btn-attach').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#add-menu');
+  if (pop.classList.contains('hidden')) { renderAddMenu(); pop.classList.remove('hidden'); }
+  else pop.classList.add('hidden');
+  // 关闭其它
+  $('#permission-pop').classList.add('hidden');
+  $('#model-pop').classList.add('hidden');
+});
+$('#btn-permission').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#permission-pop');
+  if (pop.classList.contains('hidden')) { renderPermissionPop(); pop.classList.remove('hidden'); }
+  else pop.classList.add('hidden');
+  $('#add-menu').classList.add('hidden');
+  $('#model-pop').classList.add('hidden');
+});
+$('#ctx-project').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#project-pop');
+  if (pop.classList.contains('hidden')) { renderProjectPop(); pop.classList.remove('hidden'); }
+  else pop.classList.add('hidden');
+  $('#location-pop').classList.add('hidden');
+  $('#branch-pop').classList.add('hidden');
+});
+$('#ctx-location').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#location-pop');
+  if (pop.classList.contains('hidden')) { renderLocationPop(); pop.classList.remove('hidden'); }
+  else pop.classList.add('hidden');
+  $('#project-pop').classList.add('hidden');
+  $('#branch-pop').classList.add('hidden');
+});
+$('#ctx-branch').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#branch-pop');
+  if (pop.classList.contains('hidden')) { renderBranchPop(); pop.classList.remove('hidden'); }
+  else pop.classList.add('hidden');
+  $('#project-pop').classList.add('hidden');
+  $('#location-pop').classList.add('hidden');
+});
 
 /* ---------------- 模型 / 思考级别 popover（composer 内联切换） ---------------- */
 function openModelPop() {
   renderModelPop(state.status || {});
   $('#model-pop').classList.remove('hidden');
+  $('#permission-pop').classList.add('hidden');
+  $('#add-menu').classList.add('hidden');
 }
 
 function closeModelPop() {
@@ -1191,36 +1986,92 @@ function renderModelPop(s) {
   const pop = $('#model-pop');
   if (!pop) return;
   pop.innerHTML = '';
-
-  // —— 模型（下拉选择）——
-  pop.appendChild(el('div', 'pop-head', '模型'));
-  const sel = document.createElement('select');
-  sel.className = 'pop-select';
+  // 按截图布局：两行条目（模型 / 推理强度）+ 可折叠高级
   const models = Array.isArray(s.models) ? s.models : [];
-  for (const m of models) {
-    const o = document.createElement('option');
-    o.value = m.name;
-    o.textContent = m.baseURL && !m.baseURL.includes('api.openai.com') ? `${m.name} · ${m.baseURL}` : m.name;
-    if (m.name === s.model) o.selected = true;
-    sel.appendChild(o);
-  }
-  sel.addEventListener('change', () => {
-    applySettings({ model: sel.value })
-      .then(() => renderModelPop(state.status || {}))
-      .catch((err) => alert(`切换失败：${err.message}`));
-  });
-  pop.appendChild(sel);
-
-  // —— 思考级别（slider 滑杆，离散档位）——
+  const cur = models.find((m) => m.name === s.model);
   const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
-  if (efforts.length) {
-    pop.appendChild(el('div', 'pop-sep'));
-    const headRow = el('div', 'pop-head-row');
-    headRow.appendChild(el('div', 'pop-head', '思考级别'));
+  const row = (label, value, onClick) => {
+    const b = el('button', 'model-pop-row');
+    b.type = 'button';
+    b.appendChild(el('span', 'mpr-label', label));
+    const rv = el('span', 'mpr-value', value);
+    b.appendChild(rv);
+    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ic.setAttribute('class', 'mpr-chev');
+    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u.setAttribute('href', '#i-chevron-right');
+    ic.appendChild(u);
+    b.appendChild(ic);
+    if (onClick) b.addEventListener('click', onClick);
+    return b;
+  };
+  // 模型行：点击展开子菜单（简化为直接在原位展开选择器）
+  const modelVal = s.model || '—';
+  const modelRow = row('模型', modelVal, () => {
+    // 展开模型选择子列表
+    pop.innerHTML = '';
+    pop.appendChild(el('div', 'pop-head', '选择模型'));
+    models.forEach((m) => {
+      const it = el('button', 'pop-item' + (m.name === s.model ? ' active' : ''));
+      it.type = 'button';
+      it.appendChild(el('span', 'pop-name', m.name));
+      if (m.baseURL && !m.baseURL.includes('api.openai.com')) it.appendChild(el('span', 'pop-sub', m.baseURL));
+      if (m.name === s.model) {
+        const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        ck.setAttribute('class', 'pop-check');
+        const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        cu.setAttribute('href', '#i-check');
+        ck.appendChild(cu);
+        it.appendChild(ck);
+      }
+      it.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applySettings({ model: m.name }).then(() => { closeModelPop(); }).catch((err) => alert(`切换失败：${err.message}`));
+      });
+      pop.appendChild(it);
+    });
+  });
+  pop.appendChild(modelRow);
+  const effVal = s.reasoningEffort || efforts[0] || '—';
+  const effRow = row('推理强度', effVal, () => {
+    if (!efforts.length) return;
+    pop.innerHTML = '';
+    pop.appendChild(el('div', 'pop-head', '推理强度'));
+    efforts.forEach((eff) => {
+      const it = el('button', 'pop-item' + (eff === s.reasoningEffort ? ' active' : ''));
+      it.type = 'button';
+      it.appendChild(el('span', 'pop-name', eff));
+      if (eff === s.reasoningEffort) {
+        const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        ck.setAttribute('class', 'pop-check');
+        const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        cu.setAttribute('href', '#i-check');
+        ck.appendChild(cu);
+        it.appendChild(ck);
+      }
+      it.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applySettings({ reasoningEffort: eff }).then(() => closeModelPop()).catch((err) => alert(`设置失败：${err.message}`));
+      });
+      pop.appendChild(it);
+    });
+  });
+  pop.appendChild(effRow);
+  // 高级折叠
+  const adv = el('button', 'model-pop-adv');
+  adv.type = 'button';
+  adv.innerHTML = '高级 <svg class="chev"><use href="#i-chevron-up"/></svg>';
+  let advOpen = false;
+  const advBody = el('div', 'model-pop-adv-body hidden');
+  // 高级内容：显示当前模型端点与 slider 备用（可复用原 slider 作为高级设置）
+  if (efforts.length > 1) {
+    const sliderWrap = el('div', 'pop-adv-slider');
+    sliderWrap.appendChild(el('div', 'pop-head', '思考级别（精细调节）'));
     const val = el('span', 'pop-val', s.reasoningEffort || efforts[0]);
+    const headRow = el('div', 'pop-head-row');
+    headRow.appendChild(el('div', 'pop-head', ''));
     headRow.appendChild(val);
-    pop.appendChild(headRow);
-
+    sliderWrap.appendChild(headRow);
     const idx = Math.max(0, efforts.indexOf(s.reasoningEffort));
     const range = document.createElement('input');
     range.type = 'range';
@@ -1230,36 +2081,47 @@ function renderModelPop(s) {
     range.step = '1';
     range.value = String(idx);
     let applied = idx;
-    // input：拖动时仅更新数值标签；change：松手才落盘（失败回弹）
-    range.addEventListener('input', () => {
-      val.textContent = efforts[Number(range.value)] ?? '';
-    });
+    range.addEventListener('input', () => { val.textContent = efforts[Number(range.value)] ?? ''; });
     range.addEventListener('change', () => {
       const pos = Number(range.value);
       const v = efforts[pos];
       if (pos === applied || !v) return;
-      applySettings({ reasoningEffort: v })
-        .then(() => {
-          applied = pos;
-        })
-        .catch((err) => {
-          alert(`设置失败：${err.message}`);
-          range.value = String(applied);
-          val.textContent = efforts[applied];
-        });
+      applySettings({ reasoningEffort: v }).then(() => { applied = pos; closeModelPop(); }).catch((err) => { alert(`设置失败：${err.message}`); range.value = String(applied); val.textContent = efforts[applied]; });
     });
-    pop.appendChild(range);
+    sliderWrap.appendChild(range);
     const ticks = el('div', 'pop-ticks');
     efforts.forEach((t) => ticks.appendChild(el('span', null, t)));
-    pop.appendChild(ticks);
+    sliderWrap.appendChild(ticks);
+    advBody.appendChild(sliderWrap);
   }
+  if (cur?.baseURL) {
+    const ep = el('div', 'pop-head', `端点 ${cur.baseURL}`);
+    ep.style.fontSize = '11px';
+    advBody.appendChild(ep);
+  }
+  adv.addEventListener('click', (e) => {
+    e.stopPropagation();
+    advOpen = !advOpen;
+    advBody.classList.toggle('hidden', !advOpen);
+    adv.querySelector('svg').style.transform = advOpen ? 'rotate(180deg)' : '';
+  });
+  pop.appendChild(adv);
+  pop.appendChild(advBody);
 }
 
-/* 点击 popover 外关闭 */
+/* 点击 popover 外关闭（统一处理所有 composer 相关 pop） */
 document.addEventListener('click', (e) => {
-  const pop = $('#model-pop');
-  const face = $('#composer-model');
-  if (!pop.classList.contains('hidden') && !pop.contains(e.target) && !face.contains(e.target)) closeModelPop();
+  const target = e.target;
+  const inside = (sel) => {
+    const n = $(sel);
+    return n && (n.contains(target) || (n.previousElementSibling && n.previousElementSibling.contains && n.previousElementSibling.contains(target)));
+  };
+  // 统一关闭逻辑：若点击不在任何 pop/触发器内则全关
+  const pops = ['#model-pop', '#permission-pop', '#add-menu', '#project-pop', '#location-pop', '#branch-pop'];
+  const triggers = ['#composer-model', '#btn-permission', '#btn-attach', '#ctx-project', '#ctx-location', '#ctx-branch'];
+  const hitPop = pops.some((sel) => { const n = $(sel); return n && n.contains(target); });
+  const hitTrig = triggers.some((sel) => { const n = $(sel); return n && n.contains(target); });
+  if (!hitPop && !hitTrig) closeAllComposerPops();
 });
 $('#btn-close-settings').addEventListener('click', () => {
   closeSettings();
@@ -1396,6 +2258,13 @@ $('#messages').addEventListener('click', (e) => {
     else renderWelcome();
   } catch (e) { renderWelcome(); }
 })();
+
+/* 退出时触发 autoMemory（用 sendBeacon 保证页面关闭时仍能发送） */
+window.addEventListener('beforeunload', () => {
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon('/api/finalize');
+  }
+});
 
 /* spinner 动画 */
 setInterval(() => {

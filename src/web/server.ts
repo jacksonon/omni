@@ -17,6 +17,7 @@
  * （bundle 单文件发布时无需外部文件）。
  */
 import http from 'node:http';
+import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import { rm } from 'node:fs/promises';
@@ -26,15 +27,17 @@ import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 import { createClient } from '../client.js';
-import { prepareContext } from '../agent/context.js';
+import { prepareContext, summarizeContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { EventRecorder } from '../agent/events.js';
 import { generateSessionTitle } from '../agent/title.js';
+import { buildTraceTextLines } from '../agent/trace.js';
 import {
   appendSessionMessages,
   createSession,
   finalizeSession,
   findSessionById,
+  findSessionCandidates,
   isPersistable,
   listSessions,
   loadSession,
@@ -44,10 +47,49 @@ import {
   sessionsDir,
   updateSessionTitle,
 } from '../agent/session.js';
+import {
+  captureCommand,
+  collectDiff,
+  detectCheckCommand,
+  reviewCode,
+} from '../agent/review.js';
+import {
+  configReport,
+  contextReport,
+  detectScaffolds,
+  doctorReport,
+  exportSession,
+  statusReport,
+} from '../agent/report.js';
+import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
+import {
+  discoverSkills,
+  loadSkillContent,
+  parseSkillFindResults,
+  runSkillsCli,
+} from '../agent/skill.js';
+import {
+  findProjectRoot,
+  generateAgentsFile,
+  generateGlobalAgentsFile,
+  writeAgentsFile,
+  writeGlobalAgentsFile,
+} from '../agent/init.js';
+import { applyUndo } from '../tools/undo.js';
+import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
 import { attachRuntime, prepareRun } from '../main.js';
-import type { ConfigOverrides } from '../config/index.js';
-import { persistWebWorkspaceToConfig, removeWebWorkspaceFromConfig } from '../config/write.js';
+import type { ConfigOverrides, OmniConfig } from '../config/index.js';
+import { maybeWriteGlobalMemory } from '../agent/memory.js';
+import {
+  parseModelAddArgs,
+  persistModelDefaultToConfig,
+  persistModelToConfig,
+  persistReasoningEffortToConfig,
+  persistWebWorkspaceToConfig,
+  removeWebWorkspaceFromConfig,
+} from '../config/write.js';
+import type { PermissionTier } from '../safety/policy.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -229,8 +271,34 @@ function maybeAutoTitle(s: WebSession, client: OpenAI, model: string): void {
     });
 }
 
+/* ---------------- git 快照（分支 / 脏文件数 / 分支列表，供输入区上下文条展示） ---------------- */
+function getGitInfo(cwd: string): { gitBranch?: string; gitDirty?: number; gitBranches?: string[] } {
+  try {
+    if (!existsSync(path.join(cwd, '.git')) && !existsSync(path.join(cwd, '..', '.git'))) {
+      // 向上最多两层查找 git 根，避免大量无 git 目录的开销；失败则直接返回
+      execSync('git rev-parse --git-dir', { cwd, encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] });
+    }
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (!branch) return {};
+    let dirty = 0;
+    try {
+      const st = execSync('git status --porcelain', { cwd, encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] });
+      dirty = st.split('\n').filter((l) => l.trim()).length;
+    } catch {}
+    let branches: string[] = [];
+    try {
+      const out = execSync('git branch --format="%(refname:short)"', { cwd, encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] });
+      branches = out.split('\n').map((s) => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
+    } catch {}
+    return { gitBranch: branch, gitDirty: dirty, gitBranches: branches.length ? branches : [branch] };
+  } catch {
+    return {};
+  }
+}
+
 /* ---------------- 状态快照 ---------------- */
 function buildStatus(runOpts: RunContext['runOpts']): Record<string, unknown> {
+  const git = getGitInfo(process.cwd());
   return {
     version: VERSION,
     cwd: process.cwd(),
@@ -245,6 +313,7 @@ function buildStatus(runOpts: RunContext['runOpts']): Record<string, unknown> {
     tools: runOpts.tools?.map((t) => t.name) ?? [],
     // 已知工作区列表（设置面板一键切换用）
     workspaces: runOpts.cfg?.webWorkspaces ?? [],
+    ...git,
   };
 }
 
@@ -274,6 +343,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
   };
 
+  /** steer 打断槽（模块级，供 POST /api/sessions/:id/steer 直接写入） */
+  let interruptText: string | null = null;
+
   /** 发送消息 → 启动一轮 Agent 运行（后台执行，事件经 SSE 推送） */
   async function sendMessage(sessionId: string, text: string): Promise<{ error?: string }> {
     const s = sessions.get(sessionId);
@@ -294,6 +366,20 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     runOpts.takeInterrupt = undefined;
     runOpts.rearmAbort = undefined;
     runOpts.interruptPending = undefined;
+    interruptText = null;
+    // steer 打断槽：前端 POST /api/sessions/:id/steer → 写入 interruptText + abort
+    // loop 在流中/工具中 abort 后取走 interruptText，插入同一轮继续
+    runOpts.takeInterrupt = () => {
+      const t = interruptText;
+      interruptText = null;
+      return t;
+    };
+    runOpts.interruptPending = () => interruptText !== null;
+    runOpts.rearmAbort = () => {
+      const newController = new AbortController();
+      running = { sessionId, controller: newController };
+      runOpts.abortSignal = newController.signal;
+    };
 
     const output = new WebOutput(sessionId, broadcast, pendingRegistry);
     currentOutput = output;
@@ -362,6 +448,440 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
     broadcast('status', buildStatus(runOpts));
     return true;
+  }
+
+  /** 切换工作目录（chdir + 重建 ctx/runOpts），失败回滚并抛出。
+   *  供 /api/workspace、/api/git/worktree 与 /api/workspace/remove 共用。 */
+  async function switchWorkspaceInternal(dir: string): Promise<void> {
+    const prev = process.cwd();
+    try {
+      process.chdir(dir);
+      const newCtx = prepareRun(overrides);
+      const oldMcp = (runOpts as { mcpServers?: unknown }).mcpServers;
+      if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
+        await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
+      }
+      await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
+      ctx.cfg = newCtx.cfg;
+      Object.assign(runOpts, newCtx.runOpts);
+      cfg = newCtx.cfg;
+    } catch (e) {
+      try {
+        if (prev) process.chdir(prev);
+      } catch {
+        // 回滚失败（极少）——保持现状
+      }
+      throw e;
+    }
+  }
+
+  /** 执行 / 命令（复用 CLI 全部命令逻辑），返回输出行数组。
+   *  s = null 表示无会话上下文（/status /model /config 等仍可用）。 */
+  async function runSlashCommand(
+    cmd: string,
+    s: WebSession | null,
+  ): Promise<{ lines: string[] }> {
+    const lines: string[] = [];
+    const client = runOpts.modelRuntime?.client;
+    const model = runOpts.modelRuntime?.model ?? cfg.model;
+    const messages = s?.messages ?? [];
+
+    const add = (t: string) => lines.push(t);
+
+    // -- 不需要 LLM 的命令 --
+
+    if (cmd === '/help') {
+      add('可用命令：/status /context /export /config /diff /doctor /trace /agents');
+      add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
+      add('/skill [find|add|show] /compact /review /rename /session /resume /mcp /init');
+      add('/orchestrate /goal /settings /help');
+      return { lines };
+    }
+
+    if (cmd === '/clear') {
+      if (!s) { add('（无当前会话）'); return { lines }; }
+      s.messages.length = 0;
+      s.persisted = 0;
+      runOpts.hooks?.resetSessionStart();
+      // 广播 clear 事件 → 前端清空消息流
+      for (const l of listeners) l('clear', { sessionId: s.id });
+      add('已清空上下文，开始新一轮对话。');
+      return { lines };
+    }
+
+    if (cmd === '/plan') {
+      runOpts.planMode = !runOpts.planMode;
+      add(runOpts.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。');
+      return { lines };
+    }
+
+    if (cmd === '/thinking') {
+      // /thinking：全局切换思考块显示模式（展开/折叠）
+      const ctx = runOpts.context as Record<string, unknown>;
+      const thinkingHidden = ctx.thinkingHidden ?? false;
+      ctx.thinkingHidden = !thinkingHidden;
+      // 广播状态让前端同步
+      for (const l of listeners) l('thinking.toggle', { sessionId: s?.id ?? null, hidden: !thinkingHidden });
+      add(thinkingHidden ? '已展开全部思考过程。' : '已折叠全部思考过程（点击可展开单条）。');
+      return { lines };
+    }
+
+    if (cmd === '/permission' || cmd.startsWith('/permission ')) {
+      const want = cmd.slice('/permission'.length).trim();
+      const PERMS: Record<string, PermissionTier> = { 低: 'read', 中: 'safe', 高: 'ask', 全量: 'full', read: 'read', safe: 'safe', ask: 'ask', full: 'full' };
+      const LABEL: Record<string, string> = { read: '低（只读）', safe: '中（标准）', ask: '高（谨慎）', full: '全量（直通）' };
+      if (!want) {
+        add(`当前安全权限：${LABEL[runOpts.permission ?? 'safe']}（/permission 低|中|高|全量 切换）`);
+      } else {
+        const next = PERMS[want];
+        if (!next) { add(`未知权限「${want}」——可选：低=只读 / 中=标准 / 高=谨慎 / 全量=直通`); }
+        else { runOpts.permission = next; runOpts.safetyGate?.setTier(next); add(`已切换安全权限 → ${LABEL[next]}`); }
+      }
+      return { lines };
+    }
+
+    if (cmd === '/undo' || cmd.startsWith('/undo ')) {
+      const stack = runOpts.undoStack;
+      if (!stack || stack.size === 0) { add('没有可撤销的写操作。'); return { lines }; }
+      const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
+      if (all) {
+        const entries = await stack.popAllForUndo();
+        const results: string[] = [];
+        for (const e of entries) results.push(await applyUndo(e).catch(() => `撤销失败：${e.path}`));
+        add(`已撤销全部 ${results.length} 个写操作`);
+        for (const r of results) add(`· ${r}`);
+        messages.push({ role: 'system', content: `[已执行 /undo all] 本次会话 ${results.length} 个文件修改已全部回滚。` });
+      } else {
+        const entry = await stack.popForUndo();
+        if (!entry) return { lines };
+        const msg = await applyUndo(entry).catch(() => `撤销失败：${entry.path}`);
+        add(stack.size > 0 ? `${msg}（还有 ${stack.size} 个可撤销，/undo all 全部撤销）` : `${msg}（无更多可撤销）`);
+        messages.push({ role: 'system', content: `[已执行 /undo] ${msg}。` });
+      }
+      return { lines };
+    }
+
+    if (cmd === '/redo' || cmd.startsWith('/redo ')) {
+      const stack = runOpts.undoStack;
+      if (!stack || stack.redoSize === 0) { add('没有可重做的操作。'); return { lines }; }
+      const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
+      if (all) {
+        const entries = stack.redoAll();
+        const results: string[] = [];
+        for (const e of entries) results.push(await applyUndo(e).catch(() => `重做失败：${e.path}`));
+        add(`已重做全部 ${results.length} 个操作`);
+        for (const r of results) add(`· ${r}`);
+        messages.push({ role: 'system', content: `[已执行 /redo all] 已恢复 ${results.length} 个被撤销的写操作。` });
+      } else {
+        const entry = stack.redo();
+        if (!entry) return { lines };
+        const msg = await applyUndo(entry).catch(() => `重做失败：${entry.path}`);
+        add(stack.redoSize > 0 ? `${msg}（还有 ${stack.redoSize} 个可重做）` : `${msg}（无更多可重做）`);
+        messages.push({ role: 'system', content: `[已执行 /redo] ${msg}。` });
+      }
+      return { lines };
+    }
+
+    if (cmd === '/status') {
+      for (const l of statusReport({
+        model, permission: runOpts.permission ?? 'safe',
+        planMode: runOpts.planMode ?? false, reasoningEffort: runOpts.reasoningEffort,
+        sessionPath: runOpts.sessionPath, scaffolds: detectScaffolds(messages),
+      })) add(l);
+      return { lines };
+    }
+
+    if (cmd === '/context') {
+      for (const l of contextReport(messages, cfg.summarizeAt ?? 40)) add(l);
+      return { lines };
+    }
+
+    if (cmd === '/export') {
+      const file = exportSession(messages, process.cwd());
+      add(file ? `已导出会话 → ${file}（${messages.length} 条消息）` : '导出失败（无法写入 .omni/ 目录）');
+      return { lines };
+    }
+
+    if (cmd === '/config') {
+      for (const l of configReport(cfg)) add(l);
+      return { lines };
+    }
+
+    if (cmd === '/diff') {
+      add('正在收集 git diff…');
+      const d = await collectDiff();
+      if (!d.ok) add(`无法获取 git diff：${d.output.slice(0, 200)}`);
+      else if (d.output === '（无改动）') add('工作区没有未提交的改动');
+      else {
+        const dlines = d.output.split('\n');
+        add(`git diff（${dlines.length} 行，前 60 行）：`);
+        for (const l of dlines.slice(0, 60)) add(l);
+        if (dlines.length > 60) add(`… 还有 ${dlines.length - 60} 行`);
+      }
+      return { lines };
+    }
+
+    if (cmd === '/doctor') {
+      add('正在诊断环境…');
+      for (const l of await doctorReport(cfg)) add(l);
+      return { lines };
+    }
+
+    if (cmd === '/trace') {
+      const events = runOpts.events?.events ?? [];
+      if (events.length === 0) {
+        add('暂无轨迹——开始对话后这里会记录每一轮请求/工具/消息');
+      } else {
+        add(`轨迹账本（${events.length} 条事件）：`);
+        for (const l of buildTraceTextLines(events, { full: true })) add(l);
+      }
+      return { lines };
+    }
+
+    if (cmd === '/agents' || cmd.startsWith('/agents ')) {
+      const showName = cmd.slice('/agents'.length).trim();
+      if (showName) {
+        const defs = runOpts.subagents ?? [];
+        const def = defs.find((d) => d.name === showName);
+        if (!def) { add(`未找到子代理定义「${showName}」`); return { lines }; }
+        add(`子代理：${def.name} — ${def.description}`);
+        add(`· 模型：${def.model ?? '（继承）'} · 权限：${def.permission ?? '（继承）'}`);
+        add(`· 工具：${def.tools?.join('、') || '（全部默认）'} · 技能：${def.skills?.join('、') || '（无）'}`);
+        add(`· 步数上限：${def.maxSteps ?? '（继承）'} · 定义文件：${def.path}`);
+        for (const l of def.instructions.split('\n')) add(`  ${l}`);
+      } else {
+        const tools = runOpts.tools ?? [];
+        const hasDelegate = tools.some((t) => t.name === 'delegate');
+        add(`子代理：${hasDelegate ? '已启用' : '未启用'} · 模型：${model}`);
+        add(`· 最大步数：${runOpts.maxSubagentSteps ?? 10} · 最大嵌套深度：${runOpts.maxSubagentDepth ?? 5}`);
+        const defs = runOpts.subagents ?? [];
+        if (defs.length > 0) { add(`· 已定义子代理（${defs.length}）：`); for (const d of defs) add(`  · ${d.name} — ${d.description}`); }
+        else add('· 已定义子代理：无');
+      }
+      return { lines };
+    }
+
+    if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
+      const servers = runOpts.mcpServers ?? {};
+      const names = Object.keys(servers);
+      if (names.length === 0) { add('未配置 MCP 服务器（配置文件 mcpServers 字段）'); return { lines }; }
+      const mcpToolNames = (runOpts.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
+      add(`已配置 ${names.length} 个服务器：${names.join('、')} · 工具：${mcpToolNames.length > 0 ? mcpToolNames.map((t) => t.name).join('、') : '（无）'}`);
+      if (/(?:^|\s)reconnect(?=\s|$)/.test(cmd)) {
+        add('正在重连 MCP…');
+        closeMcpClients();
+        const mcp = await discoverMcpTools(runOpts.mcpServers);
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
+        add(`已重连（当前 ${runOpts.tools.length} 个工具）`);
+      } else { add('用 /mcp reconnect 重连。'); }
+      return { lines };
+    }
+
+    if (cmd === '/rename' || cmd.startsWith('/rename ')) {
+      const title = cmd.slice('/rename'.length).trim();
+      if (!title) { add('用法：/rename <标题>'); return { lines }; }
+      if (s) { s.title = title; if (s.file) await updateSessionTitle(s.file, title).catch(() => {}); }
+      add(`会话标题已改为「${title}」`);
+      return { lines };
+    }
+
+    if (cmd === '/session' || cmd.startsWith('/session ')) {
+      const arg = cmd.slice('/session'.length).trim();
+      const isAll = arg === 'all' || arg === 'list';
+      if (!arg || isAll) {
+        const list = await listSessions(isAll ? undefined : process.cwd());
+        if (list.length === 0) { add(isAll ? '没有已保存的会话' : '当前目录没有历史会话'); }
+        else { add(isAll ? `已保存 ${list.length} 个会话：` : `当前目录 ${list.length} 个会话：`); for (const x of list.slice(0, 20)) add(`· ${x.id} — ${x.title || '（无标题）'}（${x.messages} 条）`); }
+      } else {
+        const cands = await findSessionCandidates(arg);
+        if (cands.length === 0) { add(`会话「${arg}」不存在`); }
+        else if (cands.length > 1) { add(`「${arg}」匹配 ${cands.length} 个会话，请用完整 id`); for (const c of cands.slice(0, 9)) add(`· ${c.id}`); }
+        else { add(`已找到会话 ${cands[0].id}（${cands[0].messages} 条消息）——侧栏点击恢复。`); }
+      }
+      return { lines };
+    }
+
+    if (cmd === '/resume' || cmd.startsWith('/resume ')) {
+      const arg = cmd.slice('/resume'.length).trim();
+      if (!arg) { const list = await listSessions(); add(`已保存 ${list.length} 个会话（/resume <id> 恢复）：`); for (const x of list.slice(0, 15)) add(`· ${x.id} — ${x.title || '（无标题）'}（${x.messages} 条）`); }
+      else { const cands = await findSessionCandidates(arg); if (cands.length === 0) add(`会话「${arg}」不存在`); else add(`已找到会话 ${cands[0].id}——侧栏点击恢复。`); }
+      return { lines };
+    }
+
+    if (cmd === '/variants' || cmd.startsWith('/variants ')) {
+      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high'];
+      const want = cmd.slice('/variants'.length).trim();
+      if (!want) { add(`当前思考级别：${runOpts.reasoningEffort ?? '（未设置）'}（可选：${opts.join(' / ')}）`); }
+      else if (!opts.includes(want)) { add(`未知思考级别「${want}」——可选：${opts.join(' / ')}`); }
+      else {
+        runOpts.reasoningEffort = want;
+        add(`已切换思考级别 → ${want}`);
+        const res = persistReasoningEffortToConfig(want, cfg, model);
+        add(res.message);
+      }
+      return { lines };
+    }
+
+    if (cmd === '/model' || cmd.startsWith('/model ')) {
+      const want = cmd.slice('/model'.length).trim();
+      const models = runOpts.models ?? [];
+      if (!want) {
+        add(`当前模型：${model}（可用：${models.map((m) => m.name).join(' / ')}）`);
+      } else if (want.startsWith('add')) {
+        const parsed = parseModelAddArgs(want.slice(3));
+        if (!parsed.ok) { add(parsed.error); return { lines }; }
+        const endpoint = {
+          name: parsed.name, baseURL: parsed.baseURL ?? cfg.baseURL,
+          apiKey: parsed.apiKey ?? cfg.apiKey, userAgent: parsed.userAgent ?? cfg.userAgent,
+          reasoningEffortOptions: cfg.reasoningEffortOptions, reasoningEffort: cfg.reasoningEffort,
+        };
+        const existing = models.find((m) => m.name === parsed.name);
+        if (existing) Object.assign(existing, endpoint);
+        else runOpts.models = [...models, endpoint];
+        if (await switchModel(parsed.name)) add(`已添加并切换模型 → ${parsed.name}`);
+        else add(`切换失败：${parsed.name}`);
+        const res = persistModelToConfig(parsed.name, { baseURL: parsed.baseURL, apiKey: parsed.apiKey, userAgent: parsed.userAgent }, cfg);
+        add(res.message);
+      } else {
+        const ep = models.find((m) => m.name === want);
+        if (!ep) { add(`未知模型「${want}」`); }
+        else if (want === model) { add(`已是当前模型 ${want}`); }
+        else {
+          if (await switchModel(want)) {
+            add(`已切换模型 → ${want}`);
+            const res = persistModelDefaultToConfig(want, cfg);
+            add(res.message);
+          } else { add(`切换失败：${want}`); }
+        }
+      }
+      return { lines };
+    }
+
+    // -- 需要 LLM 的命令（无 client 时提示）--
+
+    if (!client) {
+      add('此命令需要可用的模型客户端（当前未配置模型端点）。');
+      return { lines };
+    }
+
+    if (cmd === '/compact') {
+      const before = messages.length;
+      await summarizeContext(client, model, messages, { summarizeAt: 1, summarizeWindow: 8 }, runOpts.events);
+      add(messages.length < before ? `已压缩 ${before - messages.length} 条旧消息为摘要。` : '上下文还很短，无需压缩。');
+      return { lines };
+    }
+
+    if (cmd === '/review') {
+      add('正在收集改动并运行 typecheck…');
+      const checkCmd = detectCheckCommand();
+      const check = checkCmd ? { command: checkCmd, output: (await captureCommand(checkCmd, 120_000)).output } : { command: null, output: '（无脚本）' };
+      const diff = await collectDiff();
+      if (!diff.ok) { add(`无法获取 git diff：${diff.output.slice(0, 200)}`); return { lines }; }
+      if (diff.output === '（无改动）') { add('工作区没有改动可审查。'); return { lines }; }
+      add(`typecheck：${check.output === '（无输出）' ? '通过' : check.output.split('\n').slice(0, 3).join(' · ')}`);
+      const review = await reviewCode(client, model, diff.output, { command: check.command, output: check.output });
+      if (!review) { add('审查失败（网络/API 问题），请重试。'); }
+      else { add(`审查结果（${diff.output.length} 字符改动）：`); for (const l of review.split('\n')) add(l); }
+      return { lines };
+    }
+
+    if (cmd === '/init' || cmd.startsWith('/init ')) {
+      const isGlobal = /(?:^|\s)--global(?=\s|$)/.test(cmd);
+      if (isGlobal) {
+        add('正在扫描用户环境并生成全局记忆 AGENTS.md…');
+        const content = await generateGlobalAgentsFile(client, model);
+        if (!content) { add('生成失败（网络/API 问题），请重试。'); return { lines }; }
+        const res = await writeGlobalAgentsFile(content);
+        add(res.ok ? `已生成全局记忆 ${res.path}` : `已存在 ${res.path}，/init --global 不覆盖。`);
+      } else {
+        const root = findProjectRoot(process.cwd());
+        add(`正在扫描项目并生成 AGENTS.md（项目根：${root}）…`);
+        const content = await generateAgentsFile(client, model, root);
+        if (!content) { add('生成失败（网络/API 问题），请重试。'); return { lines }; }
+        const res = await writeAgentsFile(root, content);
+        add(res.ok ? `已生成 ${res.path}` : `已存在 ${res.path}，/init 不覆盖。`);
+      }
+      return { lines };
+    }
+
+    if (cmd === '/orchestrate' || cmd.startsWith('/orchestrate ')) {
+      if (!runOpts.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
+      try {
+        const { combined, review } = await runOrchestrate(cmd.slice('/orchestrate'.length).trim(), runOpts.subagents, {
+          client, model, runOpts,
+          log: (t) => add(t),
+          onSubagentEvent: (ev) => { /* 静默，不阻塞 */ },
+        });
+        add('═══ 综合结果 ═══'); for (const l of combined.split('\n')) add(l);
+        add('═══ 对抗审查 ═══'); for (const l of review.split('\n')) add(l);
+      } catch (err) { add(String((err as Error)?.message ?? err)); }
+      return { lines };
+    }
+
+    const goalCmd = cmd === '/goal' || cmd.startsWith('/goal ') || cmd === '/loop' || cmd.startsWith('/loop ');
+    if (goalCmd) {
+      if (!runOpts.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
+      try {
+        const raw = (cmd.startsWith('/goal') ? cmd.slice('/goal'.length) : cmd.slice('/loop'.length)).trim();
+        const result = await runGoal(raw, {
+          client, model, runOpts,
+          log: (t) => add(t),
+          onStream: () => ({
+            start(prefix: string) { add(prefix); },
+            chunk() { /* 流式逐字暂不实现，整行输出 */ },
+            end() {},
+          }),
+          onSubagentEvent: () => {},
+        });
+        add(result);
+      } catch (err) { add(String((err as Error)?.message ?? err)); }
+      return { lines };
+    }
+
+    if (cmd === '/skill' || cmd.startsWith('/skill ')) {
+      const args = cmd.slice('/skill'.length).trim();
+      if (!args) {
+        const skills = await discoverSkills();
+        if (skills.length === 0) {
+          add('未发现技能。用 /skill find <关键词> 网络检索，或 /skill add <owner/repo> 安装。');
+        } else {
+          add(`已发现 ${skills.length} 个技能：`);
+          for (const sk of skills) add(`· ${sk.name} — ${sk.description}${sk.global ? '（全局）' : ''}`);
+        }
+        return { lines };
+      }
+      const findM = args.match(/^find\s+(.+)$/);
+      if (findM) {
+        add(`正在网络检索（npx skills find ${findM[1]}）…`);
+        const { ok, output } = await runSkillsCli(['find', findM[1]]);
+        if (!ok) { add(`检索失败：${output.slice(0, 300) || 'npx skills 不可用'}`); }
+        else {
+          const results = parseSkillFindResults(output);
+          if (results.length === 0) { add(`没有匹配「${findM[1]}」的技能。`); }
+          else { add(`找到 ${results.length} 个技能：`); for (const r of results.slice(0, 20)) add(`· ${r}`); }
+        }
+        return { lines };
+      }
+      const addM = args.match(/^add\s+(\S+)(?:\s+--skill\s+(.+))?$/);
+      if (addM) {
+        add(`正在安装 ${addM[1]}…`);
+        const { ok, output } = await runSkillsCli(['add', addM[1], ...(addM[2] ? ['--skill', addM[2]] : []), '-y'], 180_000);
+        add(ok ? '安装完成（已装入 .agents/skills 等目录，下次会话自动发现）。' : `安装失败：${output.slice(0, 300)}`);
+        return { lines };
+      }
+      const showM = args.match(/^show\s+(\S+)$/);
+      if (showM) {
+        const content = await loadSkillContent(showM[1]);
+        if (!content) { add(`未找到技能「${showM[1]}」`); }
+        else { add(`技能「${showM[1]}」内容：`); for (const l of content.split('\n')) add(l); }
+        return { lines };
+      }
+      add('用法：/skill（列出）· /skill find <词>（检索）· /skill add <repo>（安装）· /skill show <名>（查看）');
+      return { lines };
+    }
+
+    add(`未知命令「${cmd}」。/help 查看可用命令。`);
+    return { lines };
   }
 
   async function createWebSession(resumeId?: string): Promise<WebSession> {
@@ -541,6 +1061,53 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         return;
       }
 
+      // @ 提及文件：列出工作区下的文件/目录
+      if (p === '/api/files' && req.method === 'GET') {
+        const url = new URL(req.url || '', 'http://localhost');
+        const query = url.searchParams.get('q') || '';
+        const cwd = process.cwd();
+        const NOISE_DIRS = new Set(['node_modules', '.git', 'dist', '__pycache__', '.next', '.cache', 'build', '.turbo', 'coverage']);
+        const isHidden = (n: string) => n.startsWith('.') && !query.startsWith('.');
+        const results: { name: string; path: string; isDir: boolean }[] = [];
+        const dirPart = query.includes('/') ? query.slice(0, query.lastIndexOf('/') + 1) : '';
+        const filePart = query.includes('/') ? query.slice(query.lastIndexOf('/') + 1) : query;
+        const baseDir = dirPart ? cwd + '/' + dirPart : cwd;
+        const collect = (dir: string, depth: number) => {
+          if (depth > 3 || results.length >= 50) return;
+          let entries: import('node:fs').Dirent[];
+          try { entries = readdirSync(dir, { withFileTypes: true }); }
+          catch { return; }
+          if (!filePart) {
+            for (const ent of entries) {
+              if (NOISE_DIRS.has(ent.name) || isHidden(ent.name)) continue;
+              const full = path.join(dir, ent.name);
+              const rel = path.relative(cwd, full);
+              results.push({ name: ent.name, path: rel, isDir: ent.isDirectory() });
+              if (results.length >= 50) break;
+            }
+          } else {
+            for (const ent of entries) {
+              if (NOISE_DIRS.has(ent.name)) continue;
+              const full = path.join(dir, ent.name);
+              const rel = path.relative(cwd, full);
+              const lower = ent.name.toLowerCase();
+              if (lower.startsWith(filePart.toLowerCase()) || lower.includes(filePart.toLowerCase())) {
+                if (!isHidden(ent.name)) results.push({ name: ent.name, path: rel, isDir: ent.isDirectory() });
+              }
+              if (results.length >= 50) return;
+              if (ent.isDirectory()) collect(full, depth + 1);
+            }
+          }
+        };
+        try { collect(baseDir, 0); } catch {}
+        results.sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        json(res, 200, results);
+        return;
+      }
+
       if (p === '/api/sessions' && req.method === 'GET') {
         json(res, 200, await listWebSessions());
         return;
@@ -573,6 +1140,23 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (p === sessionPath('cancel') && req.method === 'POST') {
           if (running && running.sessionId === sid) running.controller.abort();
           json(res, 200, { ok: true });
+          return;
+        }
+        if (p === sessionPath('steer') && req.method === 'POST') {
+          // steer 打断：写入 interruptText + abort → loop 在流中断后取走消息插入同一轮
+          if (!running || running.sessionId !== sid) {
+            json(res, 409, { error: '当前会话未在运行' });
+            return;
+          }
+          const body = await readBody(req);
+          const text = typeof body.text === 'string' ? body.text.trim() : '';
+          if (!text) { json(res, 400, { error: '消息为空' }); return; }
+          // 直接写入中断槽 + abort（runOpts.interruptPending 是只读探测，不能传参）
+          interruptText = text;
+          running.controller.abort();
+          // 广播用户消息（前端立即显示打断消息）
+          broadcast('user.message', { sessionId: sid, text, steer: true });
+          json(res, 202, { ok: true });
           return;
         }
         if (p === sessionPath('approval') && req.method === 'POST') {
@@ -692,28 +1276,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           json(res, 400, { error: '目录不存在或不是文件夹' });
           return;
         }
-        // 切换工作目录：chdir + 重建 ctx/runOpts（配置从新目录向上重新发现，
-        // 新会话以新目录为工作区；已存在的会话保留）。失败则回滚 chdir 并报错。
-        let prev = '';
+        // 切换工作目录（chdir + 重建 ctx/runOpts），失败回滚并报错
         try {
-          prev = process.cwd();
-          process.chdir(dir);
-          const newCtx = prepareRun(overrides);
-          // 关闭旧运行时的 MCP 客户端（子进程），再重建——否则每次切换都泄漏一批 MCP server 进程
-          const oldMcp = (runOpts as { mcpServers?: unknown }).mcpServers;
-          if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
-            await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
-          }
-          await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
-          ctx.cfg = newCtx.cfg;
-          Object.assign(runOpts, newCtx.runOpts);
-          cfg = newCtx.cfg;
+          await switchWorkspaceInternal(dir);
         } catch (e) {
-          try {
-            if (prev) process.chdir(prev);
-          } catch {
-            // 回滚失败（极少）——保持现状
-          }
           json(res, 400, { error: `切换工作目录失败：${e instanceof Error ? e.message : String(e)}` });
           return;
         }
@@ -760,29 +1326,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           // 尽力而为
         }
         for (const id of deletedIds) sessions.delete(id);
-        // 移除的是当前工作区 → 回退 home 并重建运行时（与切换同流程）
+        // 移除的是当前工作区 → 回退 home 并重建运行时（复用 workspace 切换流程）
         let switched = false;
         if (path.resolve(process.cwd()) === target) {
-          let prev = '';
           try {
-            prev = process.cwd();
-            process.chdir(os.homedir());
-            const newCtx = prepareRun(overrides);
-            const oldMcp = (runOpts as { mcpServers?: unknown }).mcpServers;
-            if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
-              await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
-            }
-            await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
-            ctx.cfg = newCtx.cfg;
-            Object.assign(runOpts, newCtx.runOpts);
-            cfg = newCtx.cfg;
+            await switchWorkspaceInternal(os.homedir());
             switched = true;
           } catch (e) {
-            try {
-              if (prev) process.chdir(prev);
-            } catch {
-              // 回滚失败保持现状
-            }
             json(res, 400, { error: `已从清单移除，但回退默认工作区失败：${e instanceof Error ? e.message : String(e)}` });
             return;
           }
@@ -813,6 +1363,138 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         dirs.sort((a, b) => a.localeCompare(b));
         json(res, 200, { current: target, parent: path.dirname(target), dirs: dirs.slice(0, 500) });
+        return;
+      }
+
+      if (p === '/api/git/checkout' && req.method === 'POST') {
+        const body = await readBody(req);
+        const branch = typeof body.branch === 'string' ? body.branch.trim() : '';
+        const create = body.create === true;
+        if (!branch || !/^[A-Za-z0-9._\-\/]+$/.test(branch)) {
+          json(res, 400, { error: '分支名不合法' });
+          return;
+        }
+        try {
+          const cwd = process.cwd();
+          if (create) execSync(`git checkout -b ${JSON.stringify(branch)}`, { cwd, encoding: 'utf8', timeout: 5000 });
+          else execSync(`git checkout ${JSON.stringify(branch)}`, { cwd, encoding: 'utf8', timeout: 5000 });
+          broadcast('status', buildStatus(runOpts));
+          json(res, 200, { ok: true, branch });
+        } catch (e) {
+          json(res, 400, { error: `切换分支失败：${e instanceof Error ? e.message : String(e)}` });
+        }
+        return;
+      }
+
+      if (p === '/api/git/worktree' && req.method === 'POST') {
+        const body = await readBody(req);
+        const branch = typeof body.branch === 'string' ? body.branch.trim() : '';
+        const worktreePath = typeof body.path === 'string' ? body.path.trim() : '';
+        if (!branch || !/^[A-Za-z0-9._\-\/]+$/.test(branch)) {
+          json(res, 400, { error: '分支名不合法' });
+          return;
+        }
+        try {
+          const cwd = process.cwd();
+          // 在项目根目录的父目录下创建 worktree（如 omni-feat）
+          const projectName = path.basename(cwd);
+          const defaultPath = path.resolve(cwd, '..', `${projectName}-${branch.replace(/\//g, '-')}`);
+          const targetPath = worktreePath || defaultPath;
+          if (existsSync(targetPath)) {
+            json(res, 400, { error: `目标路径已存在：${targetPath}` });
+            return;
+          }
+          execSync(`git worktree add ${JSON.stringify(targetPath)} -b ${JSON.stringify(branch)}`, {
+            cwd, encoding: 'utf8', timeout: 15000,
+          });
+          // 自动切换工作区到新 worktree（复用 workspace 切换流程）
+          await switchWorkspaceInternal(targetPath);
+          broadcast('status', buildStatus(runOpts));
+          broadcast('workspace.changed', { cwd: process.cwd() });
+          json(res, 200, { ok: true, branch, path: targetPath });
+        } catch (e) {
+          json(res, 400, { error: `创建工作树失败：${e instanceof Error ? e.message : String(e)}` });
+        }
+        return;
+      }
+
+      if (p === '/api/finalize' && req.method === 'POST') {
+        // 退出时自动写入偏好到全局记忆（autoMemory）
+        const body = await readBody(req).catch(() => ({}) as Record<string, any>);
+        const sid = typeof body.sessionId === 'string' ? body.sessionId : null;
+        const s = running ? null : (sid ? sessions.get(sid) ?? null : null);
+        try {
+          if (s && s.messages.some((m) => m.role === 'user') && runOpts.context?.autoMemory !== false) {
+            const client = runOpts.modelRuntime?.client;
+            const model = runOpts.modelRuntime?.model ?? cfg.model;
+            if (client) await maybeWriteGlobalMemory(client, model, s.messages).catch(() => {});
+          }
+          json(res, 200, { ok: true });
+        } catch (e) {
+          json(res, 400, { error: String(e) });
+        }
+        return;
+      }
+
+      if (p === '/api/command' && req.method === 'POST') {
+        const body = await readBody(req);
+        const cmd = typeof body.command === 'string' ? body.command.trim() : '';
+        if (!cmd || !cmd.startsWith('/')) {
+          json(res, 400, { error: '命令必须以 / 开头' });
+          return;
+        }
+        if (running && !body.background) {
+          json(res, 409, { error: '当前有任务运行中，请先取消' });
+          return;
+        }
+        // 命令可带 sessionId（恢复/undo 等需要会话上下文的命令）；无则 null
+        const sid = typeof body.sessionId === 'string' ? body.sessionId : null;
+        const s = sid ? sessions.get(sid) ?? null : null;
+        try {
+          const result = await runSlashCommand(cmd, s);
+          // 命令可能修改了运行时状态（如 /model /permission /plan）→ 广播最新状态
+          broadcast('status', buildStatus(runOpts));
+          json(res, 200, { ok: true, lines: result.lines });
+        } catch (err) {
+          json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
+      if (p === '/api/skills/create' && req.method === 'POST') {
+        const body = await readBody(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const desc = typeof body.description === 'string' ? body.description.trim() : '';
+        if (!name || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+          json(res, 400, { error: '技能名不合法（仅小写字母、数字、连字符，如 my-skill）' });
+          return;
+        }
+        try {
+          const skillsDir = path.join(process.cwd(), '.agents', 'skills', name);
+          if (existsSync(skillsDir)) {
+            json(res, 409, { error: `技能 ${name} 已存在` });
+            return;
+          }
+          const { mkdirSync, writeFileSync } = await import('node:fs');
+          mkdirSync(skillsDir, { recursive: true });
+          const frontmatter = [
+            '---',
+            `name: ${name}`,
+            `description: ${desc || name}`,
+            '---',
+            '',
+            `# ${name}`,
+            '',
+            desc ? `${desc}\n` : '',
+            '## 指令',
+            '',
+            '在此编写技能的详细指令...',
+          ].join('\n');
+          writeFileSync(path.join(skillsDir, 'SKILL.md'), frontmatter, 'utf8');
+          json(res, 201, { ok: true, name, path: skillsDir });
+        } catch (e) {
+          json(res, 400, { error: `创建技能失败：${e instanceof Error ? e.message : String(e)}` });
+        }
         return;
       }
 

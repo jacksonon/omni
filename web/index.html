@@ -24,6 +24,19 @@
   <symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 10-10M16 7l3 3"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11.5V16"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="6" cy="8" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M18 8.5a9 9 0 0 1-9 7.5"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="11" rx="2"/><path d="M2 19h20"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M2 12h20"/><path d="M12 2a14 14 0 0 1 0 20M12 2a14 14 0 0 0 0 20"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a4 4 0 0 1 0-8 5 5 0 0 1 9.9-1A3.5 3.5 0 0 1 17.5 19Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2l7 4v5c0 5-3.5 7.5-7 8-3.5-.5-7-3-7-8V6l7-4Z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24"><path d="M8 9h8M8 12h8M8 15h8"/><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M10 13H8m8 4H8m8-8H8"/></symbol>
+  <symbol id="i-warp" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l2 2 6-6"/></symbol>
 </svg>
 
 <div id="app" class="app-frame empty-session">
@@ -74,21 +87,42 @@
         <div class="hero-workspace"><svg><use href="#i-folder"/></svg><span id="hero-workspace-name">当前工作区</span><svg><use href="#i-chevron-down"/></svg></div>
         <div class="hero-glow" aria-hidden="true"></div>
         <div id="interaction-stack"></div>
-        <div class="composer-card">
-          <textarea id="input" rows="1" placeholder="描述你想要构建的内容" aria-label="消息输入"></textarea>
+        <div id="composer-context" class="composer-context">
+          <div class="ctx-wrap" id="wrap-project">
+            <button id="ctx-project" class="context-chip" type="button" title="切换项目"><svg><use href="#i-folder"/></svg><span id="ctx-project-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <div id="project-pop" class="context-pop hidden"></div>
+          </div>
+          <div class="ctx-wrap" id="wrap-location">
+            <button id="ctx-location" class="context-chip" type="button" title="工作位置"><svg><use href="#i-laptop"/></svg><span>本地</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <div id="location-pop" class="context-pop hidden"></div>
+          </div>
+          <div class="ctx-wrap" id="wrap-branch">
+            <button id="ctx-branch" class="context-chip" type="button" title="切换分支"><svg><use href="#i-branch"/></svg><span id="ctx-branch-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <div id="branch-pop" class="context-pop hidden"></div>
+          </div>
+        </div>
+        <div class="composer-card" id="composer-card">
+          <div id="cmd-palette" class="cmd-palette hidden"></div>
+          <div id="mention-pop" class="mention-pop hidden"></div>
+          <textarea id="input" rows="1" placeholder="随心输入" aria-label="消息输入"></textarea>
           <div class="composer-row">
             <div class="composer-tools">
-              <button id="btn-attach" class="attach-button" type="button" title="添加上下文" aria-label="添加上下文" disabled><svg><use href="#i-plus"/></svg></button>
-              <label class="plan-toggle"><input type="checkbox" id="plan-mode"><span>计划</span></label>
-              <button id="btn-composer-settings" class="mode-button" type="button" title="运行设置"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
+              <div class="attach-wrap">
+                <button id="btn-attach" class="attach-button" type="button" title="添加上下文" aria-label="添加上下文"><svg><use href="#i-plus"/></svg></button>
+                <div id="add-menu" class="add-menu hidden"></div>
+              </div>
+              <button id="btn-permission" class="perm-pill" type="button" title="权限设置"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
+              <label class="plan-toggle hidden"><input type="checkbox" id="plan-mode"><span>计划</span></label>
+              <button id="btn-composer-settings" class="mode-button hidden" type="button" title="运行设置"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
             </div>
             <div class="composer-trailing">
-              <button id="composer-model" class="model-select-face" type="button" title="切换模型与思考级别"><span id="composer-model-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+              <button id="composer-model" class="model-pill" type="button" title="切换模型与思考级别"><span id="composer-model-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
               <div id="model-pop" class="model-pop hidden"></div>
               <button id="btn-cancel" class="send-button cancel hidden" type="button" title="停止"><svg><use href="#i-square"/></svg></button>
               <button id="btn-send" class="send-button" type="button" title="发送消息"><svg><use href="#i-arrow-up"/></svg></button>
             </div>
           </div>
+          <div id="permission-pop" class="permission-pop hidden"></div>
         </div>
         <div id="composer-note" class="composer-note">选择或新建会话</div>
       </footer>
@@ -103,6 +137,14 @@
       <section id="details-output-section" class="details-section hidden"><div class="details-label">输出</div><pre id="details-output" class="details-code"></pre></section>
     </div>
   </aside>
+</div>
+
+<div id="cmd-panel" class="cmd-panel hidden" role="dialog" aria-label="命令输出">
+  <div class="cmd-panel-head">
+    <div class="cmd-panel-title">命令输出</div>
+    <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <div class="cmd-panel-body" id="cmd-panel-body"></div>
 </div>
 
 <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">

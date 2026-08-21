@@ -57,7 +57,8 @@ export type WebEventName =
   | 'ask.resolved'
   | 'title'
   | 'clear'
-  | 'workspace.changed';
+  | 'workspace.changed'
+  | 'thinking.toggle';
 
 /** 广播函数：把（事件名, 数据）发给所有已连接客户端 */
 export type WebBroadcast = (type: WebEventName, data: Record<string, unknown>) => void;
