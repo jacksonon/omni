@@ -579,24 +579,24 @@ npm run probe:web && npm run eval:mock && npm run tui:snapshot
 
 ### Electron desktop app (end users)
 
-"Omni Web" is a standalone desktop app that bundles the same backend (`dist/omni.cjs`, run through
+`omni` is a standalone desktop app that bundles the same backend (`dist/omni.cjs`, run through
 Electron's own Node — no system Node needed). GitHub Actions builds it for macOS arm64/x64 (zip),
-Windows x64 (setup + portable exe), and Linux x64 (AppImage) on every `v*` tag; grab the artifact for
+Windows x64 (NSIS installer), and Linux x64 (AppImage) on every `v*` tag; grab the artifact for
 your platform from the **GitHub Releases** page:
 
 | Platform | Artifact | Install |
 |---|---|---|
-| macOS Apple Silicon | `Omni.Web-<ver>-arm64-mac.zip` | unzip, drag `Omni Web.app` into Applications |
-| macOS Intel | `Omni.Web-<ver>-mac.zip` | unzip, drag `Omni Web.app` into Applications |
-| Windows | `Omni.Web.Setup.<ver>.exe` / `Omni.Web.exe` | installer, or run the portable exe |
-| Linux | `Omni.Web-<ver>.AppImage` | `chmod +x` and run |
+| macOS Apple Silicon | `omni-<ver>-mac-arm64.zip` | unzip, drag `omni.app` into Applications |
+| macOS Intel | `omni-<ver>-mac-x64.zip` | unzip, drag `omni.app` into Applications |
+| Windows | `omni-<ver>-win-x64.exe` | run the installer |
+| Linux | `omni-<ver>-linux-x64.AppImage` | `chmod +x` and run |
 
 Usage: the app starts the local backend and opens the web UI in its own window. Use
 **File → 选择工作目录…** to set the workspace where the agent reads/writes files, and ⚙ Settings for
 model / API key / permission / reasoning level (Settings apply for the current run; permanent config
 lives in `omni.json` / env vars). The Menu's 视图 → 开发者工具 opens DevTools for debugging.
 If macOS Gatekeeper blocks the app at first launch (downloaded app): right-click → Open once, or
-`xattr -dr com.apple.quarantine "/Applications/Omni Web.app"`.
+`xattr -dr com.apple.quarantine "/Applications/omni.app"`.
 
 ---
 

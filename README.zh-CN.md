@@ -54,14 +54,14 @@ npm run dev -- "列出当前目录的文件"
 
 ### 方式五：Electron 桌面应用（macOS / Windows / Linux，无需 Node）
 
-「Omni Web」是独立桌面应用，内置 web 后端（Electron 自带的 Node 运行时）——去 **GitHub Releases** 页下载对应平台的产物（每次打 `v*` tag 都会自动构建）：
+`omni` 是独立桌面应用，内置 web 后端（Electron 自带的 Node 运行时）——去 **GitHub Releases** 页下载对应平台的产物（每次打 `v*` tag 都会自动构建）：
 
 | 平台 | 产物 |
 |---|---|
-| macOS（Apple Silicon） | `Omni.Web-<版本>-arm64-mac.zip` —— 解压后把 `Omni Web.app` 拖入「应用程序」 |
-| macOS（Intel） | `Omni.Web-<版本>-mac.zip` —— 同上 |
-| Windows | `Omni.Web.Setup.<版本>.exe`（安装版）或 `Omni.Web.exe`（免安装版） |
-| Linux | `Omni.Web-<版本>.AppImage` —— `chmod +x` 后双击运行 |
+| macOS（Apple Silicon） | `omni-<版本>-mac-arm64.zip` —— 解压后把 `omni.app` 拖入「应用程序」 |
+| macOS（Intel） | `omni-<版本>-mac-x64.zip` —— 同上 |
+| Windows | `omni-<版本>-win-x64.exe` —— 运行安装程序 |
+| Linux | `omni-<版本>-linux-x64.AppImage` —— `chmod +x` 后双击运行 |
 
 应用启动即拉起本地后端并打开 Web 界面窗口；菜单「文件 → 选择工作目录…」设定 Agent 读写文件的目录；模型 / API Key 在应用内 ⚙ 设置里配置（本次运行有效；永久配置请用 `omni.json` / 环境变量）。
 
@@ -404,7 +404,7 @@ src/
 
   web/                  # **Web 模式（`omni web`）**：本地后端服务（REST+SSE，零依赖）+ 浏览器界面——index.ts（入口：参数 + prepareRun + attachRuntime + 自动开浏览器）· server.ts（http 服务：SSE 事件广播 + 会话/消息/审批/提问/设置路由 + 静态页面托管（内嵌 assets 回退））· output.ts（WebOutput：Output 事件带 sessionId 广播；审批/提问经 pending 注册表）· events.ts（事件协议名）· assets.ts（web/ 内嵌副本，`npm run web:sync` 生成）
 
-  electron/             # **Electron 桌面应用（Omni Web）**：main.cjs（Electron 主进程：以 Electron 自带 Node（ELECTRON_RUN_AS_NODE）执行 `dist/omni.cjs web --no-open` → 轮询 /api/status → 开 BrowserWindow；单实例锁 · 应用菜单（选择工作目录）· 退出杀后端；开发模式走 tsx 源码）+ package.json `build` 字段（electron-builder：mac zip arm64/x64 / win nsis x64 / linux AppImage x64）；GitHub Actions 打 tag 全平台构建
+  electron/             # **Electron 桌面应用（`omni`）**：main.cjs（Electron 主进程：以 Electron 自带 Node（ELECTRON_RUN_AS_NODE）执行 `dist/omni.cjs web --no-open` → 轮询 /api/status → 开 BrowserWindow；单实例锁 · 应用菜单（选择工作目录）· 退出杀后端；开发模式走 tsx 源码）+ package.json `build` 字段（electron-builder：mac zip arm64/x64 / win nsis x64 / linux AppImage x64）；GitHub Actions 打 tag 全平台构建
 
   web/                  # 浏览器页面（仓库根目录）：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；是 src/web/assets.ts 的源——`npm run web:sync` 重新生成内嵌副本）
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题

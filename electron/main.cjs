@@ -1,5 +1,5 @@
 /**
- * Omni Web 桌面应用（Electron 壳）。
+ * omni 桌面应用（Electron 壳）。
  *
  * 原理：ll 起本机后端服务（`dist/omni.cjs web --no-open --port <p>`，用 Electron 自带的
  * Node（ELECTRON_RUN_AS_NODE=1）执行，无需系统安装 Node），等端口就绪后开一个
@@ -117,7 +117,7 @@ async function createWindow() {
     height: 800,
     minWidth: 640,
     minHeight: 480,
-    title: 'Omni Web',
+    title: 'omni',
     backgroundColor: '#111113',
     webPreferences: {
       contextIsolation: true,
@@ -189,7 +189,7 @@ if (!gotLock) {
     try {
       await createWindow();
     } catch (err) {
-      dialog.showErrorBox('Omni Web 启动失败', String(err && err.message || err));
+      dialog.showErrorBox('omni 启动失败', String(err && err.message || err));
       app.quit();
       return;
     }

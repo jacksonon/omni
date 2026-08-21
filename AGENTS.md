@@ -131,7 +131,7 @@ src/
     events.ts           # **Web 事件协议**：事件名与 payload 的单一来源（客户端 web/app.js 按名渲染）
     assets.ts           # **内嵌页面资源**（web/ 的副本，scripts/web-sync.mjs 生成；bundle 单文件发布免外部文件）
   electron/
-    main.cjs            # **Electron 桌面应用（Omni Web）**：主进程以 Electron 自带 Node（ELECTRON_RUN_AS_NODE=1）
+    main.cjs            # **Electron 桌面应用（`omni`）**：主进程以 Electron 自带 Node（ELECTRON_RUN_AS_NODE=1）
                         #   执行 `dist/omni.cjs web --no-open --port <p>`（无需系统 Node）→ 轮询 /api/status 就绪 →
                         #   开 BrowserWindow 加载 http://127.0.0.1:<p> · 单实例锁 · 应用菜单（选择工作目录/重载/DevTools/
                         #   退出）· 退出时终止后端子进程 · 自动找空闲端口 · 开发模式（OMNI_WEB_DEV=1）走 tsx 源码
@@ -310,10 +310,12 @@ for step in 1..maxSteps:
 - [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换（共用闸门 setTier 同步，子代理一致）
 - [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果/stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
 - [x] **本地后端服务 + Web 界面（`omni web`）**：REST + SSE 后端（零依赖）+ 浏览器 UI——多会话/实时流式/审批与提问卡片/模型权限设置/会话持久化（复用 session JSONL）/运行统计；同一 Agent 栈同时服务 CLI 与网页（multi 前端共享后端）
-- [x] **Electron 桌面应用（Omni Web）**：独立 mac/win/linux 应用（内置后端，Electron 自带 Node 无需系统 Node）——GitHub Actions 打 tag 自动构建（mac zip / win exe / linux AppImage）并附 GitHub Release + npm 发布（5 平台子包 + 主包）
+- [x] **Electron 桌面应用（`omni`）**：独立 mac/win/linux 应用（内置后端，Electron 自带 Node 无需系统 Node）——GitHub Actions 打 tag 自动构建（mac zip / win exe / linux AppImage）并附 GitHub Release + npm 发布（5 平台子包 + 主包）
 - [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md、Web 多会话并发运行（per-session runOpts 克隆 + 独立闸门/撤销栈）
 
 ## 演进日志
+
+- **2026-08-21（第一百四十八次）**：**Web UI 按 DeepSeek Harness 完整视觉基线重构 + Electron 应用统一命名 `omni` + 0.6.3 发布**——根目录 `web/` 的 vanilla HTML/CSS/JS 重建为 Harness 三栏布局（280px 会话栏/748px 消息列/780px 输入卡/360px 工具详情）、空会话鱼标与居中 composer、会话标题/对话轨迹 tabs、用户气泡、思考与工具 disclosure 行、工具 Input/Output 详情及移动端抽屉；保留 Omni SSE、审批、提问、取消、模型切换与会话管理行为，`web:sync` 同步内嵌到 `src/web/assets.ts`；Harness 派生样式与鱼标保留 MIT 版权声明。Electron `productName` / `executableName` / 窗口标题统一为小写 `omni`，分发文件固定为 `omni-<版本>-<os>-<arch>.<ext>`；版本升至 0.6.3，tag `v0.6.3` 触发 GitHub Actions 构建 5 个 CLI/TUI 原生二进制、npm 平台包与 4 个 Electron 应用。验证：Chrome 桌面+390x844 空态/对话/工具详情 ✓，typecheck ✓，bundle ✓，probe:web 全绿。
 
 - **2026-08-21（第一百四十七次）**：**CI 三连败修复 + mac DMG 损坏改 zip + 版本 0.6.2 全量重发成功**——v0.6.0/v0.6.1 首跑连续失败，逐步定位三个根因：**① Electron 制品上传爆量**：`release-electron/**` 把整个 .app 目录（asar 关闭含 node_modules 数千源文件）传 GitHub 触发限流 → 只收集最终分发包（dmg/exe/AppImage/zip + 校验文件）；**② lockfile 解析自镜像**：本机 npm 全局 registry 是腾讯镜像，lockfile 的 resolved 全部指向镜像且解析出 npmjs 上**不存在的 emoji-regex@10.6.1**（镜像私有版本）→ 干净环境（空缓存 + npm_config_registry=npmjs）重生成 lockfile + package.json overrides 钉 emoji-regex@10.6.0，并在临时目录模拟 CI 跑 `npm ci` 验证通过；**③ mac DMG 损坏**：CI runner 上 hdiutil 生成的 dmg 内部 CRC 校验失败（两次独立下载 SHA-256 一致，排除传输损坏；imageinfo CRC32 不符）→ mac 目标改 **zip**（免 hdiutil，双击解压即 .app）。**④ 版本管理**：npm 子包不可覆盖重发，0.6.0 已发 4 个 darwin/linux 子包 → 升 0.6.1 → 再修 lockfile 后升 0.6.2 重发。**⑤ v0.6.2 全量成功**：build 5 平台原生二进制 ✓ + electron 4 平台（mac arm64 zip / mac x64 zip / win nsis exe / linux AppImage）✓ + release job ✓；GitHub Release 附 10 个产物；npm 5 平台子包 + 主包 `@right-ai/omni@0.6.2` 全部发布成功。**⑥ 顺带修正**：AGENTS.md npm 发布包名描述（实际为 `omnicode-<平台>-<arch>` 子包 + scoped `@right-ai/omni` 主包 / `@right-ai/win32-x64`）；sed 全量替换版本号误伤 lockfile 中 source-map 0.6.1 → 手工恢复。**教训**：electron-builder 的 dmg 目标依赖 hdiutil，在 CI macOS runner 上不可靠，zip 是稳妥选择；lockfile 必须在对目标 registry 的干净环境生成，镜像私有版本（emoji-regex 10.6.1）会毒化 lockfile。
 
