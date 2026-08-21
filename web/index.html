@@ -38,7 +38,7 @@
     </div>
     <button id="btn-new" class="new-session" type="button"><svg><use href="#i-plus"/></svg><span class="new-session-label">新会话</span></button>
     <div class="workspace-region">
-      <button class="project-row" type="button" title="当前工作目录"><span class="project-icon"><svg><use href="#i-folder"/></svg></span><span id="workspace-name" class="project-title">当前工作区</span><svg class="project-chevron"><use href="#i-chevron-down"/></svg></button>
+      <button class="project-row" id="btn-workspace" type="button" title="当前工作目录（点击切换）"><span class="project-icon"><svg><use href="#i-folder"/></svg></span><span id="workspace-name" class="project-title">当前工作区</span><svg class="project-chevron"><use href="#i-chevron-down"/></svg></button>
       <div class="section-header">
         <span class="section-label">会话</span><span id="session-count" class="session-count">0</span>
         <label class="session-search" title="搜索会话"><svg><use href="#i-search"/></svg><input id="session-search" type="search" placeholder="搜索会话" autocomplete="off"></label>
@@ -114,6 +114,7 @@
       <section class="settings-section"><label for="set-apikey">API Key <em>可选</em></label><div class="apikey-row"><input type="password" id="set-apikey" placeholder="沿用当前配置" autocomplete="off"><button id="btn-save-apikey" class="secondary-button" type="button">保存</button></div><p>仅保存在当前进程。</p></section>
       <section class="settings-section"><label for="set-permission">权限级别</label><select id="set-permission"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select></section>
       <section class="settings-section"><label for="set-effort">思考级别</label><select id="set-effort"></select></section>
+      <section class="settings-section"><label for="set-workspace">工作目录</label><div class="apikey-row"><input type="text" id="set-workspace" placeholder="输入绝对路径，如 /Users/me/project" autocomplete="off"><button id="btn-change-workspace" class="secondary-button" type="button">切换</button></div><p>切换后新会话将使用该目录作为工作区；已有会话保留。</p></section>
       <section class="settings-about"><div>工作目录 <code id="about-cwd"></code></div><div>工具 <code id="about-tools"></code></div><div>服务 <code id="about-server"></code></div></section>
     </div>
   </div>

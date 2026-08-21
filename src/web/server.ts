@@ -17,7 +17,7 @@
  * （bundle 单文件发布时无需外部文件）。
  */
 import http from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +42,8 @@ import {
   updateSessionTitle,
 } from '../agent/session.js';
 import type { RunContext } from '../main.js';
-import { attachRuntime } from '../main.js';
+import { attachRuntime, prepareRun } from '../main.js';
+import type { ConfigOverrides } from '../config/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -224,11 +225,14 @@ export interface WebServiceOptions {
   ctx: RunContext;
   host?: string;
   port?: number;
+  overrides?: ConfigOverrides;
 }
 
 export async function startWebService(opts: WebServiceOptions): Promise<http.Server> {
   const { ctx } = opts;
-  const { cfg, runOpts } = ctx;
+  let cfg = ctx.cfg;
+  const runOpts = ctx.runOpts;
+  const overrides = opts.overrides ?? {};
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 3080;
 
@@ -578,6 +582,48 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         broadcast('status', buildStatus(runOpts));
         json(res, 200, buildStatus(runOpts));
+        return;
+      }
+
+      if (p === '/api/workspace' && req.method === 'POST') {
+        const body = await readBody(req);
+        const dir = typeof body.dir === 'string' ? body.dir.trim() : '';
+        if (running) {
+          json(res, 409, { error: '当前有任务运行中，请先取消' });
+          return;
+        }
+        if (!dir || !existsSync(dir) || !statSync(dir).isDirectory()) {
+          json(res, 400, { error: '目录不存在或不是文件夹' });
+          return;
+        }
+        // 切换工作目录：chdir + 重建 ctx/runOpts（配置从新目录向上重新发现，
+        // 新会话以新目录为工作区；已存在的会话保留）。失败则回滚 chdir 并报错。
+        let prev = '';
+        try {
+          prev = process.cwd();
+          process.chdir(dir);
+          const newCtx = prepareRun(overrides);
+          // 关闭旧运行时的 MCP 客户端（子进程），再重建——否则每次切换都泄漏一批 MCP server 进程
+          const oldMcp = (runOpts as { mcpServers?: unknown }).mcpServers;
+          if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
+            await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
+          }
+          await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
+          ctx.cfg = newCtx.cfg;
+          Object.assign(runOpts, newCtx.runOpts);
+          cfg = newCtx.cfg;
+        } catch (e) {
+          try {
+            if (prev) process.chdir(prev);
+          } catch {
+            // 回滚失败（极少）——保持现状
+          }
+          json(res, 400, { error: `切换工作目录失败：${e instanceof Error ? e.message : String(e)}` });
+          return;
+        }
+        broadcast('workspace.changed', { cwd: process.cwd() });
+        broadcast('status', buildStatus(runOpts));
+        json(res, 200, { cwd: process.cwd() });
         return;
       }
 

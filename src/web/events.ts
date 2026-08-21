@@ -28,6 +28,7 @@
  *   ask.resolved     —— 提问已处理（{ sessionId, askId, choices | null }）
  *   title            —— 会话标题已生成（{ sessionId, title }）
  *   clear            —— 清空当前会话视图（{ sessionId }）
+ *   workspace.changed—— 工作目录已切换（{ cwd }）
  */
 export type WebEventName =
   | 'ready'
@@ -55,7 +56,8 @@ export type WebEventName =
   | 'ask.request'
   | 'ask.resolved'
   | 'title'
-  | 'clear';
+  | 'clear'
+  | 'workspace.changed';
 
 /** 广播函数：把（事件名, 数据）发给所有已连接客户端 */
 export type WebBroadcast = (type: WebEventName, data: Record<string, unknown>) => void;

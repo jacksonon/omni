@@ -82,7 +82,7 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
   // 路由到当前运行会话的 WebOutput；hook 输出/子代理事件转发到 SSE
   await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output);
 
-  const server = await startWebService({ ctx, host: parsed.host, port: parsed.port });
+  const server = await startWebService({ ctx, host: parsed.host, port: parsed.port, overrides });
   const url = `http://${parsed.host}:${parsed.port}`;
   console.log(`omni v${(await import('../version.js')).VERSION}`);
   console.log('');

@@ -620,6 +620,7 @@ function connectSSE() {
     'thinking.end', 'tool.start', 'tool.result', 'answer.chunk', 'answer.end',
     'usage', 'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'subagent', 'title', 'meta.add', 'clear',
+    'workspace.changed',
   ].forEach(on);
   es.onerror = () => {
     $('#status-dot').classList.add('error');
@@ -816,6 +817,15 @@ bus.on('meta.add', (ev) => {
   if (ev.sessionId !== state.session) return;
   metaLine(ev.sessionId, [ev.text]);
 });
+bus.on('workspace.changed', () => {
+  refreshStatus().catch(() => {});
+  api('/api/sessions')
+    .then((list) => {
+      state.sessions = list;
+      renderSessionList();
+    })
+    .catch(() => {});
+});
 bus.on('clear', (ev) => {
   if (ev.sessionId !== state.session) return;
   clearMessages();
@@ -907,6 +917,7 @@ $('#btn-new').addEventListener('click', () => newSession().catch((e) => console.
 $('#btn-new-brand').addEventListener('click', () => newSession().catch((e) => console.error(e)));
 $('#btn-session-add').addEventListener('click', () => newSession().catch((e) => console.error(e)));
 $('#btn-settings').addEventListener('click', () => openSettings());
+$('#btn-workspace').addEventListener('click', () => openSettings());
 $('#btn-composer-settings').addEventListener('click', () => openSettings());
 $('#btn-header-model').addEventListener('click', () => openSettings(true));
 $('#composer-model').addEventListener('click', () => openSettings(true));
@@ -957,6 +968,25 @@ $('#btn-save-apikey').addEventListener('click', () => {
 });
 $('#plan-mode').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
+});
+$('#btn-change-workspace').addEventListener('click', () => {
+  const dir = $('#set-workspace').value.trim();
+  if (!dir) return;
+  api('/api/workspace', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dir }),
+  })
+    .then(() => {
+      $('#set-workspace').value = '';
+      return refreshStatus();
+    })
+    .then(() => api('/api/sessions'))
+    .then((list) => {
+      state.sessions = list;
+      renderSessionList();
+    })
+    .catch((err) => alert(`切换工作目录失败：${err.message}`));
 });
 
 /* 会话消息区点击空白时聚焦输入 */
