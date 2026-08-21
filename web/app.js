@@ -744,11 +744,16 @@ function refreshStatus() {
     $('#ver').textContent = `v${s.version}`;
     $('#cwd').textContent = s.cwd;
     $('#cwd').title = s.cwd;
-    $('#about-cwd').textContent = s.cwd;
+    $('#ws-cwd').textContent = s.cwd;
+    $('#ws-cwd').title = s.cwd;
+    $('#about-version').textContent = `v${s.version}`;
     $('#about-tools').textContent = s.tools.join(', ');
     $('#about-server').textContent = `http://${location.host}`;
     $('#plan-mode').checked = state.planMode;
+    const sp = $('#set-plan');
+    if (sp) sp.checked = state.planMode;
     $('#set-permission').value = s.permission || 'safe';
+    renderSettingsModel(s);
     const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || '当前工作区' : '当前工作区';
     $('#hero-workspace-name').textContent = workspaceName;
     updateDetails();
@@ -802,6 +807,48 @@ function applySettings(patch) {
   }).then(refreshStatus);
 }
 
+/** 设置 → 模型面板：填充模型下拉与思考级别分段选择（签名去重，避免打断进行中的交互） */
+function renderSettingsModel(s) {
+  const sel = $('#set-model');
+  if (!sel) return;
+  const models = Array.isArray(s.models) ? s.models : [];
+  const sig = JSON.stringify([s.model, models.map((m) => [m.name, m.baseURL])]);
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = '';
+    for (const m of models) {
+      const o = document.createElement('option');
+      o.value = m.name;
+      o.textContent = m.baseURL && !m.baseURL.includes('api.openai.com') ? `${m.name} · ${m.baseURL}` : m.name;
+      o.selected = m.name === s.model;
+      sel.appendChild(o);
+    }
+  } else {
+    sel.value = s.model || '';
+  }
+  const cur = models.find((m) => m.name === s.model);
+  $('#set-model-desc').textContent = cur?.baseURL ? `端点 ${cur.baseURL}` : '端点沿用全局配置。';
+
+  const box = $('#set-efforts');
+  const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
+  const esig = JSON.stringify([efforts, s.reasoningEffort]);
+  if (box.dataset.sig === esig) return;
+  box.dataset.sig = esig;
+  box.innerHTML = '';
+  if (!efforts.length) {
+    box.appendChild(el('span', 'seg-empty', '该模型未提供思考级别'));
+    return;
+  }
+  efforts.forEach((t) => {
+    const b = el('button', 'seg-btn' + (t === (s.reasoningEffort || efforts[0]) ? ' active' : ''), t);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      applySettings({ reasoningEffort: t }).catch((err) => alert(`设置失败：${err.message}`));
+    });
+    box.appendChild(b);
+  });
+}
+
 /* ---------------- SSE ---------------- */
 function connectSSE() {
   const es = new EventSource('/api/events');
@@ -836,6 +883,8 @@ bus.on('status', (s) => {
   state.running = s.running;
   state.planMode = !!s.planMode;
   $('#plan-mode').checked = state.planMode;
+  const sp = $('#set-plan');
+  if (sp) sp.checked = state.planMode;
   updateDetails();
   updateComposer();
   updateStatusText();
@@ -1221,6 +1270,22 @@ $('#settings-modal').addEventListener('click', (e) => {
   }
 });
 
+/* 设置弹窗：左侧分类 → 右侧详情 */
+document.querySelectorAll('.settings-nav-item').forEach((item) => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n === item));
+    const pane = item.dataset.pane;
+    document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
+  });
+});
+$('#set-model').addEventListener('change', (e) => {
+  applySettings({ model: e.target.value }).catch((err) => alert(`切换失败：${err.message}`));
+});
+$('#set-plan').addEventListener('change', (e) => {
+  applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
+});
+$('#btn-browse-workspace').addEventListener('click', () => browseWorkspace());
+
 $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
   renderSessionList();
@@ -1248,7 +1313,9 @@ $('#btn-save-apikey').addEventListener('click', () => {
   if (!v) return;
   applySettings({ apiKey: v }).then(() => {
     $('#set-apikey').value = '';
-    $('#composer-note').textContent = 'API Key 已生效（本次运行）';
+    const note = $('#apikey-note');
+    note.classList.remove('hidden');
+    setTimeout(() => note.classList.add('hidden'), 2500);
   }).catch((err) => alert(`保存失败：${err.message}`));
 });
 $('#plan-mode').addEventListener('change', (e) => {

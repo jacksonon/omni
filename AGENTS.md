@@ -315,6 +315,8 @@ for step in 1..maxSteps:
 
 ## 演进日志
 
+- **2026-08-21（第一百五十六次）**：**Web 设置界面改版：左侧分类导航 + 右侧详情面板**——用户要求「设置界面变成左侧列表、右侧详情的布局，整体卡片大一些」。原设置弹窗是 520px 小窗、全部配置竖排一列。改版（`web/index.html` + `style.css` + `app.js`）：① **布局**——卡片扩为 `min(880px, 100%) × min(640px, 92vh)` 固定高（`overflow:hidden`，内容区独立滚动），内部 `settings-layout` 左右分栏：左导航 188px（`--sidebar` 底色 + 右分隔线）+ 右详情面板；② **五个分类**——通用（权限级别 select + 计划模式开关）/ 模型（模型下拉 + 思考级别分段按钮 seg-group，签名去重防打断交互，无级别选项显示占位文案）/ 工作区（当前目录 + 「切换…」复用 browseWorkspace 目录选择器）/ API 密钥（密码框 + 保存 + 2.5s 自动消失的成功提示行）/ 关于（版本 / 服务地址 / 可用工具）；③ **组件样式**——setting-row 卡片组（圆角分组卡 + 行分隔线）、toggle-switch 纯 CSS 开关（appearance:none + ::after 滑块）、seg-btn 分段选择（active 白底浮起）、pane 切换淡入动画；④ **接线**——settings-nav-item 点击切换 `.active` 面板；`refreshStatus` 填充新 ID（ws-cwd / about-version / set-plan 同步 / renderSettingsModel），`#set-model` change → applySettings({model})，`#set-plan` 与 composer 计划开关双向同步；⑤ 新增 i-cpu/i-key/i-info 图标 symbol；窄屏（≤760px）设置弹窗改上下布局、导航横向滚动。验证：node --check ✓ · 服务端热更新后 curl 断言新类名/函数/结构均已下发 ✓ · 全部 JS 引用 ID 在 HTML 中存在 ✓。
+
 - **2026-08-21（第一百五十五次）**：**修复 composer/disclosure 行图标与文本垂直居中**——用户反馈「下拉图标和文本不居中（思考/工具调用/模型选择）」。根因：指示符全是**文本字符**（模型按钮 `::after` 的 `⌄`、思考/工具行 `::before` 的 `›`），字符自带基线偏移与字体度量，视觉上永远差几像素。修复：全部换几何居中的 SVG——模型按钮加真 chevron svg 节点（模型名改写入独立 label span 防覆盖）；disclosure 箭头改 CSS mask 绘制 chevron（currentColor 着色、mask center 绝对居中、展开旋转 90° 不变）。教训：装饰性符号用字符是脆弱方案，图标一律 SVG/mask。
 
 - **2026-08-21（第一百五十四次）**：**无标题会话显示首条消息缩略标题**——用户反馈「不要都显示为新会话，显示为缩略标题」。根因：自动标题是首轮后的一次独立轻量 LLM 请求，用户网关对该辅助请求失败时静默返回 null（设计上不打扰对话），meta.title 永远为空 → 列表兜底「新会话」无法分辨。修复：`listWebSessions` 对无标题会话用**首条用户消息前 30 字符**作展示标题（`firstUserSnippet`，空白折叠 + 省略号；内存会话直接取、磁盘会话 loadSession 兜底）——**不落盘**，之后自动标题成功仍可覆盖；`maybeAutoTitle` 链路补 `.catch` 杜绝未处理拒绝。验证：typecheck ✓ · 重启后列表显示缩略标题（如「在吗」「将当前文件夹在所有的图片大小修改为…」）✓。

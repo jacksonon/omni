@@ -21,6 +21,9 @@
   <symbol id="i-square" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 10-10M16 7l3 3"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11.5V16"/></symbol>
 </svg>
 
 <div id="app" class="app-frame empty-session">
@@ -103,12 +106,82 @@
 </div>
 
 <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-  <div class="modal-card">
+  <div class="modal-card settings-card">
     <div class="modal-head"><h2 id="settings-title">设置</h2><button class="icon-button" id="btn-close-settings" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
-    <div class="modal-body">
-      <section class="settings-section"><label for="set-apikey">API Key <em>可选</em></label><div class="apikey-row"><input type="password" id="set-apikey" placeholder="沿用当前配置" autocomplete="off"><button id="btn-save-apikey" class="secondary-button" type="button">保存</button></div><p>仅保存在当前进程。</p></section>
-      <section class="settings-section"><label for="set-permission">权限级别</label><select id="set-permission"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select></section>
-      <section class="settings-about"><div>工作目录 <code id="about-cwd"></code></div><div>工具 <code id="about-tools"></code></div><div>服务 <code id="about-server"></code></div></section>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span>通用</span></button>
+        <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span>模型</span></button>
+        <button class="settings-nav-item" type="button" data-pane="workspace"><svg><use href="#i-folder"/></svg><span>工作区</span></button>
+        <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span>API 密钥</span></button>
+        <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
+      </nav>
+      <div class="settings-content">
+        <section class="settings-pane active" data-pane="general">
+          <h3 class="settings-pane-title">通用</h3>
+          <p class="settings-pane-sub">会话运行的基础行为。</p>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info"><h4>权限级别</h4><p>控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。</p></div>
+              <select id="set-permission" class="setting-control"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4>计划模式</h4><p>只调研并输出实施计划，不直接修改文件。</p></div>
+              <input type="checkbox" id="set-plan" class="toggle-switch" aria-label="计划模式">
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="model">
+          <h3 class="settings-pane-title">模型</h3>
+          <p class="settings-pane-sub">切换对话使用的模型与思考深度。</p>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info"><h4>模型</h4><p id="set-model-desc"></p></div>
+              <select id="set-model" class="setting-control"></select>
+            </div>
+            <div class="setting-row col">
+              <div class="setting-info"><h4>思考级别</h4><p>越高推理越深、响应越慢；可选项由模型配置决定。</p></div>
+              <div id="set-efforts" class="seg-group"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="workspace">
+          <h3 class="settings-pane-title">工作区</h3>
+          <p class="settings-pane-sub">智能体读写文件、执行命令所用的根目录。</p>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info"><h4>当前目录</h4><p><code id="ws-cwd"></code></p></div>
+              <button id="btn-browse-workspace" class="secondary-button" type="button">切换…</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="apikey">
+          <h3 class="settings-pane-title">API 密钥</h3>
+          <p class="settings-pane-sub">覆盖本次运行的密钥，仅保存在当前进程，不写入配置文件。</p>
+          <div class="settings-group">
+            <div class="setting-row col">
+              <div class="setting-info"><h4>API Key</h4><p>留空表示沿用配置文件中的密钥，保存后立即生效。</p></div>
+              <div class="apikey-row">
+                <input type="password" id="set-apikey" placeholder="sk-…" autocomplete="off">
+                <button id="btn-save-apikey" class="primary-button" type="button">保存</button>
+              </div>
+              <p id="apikey-note" class="save-note hidden">✓ 已生效（本次运行）</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="about">
+          <h3 class="settings-pane-title">关于</h3>
+          <div class="settings-group">
+            <div class="setting-row"><div class="setting-info"><h4>版本</h4></div><code id="about-version" class="mono-value"></code></div>
+            <div class="setting-row"><div class="setting-info"><h4>服务地址</h4></div><code id="about-server" class="mono-value"></code></div>
+            <div class="setting-row"><div class="setting-info"><h4>可用工具</h4><p id="about-tools" class="tools-list"></p></div></div>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 </div>
