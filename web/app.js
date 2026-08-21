@@ -637,7 +637,9 @@ function renderWelcome() {
 
 function updateDetails() {
   const st = state.status || {};
-  $('#composer-model').textContent = st.model || '—';
+  // 模型名 + 思考级别（未设置级别只显示模型名）
+  const eff = st.reasoningEffort;
+  $('#composer-model').textContent = st.model ? (eff ? `${st.model} · ${eff}` : st.model) : '—';
   $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
   const selected = state.selectedTool;
   $('#details-title').textContent = selected?._data?.name || '详情';
@@ -740,15 +742,12 @@ function refreshStatus() {
     state.running = s.running;
     state.planMode = !!s.planMode;
     $('#ver').textContent = `v${s.version}`;
-    $('#header-model').textContent = s.model;
     $('#cwd').textContent = s.cwd;
     $('#cwd').title = s.cwd;
     $('#about-cwd').textContent = s.cwd;
     $('#about-tools').textContent = s.tools.join(', ');
     $('#about-server').textContent = `http://${location.host}`;
     $('#plan-mode').checked = state.planMode;
-    fillModelSelect(s);
-    fillEffortSelect(s);
     $('#set-permission').value = s.permission || 'safe';
     const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || '当前工作区' : '当前工作区';
     $('#hero-workspace-name').textContent = workspaceName;
@@ -756,32 +755,6 @@ function refreshStatus() {
     updateComposer();
     updateStatusText();
   });
-}
-
-function fillModelSelect(s) {
-  const sel = $('#set-model');
-  const prev = sel.value;
-  sel.innerHTML = '';
-  (s.models || [s.model]).forEach((m) => {
-    const o = el('option', '', m.name);
-    o.value = m.name;
-    if (m.baseURL && !m.baseURL.includes('api.openai.com')) o.textContent = `${m.name} · ${m.baseURL}`;
-    sel.appendChild(o);
-  });
-  if (prev) sel.value = prev;
-  const cur = (s.models || []).find((m) => m.name === s.model);
-  if (cur) sel.value = cur.name;
-}
-
-function fillEffortSelect(s) {
-  const sel = $('#set-effort');
-  sel.innerHTML = '';
-  (s.reasoningEffortOptions || ['low', 'medium', 'high']).forEach((e) => {
-    const o = el('option', '', e);
-    o.value = e;
-    sel.appendChild(o);
-  });
-  if (s.reasoningEffort) sel.value = s.reasoningEffort;
 }
 
 function updateComposer() {
@@ -863,8 +836,6 @@ bus.on('status', (s) => {
   state.running = s.running;
   state.planMode = !!s.planMode;
   $('#plan-mode').checked = state.planMode;
-  fillModelSelect(s);
-  fillEffortSelect(s);
   updateDetails();
   updateComposer();
   updateStatusText();
@@ -1087,6 +1058,7 @@ document.addEventListener('keydown', (e) => {
     $('#session-search').focus();
   } else if (e.key === 'Escape') {
     if (!$('#dirpicker-modal').classList.contains('hidden')) closeDirPicker();
+    else if (!$('#model-pop').classList.contains('hidden')) closeModelPop();
     else if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
     else if ($('#app').classList.contains('sidebar-open')) $('#app').classList.remove('sidebar-open');
     else if (state.detailsOpen) {
@@ -1134,11 +1106,10 @@ $('#btn-cancel').addEventListener('click', () => {
     api(`/api/sessions/${state.session}/cancel`, { method: 'POST' }).catch(() => {});
   }
 });
-function openSettings(focusModel = false) {
+function openSettings() {
   refreshStatus();
   $('#settings-modal').classList.remove('hidden');
   document.body.classList.add('settings-open');
-  if (focusModel) setTimeout(() => $('#set-model').focus(), 0);
 }
 function closeSettings() {
   $('#settings-modal').classList.add('hidden');
@@ -1150,8 +1121,97 @@ $('#btn-new-brand').addEventListener('click', () => newSession().catch((e) => co
 $('#btn-session-add').addEventListener('click', () => browseWorkspace());
 $('#btn-settings').addEventListener('click', () => openSettings());
 $('#btn-composer-settings').addEventListener('click', () => openSettings());
-$('#btn-header-model').addEventListener('click', () => openSettings(true));
-$('#composer-model').addEventListener('click', () => openSettings(true));
+$('#composer-model').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const pop = $('#model-pop');
+  if (pop.classList.contains('hidden')) openModelPop();
+  else closeModelPop();
+});
+
+/* ---------------- 模型 / 思考级别 popover（composer 内联切换） ---------------- */
+function openModelPop() {
+  renderModelPop(state.status || {});
+  $('#model-pop').classList.remove('hidden');
+}
+
+function closeModelPop() {
+  $('#model-pop').classList.add('hidden');
+}
+
+function renderModelPop(s) {
+  const pop = $('#model-pop');
+  if (!pop) return;
+  pop.innerHTML = '';
+
+  // —— 模型（下拉选择）——
+  pop.appendChild(el('div', 'pop-head', '模型'));
+  const sel = document.createElement('select');
+  sel.className = 'pop-select';
+  const models = Array.isArray(s.models) ? s.models : [];
+  for (const m of models) {
+    const o = document.createElement('option');
+    o.value = m.name;
+    o.textContent = m.baseURL && !m.baseURL.includes('api.openai.com') ? `${m.name} · ${m.baseURL}` : m.name;
+    if (m.name === s.model) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => {
+    applySettings({ model: sel.value })
+      .then(() => renderModelPop(state.status || {}))
+      .catch((err) => alert(`切换失败：${err.message}`));
+  });
+  pop.appendChild(sel);
+
+  // —— 思考级别（slider 滑杆，离散档位）——
+  const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
+  if (efforts.length) {
+    pop.appendChild(el('div', 'pop-sep'));
+    const headRow = el('div', 'pop-head-row');
+    headRow.appendChild(el('div', 'pop-head', '思考级别'));
+    const val = el('span', 'pop-val', s.reasoningEffort || efforts[0]);
+    headRow.appendChild(val);
+    pop.appendChild(headRow);
+
+    const idx = Math.max(0, efforts.indexOf(s.reasoningEffort));
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.className = 'pop-slider';
+    range.min = '0';
+    range.max = String(efforts.length - 1);
+    range.step = '1';
+    range.value = String(idx);
+    let applied = idx;
+    // input：拖动时仅更新数值标签；change：松手才落盘（失败回弹）
+    range.addEventListener('input', () => {
+      val.textContent = efforts[Number(range.value)] ?? '';
+    });
+    range.addEventListener('change', () => {
+      const pos = Number(range.value);
+      const v = efforts[pos];
+      if (pos === applied || !v) return;
+      applySettings({ reasoningEffort: v })
+        .then(() => {
+          applied = pos;
+        })
+        .catch((err) => {
+          alert(`设置失败：${err.message}`);
+          range.value = String(applied);
+          val.textContent = efforts[applied];
+        });
+    });
+    pop.appendChild(range);
+    const ticks = el('div', 'pop-ticks');
+    efforts.forEach((t) => ticks.appendChild(el('span', null, t)));
+    pop.appendChild(ticks);
+  }
+}
+
+/* 点击 popover 外关闭 */
+document.addEventListener('click', (e) => {
+  const pop = $('#model-pop');
+  const face = $('#composer-model');
+  if (!pop.classList.contains('hidden') && !pop.contains(e.target) && !face.contains(e.target)) closeModelPop();
+});
 $('#btn-close-settings').addEventListener('click', () => {
   closeSettings();
 });
@@ -1180,14 +1240,8 @@ $('#btn-sidebar-toggle').addEventListener('click', () => {
 });
 $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.toggle('sidebar-open'));
 
-$('#set-model').addEventListener('change', (e) => {
-  applySettings({ model: e.target.value }).catch((err) => alert(`切换失败：${err.message}`));
-});
 $('#set-permission').addEventListener('change', (e) => {
   applySettings({ permission: e.target.value }).catch((err) => alert(`设置失败：${err.message}`));
-});
-$('#set-effort').addEventListener('change', (e) => {
-  applySettings({ reasoningEffort: e.target.value }).catch((err) => alert(`设置失败：${err.message}`));
 });
 $('#btn-save-apikey').addEventListener('click', () => {
   const v = $('#set-apikey').value.trim();

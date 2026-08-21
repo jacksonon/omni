@@ -352,6 +352,26 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .ctx-item { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
 .ctx-item:hover { background: var(--surface-hover-solid); }
 .ctx-item.danger { color: var(--red, #d92d20); }
+
+/* 模型 / 思考级别 popover（composer 模型按钮向上弹出） */
+.composer-trailing { position: relative; }
+.model-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 50; display: flex; flex-direction: column; gap: 1px; width: min(300px, calc(100vw - 32px)); max-height: min(400px, 60vh); overflow-y: auto; padding: 6px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: 0 16px 48px rgba(0, 0, 0, .16); }
+.pop-head { padding: 6px 8px 4px; color: var(--text-caption); font-size: 11px; font-weight: 500; }
+.pop-sep { height: 1px; margin: 5px 4px; background: var(--line-1); }
+.pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; }
+.pop-head-row .pop-head { padding: 0; }
+.pop-val { color: var(--blue); font-size: 12px; font-weight: 500; }
+.pop-select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 9px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; cursor: pointer; }
+.pop-select:focus { border-color: var(--blue); }
+.pop-slider { width: calc(100% - 16px); margin: 6px 8px 2px; accent-color: var(--blue); cursor: pointer; }
+.pop-ticks { display: flex; justify-content: space-between; padding: 0 10px 4px; color: var(--text-caption); font-size: 11px; }
+.pop-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.pop-item:hover { background: var(--surface-hover-solid); }
+.pop-item.active { color: var(--blue); font-weight: 500; }
+.pop-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pop-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-sub { color: var(--text-caption); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-check { flex: none; color: var(--blue); }
 .settings-about { display: flex; flex-direction: column; gap: 6px; padding-top: 14px; border-top: 1px solid var(--line-2); color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .settings-about code { margin-left: 5px; color: var(--text-secondary); font: 11px/18px var(--mono); overflow-wrap: anywhere; }
 

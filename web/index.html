@@ -57,7 +57,6 @@
           <span class="header-status"><span class="status-dot" id="status-dot"></span><span id="status-text">就绪</span></span>
         </div>
         <div class="header-actions">
-          <button id="btn-header-model" class="model-button" type="button" title="切换模型"><span id="header-model">—</span><svg><use href="#i-chevron-down"/></svg></button>
           <button id="btn-details" class="icon-button" type="button" title="打开详情" aria-label="打开详情"><svg><use href="#i-panel-right"/></svg></button>
         </div>
       </div>
@@ -81,7 +80,8 @@
               <button id="btn-composer-settings" class="mode-button" type="button" title="运行设置"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
             </div>
             <div class="composer-trailing">
-              <button id="composer-model" class="model-select-face" type="button" title="切换模型">—</button>
+              <button id="composer-model" class="model-select-face" type="button" title="切换模型与思考级别">—</button>
+              <div id="model-pop" class="model-pop hidden"></div>
               <button id="btn-cancel" class="send-button cancel hidden" type="button" title="停止"><svg><use href="#i-square"/></svg></button>
               <button id="btn-send" class="send-button" type="button" title="发送消息"><svg><use href="#i-arrow-up"/></svg></button>
             </div>
@@ -106,10 +106,8 @@
   <div class="modal-card">
     <div class="modal-head"><h2 id="settings-title">设置</h2><button class="icon-button" id="btn-close-settings" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
-      <section class="settings-section"><label for="set-model">模型</label><select id="set-model"></select><p>切换后立即用于下一次请求。</p></section>
       <section class="settings-section"><label for="set-apikey">API Key <em>可选</em></label><div class="apikey-row"><input type="password" id="set-apikey" placeholder="沿用当前配置" autocomplete="off"><button id="btn-save-apikey" class="secondary-button" type="button">保存</button></div><p>仅保存在当前进程。</p></section>
       <section class="settings-section"><label for="set-permission">权限级别</label><select id="set-permission"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select></section>
-      <section class="settings-section"><label for="set-effort">思考级别</label><select id="set-effort"></select></section>
       <section class="settings-about"><div>工作目录 <code id="about-cwd"></code></div><div>工具 <code id="about-tools"></code></div><div>服务 <code id="about-server"></code></div></section>
     </div>
   </div>
