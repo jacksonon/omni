@@ -136,10 +136,24 @@ jobs:
             target: mac
             arch: arm64
             artifact: omni-electron-darwin-arm64
+            env:
+              # Apple 代码签名 + 公证（仅 mac 生效；未配置则 electron-builder 跳过签名、
+              # notarize.cjs 跳过公证，构建出的 app 需用户本地 `xattr -cr /Applications/omni.app`）
+              CSC_LINK: ${{ secrets.CSC_LINK }}
+              CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+              APPLE_ID: ${{ secrets.APPLE_ID }}
+              APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+              APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           - os: macos-15-intel
             target: mac
             arch: x64
             artifact: omni-electron-darwin-x64
+            env:
+              CSC_LINK: ${{ secrets.CSC_LINK }}
+              CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+              APPLE_ID: ${{ secrets.APPLE_ID }}
+              APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+              APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           - os: windows-latest
             target: win
             arch: x64

@@ -1,6 +1,6 @@
 {
   "name": "omni",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Omni — Agent 工程（终端型 AI 编程助手）",
   "author": "Omni Contributors",
   "type": "module",
@@ -16,6 +16,8 @@
     "productName": "omni",
     "executableName": "omni",
     "artifactName": "omni-${version}-${os}-${arch}.${ext}",
+    "icon": "electron/icon.png",
+    "afterSign": "scripts/notarize.cjs",
     "asar": false,
     "files": [
       "dist/omni.cjs",
@@ -36,6 +38,7 @@
           ]
         }
       ],
+      "icon": "electron/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "win": {
@@ -46,7 +49,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "electron/icon.png"
     },
     "linux": {
       "target": [
@@ -58,7 +62,8 @@
         }
       ],
       "category": "Development",
-      "maintainer": "Omni Contributors"
+      "maintainer": "Omni Contributors",
+      "icon": "electron/icon.png"
     }
   },
   "scripts": {
@@ -91,6 +96,7 @@
     "openai": "^4.0.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1",
     "@types/node": "^20.0.0",
