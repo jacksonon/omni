@@ -1,5 +1,8 @@
 # TODO — Omni 可做事项清单
 
+> **1.0 版本规划**：见 [`TODO-1.0.md`](TODO-1.0.md)（2026-08-22 全市场调研 → P0 定义项 / P1 / P2 / 发布工程）。
+> 本文件维持为持续演进的 backlog；1.0 完成项会同步回填到这里。
+>
 > 调研时间：2026-08-17。覆盖主流 agent harness：Claude Code / OpenAI Codex CLI / opencode /
 > Gemini CLI（现 Antigravity CLI）/ Qwen Code / Cursor / Aider / Cline / Roo Code / Kilo Code /
 > Goose / OpenHands / GitHub Copilot CLI。
@@ -129,11 +132,79 @@
 
 ## 七、模型与多端点（✅ 基线：models 多端点、/model 切换与添加、/variants 思考级别、持久化）
 
+> 2026-08-22 需求修订（参考 opencode V2 providers / models.dev 目录设计）：
+> 支持一个 baseURL 挂多个模型、每个模型带自己的 variants 与元数据
+> （上下文/输出上限、输入输出类型数组等）；并按现状盘点出待优化项。
+
+### 7.1 配置模型重构（provider 分组 + 模型元数据）
+
+- [ ] **P0 Provider 分组：一个 baseURL 挂多个模型**（对标 opencode `providers`）：
+      现状 `models` 是以「模型名」为 key 的扁平表
+      （`{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffort?… } }`）——同一网关下挂 N 个
+      模型要么重复写 N 遍端点字段，要么全部挤在顶层唯一 baseURL 回退上，
+      **无法表达「一个网关 + 一组模型」**。新增 `providers` 分组（扁平 `models` 向后兼容，
+      迁移期两种形态并存）：
+
+      ```jsonc
+      {
+        "providers": {
+          "bigmodel": {
+            "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+            "apiKey": "{env:GLM_KEY}",   // provider 级共享凭据；支持 {env:VAR} 引用
+            "userAgent": "...",
+            "headers": {},               // 可选：provider 级请求头
+            "models": {
+              "glm-4-flash": {},         // 只写差异字段（缺省继承 provider 级）
+              "glm-4-plus": {}
+            }
+          }
+        }
+      }
+      ```
+
+      解析顺序 = provider 级 → model 级逐字段覆盖；`/model` 面板按 `provider/model`
+      展示与切换（`providerID` 不含 `/`，`modelID` 可含 `/`，opencode 同规则）；
+      createClient 按 provider 复用缓存（同组多模型共享一个客户端实例）。
+- [ ] **P0 模型元数据：limit + modalities + capabilities**（每个模型自己的参数画像，
+      对标 opencode model 条目的 limit/modalities/capabilities）：
+      - `limit: { context, output }`——输入上限（上下文窗口）/ 输出 max（token 数）；
+      - `modalities: { input: [...], output: [...] }`——**输入/输出类型数组**
+        （text / image / pdf / audio；vision 模型标 image，纯文本模型只 text）；
+      - `capabilities`：tools（工具调用）/ reasoning（思考输出）/ temperature 等能力标记；
+      - `modelID` 别名（目录友好名 ≠ 发给 API 的真实模型名）、`disabled` 隐藏不出现在
+        /model 列表；
+      - **未声明时的兜底假设**（opencode 方案）：tools ✓ · input ["text","image"] ·
+        output ["text"] · context 200K / output 32K——显式声明覆盖兜底。
+      下游消费点：① 请求带 `max_tokens ≤ limit.output`（当前从不设置，长回答可能被网关默认值截断）；
+      ② summarizeContext 从「消息数阈值」升级为按 context 窗口占比触发；
+      ③ 工具结果 8000 字符固定截断可按模型预算缩放；
+      ④ 多模态前置校验（用户消息含图片而该模型 input 无 image → 明确提示而非网关侧报错）。
+- [ ] **P1 variants 升级为命名请求叠加层**（对标 opencode custom variants）：
+      现状 variants 只有 reasoning_effort 一个维度（`reasoningEffortOptions` 字符串数组 +
+      `reasoningEffort` 当前值）；升级为 `{ id, settings?, body?, headers? }` 命名叠加层——
+      deep-merge 到该模型的请求配置上（例：`fast` = effort low；`deep` = effort high +
+      summary auto + 更大 token budget），/variants 面板列命名 variant、选中即叠加生效；
+      **未知 variant 报错而非静默回落基础模型**（opencode 语义）；现有字符串形式保留为简写。
+
+### 7.2 现状盘点：模型与多端点待优化项
+
 - [ ] **P0 fallback 模型回退链**（Claude Code fallbackModel：最多 3 级按序回退）：
       主模型 429/超时/网关错误时自动切换备用端点（现有 models 表已可配，loop 错误处理处加
       回退重试），提示「已回退到 X」。
-- [ ] **P1 计划/执行模型分离预设**（见第六节 architect/editor；此处指单一 harness 层面
-      `/plan` 自动用 config 指定模型）。
+- [ ] **P1 architect/editor 跨端点路由**：现状 loop 只在同一 client 上换模型名
+      （`routedModel`；config 注释明说「不同端点的 architect/editor 需配 models 表，
+      MVP 不做跨端点路由」）——architect 与 editor 配在不同网关时不生效。
+      基于 provider 分组解析出 per-model 端点，路由时同步切换/复用对应 client
+      （ModelRuntime 已支持重建，缺的是按模型名反查端点的解析层）。
+- [ ] **P1 模型发现与列表增强**：a) `/model add` 与启动时可选拉取网关 `GET /v1/models`
+      自动补全可用模型（OpenAI 兼容协议通用能力；对标 opencode 对 Ollama/LM Studio/vLLM
+      的后台自动发现）；b) /model 面板与 Web 设置面板的模型下拉展示显示名 + 上下文窗口/
+      输出上限（来自元数据，当前只有裸模型名）；c) `{env:VAR}` 引用统一替换——密钥不进
+      配置文件（现状只有顶层 OMNI_API_KEY 环境变量一条路，models 表里只能明文）。
+- [ ] **P2 能力驱动的请求构建**：`reasoning_effort` / `stream_options` 等参数目前靠
+      「请求失败静默重试不带」探测（每次换不兼容网关都白付一轮失败往返）；有了
+      capabilities 元数据后事前决定是否携带。兼容性字段 `compatibility.reasoningField`
+      （DeepSeek 系 `reasoning_content` 已内置识别，其余字段名可配置扩展，对标 opencode）。
 - [ ] **P2 多模型对比 eval**：同一任务多模型跑 eval 输出对比报告（--eval 已铺路）。
 
 ## 八、MCP 增强（✅ 基线：tools 协议、stdio/streamable-HTTP 双传输、/mcp 列表/资源/提示词/增删/登录、instructions 注入、per-tool 审批、OAuth）
