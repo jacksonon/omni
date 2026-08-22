@@ -60,16 +60,36 @@ export function detectCheckCommand(cwd = process.cwd()): string | null {
   }
 }
 
-/** 收集工作区改动：git diff HEAD（含暂存）+ git status 未跟踪文件 */
-export async function collectDiff(): Promise<{ ok: boolean; output: string }> {
-  const diff = await captureCommand('git diff HEAD -- .');
+/**
+ * 收集工作区改动：git diff HEAD（含暂存）+ git status 未跟踪文件。
+ *
+ * options：
+ *   · stat —— 只输出统计摘要（git diff --stat + 状态行；/diff --stat 用）
+ *   · full —— 不截断（缺省整体 50KB 上限保留；/diff --full 用）
+ *
+ * 修复：非 git 目录下 `git diff` 失败但 `git status` 也失败时才报错；
+ * 此前 diff 失败（如非 git 仓库输出「不是 git 仓库」）而 status 成功时，
+ * 错误文本会混进 ok 结果里被当成 diff 内容展示。
+ */
+export async function collectDiff(
+  options: { stat?: boolean; full?: boolean } = {}
+): Promise<{ ok: boolean; output: string }> {
+  const diffCmd = options.stat ? 'git diff HEAD --stat -- .' : 'git diff HEAD -- .';
+  const diff = await captureCommand(diffCmd);
   const status = await captureCommand('git status --short');
+  // 两个都失败 → 大概率非 git 目录，如实报错（调用方提示）
   if (!diff.ok && !status.ok) return { ok: false, output: diff.output };
+  // diff 命令本身失败（非 git / 无提交历史）但 status 成功：只用 status 部分，
+  // 不把错误文本混当 diff 内容（review 抓到的边界）
+  const diffPart =
+    diff.ok && diff.output !== '（无输出）' ? diff.output : diff.ok ? '（无改动）' : '';
   const parts = [
-    diff.output !== '（无输出）' ? diff.output : '（无改动）',
+    diffPart,
     status.output !== '（无输出）' ? `git status:\n${status.output}` : '',
   ].filter(Boolean);
-  return { ok: true, output: parts.join('\n\n').slice(0, 50_000) };
+  if (parts.length === 0) return { ok: true, output: '（无改动）' };
+  const joined = parts.join('\n\n');
+  return { ok: true, output: options.full ? joined : joined.slice(0, 50_000) };
 }
 
 /** 组装审查输入（diff + typecheck 结果） */

@@ -35,6 +35,12 @@ export interface SafetyOptions {
   summarize?: (tool: string, args: Record<string, unknown>) => string;
   /** 用户/项目级危险命令扩展正则（config dangerousPatterns；缺省无） */
   dangerousPatterns?: string[];
+  /**
+   * 写操作 diff 确认（P2）：非空时 write_file 需要审批的场景把变更统计
+   * （`+A −B 行` / 新增 N 行）附进审批 reason——审批扩展到「看到要写什么」，
+   * 用户据此决定放行/拒绝。由入口层注入（loop 的 UndoStack 快照同源数据）。
+   */
+  writeDiffSummary?: (tool: string, args: Record<string, unknown>) => string | null;
 }
 
 export class Safety {
@@ -51,6 +57,8 @@ export class Safety {
   /**
    * 工具调用过闸：判定 → （需要时）审批 → 审计。返回 { allow, reason? }。
    * 拒绝时 reason 说明原因（由 loop 作为工具结果回传模型，触发自我纠错）。
+   * write_file 且配置了 writeDiffSummary 时：需要审批的写操作把变更统计附进
+   * reason（diff 确认审批 P2——用户在卡片上看到「要写什么、改多少行」再决定）。
    */
   async gate(tool: Tool, args: Record<string, unknown>): Promise<{ allow: boolean; reason?: string }> {
     const summary = this.opts.summarize?.(tool.name, args) ?? tool.name;
@@ -65,8 +73,14 @@ export class Safety {
       this.record(tool.name, summary, `deny:${g.reason}`);
       return { allow: false, reason: g.reason };
     }
+    // 需要审批：write_file 附变更统计（diff 确认）；其余原样
+    let reason = g.reason;
+    if (tool.name === 'write_file' && this.opts.writeDiffSummary) {
+      const diffLine = this.opts.writeDiffSummary(tool.name, args);
+      if (diffLine) reason = `${reason}\n${diffLine}`;
+    }
     // 需要审批：交给 Output 层的回调（console readline / TUI 审批卡片）
-    const ok = await this.requestApproval({ tool: tool.name, summary, reason: g.reason });
+    const ok = await this.requestApproval({ tool: tool.name, summary, reason });
     this.record(tool.name, summary, ok ? 'approved' : 'rejected');
     return ok ? { allow: true } : { allow: false, reason: '用户拒绝了该操作' };
   }

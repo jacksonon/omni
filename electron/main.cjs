@@ -49,7 +49,8 @@ ipcMain.handle('omni:pick-directory', () => pickDir());
 
 /**
  * 菜单「选择工作目录…」：首选调后端 REST /api/workspace 切换（chdir + 重建运行时 +
- * 持久化到全局配置，页面经 SSE 自动刷新，无需重启）；后端不可达时回退进程重启。
+ * 持久化到全局配置，页面经 SSE 自动刷新，无需重启）；后端不可达或返回错误时
+ * 提示后回退进程重启（修复：此前非 ok 响应被静默吞掉，用户不知道切换没生效）。
  */
 async function pickAndSwitchWorkspace() {
   const dir = pickDir();
@@ -62,6 +63,14 @@ async function pickAndSwitchWorkspace() {
       body: JSON.stringify({ dir }),
     });
     if (res.ok) return;
+    // 后端明确拒绝（如目录不存在）→ 提示原因，不盲目重启（重启也会失败）
+    let detail = '';
+    try {
+      const body = await res.json();
+      if (body && body.error) detail = String(body.error);
+    } catch { /* 非 JSON 响应忽略 */ }
+    dialog.showErrorBox('切换工作目录失败', detail || `后端返回 ${res.status}，请检查目录是否有效。`);
+    return;
   } catch {
     // 后端不可达（极端）→ 回退重启
   }

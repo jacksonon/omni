@@ -17,7 +17,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { formatToolCall, previewOutput } from '../output/format.js';
+import { formatToolCall, previewOutput, countDiffLines } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
@@ -168,11 +168,27 @@ export async function runAgent(
   const routedModel = planMode ? (opts.architectModel ?? model) : (opts.editorModel ?? model);
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
+  // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批 reason
+  //（数据源 = UndoStack 执行前快照，与 write_file 卡片 diff 同源）
   const safety = new Safety({
     tier: opts.permission ?? 'full',
     audit: opts.auditLog ?? false,
     requestApproval: opts.requestApproval ?? (() => false),
     summarize: formatToolCall,
+    dangerousPatterns: opts.cfg?.dangerousPatterns,
+    writeDiffSummary: (tool, args) => {
+      if (tool !== 'write_file') return null;
+      const snap = opts.undoStack?.latestFor(String(args.path ?? ''));
+      const content = String(args.content ?? '');
+      const original = snap ? (snap.existed ? snap.content : null) : null;
+      try {
+        if (original === null) return `新增文件 · 全文 ${content.split('\n').length} 行`;
+        const st = countDiffLines(original, content);
+        return st.add === 0 && st.rem === 0 ? null : `变更统计 · +${st.add} −${st.rem} 行`;
+      } catch {
+        return null;
+      }
+    },
   });
 
   // Stop hook 的续命标记：模型已被要求继续过一次后为 true（只允许续一次，防 hook 无限循环）。

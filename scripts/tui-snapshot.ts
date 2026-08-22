@@ -1327,12 +1327,12 @@ async function main(): Promise<void> {
   const t19 = await createTestRenderer({ width: 64, height: 20 });
   const tree19 = mountTree(t19.renderer, s19, { withInput: true });
   await t19.renderOnce();
-  // a) 输入 '/' → 联想列出全部命令（items 全量 31 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
+  // a) 输入 '/' → 联想列出全部命令（items 全量 32 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 31 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 31、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 32 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 32、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1402,8 +1402,8 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 25 个」提示行
-  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '开/关思考过程展示', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 25 个'];
+  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 26 个」提示行
+  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '开/关思考过程展示', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 26 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1483,9 +1483,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = model/status/context/export/config/mcp；上下各一条提示行（↑ 15 个 · ↓ 10 个，31 条命令）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 10 个') || frame19s.includes('/review')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 10 个」、无 /review）');
+  // items[15..20] = model/status/context/export/config/mcp（32 条命令下标不变，/rewind 追加在 /diff 后）
+  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 11 个') || frame19s.includes('/review')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 11 个」、无 /review）');
     process.exit(1);
   }
   if (!frame19s.includes('/model') || !frame19s.includes('/config') || !frame19s.includes('/mcp')) {
@@ -2076,7 +2076,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const root25 = findProjectRoot(process.cwd());
-  if (!root25.endsWith('omni')) {
+  // 断言「定位到的就是 git 根」（存在 .git）而非目录名——worktree 下目录名是
+  // .worktrees/rewind（第一百四十五次日志记录过的环境假设误报），语义上仍是本仓库
+  if (!fs.existsSync(path.join(root25, '.git'))) {
     console.error(`✗ 场景 25 findProjectRoot 未定位到 git 根: ${root25}`);
     process.exit(1);
   }

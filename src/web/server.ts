@@ -79,6 +79,13 @@ import {
   writeGlobalAgentsFile,
 } from '../agent/init.js';
 import { applyUndo } from '../tools/undo.js';
+import {
+  checkpointSummaryLine,
+  createCheckpoint,
+  loadCheckpoint,
+  loadCheckpoints,
+  restoreCheckpoint,
+} from '../agent/rewind.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
 import { attachRuntime, prepareRun } from '../main.js';
@@ -403,6 +410,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     s.messages.push({ role: 'user', content: prompt });
     output.onUserMessage(prompt);
+    // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘）；
+    // 失败静默不打扰对话
+    await createCheckpoint(s.file ?? undefined, prompt).catch(() => null);
 
     // 后台运行：事件流经 broadcast 推给客户端，REST 路由立即返回 202
     void (async () => {
@@ -497,7 +507,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     // -- 不需要 LLM 的命令 --
 
     if (cmd === '/help') {
-      add('可用命令：/status /context /export /config /diff /doctor /trace /agents');
+      add('可用命令：/status /context /export /config /diff [--stat|--full] /rewind /doctor /trace /agents');
       add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
       add('/skill [find|add|show] /compact /review /rename /session /resume /mcp /init');
       add('/orchestrate /goal /settings /help');
@@ -546,6 +556,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/undo' || cmd.startsWith('/undo ')) {
+      // 无会话上下文（s=null）时 undoStack 仍在但 messages 注入无意义——如实提示，
+      // 不静默「成功」（修复：此前 messages ?? [] 把 system 提示推进了临时数组，用户看不到）
+      if (!s) { add('当前没有会话上下文——/undo 需要先选择一个会话。'); return { lines }; }
       const stack = runOpts.undoStack;
       if (!stack || stack.size === 0) { add('没有可撤销的写操作。'); return { lines }; }
       const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
@@ -567,6 +580,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/redo' || cmd.startsWith('/redo ')) {
+      // 同 /undo：无会话上下文时如实提示（messages ?? [] 临时数组 bug 修复）
+      if (!s) { add('当前没有会话上下文——/redo 需要先选择一个会话。'); return { lines }; }
       const stack = runOpts.undoStack;
       if (!stack || stack.redoSize === 0) { add('没有可重做的操作。'); return { lines }; }
       const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
@@ -615,17 +630,53 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       return { lines };
     }
 
-    if (cmd === '/diff') {
+    if (cmd === '/diff' || cmd.startsWith('/diff ')) {
+      // /diff：查看未提交改动；--stat 只看统计摘要、--full 不截断（缺省前 60 行）
+      const arg = cmd.slice('/diff'.length).trim();
+      const stat = /(?:^|\s)--stat(?=\s|$)/.test(arg);
+      const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       add('正在收集 git diff…');
-      const d = await collectDiff();
+      const d = await collectDiff({ stat, full });
       if (!d.ok) add(`无法获取 git diff：${d.output.slice(0, 200)}`);
       else if (d.output === '（无改动）') add('工作区没有未提交的改动');
-      else {
+      else if (stat) {
+        for (const l of d.output.split('\n')) add(l);
+      } else {
         const dlines = d.output.split('\n');
-        add(`git diff（${dlines.length} 行，前 60 行）：`);
-        for (const l of dlines.slice(0, 60)) add(l);
-        if (dlines.length > 60) add(`… 还有 ${dlines.length - 60} 行`);
+        const shown = full ? dlines : dlines.slice(0, 60);
+        add(full ? `git diff（${dlines.length} 行）：` : `git diff（${dlines.length} 行，前 60 行）：`);
+        for (const l of shown) add(l);
+        if (!full && dlines.length > 60) add(`… 还有 ${dlines.length - 60} 行（/diff --full 查看全部）`);
       }
+      return { lines };
+    }
+
+    if (cmd === '/rewind' || cmd.startsWith('/rewind ')) {
+      // /rewind：会话检查点——无参列出全部；<N> 恢复到第 N 个检查点的文件状态
+      //（只回滚文件，对话保留）。检查点每轮用户消息提交时自动创建并存盘。
+      const arg = cmd.slice('/rewind'.length).trim();
+      const sessionFile = s?.file ?? undefined;
+      const cps = await loadCheckpoints(sessionFile);
+      if (!arg) {
+        if (cps.length === 0) {
+          add('暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）');
+          return { lines };
+        }
+        add(`会话检查点（${cps.length} 个，/rewind <序号> 回滚工作区文件到该时刻）：`);
+        for (const c of cps) add(`· ${checkpointSummaryLine(c)}`);
+        return { lines };
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+        add(`/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`);
+        return { lines };
+      }
+      const target = await loadCheckpoint(sessionFile, n);
+      if (!target) return { lines };
+      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
+      add(`已回滚到检查点 #${n}（${results.length} 个文件处理）：`);
+      for (const r of results) add(`· ${r}`);
+      if (s) s.messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
       return { lines };
     }
 

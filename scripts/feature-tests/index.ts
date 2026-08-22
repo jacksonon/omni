@@ -16,6 +16,7 @@ import { configSuite } from './config.js';
 import { coreSuite } from './core.js';
 import { sessionSuite } from './session.js';
 import { memoryEnhanceSuite } from './memory-enhance.js';
+import { rewindSuite } from './rewind.js';
 
 console.log('🧪 Omni 功能回归测试');
 console.log('═══════════════════════════════════════════');
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
     safetySuite(),
     mcpSuite(),
     skillsSuite(),
+    rewindSuite(),
     coreSuite(),
   ];
 

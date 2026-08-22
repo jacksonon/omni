@@ -21,6 +21,14 @@ import type { TuiOutput } from './output.js';
 import type { TuiKey, TuiSession } from './render.js';
 import type { PermissionTier } from '../safety/policy.js';
 import { applyUndo, type UndoStack } from '../tools/undo.js';
+import {
+  checkpointDiffStats,
+  checkpointSummaryLine,
+  createCheckpoint,
+  loadCheckpoint,
+  loadCheckpoints,
+  restoreCheckpoint,
+} from '../agent/rewind.js';
 import { truncateToWidth } from '../output/format.js';
 import {
   discoverSkills,
@@ -1209,12 +1217,15 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'diff',
-    description: '查看最近修改（git diff 未提交改动）',
-    descriptionEn: 'View uncommitted changes (git diff)',
+    description: '查看最近修改（git diff；--stat 只看统计 · --full 不截断）',
+    descriptionEn: 'View uncommitted changes (git diff; --stat summary · --full untruncated)',
     run: async (ctx) => {
+      const arg = (ctx.args ?? '').trim();
+      const stat = /(?:^|\s)--stat(?=\s|$)/.test(arg);
+      const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       pushCmdLine(ctx.state, { kind: 'meta', text: '正在收集 git diff…' });
       await ctx.session.paint().catch(() => {});
-      const d = await collectDiff();
+      const d = await collectDiff({ stat, full });
       if (!d.ok) {
         pushCmdLine(ctx.state, { kind: 'warn', text: `无法获取 git diff：${d.output.slice(0, 200)}` });
         return;
@@ -1223,10 +1234,53 @@ export const TUI_COMMANDS: TuiCommand[] = [
         pushCmdLine(ctx.state, { kind: 'meta', text: '工作区没有未提交的改动' });
         return;
       }
+      if (stat) {
+        for (const l of d.output.split('\n')) pushCmdLine(ctx.state, { kind: 'answer', text: l });
+        return;
+      }
       const lines = d.output.split('\n');
-      pushCmdLine(ctx.state, { kind: 'meta', text: `git diff（${lines.length} 行，前 60 行）：` });
-      for (const l of lines.slice(0, 60)) pushCmdLine(ctx.state, { kind: 'answer', text: l });
-      if (lines.length > 60) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${lines.length - 60} 行（git diff 查看全部）` });
+      const shown = full ? lines : lines.slice(0, 60);
+      pushCmdLine(ctx.state, { kind: 'meta', text: full ? `git diff（${lines.length} 行）：` : `git diff（${lines.length} 行，前 60 行）：` });
+      for (const l of shown) pushCmdLine(ctx.state, { kind: 'answer', text: l });
+      if (!full && lines.length > 60) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${lines.length - 60} 行（/diff --full 查看全部）` });
+    },
+  },
+  {
+    name: 'rewind',
+    description: '会话检查点：回滚工作区到任意历史回合（/rewind 列表 · /rewind <N> 恢复；文件回滚，对话保留）',
+    descriptionEn: 'Session checkpoints: roll back workspace files to any past turn (/rewind list · /rewind <N> restore)',
+    run: async (ctx) => {
+      // /rewind：会话检查点（P0）——每轮用户消息提交时自动快照工作区修改文件
+      // （.omni/checkpoints/<会话id>/，持久化——恢复会话后仍可用）。无参列出全部
+      // （含与当前工作区的差异统计 = 可视化 P1）；<N> 恢复（只回滚文件，对话历史
+      // 保留，恢复后注入 system 提示告知模型）。
+      const arg = (ctx.args ?? '').trim();
+      const cps = await loadCheckpoints(ctx.sessionPath);
+      if (!arg) {
+        if (cps.length === 0) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）' });
+          return;
+        }
+        pushCmdLine(ctx.state, { kind: 'meta', text: `会话检查点（${cps.length} 个，/rewind <序号> 回滚；Δ = 与当前工作区的差异）：` });
+        for (const c of cps) {
+          const stats = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+          const delta = stats.add === 0 && stats.rem === 0 ? '· 与当前一致' : `· Δ +${stats.add} −${stats.rem} 行`;
+          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${checkpointSummaryLine(c)} ${delta}` });
+        }
+        return;
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）` });
+        return;
+      }
+      const target = await loadCheckpoint(ctx.sessionPath, n);
+      if (!target) return;
+      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
+      pushCmdLine(ctx.state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` });
+      for (const r of results) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${r}` });
+      ctx.messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+      scheduleCmdPanelAutoClose(ctx.state, ctx.session);
     },
   },
   {

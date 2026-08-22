@@ -21,6 +21,7 @@ import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
+import { createCheckpoint } from '../agent/rewind.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
@@ -786,6 +787,9 @@ export async function runTuiInteractive(
       messages.push({ role: 'user', content: userText });
       out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
       runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
+      // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
+      // 恢复会话后仍可 /rewind）；失败静默不打扰对话
+      await createCheckpoint(runOpts.sessionPath, userText).catch(() => null);
       // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context；
       // recorder 传下去——压缩成功时记 compact 轨迹事件）
       await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);

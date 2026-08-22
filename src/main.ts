@@ -42,8 +42,21 @@ import { discoverSubagents } from './agent/subagent-defs.js';
 import { tools } from './tools/index.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
+import { countDiffLines } from './output/format.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { dim, red } from './ui.js';
 import { VERSION } from './version.js';
+
+/** 读文件当前内容（write_file diff 审批统计用）；不存在/读失败返回 null */
+function readIfExists(p: string): string | null {
+  try {
+    const abs = path.resolve(process.cwd(), p);
+    return readFileSync(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
 
 // 抑制第三方依赖（openai SDK 等）触发的 Node 过时 API 警告，保持终端干净
 process.removeAllListeners('warning');
@@ -185,6 +198,23 @@ export async function attachRuntime(
     requestApproval,
     summarize: formatToolCall,
     dangerousPatterns: cfg.dangerousPatterns,
+    // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批卡片
+    //（数据源 = UndoStack 执行前快照——与 write_file 卡片 diff 同源；快照在工具执行前
+    // 打，这里 gate 先于 execute 读「最近一次同路径快照」即为当前盘上内容）
+    writeDiffSummary: (tool, args) => {
+      if (tool !== 'write_file') return null;
+      const snap = undoStack.latestFor(String(args.path ?? ''));
+      const content = String(args.content ?? '');
+      // 无快照（本会话首写该文件）→ 直接读盘上现状做统计
+      const original = snap ? (snap.existed ? snap.content : null) : readIfExists(String(args.path ?? ''));
+      try {
+        if (original === null) return `新增文件 · 全文 ${content.split('\n').length} 行`;
+        const st = countDiffLines(original, content);
+        return st.add === 0 && st.rem === 0 ? null : `变更统计 · +${st.add} −${st.rem} 行`;
+      } catch {
+        return null;
+      }
+    },
   });
   ctx.runOpts.permission = effectiveTier;
   ctx.runOpts.trusted = trusted;

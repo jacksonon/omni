@@ -46,6 +46,13 @@ import {
   statusReport,
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
+import {
+  checkpointSummaryLine,
+  createCheckpoint,
+  loadCheckpoint,
+  loadCheckpoints,
+  restoreCheckpoint,
+} from '../agent/rewind.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import { createClient } from '../client.js';
@@ -664,20 +671,57 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/diff') {
-      // /diff：查看未提交改动（git diff）
+    if (cmd === '/diff' || cmd.startsWith('/diff ')) {
+      // /diff：查看未提交改动；--stat 只看统计摘要、--full 不截断（缺省前 60 行）
+      const arg = cmd.slice('/diff'.length).trim();
+      const stat = /(?:^|\s)--stat(?=\s|$)/.test(arg);
+      const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       console.log(dim('正在收集 git diff…'));
-      const d = await collectDiff();
+      const d = await collectDiff({ stat, full });
       if (!d.ok) {
         console.log(red(`无法获取 git diff：${d.output.slice(0, 200)}`));
       } else if (d.output === '（无改动）') {
         console.log(dim('工作区没有未提交的改动'));
+      } else if (stat) {
+        console.log(d.output); // 统计摘要全量输出（本身就短）
       } else {
         const lines = d.output.split('\n');
-        console.log(dim(`git diff（${lines.length} 行，前 60 行）：`));
-        for (const l of lines.slice(0, 60)) console.log(l);
-        if (lines.length > 60) console.log(dim(`… 还有 ${lines.length - 60} 行（git diff 查看全部）`));
+        const shown = full ? lines : lines.slice(0, 60);
+        console.log(dim(full ? `git diff（${lines.length} 行）：` : `git diff（${lines.length} 行，前 60 行）：`));
+        for (const l of shown) console.log(l);
+        if (!full && lines.length > 60) console.log(dim(`… 还有 ${lines.length - 60} 行（/diff --full 查看全部）`));
       }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/rewind' || cmd.startsWith('/rewind ')) {
+      // /rewind：会话检查点——无参列出全部检查点；<N> 恢复到第 N 个检查点的文件状态
+      //（只回滚文件，不动对话历史；恢复后注入 system 提示告知模型）。检查点在每轮
+      // 用户消息提交时自动创建并存盘——会话恢复后仍可用。
+      const arg = cmd.slice('/rewind'.length).trim();
+      const cps = await loadCheckpoints(runOpts.sessionPath);
+      if (!arg) {
+        if (cps.length === 0) {
+          console.log(dim('暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）'));
+        } else {
+          console.log(dim(`会话检查点（${cps.length} 个，/rewind <序号> 回滚工作区文件到该时刻）：`));
+          for (const c of cps) console.log(dim(`· ${checkpointSummaryLine(c)}`));
+        }
+        safePrompt();
+        continue;
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+        console.log(red(`/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`));
+        safePrompt();
+        continue;
+      }
+      const target = await loadCheckpoint(runOpts.sessionPath, n);
+      if (!target) continue;
+      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
+      console.log(green(`已回滚到检查点 #${n}（${results.length} 个文件处理）：`));
+      for (const r of results) console.log(dim(`· ${r}`));
+      messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
       safePrompt();
       continue;
     }
@@ -1011,6 +1055,9 @@ export async function runInteractive(
     messages.push({ role: 'user', content: userText });
     out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
     runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
+    // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
+    // 恢复会话后仍可 /rewind）；失败静默不打扰对话
+    await createCheckpoint(runOpts.sessionPath, userText).catch(() => null);
     // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
     // recorder 传下去——压缩成功时记 compact 轨迹事件）
     await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
