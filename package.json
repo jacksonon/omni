@@ -3,6 +3,7 @@
   "version": "0.6.7",
   "description": "Omni — Agent 工程（终端型 AI 编程助手）",
   "author": "Omni Contributors",
+  "license": "BSD-3-Clause",
   "type": "module",
   "main": "electron/main.cjs",
   "bin": {
@@ -84,6 +85,7 @@
     "mock": "node scripts/mock-server.mjs",
     "eval": "tsx scripts/eval/run-eval.ts",
     "eval:mock": "tsx scripts/eval/run-eval.ts --mock",
+    "test:features": "tsx scripts/feature-tests/index.ts",
     "prepack": "npm run web:sync && npm run build",
     "electron:dev": "npm run bundle && electron .",
     "electron:pack": "npm run web:sync && npm run bundle && electron-builder --dir",

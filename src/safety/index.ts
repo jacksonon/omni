@@ -33,6 +33,8 @@ export interface SafetyOptions {
   requestApproval?: (req: ApprovalRequest) => Promise<boolean> | boolean;
   /** 参数人类可读摘要（传 formatToolCall 复用；缺省用工具名） */
   summarize?: (tool: string, args: Record<string, unknown>) => string;
+  /** 用户/项目级危险命令扩展正则（config dangerousPatterns；缺省无） */
+  dangerousPatterns?: string[];
 }
 
 export class Safety {
@@ -52,7 +54,7 @@ export class Safety {
    */
   async gate(tool: Tool, args: Record<string, unknown>): Promise<{ allow: boolean; reason?: string }> {
     const summary = this.opts.summarize?.(tool.name, args) ?? tool.name;
-    const g = gateTool(this.opts.tier, tool.name, args);
+    const g = gateTool(this.opts.tier, tool, args, this.opts.dangerousPatterns);
     // 联合类型收窄：GateResult = {allow:true} | {allow:false;reason} | {needApproval:true;reason}
     if ('allow' in g && g.allow) {
       this.record(tool.name, summary, 'allow');

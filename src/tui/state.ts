@@ -273,10 +273,17 @@ export interface TuiState {
   /** 是否正在流式生成回答（显示光标在末尾） */
   generating: boolean;
   /**
-   * 是否展开显示全部思考过程（/thinking 命令切换；默认 true）。false = 每个思考
+   * 是否展开显示全部思考过程（点击思考行可单独切换；默认 true）。false = 每个思考
    * 段落折叠成一行 `+ thinking`。会话级状态（/clear 不清除），buildBody 渲染时读取。
    */
   thinkingExpanded: boolean;
+  /**
+   * 是否展示思考过程流（/thinking 命令切换；默认跟随配置 showThinking）。false =
+   * buildBody 渲染时过滤掉所有 thinking 行（历史与新轮的思考都不显示，会话级 /clear
+   * 不清除）；TuiOutput 同步停止建模块/写 chunk（数据仍捕获并落盘 .omni/last-thinking.md，
+   * 重新打开即恢复显示）。
+   */
+  thinkingShow: boolean;
   /**
    * 是否展示当次 token 使用统计（/tokens 命令切换；默认 true）。false = buildBody
    * 渲染时过滤掉所有 tokens 行（历史与新轮的统计都不显示，会话级 /clear 不清除）；
@@ -505,6 +512,7 @@ export function createTuiState(): TuiState {
     loadingIndex: -1,
     generating: false,
     thinkingExpanded: true,
+    thinkingShow: true,
     showTokens: true,
     expandedThinking: new Set(),
     collapsedThinking: new Set(),

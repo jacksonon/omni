@@ -7,6 +7,7 @@
  * handleMenuKey 消费（interactive.ts 在全局 keypress 里先于输入框拦截）。
  */
 import type { TextareaRenderable } from '@opentui/core';
+import path from 'node:path';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import {
@@ -25,6 +26,8 @@ import {
   discoverSkills,
   loadSkillContent,
   parseSkillFindResults,
+  parseSkillFrontmatter,
+  refreshSkillInjections,
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
@@ -36,6 +39,7 @@ import {
   detectScaffolds,
   doctorReport,
   exportSession,
+  memoryFilesFromMessages,
   statusReport,
 } from '../agent/report.js';
 import {
@@ -44,12 +48,15 @@ import {
   loadSession,
   sessionIdFromPath,
   updateSessionTitle,
+  isPersistable as isPersistableSafe,
   type SessionInfo,
 } from '../agent/session.js';
-import type { McpServerConfig } from '../tools/mcp.js';
+import { forkSession, sendSessionMessage } from '../agent/session-fork.js';
+import { applyProjectMemoryPending } from '../agent/memory.js';
+import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
-import { parseModelAddArgs, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
+import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
 import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
@@ -96,11 +103,27 @@ export interface TuiCommandContext {
   cfg?: OmniConfig;
   /** MCP 服务器配置（/mcp 列出/重连；interactive 从 runOpts.mcpServers 传入） */
   mcpServers?: Record<string, McpServerConfig>;
+  /** MCP 服务器发现句柄（/mcp resources/prompts 展示；interactive 从 runOpts.mcpHandles 传入） */
+  mcpHandles?: import('../tools/mcp.js').McpServerHandle[];
   /**
    * /mcp 重连回调（interactive 组装）：closeMcpClients + 重新 discover + 重建 runOpts.tools
    * （命令只调它，具体装配在 interactive——它有 runOpts）。
    */
   onReconnectMcp?: () => Promise<void>;
+  /**
+   * /mcp add 回调（interactive 组装）：discover 新服务器 + 注入工具链 + 更新 mcpHandles，
+   * 返回错误信息或 null（成功）。
+   */
+  onAddMcp?: (name: string, cfg: McpServerConfig) => Promise<string | null>;
+  /**
+   * /mcp remove 回调（interactive 组装）：关闭服务器 + 移除工具 + 更新 mcpHandles，
+   * 返回错误信息或 null（成功）。
+   */
+  onRemoveMcp?: (name: string) => Promise<string | null>;
+  /**
+   * /mcp login 回调（interactive 组装）：对 HTTP 服务器执行 OAuth 登录，返回错误信息或 null（成功）。
+   */
+  onLoginMcp?: (name: string) => Promise<string | null>;
   /**
    * /resume 恢复回调（interactive 组装）：替换 messages + sessionPath + 重置 savedCount +
    * 把历史消息回放进对话流。命令负责加载会话文件，回调负责落地。
@@ -199,6 +222,227 @@ export function scheduleCmdPanelAutoClose(
 }
 
 /**
+ * /mcp 子命令分发（resources / prompts / read / get / add / remove / login / reconnect）。
+ * 输出统一进命令面板（pushCmdLine），不污染对话流。
+ */
+async function runMcpSub(
+  ctx: TuiCommandContext,
+  sub: string,
+  arg: string,
+  servers: Record<string, McpServerConfig>,
+  names: string[],
+  handles: McpServerHandle[]
+): Promise<void> {
+  const parts = arg.split(/\s+/).filter(Boolean).slice(1);
+  // —— reconnect：关旧客户端 → 重新 discover → 重建工具链 ——
+  if (sub === 'reconnect') {
+    pushCmdLine(ctx.state, { kind: 'meta', text: '正在重连 MCP 服务器…' });
+    await ctx.session.paint().catch(() => {});
+    if (ctx.onReconnectMcp) {
+      await ctx.onReconnectMcp();
+      pushCmdLine(ctx.state, { kind: 'meta', text: '已重连（工具链已更新，新工具对模型可见）' });
+      scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+    } else {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持重连（缺 onReconnectMcp）' });
+    }
+    return;
+  }
+  // —— resources：列出全部或指定 server 的资源 ——
+  if (sub === 'resources') {
+    if (names.length === 0) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '未配置 MCP 服务器' });
+      return;
+    }
+    const target = parts[0];
+    const hs = handles.filter((h) => !target || h.name === target);
+    if (hs.length === 0) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: target ? `服务器「${target}」未连接成功` : '（服务器均未连接成功）' });
+      return;
+    }
+    for (const h of hs) {
+      if (h.resources.length === 0) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `${h.name}：无资源（或服务器未声明 resources 能力）` });
+        continue;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `${h.name} 资源（${h.resources.length}）：` });
+      for (const r of h.resources) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `  ${r.uri}  ${r.name}${r.description ? ` — ${r.description}` : ''}` });
+      }
+    }
+    return;
+  }
+  // —— read <server> <uri>：读取资源内容 ——
+  if (sub === 'read') {
+    const serverName = parts[0];
+    const uri = parts.slice(1).join(' ');
+    const h = handles.find((x) => x.name === serverName);
+    if (!h) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `服务器「${serverName}」未连接成功（/mcp 查看已配置列表）` });
+      return;
+    }
+    if (!uri) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `用法：/mcp read <server> <uri>` });
+      return;
+    }
+    pushCmdLine(ctx.state, { kind: 'meta', text: `正在读取 ${uri}…` });
+    await ctx.session.paint().catch(() => {});
+    try {
+      const r = await h.client.readResource(uri);
+      if (!r) pushCmdLine(ctx.state, { kind: 'warn', text: `资源「${uri}」不存在或不可读` });
+      else {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `### ${r.uri}${r.mimeType ? `（${r.mimeType}）` : ''}` });
+        const lines = (r.text ?? '').split('\n').slice(0, 40);
+        for (const l of lines) pushCmdLine(ctx.state, { kind: 'meta', text: l });
+        if ((r.text ?? '').split('\n').length > 40) pushCmdLine(ctx.state, { kind: 'meta', text: '…（内容较长，已截断前 40 行）' });
+      }
+    } catch (err) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `读取失败：${err instanceof Error ? err.message : err}` });
+    }
+    return;
+  }
+  // —— prompts：列出全部或指定 server 的提示词模板 ——
+  if (sub === 'prompts') {
+    if (names.length === 0) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '未配置 MCP 服务器' });
+      return;
+    }
+    const target = parts[0];
+    const hs = handles.filter((h) => !target || h.name === target);
+    for (const h of hs) {
+      if (h.prompts.length === 0) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `${h.name}：无提示词模板（或服务器未声明 prompts 能力）` });
+        continue;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `${h.name} 提示词模板（${h.prompts.length}）：` });
+      for (const p of h.prompts) {
+        const argsDesc = p.arguments && p.arguments.length > 0
+          ? `（参数：${p.arguments.map((a) => `${a.name}${a.required ? '*' : ''}`).join(', ')})`
+          : '';
+        pushCmdLine(ctx.state, { kind: 'meta', text: `  ${p.name}${argsDesc}${p.description ? ` — ${p.description}` : ''}` });
+      }
+    }
+    return;
+  }
+  // —— get <server> <模板>：获取提示词模板内容 ——
+  if (sub === 'get') {
+    const serverName = parts[0];
+    const promptName = parts[1];
+    const h = handles.find((x) => x.name === serverName);
+    if (!h) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `服务器「${serverName}」未连接成功（/mcp 查看已配置列表）` });
+      return;
+    }
+    if (!promptName) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `用法：/mcp get <server> <模板名>` });
+      return;
+    }
+    try {
+      const p = await h.client.getPrompt(promptName, {});
+      if (!p) pushCmdLine(ctx.state, { kind: 'warn', text: `提示词模板「${promptName}」不存在` });
+      else {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `### 提示词模板 ${promptName}${p.description ? `（${p.description}）` : ''}` });
+        for (const m of p.messages) pushCmdLine(ctx.state, { kind: 'meta', text: `${m.role}: ${m.text.slice(0, 2000)}` });
+      }
+    } catch (err) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `获取失败：${err instanceof Error ? err.message : err}` });
+    }
+    return;
+  }
+  // —— add：解析 → onAddMcp 连接注入 → 持久化 ——
+  if (sub === 'add') {
+    const parsed = parseMcpAddArgs(arg.slice(3).trim());
+    if (!parsed.ok) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: parsed.error });
+      return;
+    }
+    if (parsed.name in servers) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `服务器「${parsed.name}」已存在（用 /mcp remove ${parsed.name} 先移除）` });
+      return;
+    }
+    pushCmdLine(ctx.state, { kind: 'meta', text: `正在连接 MCP 服务器「${parsed.name}」…` });
+    await ctx.session.paint().catch(() => {});
+    if (!ctx.onAddMcp) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持添加服务器（缺 onAddMcp）' });
+      return;
+    }
+    const err = await ctx.onAddMcp(parsed.name, parsed.cfg);
+    if (err) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `添加失败：${err}` });
+      return;
+    }
+    const persist = persistMcpServerToConfig(parsed.name, parsed.cfg, ctx.cfg!);
+    pushCmdLine(ctx.state, { kind: 'meta', text: `已添加并连接 MCP 服务器「${parsed.name}」（工具已对模型可见）` });
+    if (persist.ok) pushCmdLine(ctx.state, { kind: 'meta', text: persist.message });
+    else pushCmdLine(ctx.state, { kind: 'warn', text: persist.message });
+    scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+    return;
+  }
+  // —— remove：onRemoveMcp 断开移除 → 持久化 ——
+  if (sub === 'remove') {
+    const serverName = parts[0];
+    if (!serverName) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `用法：/mcp remove <名称>` });
+      return;
+    }
+    if (!(serverName in servers)) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未配置 MCP 服务器「${serverName}」（/mcp 查看列表）` });
+      return;
+    }
+    if (!ctx.onRemoveMcp) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持移除服务器（缺 onRemoveMcp）' });
+      return;
+    }
+    const err = await ctx.onRemoveMcp(serverName);
+    if (err) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `移除失败：${err}` });
+      return;
+    }
+    const persist = removeMcpServerFromConfig(serverName, ctx.cfg!);
+    pushCmdLine(ctx.state, { kind: 'meta', text: `已移除 MCP 服务器「${serverName}」（工具链已更新）` });
+    if (persist.ok) pushCmdLine(ctx.state, { kind: 'meta', text: persist.message });
+    else pushCmdLine(ctx.state, { kind: 'warn', text: persist.message });
+    scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+    return;
+  }
+  // —— login：OAuth 登录（仅 HTTP 服务器）——
+  if (sub === 'login') {
+    const serverName = parts[0];
+    const h = handles.find((x) => x.name === serverName);
+    const serverCfg = servers[serverName];
+    if (!serverCfg) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未配置 MCP 服务器「${serverName}」（/mcp 查看列表）` });
+      return;
+    }
+    if (!serverCfg.url) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `「${serverName}」是 stdio 服务器（不需要 OAuth 登录；HTTP 服务器才用 /mcp login）` });
+      return;
+    }
+    if (!h) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `服务器「${serverName}」未连接（先 /mcp add 或确认配置后再试）` });
+      return;
+    }
+    pushCmdLine(ctx.state, { kind: 'meta', text: '正在打开浏览器完成 OAuth 授权…（60s 内未完成将取消）' });
+    await ctx.session.paint().catch(() => {});
+    if (!ctx.onLoginMcp) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持 OAuth 登录（缺 onLoginMcp）' });
+      return;
+    }
+    try {
+      const err = await ctx.onLoginMcp(serverName);
+      if (err) pushCmdLine(ctx.state, { kind: 'warn', text: `登录失败：${err}` });
+      else {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已登录「${serverName}」（token 已保存，之后请求自动携带）` });
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+      }
+    } catch (err) {
+      pushCmdLine(ctx.state, { kind: 'warn', text: `登录失败：${err instanceof Error ? err.message : err}` });
+    }
+    return;
+  }
+  pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令 /mcp ${sub}` });
+}
+
+/**
  * 执行斜杠命令：解析命令名 → 注册表分发；未找到时提示（不打断对话）。
  * 返回 'exit' 表示应退出交互循环。
  */
@@ -231,7 +475,17 @@ export const TUI_COMMANDS: TuiCommand[] = [
     name: 'permission',
     description: '切换安全权限（低=只读 / 中=标准 / 高=谨慎 / 全量=直通）',
     descriptionEn: 'Switch security level (read / safe / ask / full)',
-    run: (ctx) => openPermissionMenu(ctx.state),
+    run: (ctx) => {
+      // 未信任目录：强制只读，禁止提升档位（read 是工作区信任的硬约束，/permission 不能绕过）
+      if (ctx.runOpts?.trusted === false) {
+        pushCmdLine(ctx.state, {
+          kind: 'warn',
+          text: '当前目录未受信任——权限锁定为只读（read），无法提升。信任目录：首次进入时批准信任，或在已信任目录运行。',
+        });
+        return;
+      }
+      openPermissionMenu(ctx.state);
+    },
   },
   {
     name: 'plan',
@@ -246,15 +500,18 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'thinking',
-    description: '展开 / 折叠全部思考过程',
-    descriptionEn: 'Expand / collapse all thinking',
+    description: '开/关思考过程展示（关闭后不再流式显示，仍落盘）',
+    descriptionEn: 'Show / hide thinking entirely',
     run: (ctx) => {
-      // 全局开关：buildBody 渲染时读取——展开=每个思考段落显示 `- thinking` 头行
-      // （含思考时间）+ 内容（默认）；折叠=每个段落压成一行 `+ thinking`。
+      // **展示开关**（非折叠）：false = 完全不展示思考流——TuiOutput 停止建模块/写
+      // chunk（reasoning 仍捕获落盘 .omni/last-thinking.md），buildBody 过滤历史行；
+      // true = 恢复实时流式展示。runOpts.showThinking 同步（/status 等读取运行时值）。
       // 会话级，/clear 不清除；切换时清空两个单独反例集合（避免残留用户点击的
-      // 单条展开/收起覆盖全局态）。不推 meta 提示文字（用户要求：已折叠/已展开
-      // 这类提示不要出现在对话流）。
-      ctx.state.thinkingExpanded = !ctx.state.thinkingExpanded;
+      // 单条展开/收起覆盖全局态）。不推 meta 提示文字（视觉变化自明）。
+      const next = !ctx.state.thinkingShow;
+      ctx.state.thinkingShow = next;
+      ctx.out.showThinking = next;
+      if (ctx.runOpts) ctx.runOpts.showThinking = next;
       ctx.state.expandedThinking.clear();
       ctx.state.collapsedThinking.clear();
     },
@@ -346,8 +603,13 @@ export const TUI_COMMANDS: TuiCommand[] = [
         pushCmdLine(ctx.state, { kind: 'meta', text: `已生成全局记忆 ${res.path}（所有项目会话自动加载）` });
         return;
       }
-      const root = findProjectRoot(process.cwd());
-      pushCmdLine(ctx.state, { kind: 'meta', text: `正在扫描项目并生成 AGENTS.md（项目根：${root}）…` });
+      // 子目录生成（P2）：/init <子目录> 在该目录生成局部层级 AGENTS.md
+      // （如 /init src/ → src/AGENTS.md，嵌套记忆覆盖外层）
+      const subDirArg = (ctx.args ?? '').replace(/\s*--global\s*/, '').trim();
+      const root = subDirArg
+        ? path.resolve(process.cwd(), subDirArg)
+        : findProjectRoot(process.cwd());
+      pushCmdLine(ctx.state, { kind: 'meta', text: `正在扫描并生成 AGENTS.md（目标：${root}）…` });
       // 先刷一帧：progress 行在 LLM 调用（可能 10s+）期间可见，否则用户面对冻结 UI
       await ctx.session.paint().catch(() => {});
       const content = await generateAgentsFile(client, model, root);
@@ -363,18 +625,14 @@ export const TUI_COMMANDS: TuiCommand[] = [
         });
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'meta', text: `已生成 ${res.path}（下次会话自动加载为项目记忆）` });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `已生成 ${res.path}（下次会话自动加载为项目记忆${subDirArg ? '；子目录层级优先于外层' : ''}）` });
     },
   },
   {
     name: 'skill',
-    description: '技能管理：列出已发现 / find <词> 网络检索 / add <repo> [--skill <名>] 安装',
-    descriptionEn: 'Skill manager: list / find <query> / add <repo> [--skill <name>]',
+    description: '技能管理：列出已发现 / find <词> 网络检索 / add <repo> [--skill <名>] [--global] 安装 / show <名> / 安装后本会话即时生效',
+    descriptionEn: 'Skill manager: list / find <query> / add <repo> [--skill <name>] [--global] / show <name> — immediate effect in current session',
     run: async (ctx) => {
-      // /skill：列出已发现的技能（.opencode/.claude/.agents/skills 下的 SKILL.md）；
-      // /skill find <query>：走 npx skills find 网络检索 skills.sh（安装提示随结果输出）；
-      // /skill add <owner/repo> [--skill <name>]：走 npx skills add 安装到 .agents/skills
-      // （opencode 兼容目录，下次会话自动发现；本会话 skill 工具按 name 加载）。
       const args = (ctx.args ?? '').trim();
       if (!args) {
         const skills = await discoverSkills();
@@ -385,12 +643,19 @@ export const TUI_COMMANDS: TuiCommand[] = [
           });
           return;
         }
+        // 渐进披露：列表展示全部（不截断）
         pushCmdLine(ctx.state, {
           kind: 'meta',
           text: `已发现 ${skills.length} 个技能（模型可用 skill 工具按 name 加载；/skill find 网络检索更多）：`,
         });
         for (const s of skills) {
-          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.name} — ${s.description}${s.global ? '（全局）' : ''}` });
+          const tags: string[] = [];
+          if (s.global) tags.push('全局');
+          if (s.disableModelInvocation) tags.push('仅手动');
+          if (s.context === 'fork') tags.push('子代理');
+          if (s.source) tags.push(s.source);
+          const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
+          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.name} — ${s.description}${tag}` });
         }
         return;
       }
@@ -417,29 +682,48 @@ export const TUI_COMMANDS: TuiCommand[] = [
         if (results.length > 20) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${results.length - 20} 个（npx skills find ${query} 查看全部）` });
         return;
       }
-      const addM = args.match(/^add\s+(\S+)(?:\s+--skill\s+(.+))?$/);
-      if (addM) {
-        const source = addM[1];
-        const skillName = addM[2]?.trim();
+      // 更精确的 add 解析：source [--skill <name>] [--global]
+      const addTokens = args.split(/\s+/).filter(Boolean);
+      if (addTokens[0] === 'add' && addTokens[1]) {
+        const source = addTokens[1];
+        const skillNameI = addTokens.indexOf('--skill');
+        const skillName = skillNameI >= 0 ? addTokens[skillNameI + 1] : undefined;
+        const isGlobal = addTokens.includes('--global');
         pushCmdLine(ctx.state, {
           kind: 'meta',
-          text: `正在安装 ${source}${skillName ? ` 的 ${skillName}` : '（仓库全部技能）'}…（npx skills add，可能需要下载）`,
+          text: `正在安装 ${source}${skillName ? ` 的 ${skillName}` : '（仓库全部技能）'}…（npx skills add${isGlobal ? ' --global' : ''}，可能需要下载）`,
         });
         await ctx.session.paint().catch(() => {});
         const cliArgs = ['add', source, ...(skillName ? ['--skill', skillName] : []), '-y'];
         const { ok, output } = await runSkillsCli(cliArgs, 180_000);
-        pushCmdLine(ctx.state, {
-          kind: ok ? 'meta' : 'warn',
-          text: ok
-            ? '安装完成（已装入 .agents/skills 等目录，下次会话自动发现；本会话可用 /skill 查看已发现列表）'
-            : `安装失败：${output.slice(0, 300) || 'npx skills 不可用'}`,
-        });
-        if (!ok && output) {
-          for (const line of output.split('\n').slice(0, 10)) {
-            if (line.trim()) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${line}` });
-          }
+        if (!ok) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `安装失败：${output.slice(0, 300) || 'npx skills 不可用'}` });
+          if (output) { for (const line of output.split('\n').slice(0, 10)) { if (line.trim()) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${line}` }); } }
+          return;
         }
-        // 动作：安装完成确认短暂停留后自动收起（列表型子命令不设，见命令级无 autoClose）
+        // 安装成功：本会话即时生效——重新 discover + 刷新注入清单
+        const oldSkills = await discoverSkills();
+        // 如果是 --global，安装到全局目录（npx skills add 默认装到项目 .agents/skills/）
+        // 这里通过调用 npx skills add 已装到项目目录，--global 时额外复制到全局目录
+        if (isGlobal) {
+          const globalDir = (await import('../agent/skill.js')).globalSkillDir();
+          // npx skills add 不支持 --global 参数，这里用 --dir 或手动复制
+          // 实际上 npx skills 没有 --global，由用户管理。我们提示用户用 --dir 或手动
+          pushCmdLine(ctx.state, { kind: 'meta', text: 'npx skills 暂不支持 --global 参数，已安装到项目目录。如需全局安装，请用 /skill add 不带 --global 后手动复制到 ~/.config/omni/skills/' });
+        }
+        // 重新发现技能并刷新当前会话注入清单
+        const newSkills = await discoverSkills();
+        const newNames = newSkills.filter((s) => !oldSkills.find((o) => o.name === s.name)).map((s) => s.name);
+        if (ctx.messages && Array.isArray(ctx.messages)) {
+          refreshSkillInjections(ctx.messages, newSkills);
+        }
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `安装完成！已安装：${(skillName ? [skillName] : newNames).join('、') || source}（本会话已生效，模型现在可用 skill 工具加载）`,
+        });
+        if (newNames.length > 0) {
+          pushCmdLine(ctx.state, { kind: 'meta', text: `新技能：${newNames.join('、')}（/skill show <名称> 查看内容）` });
+        }
         scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
@@ -450,12 +734,21 @@ export const TUI_COMMANDS: TuiCommand[] = [
           kind: content ? 'meta' : 'warn',
           text: content ? `技能「${showM[1]}」内容：` : `未找到技能「${showM[1]}」（/skill 查看已发现列表）`,
         });
-        if (content) pushCmdLine(ctx.state, { kind: 'answer', text: content });
+        if (content) {
+          // 解析 frontmatter 展示扩展字段
+          const fm = parseSkillFrontmatter(content);
+          const ext = [];
+          if (fm['disable-model-invocation']) ext.push('仅手动触发');
+          if (fm['user-invocable']) ext.push('用户可手动触发');
+          if (fm.context === 'fork') ext.push(`子代理执行${fm.agent ? `（agent=${fm.agent}）` : ''}${fm.background ? '·后台' : ''}`);
+          if (ext.length > 0) pushCmdLine(ctx.state, { kind: 'meta', text: `属性：${ext.join(' · ')}` });
+          pushCmdLine(ctx.state, { kind: 'answer', text: content });
+        }
         return;
       }
       pushCmdLine(ctx.state, {
         kind: 'warn',
-        text: '用法：/skill（列出已发现）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>]（安装）· /skill show <名称>（查看内容）',
+        text: '用法：/skill（列出已发现）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>] [--global]（安装，本会话即时生效）· /skill show <名称>（查看内容）',
       });
     },
   },
@@ -826,6 +1119,10 @@ export const TUI_COMMANDS: TuiCommand[] = [
         tokens: ctx.state.tokens,
         sessionPath: ctx.sessionPath,
         scaffolds: detectScaffolds(ctx.messages),
+        sandbox: ctx.runOpts?.sandbox,
+        trusted: ctx.runOpts?.trusted,
+        memoryFiles: memoryFilesFromMessages(ctx.messages),
+        globalMemory: ctx.messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
       })) pushCmdLine(ctx.state, { kind: 'meta', text: line });
     },
   },
@@ -870,15 +1167,23 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'mcp',
-    description: '管理 MCP 服务器（列出已发现工具 / reconnect 重连）',
-    descriptionEn: 'Manage MCP servers (list tools / reconnect)',
+    description: '管理 MCP 服务器（列出/资源/提示词/增删/OAuth 登录）',
+    descriptionEn: 'Manage MCP servers (list/resources/prompts/add/remove/login)',
     run: async (ctx) => {
       const servers = ctx.mcpServers ?? {};
       const names = Object.keys(servers);
+      const handles = ctx.mcpHandles ?? [];
+      const arg = (ctx.args ?? '').trim();
+      // 子命令分发：resources / prompts / read / get / add / remove / login / reconnect
+      const sub = arg.split(/\s+/)[0] ?? '';
+      if (['resources', 'prompts', 'read', 'get', 'add', 'remove', 'login', 'reconnect'].includes(sub)) {
+        await runMcpSub(ctx, sub, arg, servers, names, handles);
+        return;
+      }
       if (names.length === 0) {
         pushCmdLine(ctx.state, {
           kind: 'warn',
-          text: '未配置 MCP 服务器（配置文件 mcpServers 字段，如 { "demo": { "command": "node", "args": ["..."] } }）',
+          text: '未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add <名称> <command> 或 --url <url> 添加；/mcp 查看全部子命令）',
         });
         return;
       }
@@ -891,18 +1196,15 @@ export const TUI_COMMANDS: TuiCommand[] = [
       } else {
         pushCmdLine(ctx.state, { kind: 'meta', text: '（尚未发现工具——服务器连接失败或未提供工具）' });
       }
-      if (/(?:^|\s)reconnect(?=\s|$)/.test(ctx.args ?? '')) {
-        pushCmdLine(ctx.state, { kind: 'meta', text: '正在重连 MCP 服务器…' });
-        await ctx.session.paint().catch(() => {});
-        if (ctx.onReconnectMcp) {
-          await ctx.onReconnectMcp();
-          pushCmdLine(ctx.state, { kind: 'meta', text: '已重连（工具链已更新，新工具对模型可见）' });
-          // 动作：重连完成确认短暂停留后自动收起
-          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
-        }
-      } else {
-        pushCmdLine(ctx.state, { kind: 'meta', text: '用 /mcp reconnect 重连（改完配置文件后生效）' });
+      // 资源/提示词摘要
+      for (const h of handles) {
+        const bits: string[] = [];
+        if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
+        if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
+        if (h.instructions) bits.push('instructions ✓');
+        if (bits.length > 0) pushCmdLine(ctx.state, { kind: 'meta', text: `  ${h.name}：${bits.join(' · ')}` });
       }
+      pushCmdLine(ctx.state, { kind: 'meta', text: '子命令：resources / prompts / read <server> <uri> / get <server> <模板> / add / remove <name> / login <name> / reconnect' });
     },
   },
   {
@@ -946,6 +1248,113 @@ export const TUI_COMMANDS: TuiCommand[] = [
       // 落盘到会话 meta（/resume 恢复时还原标题）
       if (ctx.sessionPath) void updateSessionTitle(ctx.sessionPath, title);
       pushCmdLine(ctx.state, { kind: 'meta', text: `会话标题已改为「${title}」（终端窗口标题）` });
+    },
+  },
+  {
+    name: 'fork',
+    description: '从当前会话分叉出新会话（原会话不丢；/fork <N> 保留前 N 条消息）',
+    descriptionEn: 'Fork a new session from current (original kept; /fork <N> keeps first N msgs)',
+    run: async (ctx) => {
+      const arg = (ctx.args ?? '').trim();
+      const persistable = ctx.messages.filter(isPersistableSafe);
+      // 无参：列出 fork 点（可保留的消息数），提示 /fork <N>
+      if (!arg) {
+        if (persistable.length === 0) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '当前会话还没有可 fork 的消息（先聊几轮再 /fork）' });
+          return;
+        }
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `当前会话 ${persistable.length} 条可保留消息。/fork <N> 保留前 N 条（1..${persistable.length}）：`,
+        });
+        for (let i = 0; i < persistable.length; i++) {
+          const m = persistable[i];
+          const who = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+          const txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '').slice(0, 60);
+          pushCmdLine(ctx.state, { kind: 'meta', text: `  ${i + 1}. [${who}] ${txt.slice(0, 60)}` });
+        }
+        return;
+      }
+      // /fork <N>：保留前 N 条消息
+      const n = Number(arg);
+      if (!Number.isInteger(n) || n < 1 || n > persistable.length) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `/fork <N>：N 须为 1..${persistable.length} 的整数（当前 ${persistable.length} 条可保留消息）` });
+        return;
+      }
+      if (!ctx.sessionPath) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '当前会话未落盘（无法 fork——先产生至少一轮对话）' });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `正在从第 ${n} 条消息分叉新会话…` });
+      await ctx.session.paint().catch(() => {});
+      const forkFile = await forkSession(ctx.sessionPath, n, process.cwd(), ctx.model ?? '');
+      if (!forkFile) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: 'fork 失败（读会话或写文件出错）' });
+        return;
+      }
+      const loaded = await loadSession(forkFile);
+      if (!loaded) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: 'fork 失败（新会话不可读）' });
+        return;
+      }
+      // 切换到新会话（onResume：替换 messages + 会话文件 + 回放历史）
+      ctx.onResume?.(forkFile, loaded.messages);
+      pushCmdLine(ctx.state, {
+        kind: 'meta',
+        text: `已分叉新会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 原会话保留）`,
+      });
+      // 动作：fork 完成确认短暂停留后自动收起
+      scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+    },
+  },
+  {
+    name: 'send',
+    description: '向指定会话发消息并取回结果（/send <会话id> <消息>）',
+    descriptionEn: 'Send a message to another session and get the result (/send <id> <msg>)',
+    run: async (ctx) => {
+      const arg = (ctx.args ?? '').trim();
+      const m = arg.match(/^(\S+)\s+([\s\S]+)$/);
+      if (!m) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/send <会话id> <消息>（目标会话在后台跑一轮，结果回传当前会话）' });
+        return;
+      }
+      const targetId = m[1];
+      const text = m[2].trim();
+      // 校验目标会话存在
+      const hit = await resolveSessionCandidates(ctx.state, targetId, ctx.sessionPath);
+      if (!hit) return; // 未找到/歧义已提示
+      if (!ctx.client || !ctx.model) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境没有 LLM 客户端（无法运行目标会话）' });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `正在向会话 ${hit.id} 发送消息并等待结果…` });
+      await ctx.session.paint().catch(() => {});
+      const result = await sendSessionMessage(
+        hit.id, text, ctx.client, ctx.model,
+        ctx.runOpts as never, ctx.out as never, ctx.messages
+      );
+      if (result === null) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `发送失败（会话 ${hit.id} 不存在或运行出错）` });
+        return;
+      }
+      // 结果注入当前上下文（system 消息，前缀标记），并显示摘要
+      ctx.messages.push({ role: 'system', content: `[跨会话响应：会话 ${hit.id}]\n${result.slice(0, 2000)}` });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `✓ 会话 ${hit.id} 已回复：` });
+      const lines = result.split('\n');
+      for (const l of lines.slice(0, 10)) pushCmdLine(ctx.state, { kind: 'meta', text: `  ${l.slice(0, 90)}` });
+      if (lines.length > 10) pushCmdLine(ctx.state, { kind: 'meta', text: `  … 共 ${lines.length} 行（完整结果已注入上下文）` });
+      // 动作：发送完成确认短暂停留后自动收起
+      scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+    },
+  },
+  {
+    name: 'memory-apply',
+    description: '应用待提交的项目记忆片段（.omni/memory-pending.md → 项目根 AGENTS.md）',
+    descriptionEn: 'Apply pending project memory (.omni/memory-pending.md → root AGENTS.md)',
+    autoClose: true,
+    run: async (ctx) => {
+      const res = await applyProjectMemoryPending(process.cwd());
+      pushCmdLine(ctx.state, { kind: res.ok ? 'meta' : 'warn', text: res.message });
     },
   },
   {

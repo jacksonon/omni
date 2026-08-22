@@ -19,13 +19,13 @@ import type { TextareaRenderable } from '@opentui/core';
 import { createClient, type ModelEndpoint } from '../client.js';
 import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
-import { maybeWriteGlobalMemory } from '../agent/memory.js';
+import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
 import { refreshTrace } from './trace.js';
-import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig } from '../config/write.js';
@@ -498,6 +498,8 @@ export async function runTuiInteractive(
     const exitSession = async (): Promise<void> => {
       if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
         await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+        // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
+        await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
       }
       // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底 /clear 后等边界）
       await runOpts.events?.flush().catch(() => {});
@@ -650,14 +652,88 @@ export async function runTuiInteractive(
         sessionPath: runOpts.sessionPath,
         cfg: runOpts.cfg,
         mcpServers: runOpts.mcpServers,
+        mcpHandles: runOpts.mcpHandles,
         // 轨迹事件记录器（/trace 面板数据源 + /compact 事件）
         events: runOpts.events,
         hooks: runOpts.hooks,
-        // /mcp reconnect：关旧客户端 → 重新 discover → 以基础工具链（静态+delegate）为底重建 tools
+        // /mcp reconnect：关旧客户端 → 重新 discover → 重建工具链 + 更新 handles + 替换 instructions
         onReconnectMcp: async () => {
           closeMcpClients();
-          const mcp = await discoverMcpTools(runOpts.mcpServers);
-          runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
+          const handles = await discoverMcpServers(runOpts.mcpServers);
+          runOpts.mcpHandles = handles;
+          runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
+          const instrContent = mcpInstructionsMessage(handles);
+          if (instrContent) {
+            const instrPrefix = '[MCP server instructions';
+            const existingIdx = messages.findIndex(
+              (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+            );
+            const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+            if (existingIdx >= 0) messages[existingIdx] = instrMsg;
+            else messages.unshift(instrMsg);
+          }
+        },
+        // /mcp add：连接新服务器 → 注入工具链 + 更新 handles + 替换 instructions（不关旧服务器）
+        onAddMcp: async (name: string, cfg: McpServerConfig) => {
+          try {
+            const handles = await discoverMcpServers({ [name]: cfg });
+            if (handles.length === 0) return '服务器连接失败（见上方警告）';
+            runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [name]: cfg };
+            runOpts.mcpHandles = [...(runOpts.mcpHandles ?? []), ...handles];
+            const base = runOpts.baseTools ?? [];
+            // 重建完整工具链：基础 + 全部 MCP 工具（保留其它服务器已发现的工具）
+            runOpts.tools = [...base, ...buildMcpTools(runOpts.mcpHandles)];
+            const instrContent = mcpInstructionsMessage(runOpts.mcpHandles);
+            if (instrContent) {
+              const instrPrefix = '[MCP server instructions';
+              const existingIdx = messages.findIndex(
+                (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+              );
+              const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+              if (existingIdx >= 0) messages[existingIdx] = instrMsg;
+              else messages.unshift(instrMsg);
+            }
+            return null;
+          } catch (err) {
+            return err instanceof Error ? err.message : String(err);
+          }
+        },
+        // /mcp remove：关闭服务器 → 移除工具链 + 更新 handles + 替换 instructions
+        onRemoveMcp: async (name: string) => {
+          try {
+            const target = (runOpts.mcpHandles ?? []).find((h) => h.name === name);
+            target?.client.close();
+            runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}) };
+            delete runOpts.mcpServers[name];
+            runOpts.mcpHandles = (runOpts.mcpHandles ?? []).filter((h) => h.name !== name);
+            runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(runOpts.mcpHandles ?? [])];
+            const instrContent = mcpInstructionsMessage(runOpts.mcpHandles ?? []);
+            const instrPrefix = '[MCP server instructions';
+            const existingIdx = messages.findIndex(
+              (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+            );
+            if (instrContent) {
+              const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+              if (existingIdx >= 0) messages[existingIdx] = instrMsg;
+              else messages.unshift(instrMsg);
+            } else if (existingIdx >= 0) {
+              messages.splice(existingIdx, 1);
+            }
+            return null;
+          } catch (err) {
+            return err instanceof Error ? err.message : String(err);
+          }
+        },
+        // /mcp login：HTTP 服务器 OAuth 登录（成功后客户端自动携带 token）
+        onLoginMcp: async (name: string) => {
+          try {
+            const h = (runOpts.mcpHandles ?? []).find((x) => x.name === name);
+            if (!h) return '服务器未连接';
+            const ok = await h.client.login();
+            return ok ? null : '登录未完成（取消或超时）';
+          } catch (err) {
+            return err instanceof Error ? err.message : String(err);
+          }
         },
         // /model <名称>：按名称从 runOpts.models 找端点切换（未注册则提示）
         onSwitchModel: (name: string) => {

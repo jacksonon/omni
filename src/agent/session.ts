@@ -19,7 +19,7 @@ import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /** 不落盘的上下文脚手架前缀（恢复时 prepareContext 会按最新文件重新注入） */
-const SKIP_PREFIXES = ['[项目记忆', '[全局记忆', '[已按任务预载', '[已发现技能'];
+const SKIP_PREFIXES = ['[项目记忆', '[全局记忆', '[已按任务预载', '[已发现技能', '[项目结构地图'];
 
 /** 会话 meta（文件首行） */
 export interface SessionMeta {

@@ -14,6 +14,11 @@ import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, type ModelEndpoint } from './client.js';
 import { prepareContext } from './agent/context.js';
+import { createSkillTool } from './agent/skill.js';
+import { memorySearchTool, memoryReadTool } from './tools/memory-tools.js';
+import { createTodoWriteTool } from './tools/todo.js';
+import { createWebFetchTool } from './tools/web-fetch.js';
+import { createDiagnoseTool } from './tools/diagnose.js';
 import { runAgent } from './agent/loop.js';
 import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
 import { EventRecorder } from './agent/events.js';
@@ -24,14 +29,18 @@ import { loadConfig, type ConfigOverrides, type OmniConfig } from './config/inde
 import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
+import type { PermissionTier } from './safety/policy.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
+import { isTrustedWorkspace, addTrustedWorkspace } from './safety/trust.js';
+import { wrapSandboxCommand, type SandboxMode } from './safety/sandbox.js';
+import type { Tool } from './tools/types.js';
 import { runExec, runMcpServer } from './exec.js';
 import { runWeb } from './web/index.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { discoverSubagents } from './agent/subagent-defs.js';
 import { tools } from './tools/index.js';
-import { closeMcpClients, discoverMcpTools } from './tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { dim, red } from './ui.js';
 import { VERSION } from './version.js';
@@ -45,6 +54,29 @@ export interface RunContext {
   client: OpenAI;
   messages: ChatCompletionMessageParam[];
   runOpts: RunOptions;
+}
+
+/**
+ * 把 run_command 工具包进 OS 级沙箱（read-only / workspace-write）：
+ * 执行前把命令经 wrapSandboxCommand 包装（sandbox-exec / bwrap），结果附带沙箱提示。
+ * 非 run_command / off / danger-full-access → 原样返回。
+ */
+function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode): Tool {
+  if (tool.name !== 'run_command' || mode === 'off' || mode === 'danger-full-access') return tool;
+  const original = tool.execute;
+  return {
+    ...tool,
+    execute: async (args) => {
+      const command = String(args.command ?? '');
+      const wrapped = wrapSandboxCommand(mode, process.cwd(), command);
+      let result = await original({ ...args, command: wrapped.command });
+      if (wrapped.note) {
+        const warn = wrapped.protected ? wrapped.note : `⚠️ ${wrapped.note}`;
+        result = `${result}\n\n${warn}`;
+      }
+      return result;
+    },
+  };
 }
 
 /**
@@ -85,15 +117,48 @@ export function prepareRun(overrides: ConfigOverrides): RunContext {
 }
 
 /**
+ * 解析工作区信任（第九节）：已信任 → true；
+ * 未信任且有审批 UI（TUI 卡片 / console readline）→ 询问用户——批准 = 加入信任清单并返回 true，
+ * 拒绝 = 返回 false（attachRuntime 降级为只读）；无审批 UI（管道/非交互）→ false（fail-safe 只读）。
+ */
+export async function resolveWorkspaceTrust(cwd: string, output: Output): Promise<boolean> {
+  if (isTrustedWorkspace(cwd)) return true;
+  if (!output.requestApproval) return false;
+  try {
+    const ok = await output.requestApproval({
+      tool: 'workspace-trust',
+      summary: cwd,
+      reason:
+        '首次进入未信任目录：信任后允许写入，并加载项目记忆（AGENTS.md）/技能/子代理定义与 hooks；' +
+        '不信任则以只读模式运行（所有写操作被拒绝，项目级配置不加载）',
+    });
+    if (ok) addTrustedWorkspace(cwd);
+    return ok;
+  } catch {
+    return false; // 审批流程异常 → fail-safe 只读
+  }
+}
+
+/**
  * 组装运行时（console 与 TUI 入口共用）：安全护栏 + 动态工具链 + 上下文管理选项。
  *
  * · 安全护栏：权限分级 + 审计 + 审批回调（由 Output 层实现 UI——console readline /
  *   TUI 审批卡片；管道模式回调返回 false = 自动拒绝，fail-safe）
  * · 动态工具链：静态 5 工具 + delegate 子代理工具（可关）+ MCP 外部工具（配置了才连）
  * · 上下文管理：相关文件预载 + 长对话摘要压缩（按配置注入 runOpts.context）
+ * · 工作区信任（第九节）：opts.trust=false（未信任目录）→ 强制 read 档位 +
+ *   跳过项目级 hooks/skills/子代理定义/项目记忆（防仓库注入恶意配置）；
+ * · OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap）。
  */
-export async function attachRuntime(ctx: RunContext, output: Output): Promise<void> {
+export async function attachRuntime(
+  ctx: RunContext,
+  output: Output,
+  opts: { trust?: boolean } = {}
+): Promise<void> {
   const { cfg, client } = ctx;
+  const trusted = opts.trust !== false; // 缺省信任（兼容既有调用）
+  // 未信任目录 → 强制只读档位（fail-safe）；注意不改 cfg（/status 读的是运行时 runOpts.permission）
+  const effectiveTier: PermissionTier = trusted ? cfg.permission : 'read';
   // 审批回调缺省 = 拒绝（fail-safe）；Output 实现了 requestApproval 则用它。
   // 注意 bind(output)：实现里用了 this（ConsoleOutput 串行队列 / TuiOutput 审批队列），
   // 未绑定直接传递会在 Safety 侧以普通函数调用 → this 错位 → 静默抛错被 fail-safe 吞掉（审批永不弹出）
@@ -104,19 +169,26 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   // 未实现/非交互 → undefined（工具返回「无法询问」，模型自行决定）
   const askUser = output.askUser ? output.askUser.bind(output) : undefined;
   // Hooks 生命周期自动化（对标 Claude Code）：配置了 hooks 才创建（未配置 = no-op）。
+  // **未信任目录跳过 hooks**（项目 omni.json 可注入 PreToolUse hook 执行任意 shell——
+  // 这是仓库注入恶意配置的主要载体；全局 hooks 也被跳过，提示用户先信任目录）。
   // hook 输出经 Output.onHookOutput 回显（TUI 对话流 / console dim 行）；超时/失败降级放行
-  ctx.runOpts.hooks = new HookRunner({
-    hooks: cfg.hooks,
-    cwd: process.cwd(),
-    onOutput: (event, lines) => output.onHookOutput?.(event, lines),
-  });
+  if (trusted) {
+    ctx.runOpts.hooks = new HookRunner({
+      hooks: cfg.hooks,
+      cwd: process.cwd(),
+      onOutput: (event, lines) => output.onHookOutput?.(event, lines),
+    });
+  }
   const gate = new Safety({
-    tier: cfg.permission,
+    tier: effectiveTier,
     audit: cfg.auditLog,
     requestApproval,
     summarize: formatToolCall,
+    dangerousPatterns: cfg.dangerousPatterns,
   });
-  ctx.runOpts.permission = cfg.permission;
+  ctx.runOpts.permission = effectiveTier;
+  ctx.runOpts.trusted = trusted;
+  ctx.runOpts.sandbox = cfg.sandbox;
   // 可用模型列表（顶层 model + config models 展开；/model 切换用）
   // 默认模型端点同样优先取 models.<model>（与 prepareRun 的解析一致）
   // 顶层 model 已在列表首位；models 表里同名的条目跳过，避免 /model 面板重复列出
@@ -153,9 +225,11 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   ctx.runOpts.requestApproval = requestApproval;
   // 共用闸门（delegate 子代理用它）：/permission 切换时 setTier 同步，子代理与主循环权限一致
   ctx.runOpts.safetyGate = gate;
-  // 上下文管理选项（interactive/single-task 每轮输入后调 prepareContext 用）
+  // 上下文管理选项（interactive/single-task 每轮输入后调 prepareContext 用）。
+  // 未信任目录：跳过项目记忆（agentsFile）与技能清单（skills）——仓库可注入 AGENTS.md
+  // / SKILL.md 恶意指令；全局记忆（globalAgentsFile）保留（用户自己的偏好，可信）。
   ctx.runOpts.context = {
-    agentsFile: cfg.agentsFile,
+    agentsFile: trusted ? cfg.agentsFile : false,
     globalAgentsFile: cfg.globalAgentsFile,
     autoMemory: cfg.autoMemory,
     summarizeAt: cfg.summarizeAt,
@@ -163,8 +237,10 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
     preloadFiles: cfg.preloadFiles,
     preloadMaxFiles: cfg.preloadMaxFiles,
     preloadMaxBytes: cfg.preloadMaxBytes,
-    skills: cfg.skills,
+    skills: trusted ? cfg.skills : false,
     hooks: ctx.runOpts.hooks, // PreCompact：长对话压缩前 fire-and-forget
+    repoMap: cfg.repoMap !== false,
+    repoMapMaxSymbols: cfg.repoMapMaxSymbols,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+
   // MCP 外部工具（失败只警告不阻塞）
@@ -172,10 +248,23 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
   const undoStack = new UndoStack();
   let tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
-  // skills=false 时从工具链移除 skill 工具（模型不可见/不可调用）
-  if (cfg.skills === false) tracked = tracked.filter((t) => t.name !== 'skill');
+  // OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap 限制副作用范围）
+  if (cfg.sandbox && cfg.sandbox !== 'off' && cfg.sandbox !== 'danger-full-access') {
+    tracked = tracked.map((t) => wrapRunCommandWithSandbox(t, cfg.sandbox));
+  }
+  // skills=false（含未信任目录）时从工具链移除 skill 工具（模型不可见/不可调用）
+  if (cfg.skills === false || !trusted) tracked = tracked.filter((t) => t.name !== 'skill');
+  // 记忆渐进披露工具（memory_search / memory_read）：trusted 时注入（防未信任仓库污染记忆）
+  if (trusted) {
+    tracked.push(memorySearchTool, memoryReadTool);
+  }
+  // 技能启用：用带运行时上下文的 skill 工具替换静态版（支持 frontmatter 扩展：
+  // context:fork → 子代理执行 / agent / background；delegate 运行时在 tools 里找）
+  if (cfg.skills !== false && trusted) {
+    tracked = tracked.map((t) => (t.name === 'skill' ? createSkillTool(ctx.runOpts) : t));
+  }
   const toolchain = [...tracked];
-  if (cfg.allowSubagents) {
+  if (cfg.allowSubagents && trusted) {
     // delegate：子代理委托工具——嵌套/agent 参数/模型路由/进度事件（第六节 P1）。
     // runOpts 传引用：/plan、/model、/settings 等运行时切换即时生效；
     // onEvent 把子代理生命周期分发给 Output（TUI 卡片 live 状态 / console dim 行）
@@ -200,6 +289,12 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   // ask_user：运行时注入提问回调（非交互输出（管道/单任务无 UI）时仍注册——工具
   // 返回「无法询问」让模型自行决定，不打断任务）
   toolchain.push(createAskUserTool(askUser));
+  // TodoWrite 任务清单工具（P1）：模型管理结构化 todo 列表
+  toolchain.push(createTodoWriteTool(ctx.runOpts));
+  // WebFetch 内置工具（P1）：URL 抓取 → 转纯文本
+  toolchain.push(createWebFetchTool(cfg.webFetchDomains));
+  // diagnose 诊断工具（P1）：运行 typecheck/lint 返回诊断摘要
+  toolchain.push(createDiagnoseTool(process.cwd()));
   // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令
   if (cfg.reasoningEffort) ctx.runOpts.reasoningEffort = cfg.reasoningEffort;
   ctx.runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions;
@@ -209,14 +304,35 @@ export async function attachRuntime(ctx: RunContext, output: Output): Promise<vo
   if (cfg.architect) ctx.runOpts.architectModel = cfg.architect;
   if (cfg.editor) ctx.runOpts.editorModel = cfg.editor;
   ctx.runOpts.maxSubagentDepth = cfg.maxSubagentDepth;
-  ctx.runOpts.subagents = await discoverSubagents();
+  // 未信任目录：跳过项目级子代理定义（.agents/subagents/*.md 可能被仓库植入
+  // 恶意模型/权限配置）；delegate 工具本身也不注册（子代理是项目级概念）。
+  ctx.runOpts.subagents = trusted ? await discoverSubagents() : [];
   // 基础工具链（静态 + delegate，不含 MCP）：/mcp 重连时以此为基底重建 tools
   ctx.runOpts.baseTools = toolchain;
   ctx.runOpts.mcpServers = cfg.mcpServers;
-  const mcpTools = await discoverMcpTools(cfg.mcpServers);
+  // 发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）
+  const mcpHandles = await discoverMcpServers(cfg.mcpServers);
+  // 组装 MCP 工具链（server 工具 + Resources/Prompts 辅助工具）
+  const mcpTools = buildMcpTools(mcpHandles);
   toolchain.push(...mcpTools);
   ctx.runOpts.tools = toolchain;
+  ctx.runOpts.mcpHandles = mcpHandles; // 供 /mcp 命令列出 resources/prompts
   ctx.runOpts.undoStack = undoStack;
+  // MCP server instructions 注入系统提示（首轮；多条时按 server 名顺序叠放）
+  const instrContent = mcpInstructionsMessage(mcpHandles);
+  if (instrContent) {
+    // 用前缀标记做去重：attachRuntime 只调用一次，但 /mcp reconnect 会替换旧消息
+    const instrPrefix = '[MCP server instructions';
+    const existingIdx = ctx.messages.findIndex(
+      (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+    );
+    const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+    if (existingIdx >= 0) {
+      ctx.messages[existingIdx] = instrMsg;
+    } else {
+      ctx.messages.unshift(instrMsg);
+    }
+  }
 }
 
 /**
@@ -316,7 +432,9 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
   const output = makeOutput(cfg);
-  await attachRuntime(ctx, output); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  // 工作区信任（第九节）：首次进入未信任目录时询问；未信任 → 只读 + 跳过项目级配置
+  const trust = await resolveWorkspaceTrust(process.cwd(), output);
+  await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
   output.banner(cfg, runOpts.tools.map((t) => t.name));
 
   const singleTask = taskArgs.join(' ').trim();

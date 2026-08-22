@@ -472,6 +472,9 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'thinking') {
+      // /thinking 关闭（state.thinkingShow=false）：完全不展示思考流——历史行与新轮
+      // 行都在渲染层过滤掉（数据仍在 state.lines 保留，重新开启即恢复显示）。
+      if (!state.thinkingShow) continue;
       // 思考模块：**支持点击展开/收起**（用户要求）。每个思考段落是独立模块——
       // 展开态 = 头行（思考中 `⠋ thinking · 实时耗时` / 思考完 `- thinking · 耗时`）
       // + 完整思考内容；收起态 = 一行（思考中 `⠋ thinking` loading / 思考完 `+ thinking`）。

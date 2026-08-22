@@ -48,7 +48,9 @@ export class WebOutput implements Output {
   constructor(
     readonly sessionId: string,
     private readonly broadcast: WebBroadcast,
-    private readonly pending: PendingRegistry
+    private readonly pending: PendingRegistry,
+    /** /thinking 可见性门控：返回 false 时 start/write 不广播事件（不展示思考流） */
+    private readonly isThinkingVisible: () => boolean = () => true,
   ) {
     this.thinking = this.makeThinking();
   }
@@ -65,11 +67,13 @@ export class WebOutput implements Output {
         return shown;
       },
       start: () => {
+        if (!this.isThinkingVisible()) return; // /thinking 关闭：不建模块
         if (shown) return;
         shown = true;
         this.announce('thinking.start');
       },
       write: (piece: string) => {
+        if (!this.isThinkingVisible()) return; // /thinking 关闭：不广播 chunk
         if (!shown) {
           shown = true;
           this.announce('thinking.start');

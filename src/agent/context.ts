@@ -6,8 +6,9 @@
  *      ——跨项目共享的用户偏好/习惯，所有会话首轮加载，排在项目记忆之前（级联：
  *      项目可覆盖/细化全局，与配置体系「低→高」优先级语义一致）；
  *   1. **项目记忆 AGENTS.md**（agentsFile）：跨会话共享的项目记忆——每次会话首轮
- *      自动加载最近的 AGENTS.md 进上下文（system 消息），模型无需重新摸索项目
- *      （查找规则与配置发现一致：从 cwd 向上找，git 根与 home 为边界）；
+ *      **嵌套加载所有层级的 AGENTS.md**（从 cwd 向上到 git 根/home 边界，每目录一层）：
+ *      外层（项目根）整体约定 + 内层（子目录）局部约定，各生成一条 system 消息，
+ *      越贴近 cwd 的层级排在越后面、离用户消息越近、权重越高（可覆盖/细化外层）；
  *   2. **相关文件选择性加载**（preloadFiles）：任务文本里出现的现有文件路径
  *      （`src/foo.ts` 等）→ 首轮前把内容预载进上下文（系统消息），模型无需
  *      先 read_file 就能看到关键文件；超限/不存在的路径自动跳过。
@@ -31,6 +32,7 @@ import {
   memoryMessage,
 } from './memory.js';
 import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
+import { buildRepoMap } from './repomap.js';
 import type { EventRecorder } from './events.js';
 import type { HookRunner } from '../hooks/index.js';
 
@@ -53,12 +55,19 @@ export interface ContextOptions {
   preloadMaxFiles?: number;
   /** 单文件预载字节上限（默认 30KB） */
   preloadMaxBytes?: number;
+  /** 是否注入代码库结构感知地图（repo map；默认 true） */
+  repoMap?: boolean;
+  /** repo map 符号上限（默认 200） */
+  repoMapMaxSymbols?: number;
   /** Hooks 运行器（PreCompact：压缩前 fire-and-forget；attachRuntime 注入） */
   hooks?: HookRunner;
 }
 
 /** 预载消息内容前缀（同内容重复判断 / 调试识别用） */
 const PRELOAD_PREFIX = '[已按任务预载相关文件';
+
+/** repo map 消息前缀（渐进披露/调试识别用） */
+const REPO_MAP_PREFIX = '[项目结构地图';
 
 /** 常见源码/配置扩展名（出现在任务文本里且存在 → 视为相关文件） */
 const FILE_RE = /[\w./~-]+\.(?:tsx?|jsx?|mjs|cjs|jsonc?|md|py|go|rs|java|c|cpp|h|hpp|sh|yml|yaml|toml|css|html|vue|svelte|sql|txt)\b/g;
@@ -205,7 +214,8 @@ async function summarizeMessages(
 
 /**
  * 上下文准备（入口在每轮用户输入后调用）：
- *   1. 项目记忆 AGENTS.md：首轮（尚未注入过）自动加载最近的 AGENTS.md；
+ *   1. 项目记忆 AGENTS.md：首轮（尚未注入过）**嵌套加载**所有层级的 AGENTS.md
+ *      （从 cwd 向上到 git 根/home 边界，每层一条 system 消息，内层贴近用户消息权重最高）；
  *   2. 首轮（尚未预载过）按任务文本预载相关文件；
  *   3. 长对话做摘要压缩。
  */
@@ -233,14 +243,19 @@ export async function prepareContext(
     }
   }
   // 2) 项目记忆 AGENTS.md：跨会话共享，首轮注入一次（system 消息；
-  //    在预载之后 unshift → 排在预载文件之前，紧跟循环的 SYSTEM_PROMPT）
+  //    在预载之后 unshift → 排在预载文件之前，紧跟循环的 SYSTEM_PROMPT）。
+  //    嵌套多层级：loadProjectMemory 返回 [内层, …, 外层]（从内到外），
+  //    依次 unshift → 最终顺序 [外层, …, 内层]——外层靠 system prompt、
+  //    内层贴近用户消息、权重最高（内层可覆盖/细化外层）。
   const agentsFile = opts.agentsFile !== false;
   const hasMemory = messages.some(
     (m) => typeof m.content === 'string' && m.content.startsWith(MEMORY_PREFIX)
   );
   if (agentsFile && !hasMemory && messages.length > 0) {
-    const mem = await loadProjectMemory();
-    if (mem) messages.unshift(memoryMessage(mem));
+    const mems = await loadProjectMemory();
+    for (const mem of mems) {
+      messages.unshift(memoryMessage(mem));
+    }
   }
   // 0) 全局记忆 ~/.config/omni/AGENTS.md：跨项目共享，首轮注入一次；
   //    在项目记忆之后 unshift → 排在项目记忆之前（级联：全局在前、项目在后）
@@ -262,6 +277,18 @@ export async function prepareContext(
   if (skillsFile && !hasSkills && messages.length > 0) {
     const skills = await discoverSkills();
     if (skills.length > 0) messages.unshift(skillMessage(skills));
+  }
+  // -0.5) 代码库结构感知（repo map，P1）：首轮注入一次紧凑符号地图（文件: 符号列表）——
+  //       模型对项目结构有概览，避免盲目 list_directory。可配置关闭。
+  const repoMap = opts.repoMap !== false;
+  const hasRepoMap = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(REPO_MAP_PREFIX)
+  );
+  if (repoMap && !hasRepoMap && messages.length > 0) {
+    const map = await buildRepoMap(process.cwd(), { maxSymbols: opts.repoMapMaxSymbols ?? 200 });
+    if (map) {
+      messages.unshift({ role: 'system', content: `${REPO_MAP_PREFIX}，供快速了解项目结构]\n${map}` });
+    }
   }
   // 3) 长对话摘要压缩（recorder：压缩成功时记 compact 轨迹事件）
   await summarizeContext(client, model, messages, opts, recorder);

@@ -14,34 +14,30 @@ import type { TuiSession } from './render.js';
 import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState, type ToolStatus } from './state.js';
 import { t, tf } from './i18n.js';
 
-const NOOP_THINKING: ThinkingDisplay = {
-  get shown() {
-    return false;
-  },
-  write() {},
-  finish() {},
-};
-
 export class TuiOutput implements Output {
   readonly exitOnCtrlC = true; // TUI 渲染器处理 Ctrl+C（有输入时清空输入框、空输入退出），main 不注册自己的 SIGINT
   readonly thinking: ThinkingDisplay;
   private paintTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * 思考过程展示开关（/thinking 运行时切换；初始值来自配置 showThinking）。
+   * false = start 不预建模块、write 不写 chunk（数据仍捕获落盘）；**已渲染的
+   * 历史行由 buildBody 按 state.thinkingShow 过滤**——两层配合实现完整的显示/隐藏。
+   */
+  showThinking: boolean;
 
   constructor(
     private state: TuiState,
-    private opts: { showThinking: boolean },
+    opts: { showThinking: boolean },
     private session: TuiSession
   ) {
-    if (!opts.showThinking) {
-      this.thinking = NOOP_THINKING;
-      return;
-    }
+    this.showThinking = opts.showThinking !== false;
     const self = this; // thinking 对象方法里的 this 指向 thinking 本身，用闭包引用外层实例
     this.thinking = {
       get shown() {
         return self.thinkingShown;
       },
       start: () => {
+        if (!self.showThinking) return; // /thinking 关闭：不建模块（重新开启后的轮次恢复）
         // 收到消息/新一轮思考开始：**立即创建 thinking 模块头行**（loading + thinking +
         // 实时耗时）——不等首个流式 chunk（用户要求「接收到消息开始 thinking 的时候就要
         // 显示 thinking，而不是收到流式返回才开始」）。内容为空只显示头行，chunk 到达后
@@ -54,6 +50,7 @@ export class TuiOutput implements Output {
         self.schedulePaint();
       },
       write: (piece: string) => {
+        if (!self.showThinking) return; // /thinking 关闭：不显示（reasoning 仍累积落盘）
         if (!self.thinkingShown) {
           // 兜底（onRound 未预建，如直接 write 的路径）：按旧逻辑首 chunk 建行
           self.thinkingShown = true;

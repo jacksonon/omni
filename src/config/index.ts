@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HOOK_EVENTS, type HookDefinition, type HooksConfig } from '../hooks/index.js';
 import type { PermissionTier } from '../safety/index.js';
+import type { SandboxMode } from '../safety/sandbox.js';
 import type { McpServerConfig } from '../tools/mcp.js';
 import { parseJsonc } from './jsonc.js';
 import { findInDir, findProjectConfig } from './discover.js';
@@ -111,6 +112,20 @@ export interface OmniConfig {
    * MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
   /**
+   * 用户/项目级危险命令扩展正则列表（config `dangerousPatterns` 字段）。
+   * 匹配的命令会在 safe 及以上档位触发审批；正则写在配置里，可用注释说明。
+   * 示例：["(\s|^)docker\s+rm\s+-f\b", "(\s|^)az\s+logout\b"]
+   */
+  dangerousPatterns?: string[];
+  /** OS 级沙箱档位：'off'（默认）| 'read-only' | 'workspace-write' | 'danger-full-access' */
+  sandbox: SandboxMode;
+  /** 是否注入代码库结构感知地图（repo map，P1；默认 true） */
+  repoMap?: boolean;
+  /** repo map 符号上限（默认 200） */
+  repoMapMaxSymbols?: number;
+  /** WebFetch 工具域名允许列表（空 = 全部） */
+  webFetchDomains?: string[];
+  /**
    * Web / Electron 上次使用的工作目录（`omni web` 与桌面应用启动时自动应用，
    * 界面「设置 → 工作目录」切换时持久化到这里）。优先级：OMNI_WEB_WORKSPACE
    * 环境变量 > 该字段 > 启动 cwd（cwd 为 "/" 时回退 home——Dock/Finder 启动场景）。
@@ -163,6 +178,7 @@ const DEFAULTS = {
   maxSubagentDepth: 5,
   statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
   language: 'zh' as 'zh' | 'en',
+  sandbox: 'off' as SandboxMode,
 };
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -251,6 +267,26 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   }
   if (typeof data.architect === 'string' && data.architect.trim()) cfg.architect = data.architect.trim();
   if (typeof data.editor === 'string' && data.editor.trim()) cfg.editor = data.editor.trim();
+  if (typeof data.repoMap === 'boolean') cfg.repoMap = data.repoMap;
+  if (typeof data.repoMapMaxSymbols === 'number' && Number.isFinite(data.repoMapMaxSymbols)) {
+    cfg.repoMapMaxSymbols = Math.max(10, Math.min(2000, Math.floor(data.repoMapMaxSymbols)));
+  }
+  if (Array.isArray(data.webFetchDomains)) {
+    const arr = (data.webFetchDomains as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim());
+    if (arr.length > 0) cfg.webFetchDomains = arr;
+  }
+  // 危险命令扩展正则：只收合法字符串（非法正则会在 dangerousCommand 里兜底忽略）
+  if (Array.isArray(data.dangerousPatterns)) {
+    const arr = (data.dangerousPatterns as unknown[]).filter(
+      (x): x is string => typeof x === 'string' && !!x.trim()
+    );
+    if (arr.length > 0) cfg.dangerousPatterns = arr;
+  }
+  // OS 级沙箱档位：非法值回退 off
+  const sb = String(data.sandbox ?? '');
+  if (['off', 'read-only', 'workspace-write', 'danger-full-access'].includes(sb)) {
+    cfg.sandbox = sb as SandboxMode;
+  }
   // 状态行段配置：只保留合法 id（非法/未知 id 丢弃，避免渲染层找不到段）；
   // 空数组 = 不显示状态行（用户全部取消勾选）；未配置保持默认全段
   if (Array.isArray(data.statusline)) {
@@ -304,14 +340,30 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)) {
     const servers: Record<string, McpServerConfig> = {};
     for (const [name, v] of Object.entries(data.mcpServers as Record<string, unknown>)) {
-      if (v && typeof v === 'object' && typeof (v as McpServerConfig).command === 'string') {
-        servers[name] = {
-          command: (v as McpServerConfig).command,
-          args: Array.isArray((v as McpServerConfig).args) ? (v as McpServerConfig).args : undefined,
-          env: (v as McpServerConfig).env && typeof (v as McpServerConfig).env === 'object'
-            ? (v as McpServerConfig).env
+      if (v && typeof v === 'object') {
+        const raw = v as Record<string, unknown>;
+        if (typeof raw.command !== 'string' && typeof raw.url !== 'string') continue; // 至少一种传输
+        const mode = raw.defaultToolsApprovalMode;
+        const cfg: McpServerConfig = {
+          command: typeof raw.command === 'string' ? raw.command : undefined,
+          args: Array.isArray(raw.args) ? (raw.args as string[]) : undefined,
+          env: raw.env && typeof raw.env === 'object' ? (raw.env as Record<string, string>) : undefined,
+          url: typeof raw.url === 'string' ? raw.url : undefined,
+          headers: raw.headers && typeof raw.headers === 'object'
+            ? (raw.headers as Record<string, string>)
             : undefined,
+          enabledTools: Array.isArray(raw.enabledTools)
+            ? (raw.enabledTools as string[]).filter((s) => typeof s === 'string')
+            : undefined,
+          disabledTools: Array.isArray(raw.disabledTools)
+            ? (raw.disabledTools as string[]).filter((s) => typeof s === 'string')
+            : undefined,
+          defaultToolsApprovalMode:
+            mode === 'auto' || mode === 'prompt' || mode === 'writes' || mode === 'approve'
+              ? mode
+              : undefined,
         };
+        servers[name] = cfg;
       }
     }
     if (Object.keys(servers).length > 0) cfg.mcpServers = servers;

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { OmniConfig } from './index.js';
 import { parseJsonc } from './jsonc.js';
+import type { McpServerConfig, ToolApprovalMode } from '../tools/mcp.js';
 
 /** /model add 解析结果：ok=true 时携带模型名与端点字段（缺省字段不在结果里，调用方回退顶层） */
 export type ModelAddArgs =
@@ -366,4 +367,139 @@ export function persistWebWorkspaceToConfig(dir: string): PersistModelResult {
     return { ok: false, file: null, message: `写入配置失败：${(err as Error)?.message ?? err}（可手动添加 "webWorkspace": "${dir}"）` };
   }
   return { ok: true, file, message: `已保存工作目录 → ${file}（下次启动自动应用）` };
+}
+
+/* ---------------- MCP 服务器增删持久化（/mcp add|remove） ---------------- */
+
+/** /mcp add 解析结果 */
+export type McpAddArgs =
+  | { ok: true; name: string; cfg: McpServerConfig }
+  | { ok: false; error: string };
+
+/**
+ * 解析 /mcp add 的参数：
+ *   /mcp add <名称> <command> [args...]                stdio 服务器（command + args）
+ *   /mcp add <名称> --url <url> [--approval <mode>]    streamable HTTP 服务器
+ *   [--approval auto|prompt|writes|approve]            默认审批模式
+ *   [--enabled-tools a,b,c] / [--disabled-tools a,b,c] 白黑名单
+ */
+export function parseMcpAddArgs(raw: string): McpAddArgs {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) {
+    return {
+      ok: false,
+      error: '用法：/mcp add <名称> <command> [args...]（stdio）| /mcp add <名称> --url <url>（HTTP）[--approval <mode>] [--enabled-tools a,b] [--disabled-tools a,b]',
+    };
+  }
+  const name = tokens[0];
+  if (name.startsWith('--')) {
+    return { ok: false, error: `缺少服务器名称（/mcp add <名称> ...，收到「${name}」）` };
+  }
+  const rest = tokens.slice(1);
+  const cfg: McpServerConfig = {};
+  const args: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    if (tok === '--url') {
+      const v = rest[i + 1];
+      if (!v || v.startsWith('--')) return { ok: false, error: '--url 缺少值' };
+      cfg.url = v;
+      i++;
+    } else if (tok === '--approval' || tok === '--approval-mode') {
+      const v = rest[i + 1];
+      if (!v || !['auto', 'prompt', 'writes', 'approve'].includes(v)) {
+        return { ok: false, error: `--approval 值非法（支持 auto/prompt/writes/approve，收到「${v ?? ''}」）` };
+      }
+      cfg.defaultToolsApprovalMode = v as ToolApprovalMode;
+      i++;
+    } else if (tok === '--enabled-tools' || tok === '--enabled') {
+      const v = rest[i + 1];
+      if (!v) return { ok: false, error: '--enabled-tools 缺少值（逗号分隔）' };
+      cfg.enabledTools = v.split(',').map((s) => s.trim()).filter(Boolean);
+      i++;
+    } else if (tok === '--disabled-tools' || tok === '--disabled') {
+      const v = rest[i + 1];
+      if (!v) return { ok: false, error: '--disabled-tools 缺少值（逗号分隔）' };
+      cfg.disabledTools = v.split(',').map((s) => s.trim()).filter(Boolean);
+      i++;
+    } else if (tok.startsWith('--')) {
+      return { ok: false, error: `未知参数「${tok}」（支持 --url / --approval / --enabled-tools / --disabled-tools）` };
+    } else {
+      // 非 flag：第一个是 command，其后是 args
+      if (!cfg.command) cfg.command = tok;
+      else args.push(tok);
+    }
+  }
+  if (cfg.command && cfg.url) {
+    return { ok: false, error: 'command 与 --url 不能同时指定（stdio 与 HTTP 二选一）' };
+  }
+  if (!cfg.command && !cfg.url) {
+    return { ok: false, error: '缺少启动命令（/mcp add <名称> <command> ...）或 --url（HTTP 端点）' };
+  }
+  if (args.length > 0) cfg.args = args;
+  return { ok: true, name, cfg };
+}
+
+/**
+ * 把 MCP 服务器写入配置文件的 mcpServers 字段（/mcp add 持久化）。
+ * 运行时已连接并注入工具链，这里只落盘供下次会话自动加载。
+ */
+export function persistMcpServerToConfig(name: string, cfg: McpServerConfig, omniCfg: OmniConfig): PersistModelResult {
+  const res = loadConfigObject(omniCfg);
+  if (!res.ok) {
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（mcpServers 字段手动添加："${name}": ${JSON.stringify(cfg)}）`,
+    };
+  }
+  const servers =
+    res.obj.mcpServers && typeof res.obj.mcpServers === 'object' && !Array.isArray(res.obj.mcpServers)
+      ? (res.obj.mcpServers as Record<string, unknown>)
+      : {};
+  servers[name] = cfg;
+  res.obj.mcpServers = servers;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（可手动在配置文件 mcpServers 字段添加）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已保存 MCP 服务器「${name}」→ ${res.file}（下次会话自动加载）` };
+}
+
+/**
+ * 从配置文件的 mcpServers 字段移除一个服务器（/mcp remove 持久化）。
+ * 运行时已断开连接并移除工具，这里只落盘供下次会话不加载。
+ */
+export function removeMcpServerFromConfig(name: string, omniCfg: OmniConfig): PersistModelResult {
+  const res = loadConfigObject(omniCfg);
+  if (!res.ok) {
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（请手动在配置文件 mcpServers 字段删除「${name}」条目）`,
+    };
+  }
+  const servers = res.obj.mcpServers;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers) || !(name in (servers as Record<string, unknown>))) {
+    return { ok: false, file: null, message: `配置里没有 MCP 服务器「${name}」` };
+  }
+  const next = { ...(servers as Record<string, unknown>) };
+  delete next[name];
+  if (Object.keys(next).length > 0) res.obj.mcpServers = next;
+  else delete res.obj.mcpServers;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（可手动在配置文件 mcpServers 字段删除「${name}」）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已从配置移除 MCP 服务器「${name}」→ ${res.file}` };
 }

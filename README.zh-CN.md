@@ -6,18 +6,31 @@
 
 当前处于 **Beta 阶段（功能完备）**：单 Agent 循环 + 6 个基础工具（+ delegate 子代理 + MCP 外部工具）+ 安全护栏 + 上下文管理 + 记忆系统/会话持久化/技能系统，无框架依赖（裸 OpenAI SDK + 主循环），并带一个全屏 TUI 界面。
 
+## 界面截图
+
+**终端 TUI**（`omni`，全屏交互模式）——思考模块、工具卡片、Markdown 表格/代码块、token 统计与输入区：
+
+![Omni TUI](Doc/images/tui.png)
+
+**Web 界面**（`omni web`，浏览器 / Electron 桌面应用）——按工作区分组的会话侧栏、实时 Markdown 回答、带模型与工作区切换的输入区：
+
+![Omni Web](Doc/images/web.png)
+
 ## 特性
 
 - **Agent 主循环**：流式调用 LLM → 工具调用（并行执行）→ 执行 → 结果回传，支持自我纠错（工具失败信息回传由模型自行修正）
-- **8 个工具（6 基础 + 2 注入）**：基础 `read_file` / `write_file` / `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）+ 运行时注入 `delegate`（子代理）+ `mcp_*`（MCP 外部工具）
-- **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认 + 审批 UI + 审计日志
+- **8 个工具（6 基础 + 2 注入）**：基础 `read_file` / `write_file` / `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）+ 运行时注入 `delegate`（子代理）+ `mcp_*`（MCP 外部工具）；另有上下文工具 `memory_search` / `memory_read`（记忆渐进披露）· `todo_write`（任务清单）· `web_fetch`（URL→文本）· `diagnose`（typecheck/lint 反馈）
+- **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认（内置 + 可配置 `dangerousPatterns`）+ 审批 UI + 审计日志
+- **工作区信任**：首次进入未信任目录时提示信任（TUI 卡片 / console）；未信任 = 只读（`/permission` 锁定）+ 跳过项目级 hooks/技能/子代理定义/项目记忆（防仓库注入恶意配置）；信任清单持久化 `~/.config/omni/trusted-workspaces.json`
+- **OS 级沙箱**：`sandbox` 配置（`read-only` / `workspace-write` / `danger-full-access`）用 macOS `sandbox-exec` 或 Linux `bwrap` 包裹 `run_command`（拒绝写/网络；workspace-write 仅允许工作目录写），平台不支持时降级并提示
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
 - **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、28 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/编排/循环任务/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
-- **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单，模型用 `skill` 工具按需加载；`/skill` 命令列出 / `find <词>` 网络检索 skills.sh / `add` 安装
-- **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目 / `/init --global` 全局一键生成，会话结束自动提取新偏好写入全局记忆（偏好去重/矛盾合并）
-- **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）
+- **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单（渐进披露：前 15 条 + "还有 N 个"），模型用 `skill` 工具按需加载；frontmatter 扩展（`disable-model-invocation` / `user-invocable` / `context: fork` 子代理执行 / `agent` / `background`）；`/skill` 命令列出（含标签）/ `find <词>` 网络检索 skills.sh / `add` 安装（本会话即时生效）/ `show <名>` 查看
+- **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目级 / `/init --global` 全局 / `/init <子目录>` 子目录层级生成，会话结束自动提取新偏好写入全局记忆（去重/矛盾合并 + TTL 归档）；渐进披露工具（`memory_search` / `memory_read`）；`AGENTS.override.md` / `TEAM_GUIDE.md` fallback + 32KB 合计预算；项目级自动写入生成待确认片段（`.omni/memory-pending.md`），`/memory-apply` 确认后应用
+- **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）；`/fork` 从历史某点分叉新会话（原会话保留），`/send <会话id> <消息>` 向指定会话发消息取结果（结果注入当前上下文）
 - **Hooks（生命周期自动化）**：在生命周期事件上挂 shell 命令——改写用户 prompt（`UserPromptSubmit`）、硬拦截工具调用（`PreToolUse`）、把工具后的输出回传模型（`PostToolUse`，如 lint 结果）、要求 agent 修完再停（`Stop`）、会话完成通知（`Notification`），另有 `SessionStart` 注入上下文、子代理 hooks（`SubagentStart`/`SubagentStop` + 子代理工具 Pre/Post）、`PreCompact`；JSON 协议（stdin 喂入 / stdout 返回），matcher 工具名通配，配置分层合并（全局+项目），stderr 捕获，超时/失败降级放行
+- **MCP 增强**：Resources 协议（列表 + `read_resource` 工具）与 Prompts 协议（列表 + `get_prompt` 工具）、server `instructions` 注入系统提示、per-tool 审批模式（`defaultToolsApprovalMode`：auto/prompt/writes/approve）+ 工具白黑名单、运行时 `add`/`remove`/`login`（OAuth PKCE）、stdio 之外新增 streamable HTTP 传输
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
 - **Web 模式（`omni web`）**：本地后端服务（REST + SSE，零新增依赖）+ 浏览器界面——多会话侧栏、思考/工具/回答实时流式、审批与提问卡片、模型/权限/思考级别设置、取消、每轮 token 统计；浏览器与 Electron 桌面应用均可使用
 - **Electron 桌面应用**（macOS / Windows / Linux）：独立桌面应用，内置 web 后端（走 Electron 自带的 Node，无需系统安装 Node）；GitHub Actions 打 tag 自动构建（mac arm64/x64 zip、win x64 exe、linux x64 AppImage）并附到 GitHub Release
@@ -108,6 +121,11 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "maxSteps": 50,                        // Agent 最大循环步数（防死循环兜底）
   "showThinking": true,                  // 展示思考过程（仍落盘）
   "permission": "safe",                  // 安全护栏：full / safe（默认）/ ask / read
+  "dangerousPatterns": [],               // 危险命令扩展正则（可选）：内置清单之外在 safe+ 档位触发审批
+  "sandbox": "off",                      // OS 级沙箱：off（默认）/ read-only / workspace-write / danger-full-access
+  "repoMap": true,                       // 代码库结构感知：首轮注入符号地图
+  "repoMapMaxSymbols": 200,              // repo map 符号上限
+  "webFetchDomains": [],                 // web_fetch 工具域名允许列表（空 = 全部）
   "auditLog": true,                      // 写审计日志（默认 true）
   "agentsFile": true,                    // 项目记忆 AGENTS.md：每次会话首轮自动加载（默认 true）
   "globalAgentsFile": true,              // 全局记忆 ~/.config/omni/AGENTS.md：跨项目偏好，级联在项目记忆之前
@@ -125,7 +143,7 @@ export OMNI_MODEL=deepseek-chat                     # 可选
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
   },
-  "mcpServers": {                        // MCP 外部工具：{ 名称: { command, args?, env? } }
+  "mcpServers": {                        // MCP 外部工具：{ 名称: { command, args?, env? } | { url, headers? }；enabledTools?/disabledTools?；defaultToolsApprovalMode? = auto|prompt|writes|approve }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   },
   "hooks": {                              // 生命周期自动化（可选，对标 Claude Code）：{ 事件: [{ matcher?, command, timeoutMs? }] }
@@ -332,7 +350,7 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/` + 输入 | 命令联想浮层（↑/↓ 移动、Tab 填入、Enter 执行、Esc 关闭、点击填入） |
 | `@` + 输入 | 文件/目录提及浮层（Tab/Enter 插入；目录 `@path/` 继续下钻） |
 | 点击工具卡片 | 展开/收起完整输出与 diff（默认收起只显示命令） |
-| 点击思考行 | 单独折叠/展开该思考模块；`/thinking` 全局折叠 |
+| 点击思考行 | 单独折叠/展开该思考模块；`/thinking` 开/关思考过程展示（关闭后不再流式显示） |
 | 点击 token 汇总 | 展开逐次 LLM 请求明细（`⚡ 输入 X · 输出 Y · 缓存 Z`） |
 | 滚轮 / PgUp/PgDn / ↑↓ / Home / End | 滚动内容（End 回到最新） |
 | `/settings theme` · `/settings language` | 亮色/深色/跟随系统 · 中文/English 界面（持久化） |
@@ -343,13 +361,13 @@ npm run tui:snapshot                 # TUI 渲染快照
 |---|---|
 | `/permission` | 运行时切换权限档位（低=read 只读 / 中=safe 危险询问 / 高=ask 全询问 / 全量=full 直通） |
 | `/plan` | 计划模式：只读工具、只调研，输出实施计划供确认后执行 |
-| `/thinking` | 全局折叠/展开所有思考过程 |
+| `/thinking` | 开/关思考过程展示（关闭后不再流式显示，完整思考仍落盘） |
 | `/model` | 切换模型；`/model <名称>`；`/model add <名称> [--base-url] [--api-key]`（添加并持久化） |
 | `/variants` | 切换模型思考级别（low/medium/high，持久化） |
 | `/settings` | 设置二级菜单：状态行 / 语言 / 主题 / token 统计 / 环境诊断 |
 | `/undo` · `/redo` | 撤销最近一次文件修改（`/undo all` 全量回滚）· 重做上次撤销 |
 | `/init` | 扫描项目生成 AGENTS.md（`/init --global` 全局记忆；已存在不覆盖） |
-| `/skill` | 技能管理：列表 / `find <词>` 网络检索 / `add <repo>` 安装 / `show <名>` 查看 |
+| `/skill` | 技能管理：列表（含标签）/ `find <词>` 网络检索 / `add <repo> [--global]` 安装（本会话即时生效）/ `show <名>` 查看 |
 | `/compact` | 手动压缩上下文（旧消息合并摘要，保留最近 8 条原文） |
 | `/agents` | 查看子代理配置 + 已发现子代理定义（`.agents/subagents/*.md`） |
 | `/orchestrate` | 编排：fan-out 并行 delegate → 汇总 → 对抗审查 → 最终报告 |
@@ -357,11 +375,11 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/review` | 代码审查：typecheck + git diff → LLM 审查 |
 | `/status` · `/context` | 会话状态汇总 · 上下文用量与压缩建议 |
 | `/session` | 列出当前目录历史会话并继续（`/session <id>` 前缀匹配；`all` 跨目录） |
-| `/resume` · `/rename` | 恢复历史会话 · 会话改名（窗口标题 + meta 落盘） |
+| `/resume` · `/rename` · `/fork` · `/send` · `/memory-apply` | 恢复历史会话 · 会话改名（窗口标题 + meta 落盘）· 从历史分叉新会话 · 向指定会话发消息取结果 · 应用待提交的项目记忆片段 |
 | `/export` | 导出会话为 Markdown（`.omni/export-<时间戳>.md`） |
 | `/trace` | 轨迹面板（右侧栏）：每轮 LLM 请求/工具/消息账本，点击推入详情页 |
 | `/diff` · `/config` | 未提交改动 · 配置路径与来源 |
-| `/mcp` | MCP 管理：列出服务器/工具，`/mcp reconnect` 改配置后重连 |
+| `/mcp` | MCP 管理：列出服务器/工具/资源/提示词，`/mcp reconnect` 改配置后重连，`/mcp add <名> <command|--url>` 运行时添加，`/mcp remove <名>` 移除，`/mcp login <名>` OAuth 登录 |
 | `/doctor`（console）/ `/settings doctor`（TUI） | 环境诊断：Node/bun 版本、API Key、端点连通性、配置/MCP/权限/模型 |
 | `/clear` · `/exit`（别名 `/quit`）· `/help` | 清屏 · 退出（autoMemory + 会话落盘）· 帮助 |
 
@@ -379,7 +397,7 @@ npm run tui:snapshot                 # TUI 渲染快照
 
 ### 记忆与会话
 
-- **记忆**：项目 `AGENTS.md`（从 cwd 向上找，git 根/home 为边界）+ 全局 `~/.config/omni/AGENTS.md`
+- **记忆**：项目 `AGENTS.md`（**嵌套加载**：从 cwd 向上收集所有层级到 git 根/home 边界，每层一条 system 消息，越贴近 cwd 权重越高）+ 全局 `~/.config/omni/AGENTS.md`
   级联注入首轮；`/init` 一键生成；`autoMemory` 在交互退出时自动沉淀新偏好（去重/矛盾合并）。
 - **会话**：交互对话 JSONL 落盘 `~/.config/omni/sessions/`；`omni -l` 列出、`omni -c`
   恢复当前项目最近会话、`omni -s <id>` 恢复指定会话（`-r` 同义）；TUI 退出（/exit 或
@@ -424,7 +442,7 @@ src/
     session.ts          # 会话持久化：JSONL 落盘 + 列表/恢复（--continue / -r / -l / /resume）
     report.ts           # 会话状态/上下文用量/导出/诊断/配置路径共享逻辑（/status /context /export /doctor /config）
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    skill.ts            # 技能系统：SKILL.md 发现 / frontmatter 解析 / 按名加载 / npx skills CLI
+    skill.ts            # 技能系统：SKILL.md 发现 / frontmatter 扩展解析 / 按名加载 / 渐进披露 / npx skills CLI / 安装即时生效 / 子代理执行
     subagent.ts         # 子代理：隔离上下文嵌套循环（共用 Safety 闸门）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
   safety/               # 安全护栏：权限分级（policy）/ 审批 / 审计日志（audit）
@@ -478,20 +496,20 @@ npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
 
 - [x] MVP：Agent 循环 + 5 基础工具 + mock 端到端测试
 - [x] 上下文管理：工具结果截断 → 消息摘要压缩 → 相关文件选择性加载
-- [x] 安全护栏：危险命令确认、权限分级、审计日志
+- [x] 安全护栏：危险命令确认、权限分级、审计日志、工作区信任、OS 级沙箱
 - [x] 评估体系：自建任务集 + 完成率统计（mock 离线可进 CI）
 - [x] MCP 接入（外部工具生态）
 - [x] 子代理（subagent）与并行工具执行
 - [x] **记忆系统**：全局记忆 + 项目记忆级联加载（`/init` 项目 / `/init --global` 全局 / 会话结束自动写入 + 偏好去重/矛盾合并）
-- [x] **会话持久化**：交互对话 JSONL 落盘 + `--continue` / `-r <id>` / `-l` 跨进程恢复
+- [x] **会话持久化**：交互对话 JSONL 落盘 + `--continue` / `-r <id>` / `-l` 跨进程恢复 + `/fork` 分叉 + `/send` 跨会话消息
 - [x] **/plan 计划模式**：只读工具过滤 + 输出实施计划，确认后再执行
 - [x] **/undo 文件撤销**：write_file 自动快照 + `/undo` / `/undo all` 回滚本次会话修改
 - [x] **/permission 运行时权限切换**：低=read 只读 / 中=safe 危险询问（默认）/ 高=ask 全询问 / 全量=full 直通——TUI 面板 + CLI 参数即时切换，子代理同步
-- [x] **技能系统（Agent Skill / SKILL.md）**：自动发现 + 清单注入 + `skill` 工具按需加载 + `/skill` 命令（列出 / find 网络检索 / add 安装），对标 opencode
+- [x] **技能系统（Agent Skill / SKILL.md）**：自动发现 + 清单注入（渐进披露）+ `skill` 工具按需加载 + frontmatter 扩展（子代理执行）+ `/skill` 命令（列出 / find 网络检索 / add 即时生效 / show），对标 opencode
 - [x] **更多交互命令**：`/compact` 手动压缩上下文 · `/agents` 查看子代理配置 · `/review` 代码审查（typecheck + git diff → LLM）· `/variants` 切换模型思考级别（reasoning_effort）· `/model` 切换/添加模型（config `models` 可配多端点，切换时重建客户端，子代理同步；`/model add <名称> [--base-url] [--api-key]` 运行时添加并持久化到配置文件）· `/status` 会话状态 · `/context` 上下文用量 · `/export` 导出 Markdown · `/config` 查看配置 · `/mcp` 管理 MCP 服务器（reconnect）· `/diff` 查看改动 · `/rename` 会话改名（meta 落盘）· `/resume` 恢复历史会话 · `/redo` 重做撤销 · `/doctor` 环境诊断
 - [x] **Hooks 生命周期自动化**：`UserPromptSubmit` 改写 prompt / `PreToolUse` 硬拦截 + 改写参数 / `PostToolUse` 输出回传（lint）/ `Stop` 要求继续（限一次）/ `Notification` 通知 + `SessionStart` 上下文注入 / `SubagentStart`·`SubagentStop` 子代理 hooks / `PreCompact`——JSON 协议 + matcher 通配 + 配置分层合并（全局+项目）+ stderr 捕获，超时/失败降级放行；enforcement 示例（guard-env / guard-dangerous / guard-git-push）在 `examples/hooks/`
 - [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果 / stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
-- [ ] 进阶：SWE-bench 评测、MCP 资源/提示（prompts）协议、记忆渐进披露/TTL、嵌套 AGENTS.md
+- [ ] 进阶：SWE-bench 评测
 
 ## 技术栈
 

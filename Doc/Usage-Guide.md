@@ -231,7 +231,7 @@ omni -h / -v                      # help / version
   "auditLog": true,                    // audit log (~/.config/omni/audit.log)
 
   // ── Memory & sessions ──
-  "agentsFile": true,                  // project memory AGENTS.md: auto-loaded on first turn
+  "agentsFile": true,                  // project memory AGENTS.md: nested load on first turn (all levels from cwd up to git root/home boundary; inner layers override outer)
   "globalAgentsFile": true,            // global memory ~/.config/omni/AGENTS.md (cross-project)
   "autoMemory": true,                  // append newly expressed preferences to global memory on interactive exit
 
@@ -429,10 +429,12 @@ Memory has two levels, **cascade-injected** (global first, project second — la
 | Level | Location | Content |
 |---|---|---|
 | Global memory | `~/.config/omni/AGENTS.md` | cross-project user preferences (language/style/toolchains) |
-| Project memory | `<project-root>/AGENTS.md` | project-specific (build commands/architecture/conventions), searched upward from cwd, git root / home are boundaries |
+| Project memory | `<project-root>/AGENTS.md` (+ nested `AGENTS.md` in subdirectories) | project-specific (build commands/architecture/conventions), all levels loaded from cwd up to git root / home boundary |
 
-- **Auto-load**: the most recent AGENTS.md is injected automatically on the first turn of every
-  session (if > 40KB only the head is loaded, with a hint to read the rest on demand);
+- **Auto-load**: every AGENTS.md from cwd upward is injected on the first turn of every session —
+  **nested**: each directory layer gets its own system message, inner layers (closer to cwd) sit
+  later in the context and override outer layers (if a file is > 40KB only its head is loaded,
+  with a hint to read the rest on demand);
 - **One-shot generation**: `/init` scans the project structure and asks the LLM to write AGENTS.md
   (never overwrites an existing file); `/init --global` generates global memory;
 - **Auto-write**: with `autoMemory: true`, quitting interactive mode extracts preferences newly

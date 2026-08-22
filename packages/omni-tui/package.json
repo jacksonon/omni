@@ -2,6 +2,7 @@
   "name": "omni-tui",
   "version": "0.3.0",
   "description": "Omni — TUI 全屏终端界面版（需 bun 运行时；npm 官方 omni 包为 Node console 版，此包为 TUI 版）",
+  "license": "BSD-3-Clause",
   "type": "module",
   "bin": {
     "omni": "dist/tui-entry.js"

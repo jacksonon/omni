@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import { attachRuntime, prepareRun } from '../main.js';
+import { isTrustedWorkspace } from '../safety/trust.js';
 import { routingOutput, startWebService } from './server.js';
 import type { ConfigOverrides } from '../config/index.js';
 import { readPersistedWebWorkspace } from '../config/write.js';
@@ -102,7 +103,12 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
   const ctx = prepareRun(overrides);
   // attachRuntime：安全护栏 + 动态工具链 + 上下文选项；审批/提问经 routingOutput
   // 路由到当前运行会话的 WebOutput；hook 输出/子代理事件转发到 SSE
-  await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output);
+  // 工作区信任：web 不弹审批（SSE 时序依赖浏览器连接），直接按信任清单判定——未信任只读
+  const trusted = isTrustedWorkspace(process.cwd());
+  await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output, { trust: trusted });
+  if (!trusted) {
+    console.log(`  ⚠️ 当前工作目录未受信任——以只读模式运行（/mcp 等写操作被拒绝；信任目录：omni 交互模式 / CLI 首次进入时批准）`);
+  }
 
   const server = await startWebService({ ctx, host: parsed.host, port: parsed.port, overrides });
   const url = `http://${parsed.host}:${parsed.port}`;

@@ -24,6 +24,27 @@ export interface StatusInput {
   sessionPath?: string | null;
   /** 已加载的脚手架 system 消息（记忆/技能/预载），用于提示当前上下文构成 */
   scaffolds: { memory: boolean; skills: boolean; preload: boolean };
+  /** 已加载的项目记忆文件路径清单（嵌套各层级；/status 展示） */
+  memoryFiles?: string[];
+  /** 是否已加载全局记忆 */
+  globalMemory?: boolean;
+  /** OS 级沙箱档位（'off' 或缺省不显示） */
+  sandbox?: string;
+  /** 工作区是否受信任（未信任 → 只读降级，显示警示） */
+  trusted?: boolean;
+}
+
+/** 从消息里提取已加载记忆文件的路径清单（`[项目记忆 AGENTS.md：<path>]` 前缀） */
+export function memoryFilesFromMessages(messages: ChatCompletionMessageParam[]): string[] {
+  return messages
+    .filter((m): m is ChatCompletionMessageParam & { content: string } =>
+      m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('[项目记忆')
+    )
+    .map((m) => {
+      const mm = m.content.match(/\[项目记忆 AGENTS\.md：(.+?)\]/);
+      return mm ? mm[1] : null;
+    })
+    .filter((x): x is string => !!x);
 }
 
 /** /status：一行汇总当前会话状态 */
@@ -31,12 +52,13 @@ export function statusReport(s: StatusInput): string[] {
   const lines = [
     `当前会话状态：`,
     `· 模型：${s.model}`,
-    `· 权限：${s.permission}${s.planMode ? '（计划模式）' : ''}`,
+    `· 权限：${s.permission}${s.planMode ? '（计划模式）' : ''}${s.trusted === false ? '（未信任目录 → 只读）' : ''}`,
     `· 思考级别：${s.reasoningEffort || '（未设置，用模型默认）'}`,
     s.tokens
       ? `· token 用量：${s.tokens.total}（prompt ${s.tokens.prompt} + completion ${s.tokens.completion}）`
       : '· token 用量：（console 模式不跟踪，TUI 底部显示）',
   ];
+  if (s.sandbox && s.sandbox !== 'off') lines.push(`· 沙箱：${s.sandbox}`);
   if (s.sessionPath) lines.push(`· 会话文件：${path.basename(s.sessionPath)}`);
   lines.push(
     `· 上下文脚手架：${[
@@ -47,6 +69,14 @@ export function statusReport(s: StatusInput): string[] {
       .filter(Boolean)
       .join(' / ') || '无'}`
   );
+  // 嵌套 AGENTS.md 清单（渐进披露增强）：展示每层文件路径
+  if (s.memoryFiles && s.memoryFiles.length > 0) {
+    const globalMark = s.globalMemory ? '（+ 全局记忆）' : '';
+    lines.push(`· 项目记忆文件（${s.memoryFiles.length} 层${globalMark}）：`);
+    for (const f of s.memoryFiles) lines.push(`  · ${f}`);
+  } else if (s.globalMemory) {
+    lines.push('· 项目记忆文件：无（已加载全局记忆）');
+  }
   return lines;
 }
 

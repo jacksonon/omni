@@ -14,6 +14,7 @@ omni.jsonc
 hello
 # 评估报告 / 审计日志
 eval-report.json
+feature-report.json
 audit.log
 
 # 系统文件
@@ -21,3 +22,6 @@ audit.log
 
 # 其他应用的本地数据（freebuff 桌面端数据库）
 .freebuff/
+
+# git worktree 本地目录
+.worktrees/

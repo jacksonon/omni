@@ -3,6 +3,7 @@
  * 支持 /exit、/clear、/help 命令。
  */
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline/promises';
 import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig } from '../config/write.js';
 import { stdin as input, stdout as output } from 'node:process';
@@ -17,14 +18,17 @@ import {
   writeGlobalAgentsFile,
 } from '../agent/init.js';
 import { runAgent } from '../agent/loop.js';
-import { maybeWriteGlobalMemory } from '../agent/memory.js';
+import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, persistableMessages } from '../agent/session.js';
+import { forkSession, sendSessionMessage } from '../agent/session-fork.js';
+import { applyProjectMemoryPending } from '../agent/memory.js';
 import type { PermissionTier } from '../safety/policy.js';
 import { applyUndo } from '../tools/undo.js';
 import {
   discoverSkills,
   loadSkillContent,
   parseSkillFindResults,
+  refreshSkillInjections,
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
@@ -37,12 +41,13 @@ import {
   detectScaffolds,
   doctorReport,
   exportSession,
+  memoryFilesFromMessages,
   openInEditor,
   statusReport,
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
-import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import { createClient } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
@@ -116,6 +121,8 @@ export async function runInteractive(
       // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
       if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
         await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+        // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
+        await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
       }
       // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底退出边界）
       await runOpts.events?.flush().catch(() => {});
@@ -162,6 +169,9 @@ export async function runInteractive(
         const next = PERMS[want];
         if (!next) {
           console.log(red(`未知权限「${want}」——可选：低=只读 / 中=标准 / 高=谨慎 / 全量=直通`));
+        } else if (runOpts.trusted === false && next !== 'read') {
+          // 未信任目录：强制只读，禁止提升（工作区信任的硬约束，/permission 不能绕过）
+          console.log(red('当前目录未受信任——权限锁定为只读（read），无法提升（首次进入时批准信任即可提升）'));
         } else {
           permission = next;
           runOpts.permission = next;
@@ -201,7 +211,7 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/skill' || cmd.startsWith('/skill ')) {
-      // /skill：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装；show 查看内容
+      // /skill：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装（本会话即时生效）；show 查看内容
       const args = cmd.slice('/skill'.length).trim();
       if (!args) {
         const skills = await discoverSkills();
@@ -209,7 +219,15 @@ export async function runInteractive(
           console.log(dim('未发现技能（.opencode/.claude/.agents/skills 下无 SKILL.md）。用 /skill find <关键词> 网络检索，或 /skill add <owner/repo> --skill <名称> 安装。'));
         } else {
           console.log(dim(`已发现 ${skills.length} 个技能（模型可用 skill 工具按 name 加载；/skill find 网络检索更多）：`));
-          for (const s of skills) console.log(dim(`· ${s.name} — ${s.description}${s.global ? '（全局）' : ''}`));
+          for (const s of skills) {
+            const tags: string[] = [];
+            if (s.global) tags.push('全局');
+            if (s.disableModelInvocation) tags.push('仅手动');
+            if (s.context === 'fork') tags.push('子代理');
+            if (s.source) tags.push(s.source);
+            const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
+            console.log(dim(`· ${s.name} — ${s.description}${tag}`));
+          }
         }
         safePrompt();
         continue;
@@ -234,20 +252,33 @@ export async function runInteractive(
         safePrompt();
         continue;
       }
-      const addM = args.match(/^add\s+(\S+)(?:\s+--skill\s+(.+))?$/);
-      if (addM) {
-        const source = addM[1];
-        const skillName = addM[2]?.trim();
+      const addTokens = args.split(/\s+/).filter(Boolean);
+      if (addTokens[0] === 'add' && addTokens[1]) {
+        const source = addTokens[1];
+        const skillNameI = addTokens.indexOf('--skill');
+        const skillName = skillNameI >= 0 ? addTokens[skillNameI + 1] : undefined;
+        const isGlobal = addTokens.includes('--global');
         console.log(dim(`正在安装 ${source}${skillName ? ` 的 ${skillName}` : '（仓库全部技能）'}…（npx skills add，可能需要下载）`));
-        const { ok, output } = await runSkillsCli(['add', source, ...(skillName ? ['--skill', skillName] : []), '-y'], 180_000);
-        if (ok) {
-          console.log(green('安装完成（已装入 .agents/skills 等目录，下次会话自动发现；本会话可用 /skill 查看已发现列表）'));
-        } else {
+        const cliArgs = ['add', source, ...(skillName ? ['--skill', skillName] : []), '-y'];
+        const { ok, output } = await runSkillsCli(cliArgs, 180_000);
+        if (!ok) {
           console.log(red(`安装失败：${output.slice(0, 300) || 'npx skills 不可用'}`));
-          for (const line of output.split('\n').slice(0, 10)) {
-            if (line.trim()) console.log(dim(`· ${line}`));
-          }
+          for (const line of output.split('\n').slice(0, 10)) { if (line.trim()) console.log(dim(`· ${line}`)); }
+          safePrompt();
+          continue;
         }
+        // 安装成功：本会话即时生效——重新 discover + 刷新注入清单
+        const oldSkills = await discoverSkills();
+        if (isGlobal) {
+          console.log(dim('npx skills 暂不支持 --global 参数，已安装到项目目录。如需全局安装，请用 /skill add 不带 --global 后手动复制到 ~/.config/omni/skills/'));
+        }
+        const newSkills = await discoverSkills();
+        const newNames = newSkills.filter((s) => !oldSkills.find((o) => o.name === s.name)).map((s) => s.name);
+        if (messages && Array.isArray(messages)) {
+          refreshSkillInjections(messages, newSkills);
+        }
+        console.log(green(`安装完成！已安装：${(skillName ? [skillName] : newNames).join('、') || source}（本会话已生效，模型现在可用 skill 工具加载）`));
+        if (newNames.length > 0) console.log(dim(`新技能：${newNames.join('、')}（/skill show <名称> 查看内容）`));
         safePrompt();
         continue;
       }
@@ -263,7 +294,7 @@ export async function runInteractive(
         safePrompt();
         continue;
       }
-      console.log(red('用法：/skill（列出已发现）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>]（安装）· /skill show <名称>（查看内容）'));
+      console.log(red('用法：/skill（列出已发现）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>] [--global]（安装，本会话即时生效）· /skill show <名称>（查看内容）'));
       safePrompt();
       continue;
     }
@@ -524,6 +555,10 @@ export async function runInteractive(
         reasoningEffort: runOpts.reasoningEffort,
         sessionPath: runOpts.sessionPath,
         scaffolds: detectScaffolds(messages),
+        sandbox: runOpts.sandbox,
+        trusted: runOpts.trusted,
+        memoryFiles: memoryFilesFromMessages(messages),
+        globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
       })) console.log(dim(line));
       safePrompt();
       continue;
@@ -564,27 +599,67 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
-      // /mcp：列出 MCP 服务器/工具；reconnect 重连（改完配置后生效）
+      // /mcp：列出 MCP 服务器/工具/资源/提示词；reconnect / add / remove / login
       const servers = runOpts.mcpServers ?? {};
       const names = Object.keys(servers);
-      if (names.length === 0) {
-        console.log(red('未配置 MCP 服务器（配置文件 mcpServers 字段）'));
+      const handles = runOpts.mcpHandles ?? [];
+      const arg = cmd.slice(4).trim(); // 去掉 '/mcp '
+      const sub = arg.split(/\s+/)[0] ?? '';
+      if (sub === 'reconnect') {
+        console.log(dim('正在重连 MCP 服务器…'));
+        closeMcpClients();
+        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        runOpts.mcpHandles = newHandles;
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        console.log(green(`已重连（工具链已更新，当前 ${runOpts.tools.length} 个工具）`));
         safePrompt();
         continue;
       }
-      const mcpToolNames = (runOpts.tools ?? []).filter((t) =>
-        names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_'))
-      );
-      console.log(dim(`已配置 ${names.length} 个 MCP 服务器：${names.join('、')}`));
-      console.log(dim(mcpToolNames.length > 0 ? `已发现工具（${mcpToolNames.length}）：${mcpToolNames.map((t) => t.name).join('、')}` : '（尚未发现工具——服务器连接失败或未提供工具）'));
-      if (/(?:^|\s)reconnect(?=\s|$)/.test(cmd)) {
-        console.log(dim('正在重连 MCP 服务器…'));
-        closeMcpClients();
-        const mcp = await discoverMcpTools(runOpts.mcpServers);
-        runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
-        console.log(green(`已重连（工具链已更新，当前 ${runOpts.tools.length} 个工具）`));
+      if (sub === 'resources') {
+        if (names.length === 0) { console.log(red('未配置 MCP 服务器')); safePrompt(); continue; }
+        const target = arg.split(/\s+/)[1] ?? '';
+        const hs = handles.filter((h) => !target || h.name === target);
+        if (hs.length === 0) { console.log(red(target ? `服务器「${target}」未连接` : '服务器均未连接')); safePrompt(); continue; }
+        for (const h of hs) {
+          if (h.resources.length === 0) { console.log(dim(`${h.name}：无资源`)); continue; }
+          console.log(dim(`${h.name} 资源（${h.resources.length}）：`));
+          for (const r of h.resources) console.log(dim(`  ${r.uri}  ${r.name}${r.description ? ` — ${r.description}` : ''}`));
+        }
+        safePrompt(); continue;
+      }
+      if (sub === 'prompts') {
+        if (names.length === 0) { console.log(red('未配置 MCP 服务器')); safePrompt(); continue; }
+        const target = arg.split(/\s+/)[1] ?? '';
+        const hs = handles.filter((h) => !target || h.name === target);
+        for (const h of hs) {
+          if (h.prompts.length === 0) { console.log(dim(`${h.name}：无提示词模板`)); continue; }
+          console.log(dim(`${h.name} 提示词模板（${h.prompts.length}）：`));
+          for (const p of h.prompts) {
+            const argsDesc = p.arguments && p.arguments.length > 0 ? `（参数：${p.arguments.map((a) => `${a.name}${a.required ? '*' : ''}`).join(', ')})` : '';
+            console.log(dim(`  ${p.name}${argsDesc}${p.description ? ` — ${p.description}` : ''}`));
+          }
+        }
+        safePrompt(); continue;
+      }
+      if (sub === 'add' || sub === 'remove' || sub === 'login') {
+        console.log(red('CLI 交互模式不支持 /mcp add / remove / login（请用 TUI 或直接编辑配置文件）'));
+        safePrompt(); continue;
+      }
+      if (names.length === 0) {
+        console.log(red('未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add 添加）'));
       } else {
-        console.log(dim('用 /mcp reconnect 重连（改完配置文件后生效）'));
+        const mcpToolNames = (runOpts.tools ?? []).filter((t) =>
+          names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_'))
+        );
+        console.log(dim(`已配置 ${names.length} 个 MCP 服务器：${names.join('、')}`));
+        console.log(dim(mcpToolNames.length > 0 ? `已发现工具（${mcpToolNames.length}）：${mcpToolNames.map((t) => t.name).join('、')}` : '（尚未发现工具——服务器连接失败或未提供工具）'));
+        for (const h of handles) {
+          const bits: string[] = [];
+          if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
+          if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
+          if (h.instructions) bits.push('instructions ✓');
+          if (bits.length > 0) console.log(dim(`  ${h.name}：${bits.join(' · ')}`));
+        }
       }
       safePrompt();
       continue;
@@ -616,6 +691,110 @@ export async function runInteractive(
         if (runOpts.sessionPath) await updateSessionTitle(runOpts.sessionPath, title);
         console.log(green(`会话标题已改为「${title}」（终端窗口标题）`));
       }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/memory-apply' || cmd.startsWith('/memory-apply ')) {
+      // /memory-apply：应用待提交的项目记忆片段（.omni/memory-pending.md → 项目根 AGENTS.md）
+      const res = await applyProjectMemoryPending(process.cwd());
+      console.log(res.ok ? green(res.message) : red(res.message));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/fork' || cmd.startsWith('/fork ')) {
+      // /fork：从当前会话分叉出新会话（原会话保留）；/fork <N> 保留前 N 条消息
+      const arg = cmd.slice('/fork'.length).trim();
+      const persistable = persistableMessages(messages);
+      if (!arg) {
+        if (persistable.length === 0) {
+          console.log(red('当前会话还没有可 fork 的消息（先聊几轮再 /fork）'));
+        } else {
+          console.log(dim(`当前会话 ${persistable.length} 条可保留消息。/fork <N> 保留前 N 条（1..${persistable.length}）：`));
+          for (let i = 0; i < persistable.length; i++) {
+            const m = persistable[i];
+            const who = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+            const txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '').slice(0, 60);
+            console.log(dim(`  ${i + 1}. [${who}] ${txt.slice(0, 60)}`));
+          }
+        }
+        safePrompt();
+        continue;
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || n < 1 || n > persistable.length) {
+        console.log(red(`/fork <N>：N 须为 1..${persistable.length} 的整数（当前 ${persistable.length} 条可保留消息）`));
+        safePrompt();
+        continue;
+      }
+      if (!runOpts.sessionPath) {
+        console.log(red('当前会话未落盘（无法 fork——先产生至少一轮对话）'));
+        safePrompt();
+        continue;
+      }
+      const forkFile = await forkSession(runOpts.sessionPath, n, process.cwd(), currentModel);
+      if (!forkFile) {
+        console.log(red('fork 失败（读会话或写文件出错）'));
+        safePrompt();
+        continue;
+      }
+      const loaded = await loadSession(forkFile);
+      if (!loaded) {
+        console.log(red('fork 失败（新会话不可读）'));
+        safePrompt();
+        continue;
+      }
+      const prevResumePath = runOpts.sessionPath;
+      messages.length = 0;
+      messages.push(...loaded.messages);
+      runOpts.sessionPath = forkFile;
+      savedCount = persistableMessages(messages).length;
+      const oldEvents = runOpts.events;
+      runOpts.events = await EventRecorder.open(forkFile).catch(() => oldEvents);
+      if (prevResumePath && prevResumePath !== forkFile) await removeEmptySession(prevResumePath).catch(() => {});
+      console.log(green(`已分叉新会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 原会话保留）`));
+      if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/send' || cmd.startsWith('/send ')) {
+      // /send <会话id> <消息>：向指定会话发消息并取回结果（串行跨会话）
+      const arg = cmd.slice('/send'.length).trim();
+      const m = arg.match(/^(\S+)\s+([\s\S]+)$/);
+      if (!m) {
+        console.log(red('用法：/send <会话id> <消息>（目标会话在后台跑一轮，结果回传当前会话）'));
+        safePrompt();
+        continue;
+      }
+      const targetId = m[1];
+      const text = m[2].trim();
+      const currentResumeId = runOpts.sessionPath ? sessionIdFromPath(runOpts.sessionPath) : '';
+      const cands = (await findSessionCandidates(targetId)).filter((c) => c.id !== currentResumeId);
+      if (cands.length === 0) {
+        console.log(red(`会话「${targetId}」不存在（/session all 查看）`));
+        safePrompt();
+        continue;
+      }
+      if (cands.length > 1) {
+        console.log(red(`「${targetId}」匹配 ${cands.length} 个会话，请用完整 id：`));
+        for (const c of cands.slice(0, 9)) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}`));
+        safePrompt();
+        continue;
+      }
+      const target = cands[0];
+      console.log(dim(`正在向会话 ${target.id} 发送消息并等待结果…`));
+      const result = await sendSessionMessage(
+        target.id, text, currentClient, currentModel, runOpts, out, messages
+      );
+      if (result === null) {
+        console.log(red(`发送失败（会话 ${target.id} 不存在或运行出错）`));
+        safePrompt();
+        continue;
+      }
+      messages.push({ role: 'system', content: `[跨会话响应：会话 ${target.id}]\n${result.slice(0, 2000)}` });
+      console.log(green(`✓ 会话 ${target.id} 已回复（结果已注入当前上下文）：`));
+      const lines = result.split('\n');
+      for (const l of lines.slice(0, 10)) console.log(dim(`  ${l.slice(0, 90)}`));
+      if (lines.length > 10) console.log(dim(`  … 共 ${lines.length} 行`));
       safePrompt();
       continue;
     }
@@ -800,8 +979,11 @@ export async function runInteractive(
           );
         }
       } else {
-        const root = findProjectRoot(process.cwd());
-        console.log(dim(`正在扫描项目并生成 AGENTS.md（项目根：${root}）…`));
+        const subDirArg = cmd.replace('/init', '').replace(/\s*--global\s*/, '').trim();
+        const root = subDirArg
+          ? path.resolve(process.cwd(), subDirArg)
+          : findProjectRoot(process.cwd());
+        console.log(dim(`正在扫描并生成 AGENTS.md（目标：${root}）…`));
         const content = await generateAgentsFile(currentClient, currentModel, root);
         if (!content) {
           console.log(red('AGENTS.md 生成失败（网络 / API 问题），请重试'));
@@ -809,7 +991,7 @@ export async function runInteractive(
           const res = await writeAgentsFile(root, content);
           console.log(
             res.ok
-              ? green(`已生成 ${res.path}（下次会话自动加载为项目记忆）`)
+              ? green(`已生成 ${res.path}（下次会话自动加载为项目记忆${subDirArg ? '；子目录层级优先于外层' : ''}）`)
               : red(`已存在 ${res.path}，/init 不覆盖（如需重新生成请先删除或重命名）`)
           );
         }

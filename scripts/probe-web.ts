@@ -118,6 +118,11 @@ function startProcess(cmd: string, args: string[], env: Record<string, string>):
 }
 
 async function main(): Promise<void> {
+  // 工作区信任（第九节）：把测试工作目录加入临时 XDG 信任清单——
+  // 否则 web 判定未信任 → 只读降级，run_command 被拒（真实使用中开发者先交互批准信任）
+  process.env.XDG_CONFIG_HOME = XDG;
+  const { addTrustedWorkspace } = await import(path.join(ROOT, 'src', 'safety', 'trust.js'));
+  addTrustedWorkspace(ROOT);
   const mock = startProcess(
     process.execPath,
     [path.join(ROOT, 'scripts', 'mock-server.mjs')],

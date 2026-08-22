@@ -48,36 +48,53 @@
       `omni_exec`/`omni_reply` 两个工具（启动会话/续会话），让 Claude Code、opencode 等外部
       harness 把 omni 当子代理用——复用 `tools/mcp.ts` 的 JSON-RPC 结构，请求串行 + isError 透传退出码。
 
-## 三、记忆与上下文增强（✅ 基线：全局+项目级联、/init 生成、autoMemory 去重合并、预载文件、摘要压缩）
+## 三、记忆与上下文增强（✅ 基线：全局+项目级联、**嵌套 AGENTS.md**、/init 生成、autoMemory 去重合并、预载文件、摘要压缩、渐进披露、override、TTL、repo map、新工具）
 
-- [ ] **P0 记忆渐进披露**（Claude Code MEMORY.md 方案）：记忆/AGENTS.md 只载头部索引
-      （前 N 行），提供 `memory_search` / `read_memory` 工具按需读取详细条目
-      （现有 40KB 截断改为索引 + 工具读取）。
-- [ ] **P0 项目级会话自动写入**：退出时把新学到的构建命令/架构决定写入项目 AGENTS.md
-      （git 跟踪文件，先做「生成待提交片段供用户确认」，不直接改文件）。
-- [ ] **P1 嵌套 AGENTS.md 与分层合并**（Codex：git 根 → cwd 每级一个，近者优先、合并注入、
-      `AGENTS.override.md` 覆盖层、`fallback` 文件名如 TEAM_GUIDE.md、合计 32KB 上限）：
-      现有发现逻辑从「向上找最近一个」改为「从项目根到 cwd 全链收集合并」。
-- [ ] **P1 记忆 TTL 与过期**：`## 会话记忆（日期）` 段落超 N 天未命中移入归档/裁剪
-      （现有只有体积裁剪）。
-- [ ] **P1 TodoWrite 任务清单工具**（Claude Code 标配）：模型维护结构化 todo（新建/更新/完成），
-      TUI 对话流展示当前进度（轻量卡片或折叠行），人机进度同步——低成本（纯工具 + 渲染）。
-- [ ] **P1 WebFetch 内置工具**（Claude Code/Gemini/Qwen 标配；omni 现只能 `curl` 兜底）：
-      URL 抓取 → 转 markdown → 截断回传（复用 wrapChunks/truncateToWidth），域名允许列表可配。
-- [ ] **P1 代码库结构感知（repo map）**（Aider：tree-sitter 提取符号 + PageRank 排序 +
-      1/8 context token 预算）：为长任务预生成紧凑符号地图注入首轮——现有 preloadFiles 是文件级，
-      缺符号级。可先用轻量方案（ctags/正则提取定义行）起步，tree-sitter 后置。
-- [ ] **P1 LSP 诊断反馈闭环**（opencode/Cline）：编辑完成后自动跑语言服务器取诊断
-      （错误/警告）回传模型自修复——比 typecheck 更细粒度实时；先支持单一语言（TypeScript）
-      验证链路，再泛化。P1 中偏重，可与「run_command 静默 typecheck 反馈」分层落地。
-- [ ] **P2 语义检索记忆**：向量化 + 检索（重投入，依赖嵌入模型；可先用关键词检索替代渐进披露）。
+- [x] **P0 记忆渐进披露**（第一百六十三次，Claude Code MEMORY.md 方案）：记忆/AGENTS.md 常驻
+      索引，新增 `memory_search`（多关键词 AND + 按命中数排序）/ `memory_read`（按路径读完整记忆）
+      工具按需读取详细条目（工具注入 trusted 环境）。
+- [x] **P0 项目级会话自动写入**（第一百六十三次）：退出时提取本项目持久事实（构建命令/架构约定，
+      `extractProjectMemory` 独立 LLM 请求）→ 生成**待提交片段** `.omni/memory-pending.md`
+      （不直接改 git 跟踪的 AGENTS.md）；`/memory-apply` 命令确认后应用（追加项目根 AGENTS.md + 清片段）。
+- [x] **P1 嵌套 AGENTS.md 与分层合并（核心）**（第一百五十八次）：从 cwd 向上**收集所有层级**
+      的 AGENTS.md（git 根/home 边界、每目录一层），各生成一条 system 消息（独立 40KB 字节截断），
+      注入顺序 `[外层 → … → 内层]`——内层贴近用户消息、权重最高（内层可覆盖/细化外层）。
+- [x] **P1 AGENTS.override.md 覆盖层 + fallback 文件名**（第一百六十三次，Codex 方案）：
+      每目录优先选 `AGENTS.override.md`（同目录覆盖 AGENTS.md）> `AGENTS.md` > fallback
+      （`TEAM_GUIDE.md` / `GUIDE.md` 兜底）。
+- [x] **P1 嵌套合计上限**（第一百六十三次）：`loadProjectMemory` 合计超 32KB
+      （PROJECT_MEMORY_TOTAL_MAX_BYTES）时从最外层（权重最低）开始裁，保内层。
+- [x] **P2 `/init` 支持子目录层级生成**（第一百六十三次）：`/init <子目录>` 生成局部层级
+      AGENTS.md（复用快照/LLM 生成链路，写入目标子目录，嵌套记忆覆盖外层）。
+- [x] **P2 `/status` 展示已加载的 AGENTS.md 清单**（第一百六十三次）：statusReport 新增
+      memoryFiles（从 `[项目记忆` 前缀消息解析路径）逐层展示 + 全局记忆标记。
+- [x] **P1 记忆 TTL 与过期**（第一百六十三次）：`## 会话记忆（日期）` 段落超 MEMORY_TTL_DAYS（90）
+      天移入 `## 记忆归档（过期）` 段（`applyMemoryTTL` 纯函数；条目仍参与去重防重复学习）。
+- [x] **P1 TodoWrite 任务清单工具**（第一百六十三次）：`todo_write` 工具——模型维护结构化 todo
+      （in_progress/completed/pending），存 `runOpts.todoList`（会话级，/status 可查），
+      执行返回进度摘要（共 N 项：完成/进行中/待办）。
+- [x] **P1 WebFetch 内置工具**（第一百六十三次）：`web_fetch` 工具——Node 内置 fetch 抓取 URL →
+      `htmlToText` 转纯文本（剥 script/style/标签、保留链接与代码块）→ 截断；域名允许列表可配
+      （config `webFetchDomains`，缺省全部）。
+- [x] **P1 代码库结构感知（repo map）**（第一百六十三次，Aider 轻量版）：`agent/repomap.ts` 正则
+      提取函数/类/常量定义行生成紧凑符号地图（文件: 符号列表）注入首轮（config `repoMap` /
+      `repoMapMaxSymbols`）；不引入 tree-sitter。
+- [x] **P1 LSP 诊断反馈闭环**（第一百六十三次，opencode/Cline 轻量版）：`diagnose` 工具——探测
+      项目 typecheck→lint→test 脚本并运行返回诊断摘要回传模型自修复（与 run_command 静默 typecheck
+      互补；`detectCheckCommand` 纯函数）。
+- [x] **P2 语义检索记忆**（第一百六十三次）：用关键词检索替代向量化——`memory_search` 多关键词
+      AND + 命中数排序近似相关度（向量嵌入重投入后置）。
 
-## 四、会话管理（✅ 基线：JSONL 落盘、--continue/-r/-l、/rename、/session、/compact、/resume、/trace、/export）
+## 四、会话管理（✅ 基线：JSONL 落盘、--continue/-r/-l、/rename、/session、/compact、/resume、/trace、/export、/fork、/send）
 
-- [ ] **P1 会话 fork**（Claude Code /codex `/fork`）：从历史某点 fork 新会话（原会话不丢），
-      支持安全探索替代路径；与 /undo（文件级）和 checkpoint（见第五节）配合形成完整分支体系。
-- [ ] **P2 跨会话消息**（Claude Code SendMessage/@ 提及会话）：主会话向指定会话发消息取结果
-      （agent teams 的前置；依赖多会话运行能力，见第六节）。
+- [x] **P1 会话 fork**（第一百六十二次）：`/fork` 从当前会话历史某点分叉独立新会话（原会话
+      不丢）——`forkSession(sourceFile, splitIndex)` 复制前 N 条消息（脚手架过滤、新 id/时间戳、
+      继承标题），TUI 列出 fork 点（`/fork` 无参展示序号摘要）· `/fork <N>` 直接分叉并自动切换；
+      CLI/Web 同步支持（Web 只做文件级 fork，侧栏刷新可见）。
+- [x] **P2 跨会话消息**（第一百六十二次）：`/send <会话id> <消息>` 向指定会话发消息取结果——
+      `sendSessionMessage` 串行执行（保存当前上下文 → 载入目标会话 → 追加消息 → prepareContext +
+      runAgent → 本轮新增落盘 → 恢复当前上下文）；结果以 `[跨会话响应：会话 <id>]` system 消息
+      注入当前上下文（模型可见），对话流显示摘要；CLI/TUI 支持，Web 提示全局单运行限制。
 
 ## 五、恢复与撤销（✅ 基线：/undo /redo 快照栈、/permission 分级、/diff /review、write_file diff 预览）
 
@@ -119,46 +136,62 @@
       `/plan` 自动用 config 指定模型）。
 - [ ] **P2 多模型对比 eval**：同一任务多模型跑 eval 输出对比报告（--eval 已铺路）。
 
-## 八、MCP 增强（✅ 基线：tools 协议、stdio 客户端、/mcp 列表与重连、上下文里 MCP 工具）
+## 八、MCP 增强（✅ 基线：tools 协议、stdio/streamable-HTTP 双传输、/mcp 列表/资源/提示词/增删/登录、instructions 注入、per-tool 审批、OAuth）
 
-- [ ] **P1 MCP Resources 协议**：`resources/list` / `resources/read`——外部数据流/文件
-      按需读取进上下文（不只工具调用）。
-- [ ] **P1 MCP Prompts 协议**：`prompts/list` / `prompts/get`——可复用提示词模板
-      （对应 /skill 面板呈现）。
-- [ ] **P1 server instructions**（Codex）：MCP 初始化时读取 `instructions` 字段注入系统提示
-      （跨工具约束/限流指引，首 512 字符自包含优先）——低成本高价值。
-- [ ] **P1 per-tool 审批模式**（Codex）：server 级 `enabled_tools`/`disabled_tools` 白黑名单 +
-      `default_tools_approval_mode`（auto/prompt/writes/approve，writes = 非只读工具才问）——
-      对接现有 Safety 闸门分级。
-- [ ] **P2 运行时 add/remove MCP 服务器**：不重启增删服务器（现在改配置 + /mcp reconnect）。
-- [ ] **P2 streamable HTTP + OAuth**（Codex）：从 stdio-only 扩展 http(s) 传输与 OAuth 登录
-      （`mcp login`），覆盖远程服务器生态。
+- [x] **P1 MCP Resources 协议**（第一百五十九次）：`resources/list` / `resources/read`——外部数据流/文件
+      按需读取进上下文（不只工具调用）；server 声明时注册 `<server>_read_resource` 辅助工具。
+- [x] **P1 MCP Prompts 协议**（第一百五十九次）：`prompts/list` / `prompts/get`——可复用提示词模板；
+      声明时注册 `<server>_get_prompt` 辅助工具，`/mcp prompts` / `/mcp get` 查看。
+- [x] **P1 server instructions**（第一百五十九次）：MCP 初始化时读取 `instructions` 字段注入系统提示
+      （跨工具约束/限流指引，2048 字符截断，多条叠放）。
+- [x] **P1 per-tool 审批模式**（第一百五十九次）：server 级 `enabledTools`/`disabledTools` 白黑名单 +
+      `defaultToolsApprovalMode`（auto/prompt/writes/approve）——烘焙到 Tool.approvalMode，
+      对接现有 Safety 闸门分级（gateTool 重构 + applyApprovalMode 纯函数）。
+- [x] **P2 运行时 add/remove MCP 服务器**（第一百五十九次）：`/mcp add <名> <command|--url> [--approval]
+      [--enabled-tools] [--disabled-tools]` / `/mcp remove <名>`——不重启增删服务器并持久化配置。
+- [x] **P2 streamable HTTP + OAuth**（第一百五十九次）：McpTransport 传输抽象——stdio 与 streamable HTTP
+      （POST JSON + SSE 响应 + Mcp-Session-Id + 自定义 headers）；OAuth 登录（`/mcp login`，RFC 8414
+      discovery + 授权码 PKCE + token 持久化 ~/.config/omni/mcp-oauth.json）。
+- [ ] **P2 streamable HTTP 服务器通知流**：GET 长连接接收服务器主动推送（resources 变更通知等）——
+      当前只处理 POST 响应流，服务器→客户端单向通知未订阅。
 
-## 九、安全与信任（✅ 基线：permission 四档分级、审批卡片/队列、审计日志、危险命令正则、MCP 过滤）
+## 九、安全与信任（✅ 基线：permission 四档分级、审批卡片/队列、审计日志、危险命令正则（内置+扩展）、工作区信任、OS 级沙箱）
 
 - [x] **P0 hooks 化 enforcement**（见第一节：PreToolUse block 是「规则」与「保证」的分界线，
       Claude Code 明确推荐 hook 而非 prompt 指令；第一百三十三次已随第一节 P1 落地
       `guard-env` / `guard-dangerous` / `guard-git-push` 示例集）。
-- [ ] **P1 工作区信任（workspace trust）**（Claude Code / Codex）：首次进入未信任目录时
-      提示信任；未信任 = 只读（read 档位）+ 跳过项目级 hooks/skills/子代理定义（防仓库注入
-      恶意配置）——低成本，直接复用 /permission 档位。
-- [ ] **P1 危险命令正则库扩充与可配置**：现有静态正则 → 用户级/项目级扩展列表
-      （config 字段 `dangerousPatterns`），配合 hooks matcher。
-- [ ] **P2 OS 级沙箱**（Codex sandbox：read-only / workspace-write / danger-full-access）：
-      容器/sandbox-exec 包裹 run_command 执行（重投入，macOS/Linux 两套实现）。
+- [x] **P1 工作区信任（workspace trust）**（第一百六十次）：首次进入未信任目录时提示信任
+      （TUI 审批卡片 / console readline；无 UI = fail-safe 只读）；信任清单持久化
+      `~/.config/omni/trusted-workspaces.json`（父目录继承）；未信任 = 只读（read 档位，
+      `/permission` 无法提升）+ 跳过项目级 hooks/skills/子代理定义/项目记忆（防仓库注入
+      恶意配置）。
+- [x] **P1 危险命令正则库扩充与可配置**（第一百六十次）：内置清单扩充（git reset --hard /
+      git clean -f / chmod -R 777 / curl | sh / sudo 危险操作）+ config `dangerousPatterns`
+      用户/项目级扩展列表，配合 hooks matcher。
+- [x] **P2 OS 级沙箱**（第一百六十次，Codex sandbox 对标）：config `sandbox` 档位
+      read-only / workspace-write / danger-full-access——macOS `sandbox-exec`（Seatbelt profile：
+      deny 写/网络）、Linux `bwrap`（--ro-bind + --unshare-net）包裹 run_command；平台不支持
+      降级执行 + 提示（fail-open）。
+- [ ] **P2 沙箱细化**：Linux 无 bwrap 时回退 `firejail`；Windows 沙箱（AppContainer / 容器）；
+      workspace-write 增加临时目录/家目录白名单配置；沙箱对 MCP HTTP 服务器请求头注入
+      （透传 token 的进程外工具不在沙箱内）。
 
-## 十、技能系统（✅ 基线：SKILL.md 发现（项目+全局）、frontmatter、skill 工具按需加载、/skill find/add/show）
+## 十、技能系统（✅ 基线：SKILL.md 发现（项目+全局）、frontmatter 扩展、skill 工具按需加载、/skill find/add/show、安装即时生效、渐进披露）
 
-- [ ] **P1 技能安装后本会话即时生效**：`/skill add` 完成后重新 discover + 刷新注入清单
-      （现在是下次会话生效）。
-- [ ] **P1 技能 frontmatter 扩展**（Claude Code Agent Skills 标准扩展）：`disable-model-invocation`
-      （仅手动触发，描述不进上下文）/ `user-invocable` / `context: fork`（技能在子代理上下文
-      运行，结果回传）/ `agent` / `background`——对齐 agentskills.io 开放标准（跨 Claude
-      Code/Qwen/opencode 生态）。
-- [ ] **P2 技能市场/分享渠道**（OpenClaw ClawHub / Claude Code plugin marketplaces）：
-      `npx skills` 已能网络检索，补「一键安装到全局 + 列表页展示来源」。
-- [ ] **P2 技能清单渐进披露**：技能多时清单占上下文，按关键词过滤/分类注入
-      （对标 opencode 可用技能索引）。
+- [x] **P1 技能安装后本会话即时生效**（第一百六十一次）：`/skill add` 完成后重新 discover +
+      `refreshSkillInjections(messages, skills)` 刷新注入清单（替换/追加到会话消息首部）——
+      模型本会话即可用 skill 工具加载新技能。
+- [x] **P1 技能 frontmatter 扩展**（第一百六十一次，Claude Code Agent Skills 标准扩展）：
+      `disable-model-invocation`（仅手动触发，不进自动清单）/ `user-invocable` /
+      `context: fork`（技能在子代理上下文运行，结果回传——`createSkillTool` 经 delegate 执行，
+      无 delegate 降级）/ `agent` / `background`——对齐 agentskills.io 开放标准
+      （跨 Claude Code/Qwen/opencode 生态）。
+- [x] **P2 技能市场/分享渠道**（第一百六十一次）：`/skill add --global`（`globalSkillDir()`
+      提示复制到 `~/.config/omni/skills/`）+ 列表展示来源标记（全局/仅手动/子代理/来源）。
+- [x] **P2 技能清单渐进披露**（第一百六十一次）：`skillMessage` 最多列 15 条 + 「还有 N 个未列出
+      （/skill 查看全部；模型可直接尝试调用未列出的技能名）」；`/skill` 列表命令展示全部不截断。
+- [ ] **P2 清单按关键词/分类注入**：技能很多时按任务关键词过滤注入（对标 opencode 可用技能
+      索引；现为固定 15 条截断，未做任务相关性排序）。
 
 ## 十一、评测与基准（✅ 基线：mock 离线 eval 可进 CI、真实 API 手动 eval、/model 多端点）
 

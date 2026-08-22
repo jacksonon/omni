@@ -782,7 +782,11 @@ function renderAddMenu() {
     return b;
   };
   pop.appendChild(mkItem('i-folder', '在项目中使用 Work', '为新聊天选择项目', () => { closeAllComposerPops(); browseWorkspace(); }));
-  pop.appendChild(mkItem('i-target', '目标', '设置要持续追求的目标', () => { closeAllComposerPops(); const t = prompt('输入目标'); if (t) { $('#input').value = t; sendMessage(); } }));
+  pop.appendChild(mkItem('i-target', '目标', '自动推导验收标准并循环执行直至达标（/goal）', () => {
+    closeAllComposerPops();
+    const t = prompt('输入目标');
+    if (t && t.trim()) runSlashCommand('/goal ' + t.trim());
+  }));
   const planActive = !!state.planMode;
   pop.appendChild(mkItem('i-spark', '计划模式', planActive ? '已开启' : '开启计划模式', () => {
     applySettings({ planMode: !planActive }).then(() => renderAddMenu()).catch((e) => alert(e.message));
@@ -1235,7 +1239,7 @@ function connectSSE() {
     'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
-    'workspace.changed', 'thinking.toggle',
+    'workspace.changed',
   ].forEach(on);
   es.onerror = () => {
     $('#status-dot').classList.add('error');
@@ -1311,14 +1315,6 @@ bus.on('thinking.end', (ev) => {
   // 标记思考段结束（下一条 trace 不再追加到此条）
   state.trace.push({ kind: 'thinking-end' });
   if (state.view === 'trajectory') renderTrajectory();
-});
-
-// /thinking 切换：隐藏/显示所有思考块
-bus.on('thinking.toggle', (ev) => {
-  const hidden = ev.hidden;
-  document.querySelectorAll('.thinking').forEach((box) => {
-    box.style.display = hidden ? 'none' : '';
-  });
 });
 
 let currentAssistant = null;
@@ -1537,7 +1533,7 @@ const SLASH_COMMANDS = [
   { name: '/orchestrate', desc: '并行编排（fan-out delegate → 汇总 → 审查）' },
   { name: '/goal', desc: '目标机制（自动推导验收标准并循环执行）' },
   { name: '/loop', desc: '/goal 别名' },
-  { name: '/thinking', desc: '切换思考过程显示（展开/折叠）' },
+  { name: '/thinking', desc: '开/关思考过程展示（关闭后不再流式显示，仍落盘）' },
   { name: '/skill', desc: '技能管理（列出/find/add/show）' },
   { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
   { name: '/export', desc: '导出会话为 Markdown' },

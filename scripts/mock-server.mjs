@@ -106,6 +106,9 @@ const server = http.createServer((req, res) => {
     // 会话结束自动写入全局记忆（system 提示词以「你是记忆整理员」开头）
     const wantMemoryExtract =
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是记忆整理员');
+    // 项目级会话自动写入（system 提示词以「你是项目记忆整理员」开头）
+    const wantProjectMemoryExtract =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是项目记忆整理员');
     // /review 代码审查（system 提示词以「你是资深代码审查员」开头）
     const wantReview =
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是资深代码审查员');
@@ -257,6 +260,27 @@ const server = http.createServer((req, res) => {
         ],
       });
       sendChunk(usageChunk('mock-memory-extract-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (wantProjectMemoryExtract) {
+      // 项目级会话自动写入：返回固定项目记忆片段（P0 e2e 验证——写入 .omni/memory-pending.md）
+      sendChunk({
+        id: 'mock-project-memory',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '- 构建命令：npm run dev（开发运行）\n- 架构约定：src/agent 放核心循环，src/tools 放工具' },
+            finish_reason: null,
+          },
+        ],
+      });
+      sendChunk(usageChunk('mock-project-memory-done'));
       res.write('data: [DONE]\n\n');
       res.end();
       return;

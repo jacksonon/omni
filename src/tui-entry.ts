@@ -19,7 +19,7 @@
 import { parseArgs, printHelp } from './cli/args.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
-import { attachRuntime, main, prepareRun, prepareSessionPersistence, printSessions } from './main.js';
+import { attachRuntime, main, prepareRun, prepareSessionPersistence, printSessions, resolveWorkspaceTrust } from './main.js';
 import { ConsoleOutput } from './output/console.js';
 import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
@@ -88,10 +88,15 @@ async function run(): Promise<void> {
   if (Array.isArray(cfg.statusline)) state.statusline = cfg.statusline;
   // 界面语言（/settings 语言面板可改并持久化；应用层已校验 zh/en）
   state.language = cfg.language === 'en' ? 'en' : 'zh';
+  // 思考过程展示（/thinking 可运行时开关；初始值来自 showThinking 配置）
+  state.thinkingShow = cfg.showThinking !== false;
   const session = await startTui(state, { withInput: !singleTask });
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
-  await attachRuntime(ctx, output); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  // 工作区信任（第九节）：首次进入未信任目录时 TUI 审批卡片询问；未信任 → 只读 + 跳过项目级配置
+  const trust = await resolveWorkspaceTrust(process.cwd(), output);
+  await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  if (!trust && !singleTask) output.onUserMessage('⚠️ 当前目录未受信任——以只读模式运行（/status 查看；/permission 无法提升）');
   output.banner(cfg, runOpts.tools.map((t) => t.name));
   // 恢复的会话：把历史消息回放到 TUI（用户消息/纯文本回答；工具调用历史不重建卡片），
   // 让对话流与消息上下文一致——新一轮在历史之后继续

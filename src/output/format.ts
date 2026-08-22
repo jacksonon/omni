@@ -409,10 +409,20 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
     }
   } else if (isWriteDiff) {
-    // write_file 带 diff：收起态**只显示命令**（改动摘要/对比点展开才显示，见下方通用
-    // 收起态注释）；展开 = 新增文件全文（逐行绿）/ 修改左右对比（左原右新，删除红新增绿）
+    // write_file 带 diff（opencode 风格）：**收起态也显示变更统计**（`+A −D 行` / `新增文件 · 全文 N 行`），
+    // 变更默认可见（对标 opencode 的一行统计）；展开 = 新增文件全文（逐行绿）/ 修改左右对比
     const d = card.diff!;
     const isNew = d.original === null;
+    if (!card.expanded) {
+      // 收起态：命令下方一行变更统计（opencode 的 +N -M）
+      if (isNew) {
+        const rows = d.content.split('\n').length;
+        lines.push({ text: padInner(` ✓ 新增文件 · 全文 ${rows} 行`, contentWidth), role: 'exec' });
+      } else {
+        const stats = countDiffLines(d.original!, d.content);
+        lines.push({ text: padInner(` ✓ 修改 · +${stats.add} −${stats.rem} 行`, contentWidth), role: 'exec' });
+      }
+    }
     if (card.expanded) {
       lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
       if (isNew) {
@@ -459,13 +469,10 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
     }
     lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
   }
-  // 收起态（所有工具默认）：**只显示完整的执行命令**——执行结果/输出/改动摘要等
-  // 点击展开才显示（用户要求「执行命令默认只显示完整的执行命令，执行的结果等需要
-  // 点击展开才显示」），且**不提示可以点击展开**（无需「点击展开」文案，卡片本身
-  // 可点击切换——上方 cmd 行已输出，这里什么都不加）。
-  //
-  // **delegate 例外**（第六节 P1 预览增强）：子代理**结果**比命令重要（对标 write diff
-  // 的改动摘要）——收起态追加一行 `✓ N 步 · 结果首行`（省略展开才能看的完整输出）。
+  // 收起态（其余工具默认）：**只显示完整的执行命令**——执行结果/输出等点击展开才显示
+  // （用户要求「执行命令默认只显示完整的执行命令」），且**不提示可以点击展开**。
+  // 例外：write_file 带 diff 按 opencode 风格显示变更统计（上方 isWriteDiff 分支已加 `✓ 修改 · +A −D 行`）；
+  // delegate 子代理按结果比命令重要（下方追加 `✓ N 步 · 结果首行`）。
   if (card.name === 'delegate' && card.subagent && card.status !== 'running') {
     const sa = card.subagent;
     const first = sa.summary ? ` · ${truncateToWidth(sa.summary, Math.max(8, inner - 16))}` : '';

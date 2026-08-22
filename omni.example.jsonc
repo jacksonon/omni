@@ -35,9 +35,34 @@
   // 是否写审计日志（默认 true；落盘 ~/.config/omni/audit.log，记录每次工具调用与审批决策）
   "auditLog": true,
 
+  // 危险命令扩展正则（可选）：内置清单之外的命令也会在 safe 及以上档位触发审批。
+  // 内置清单：rm -rf /、mkfs、dd 写盘、shutdown/reboot/halt、fork bomb、git push、
+  // git reset --hard、git clean -f、chmod -R 777、curl | sh、sudo 危险操作
+  // "dangerousPatterns": ["(\s|^)docker\s+rm\s+-f\b", "(\s|^)az\s+logout\b"],
+
+  // OS 级沙箱（可选；默认 off）：用 sandbox-exec（macOS）/ bwrap（Linux）包裹 run_command，
+  // 限制其副作用范围。read-only 拒绝全部文件写 + 网络；workspace-write 仅允许工作目录写 +
+  // 拒绝网络；danger-full-access = 不沙箱（等同 off）。平台不支持时自动降级并提示。
+  // "sandbox": "off",
+
+  // 代码库结构感知（repo map，默认 true）：首轮注入紧凑符号地图（文件: 函数/类/常量清单），
+  // 模型对项目结构有概览；repoMapMaxSymbols 控制符号上限。
+  // "repoMap": true,
+  // "repoMapMaxSymbols": 200,
+
+  // WebFetch 工具域名允许列表（可选）：空 = 允许抓取任意 URL；配置后仅允许列出的域名（含子域名）。
+  // "webFetchDomains": ["developer.mozilla.org", "nodejs.org"],
+
+  // ── 工作区信任（workspace trust）──────────────────────────
+  // 首次进入未信任目录时提示信任（TUI 审批卡片 / console readline）；信任清单持久化到
+  // ~/.config/omni/trusted-workspaces.json。未信任目录 = 只读（read 档位，/permission
+  // 无法提升）+ 跳过项目级 hooks/技能/子代理定义/项目记忆（防仓库注入恶意配置）。
+
   // ── 记忆系统 ─────────────────────────────────────────────
-  // 项目记忆 AGENTS.md：每次会话首轮自动加载最近的 AGENTS.md 进上下文
-  // （跨会话共享的项目记忆；交互模式可输入 /init 主动生成该文件；默认 true）
+  // 项目记忆 AGENTS.md：每次会话首轮**嵌套加载**所有层级的 AGENTS.md 进上下文
+  // （从 cwd 向上收集到 git 根/home 边界，每目录一层、各一条 system 消息；
+  // 越贴近 cwd 的层级权重越高，可覆盖/细化外层；交互模式可输入 /init
+  // 在项目根主动生成该文件；默认 true）
   "agentsFile": true,
 
   // 全局记忆 ~/.config/omni/AGENTS.md：跨项目共享的用户偏好/习惯，
@@ -105,6 +130,13 @@
 
   // ── MCP 外部工具 ─────────────────────────────────────────
   // 可选：配置后启动时自动发现并注册 MCP 工具（名称带 server 前缀，如 demo_ping）
+  // 支持协议：tools（工具）+ resources（资源读取）+ prompts（提示词模板）+ server instructions（约束注入）
+  // 传输：stdio（command，本地子进程）或 streamable HTTP（url，远端端点，可 OAuth 登录）
+  // 字段：
+  //   · command/args/env      stdio 传输
+  //   · url/headers           streamable HTTP 传输（headers 可带 Authorization）
+  //   · enabledTools/disabledTools  工具白/黑名单
+  //   · defaultToolsApprovalMode    auto|prompt|writes|approve——该 server 工具的默认审批模式
   // 示例（官方文件系统服务器）：
   // "mcpServers": {
   //   "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
@@ -112,6 +144,7 @@
   //     "command": "npx",
   //     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allow"]
   //   }
+  //   "remote": { "url": "https://example.com/mcp", "defaultToolsApprovalMode": "writes" }
   // }
   "mcpServers": {},
 

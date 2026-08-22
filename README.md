@@ -6,18 +6,31 @@
 
 Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ delegate subagents + MCP external tools) + safety guardrails + context management + memory system/session persistence/skills, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
 
+## Screenshots
+
+**Terminal TUI** (`omni`, full-screen interactive mode) — thinking modules, tool cards, Markdown tables/code blocks, token stats and the input area:
+
+![Omni TUI](Doc/images/tui.png)
+
+**Web UI** (`omni web`, browser / Electron desktop app) — session sidebar with workspace grouping, live Markdown answers, composer with model & workspace switcher:
+
+![Omni Web](Doc/images/web.png)
+
 ## Features
 
 - **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)
-- **8 tools (6 base + 2 injected)**: base `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools)
-- **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation + approval UI + audit log
+- **8 tools (6 base + 2 injected)**: base `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools); plus context tools `memory_search` / `memory_read` (progressive memory disclosure) · `todo_write` (task list) · `web_fetch` (URL→text) · `diagnose` (typecheck/lint feedback)
+- **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation (built-in + configurable `dangerousPatterns`) + approval UI + audit log
+- **Workspace trust**: first entry into an untrusted directory prompts for trust (TUI card / console); untrusted = read-only (`/permission` locked) + skips project-level hooks/skills/subagent defs/project memory (blocks repo-injected malicious config); trust list persisted in `~/.config/omni/trusted-workspaces.json`
+- **OS-level sandbox**: `sandbox` config (`read-only` / `workspace-write` / `danger-full-access`) wraps `run_command` with macOS `sandbox-exec` or Linux `bwrap` (deny writes/network; workspace-write allows only cwd), degrading gracefully when unavailable
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
 - **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 26 `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/config etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
-- **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn, and the model loads full content on demand via the `skill` tool; `/skill` lists / `find <term>` searches skills.sh online / `add` installs
-- **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global one-shot generation, session-end auto-extraction of new preferences into global memory (with dedup/conflict merging)
-- **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk)
+- **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn (progressive disclosure: first 15 listed + "N more"), and the model loads full content on demand via the `skill` tool; frontmatter extensions (`disable-model-invocation` / `user-invocable` / `context: fork` subagent execution / `agent` / `background`); `/skill` lists (with tags) / `find <term>` searches skills.sh online / `add` installs (immediate effect in current session) / `show <name>`
+- **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global / `/init <subdir>` for nested-layer one-shot generation, session-end auto-extraction of new preferences into global memory (dedup/conflict merge + TTL archive); progressive disclosure tools (`memory_search` / `memory_read`); `AGENTS.override.md`/`TEAM_GUIDE.md` fallback + 32KB total budget; project-level auto-write produces a pending snippet (`.omni/memory-pending.md`) applied via `/memory-apply`
+- **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk); `/fork` forks a new session from a point in history (original kept), `/send <session> <msg>` sends a message to another session and injects the reply into the current context
 - **Hooks (lifecycle automation)**: attach shell commands to lifecycle events — rewrite user prompts (`UserPromptSubmit`), hard-block tool calls (`PreToolUse`), feed post-tool output back to the model such as lint results (`PostToolUse`), require the agent to keep working before it stops (`Stop`), session-complete notifications (`Notification`), plus `SessionStart` context injection, subagent hooks (`SubagentStart`/`SubagentStop` + Pre/Post around subagent tool calls) and `PreCompact`; JSON protocol over stdin/stdout, wildcard tool-name matchers, config layers merged (global + project), stderr captured, timeout/failure degrade to pass-through
+- **MCP enhancements**: Resources (list + `read_resource` tool) and Prompts (list + `get_prompt` tool) protocols, server `instructions` injected into the system prompt, per-tool approval mode (`defaultToolsApprovalMode`: auto/prompt/writes/approve) + tool whitelist/blacklist, runtime `add`/`remove`/`login` (OAuth PKCE), streamable HTTP transport alongside stdio
 - **Swappable backends**: `OMNI_BASE_URL` is compatible with any OpenAI-protocol service (OpenAI / DeepSeek / Zhipu / Moonshot / Grok etc.)
 - **Web mode (`omni web`)**: local backend service (REST + SSE, zero new dependencies) + browser UI — multi-session sidebar, live thinking/tool/answer streaming, approval & ask_user cards, model/permission/reasoning settings, cancel, per-turn token stats; works in both browser and the Electron desktop app
 - **Electron desktop app** (macOS / Windows / Linux): a standalone app bundling the web backend via Electron's own Node runtime (no system Node needed); built automatically by GitHub Actions on tag push (mac arm64/x64 zip, win x64 exe, linux x64 AppImage) and attached to the GitHub Release
@@ -116,6 +129,11 @@ Config fields (see `omni.example.jsonc` for a full example):
   "maxSteps": 50,                        // max agent loop steps (dead-loop guard)
   "showThinking": true,                  // show thinking (still saved to disk)
   "permission": "safe",                  // safety tier: full / safe (default) / ask / read
+  "dangerousPatterns": [],               // extra dangerous-command regexes (optional; prompt on match in safe+ tiers)
+  "sandbox": "off",                      // OS-level sandbox: off (default) / read-only / workspace-write / danger-full-access
+  "repoMap": true,                       // codebase structure map (symbol map in first turn)
+  "repoMapMaxSymbols": 200,              // repo map symbol cap
+  "webFetchDomains": [],                 // web_fetch allowed domains (empty = all)
   "auditLog": true,                      // write audit log (default true)
   "agentsFile": true,                    // project memory AGENTS.md: auto-loaded on the first turn (default true)
   "globalAgentsFile": true,              // global memory ~/.config/omni/AGENTS.md: cross-project prefs, cascaded before project memory
@@ -133,7 +151,7 @@ Config fields (see `omni.example.jsonc` for a full example):
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
   },
-  "mcpServers": {                        // MCP external tools: { name: { command, args?, env? } }
+  "mcpServers": {                        // MCP external tools: { name: { command, args?, env? } | { url, headers? }; enabledTools?/disabledTools?; defaultToolsApprovalMode? = auto|prompt|writes|approve }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   },
   "hooks": {                              // lifecycle automation (optional, Claude Code style): { event: [{ matcher?, command, timeoutMs? }] }
@@ -341,7 +359,7 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/` + type | command-suggestion overlay above the input (↑/↓ move, Tab fill, Enter run, Esc close, click to fill) |
 | `@` + type | file/directory mention overlay (Tab/Enter insert, directories drill down with `@path/`) |
 | Click a tool card | expand/collapse full output & diff (collapsed by default, shows just the command) |
-| Click a thinking row | collapse/expand that thinking module; `/thinking` folds all globally |
+| Click a thinking row | collapse/expand that thinking module; `/thinking` hides all thinking entirely (off = nothing streams) |
 | Click the token summary | expand per-LLM-request details (`⚡ 输入 X · 输出 Y · 缓存 Z`) |
 | Mouse wheel / PgUp/PgDn / ↑↓ / Home / End | scroll content (End = back to latest) |
 | `/settings theme` · `/settings language` | light/dark/system theme · 中文/English UI (persisted) |
@@ -352,13 +370,13 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 |---|---|
 | `/permission` | switch permission tier at runtime (low=read / medium=safe / high=ask / full=pass-through) |
 | `/plan` | plan mode: read-only tools, research only, output an implementation plan for approval |
-| `/thinking` | fold/unfold all thinking globally |
+| `/thinking` | show/hide thinking entirely (off = no thinking blocks stream at all, reasoning still saved to disk) |
 | `/model` | switch models; `/model <name>`; `/model add <name> [--base-url] [--api-key]` (adds + persists) |
 | `/variants` | switch the model's reasoning level (low/medium/high, persisted) |
 | `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
 | `/undo` · `/redo` | undo the latest file edit (`/undo all` for everything) · redo the last undo |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites) |
-| `/skill` | skill management: list / `find <word>` online search / `add <repo>` install / `show <name>` |
+| `/skill` | skill management: list (with tags) / `find <word>` online search / `add <repo> [--global]` install (immediate in current session) / `show <name>` |
 | `/compact` | manually compress context (old messages → summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`) |
 | `/orchestrate` | orchestration: fan-out parallel delegates → merge → adversarial review → final report |
@@ -366,11 +384,11 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` · `/context` | session status summary · context usage with compression advice |
 | `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |
-| `/resume` · `/rename` | restore a past session · rename the session (window title + persisted meta) |
+| `/resume` · `/rename` · `/fork` · `/send` · `/memory-apply` | restore a past session · rename the session (window title + persisted meta) · fork a new session from history · send a message to another session and get the result · apply pending project memory |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace panel (right sidebar): per-turn LLM request / tool / message ledger, click for detail page |
 | `/diff` · `/config` | uncommitted changes · config paths & sources |
-| `/mcp` | MCP management: list servers/tools, `/mcp reconnect` reconnects after config edits |
+| `/mcp` | MCP management: list servers/tools/resources/prompts, `/mcp reconnect` after config edits, `/mcp add <name> <command|--url>` add at runtime, `/mcp remove <name>`, `/mcp login <name>` OAuth for HTTP servers |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` · `/exit` (alias `/quit`) · `/help` | clear view · quit (autoMemory + session finalize) · help |
 
@@ -389,7 +407,8 @@ reject, or click); piped/non-interactive auto-rejects. Every tool call is audite
 
 ### Memory & sessions
 
-- **Memory**: project `AGENTS.md` (searched upward from cwd, git root/home are boundaries) + global
+- **Memory**: project `AGENTS.md` (nested: all levels from cwd up to git root/home boundary, each directory
+  layer has its own system message; inner layers closer to cwd override outer layers) + global
   `~/.config/omni/AGENTS.md` cascade into the first turn automatically; `/init` generates them;
   `autoMemory` appends newly expressed preferences on interactive exit (dedup + conflict merge).
 - **Sessions**: interactive conversations persist as JSONL under `~/.config/omni/sessions/`;
@@ -437,7 +456,7 @@ src/
     session.ts          # session persistence: JSONL + list/restore (--continue / -r / -l / /resume)
     report.ts           # shared logic for session status/context usage/export/diagnostics/config paths (/status /context /export /doctor /config)
     review.ts           # code review (/review): typecheck + git diff → LLM review
-    skill.ts            # skill system: SKILL.md discovery / frontmatter parsing / load-by-name / npx skills CLI
+    skill.ts            # skill system: SKILL.md discovery / frontmatter parsing (extended) / load-by-name / progressive disclosure / npx skills CLI / immediate-effect install / subagent execution
     subagent.ts         # subagents: isolated-context nested loop (shared Safety gate)
     title.ts            # session title: generated async after the first turn, set as terminal window title
   safety/               # safety guardrails: permission tiers (policy) / approval / audit log (audit)
@@ -491,20 +510,20 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 
 - [x] MVP: agent loop + 5 base tools + mock end-to-end tests
 - [x] Context management: tool-result truncation → message summarization → relevant-file selective loading
-- [x] Safety guardrails: dangerous-command confirmation, permission tiers, audit log
+- [x] Safety guardrails: dangerous-command confirmation, permission tiers, audit log, workspace trust, OS-level sandbox
 - [x] Eval system: custom task suite + completion-rate report (offline mock is CI-friendly)
 - [x] MCP integration (external tool ecosystem)
 - [x] Subagents and parallel tool execution
 - [x] **Memory system**: global + project memory cascade (`/init` project / `/init --global` global / session-end auto-write with dedup/conflict merging)
-- [x] **Session persistence**: interactive JSONL on disk + `--continue` / `-r <id>` / `-l` cross-process restore
+- [x] **Session persistence**: interactive JSONL on disk + `--continue` / `-r <id>` / `-l` cross-process restore + `/fork` fork + `/send` cross-session messaging
 - [x] **/plan plan mode**: read-only tool filtering + implementation plan output, execute only after confirmation
 - [x] **/undo file undo**: automatic write_file snapshots + `/undo` / `/undo all` rollback for the session
 - [x] **/permission runtime permission switch**: low=read-only / medium=safe ask-on-danger (default) / high=ask everything / full=pass-through — TUI panel + CLI arg instant switching, subagents stay in sync
-- [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection + `skill` tool on-demand loading + `/skill` command (list / find online / add), aligned with opencode
+- [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection (progressive disclosure) + `skill` tool on-demand loading + frontmatter extensions (subagent execution) + `/skill` command (list / find online / add immediate-effect / show), aligned with opencode
 - [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
 - [x] **Hooks lifecycle automation**: `UserPromptSubmit` prompt rewrite / `PreToolUse` hard-block + arg rewrite / `PostToolUse` output feedback (lint) / `Stop` require-continue (once) / `Notification` + `SessionStart` context injection / `SubagentStart`·`SubagentStop` subagent hooks / `PreCompact` — JSON protocol with wildcard matchers, layered config (global+project merged), stderr capture, timeout/failure degrade to pass-through; enforcement examples (guard-env / guard-dangerous / guard-git-push) in `examples/hooks/`
 - [x] **Headless & CI integration (modeled on codex exec / claude -p)**: `omni exec "<task>"` (stdout result-only / stderr progress, `--output-format text|json|stream-json`, stdin two forms, `--max-turns`, `--allowed-tools` filtering, exit code 0/1 pipeline branching) + `--output-schema` structured validation + `exec resume <id>` session continuation + `omni mcp-server` (omni_exec / omni_reply) + CI workflow template (`examples/ci/omni-fix-ci.yml`: read-only job generates the patch → separate job opens the PR, keys never enter the patch-generating job)
-- [ ] Advanced: SWE-bench eval, MCP resources/prompts protocol, memory progressive disclosure/TTL, nested AGENTS.md
+- [ ] Advanced: SWE-bench eval
 
 ## Tech Stack
 

@@ -47,6 +47,8 @@ import {
   sessionsDir,
   updateSessionTitle,
 } from '../agent/session.js';
+import { forkSession } from '../agent/session-fork.js';
+import { applyProjectMemoryPending } from '../agent/memory.js';
 import {
   captureCommand,
   collectDiff,
@@ -59,6 +61,7 @@ import {
   detectScaffolds,
   doctorReport,
   exportSession,
+  memoryFilesFromMessages,
   statusReport,
 } from '../agent/report.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
@@ -76,9 +79,10 @@ import {
   writeGlobalAgentsFile,
 } from '../agent/init.js';
 import { applyUndo } from '../tools/undo.js';
-import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
 import { attachRuntime, prepareRun } from '../main.js';
+import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
@@ -381,7 +385,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       runOpts.abortSignal = newController.signal;
     };
 
-    const output = new WebOutput(sessionId, broadcast, pendingRegistry);
+    const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => runOpts.showThinking ?? true);
     currentOutput = output;
 
     // 广播运行状态（客户端据此禁用其它会话的发送框 / 显示取消按钮）
@@ -461,7 +465,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (oldMcp && typeof oldMcp === 'object' && Object.keys(oldMcp).length > 0) {
         await import('../tools/mcp.js').then((m) => m.closeMcpClients()).catch(() => {});
       }
-      await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output);
+      await attachRuntime(newCtx, routingOutput as unknown as import('../output/types.js').Output, {
+        trust: isTrustedWorkspace(dir),
+      });
       ctx.cfg = newCtx.cfg;
       Object.assign(runOpts, newCtx.runOpts);
       cfg = newCtx.cfg;
@@ -516,13 +522,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/thinking') {
-      // /thinking：全局切换思考块显示模式（展开/折叠）
-      const ctx = runOpts.context as Record<string, unknown>;
-      const thinkingHidden = ctx.thinkingHidden ?? false;
-      ctx.thinkingHidden = !thinkingHidden;
-      // 广播状态让前端同步
-      for (const l of listeners) l('thinking.toggle', { sessionId: s?.id ?? null, hidden: !thinkingHidden });
-      add(thinkingHidden ? '已展开全部思考过程。' : '已折叠全部思考过程（点击可展开单条）。');
+      // /thinking：**展示开关**（非折叠）——false = WebOutput 停止广播 thinking 事件
+      // （前端不再渲染思考块；reasoning 仍捕获落盘），true = 恢复实时流式展示。
+      // runOpts.showThinking 是运行时单一事实源（初始值来自配置 showThinking）。
+      const next = !(runOpts.showThinking ?? true);
+      runOpts.showThinking = next;
+      add(next ? '已开启思考过程展示（思考流实时显示）。' : '已关闭思考过程展示（不再流式显示；完整思考仍落盘 .omni/last-thinking.md）。');
       return { lines };
     }
 
@@ -587,6 +592,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         model, permission: runOpts.permission ?? 'safe',
         planMode: runOpts.planMode ?? false, reasoningEffort: runOpts.reasoningEffort,
         sessionPath: runOpts.sessionPath, scaffolds: detectScaffolds(messages),
+        sandbox: runOpts.sandbox, trusted: runOpts.trusted,
+        memoryFiles: memoryFilesFromMessages(messages),
+        globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
       })) add(l);
       return { lines };
     }
@@ -664,16 +672,49 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
       const servers = runOpts.mcpServers ?? {};
       const names = Object.keys(servers);
-      if (names.length === 0) { add('未配置 MCP 服务器（配置文件 mcpServers 字段）'); return { lines }; }
+      const handles = runOpts.mcpHandles ?? [];
+      const arg = cmd.slice(4).trim();
+      const sub = arg.split(/\s+/)[0] ?? '';
+      if (sub === 'resources') {
+        if (names.length === 0) { add('未配置 MCP 服务器'); return { lines }; }
+        const target = arg.split(/\s+/)[1] ?? '';
+        const hs = handles.filter((h) => !target || h.name === target);
+        for (const h of hs) {
+          if (h.resources.length === 0) { add(`${h.name}：无资源`); continue; }
+          add(`${h.name} 资源（${h.resources.length}）：`);
+          for (const r of h.resources) add(`  ${r.uri}  ${r.name}`);
+        }
+        return { lines };
+      }
+      if (sub === 'prompts') {
+        if (names.length === 0) { add('未配置 MCP 服务器'); return { lines }; }
+        const target = arg.split(/\s+/)[1] ?? '';
+        const hs = handles.filter((h) => !target || h.name === target);
+        for (const h of hs) {
+          if (h.prompts.length === 0) { add(`${h.name}：无提示词模板`); continue; }
+          add(`${h.name} 提示词模板（${h.prompts.length}）：`);
+          for (const p of h.prompts) add(`  ${p.name}${p.description ? ` — ${p.description}` : ''}`);
+        }
+        return { lines };
+      }
+      if (names.length === 0) { add('未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add 添加）'); return { lines }; }
       const mcpToolNames = (runOpts.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
       add(`已配置 ${names.length} 个服务器：${names.join('、')} · 工具：${mcpToolNames.length > 0 ? mcpToolNames.map((t) => t.name).join('、') : '（无）'}`);
-      if (/(?:^|\s)reconnect(?=\s|$)/.test(cmd)) {
+      for (const h of handles) {
+        const bits: string[] = [];
+        if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
+        if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
+        if (h.instructions) bits.push('instructions ✓');
+        if (bits.length > 0) add(`  ${h.name}：${bits.join(' · ')}`);
+      }
+      if (sub === 'reconnect') {
         add('正在重连 MCP…');
         closeMcpClients();
-        const mcp = await discoverMcpTools(runOpts.mcpServers);
-        runOpts.tools = [...(runOpts.baseTools ?? []), ...mcp];
+        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        runOpts.mcpHandles = newHandles;
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         add(`已重连（当前 ${runOpts.tools.length} 个工具）`);
-      } else { add('用 /mcp reconnect 重连。'); }
+      } else { add('子命令：resources / prompts / reconnect；add/remove/login 请用 CLI 或编辑配置文件'); }
       return { lines };
     }
 
@@ -698,6 +739,44 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         else if (cands.length > 1) { add(`「${arg}」匹配 ${cands.length} 个会话，请用完整 id`); for (const c of cands.slice(0, 9)) add(`· ${c.id}`); }
         else { add(`已找到会话 ${cands[0].id}（${cands[0].messages} 条消息）——侧栏点击恢复。`); }
       }
+      return { lines };
+    }
+
+    if (cmd === '/fork' || cmd.startsWith('/fork ')) {
+      // /fork：从当前会话分叉出新会话（web 端做文件级 fork，不切换会话——侧栏刷新可见）
+      const arg = cmd.slice('/fork'.length).trim();
+      const persistable = persistableMessages(messages ?? []);
+      if (!arg) {
+        add(`当前会话 ${persistable.length} 条可保留消息。/fork <N> 保留前 N 条（1..${persistable.length}）：`);
+        for (let i = 0; i < persistable.length && i < 15; i++) {
+          const m = persistable[i];
+          const who = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+          const txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '').slice(0, 60);
+          add(`  ${i + 1}. [${who}] ${txt.slice(0, 60)}`);
+        }
+        return { lines };
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || n < 1 || n > persistable.length) {
+        add(`/fork <N>：N 须为 1..${persistable.length} 的整数`);
+        return { lines };
+      }
+      if (!runOpts.sessionPath) { add('当前会话未落盘（无法 fork）'); return { lines }; }
+      const forkFile = await forkSession(runOpts.sessionPath, n, process.cwd(), model);
+      add(forkFile ? `已分叉新会话（${sessionIdFromPath(forkFile)} · ${n} 条消息 · 原会话保留，侧栏刷新可见）` : 'fork 失败');
+      return { lines };
+    }
+
+    if (cmd === '/send' || cmd.startsWith('/send ')) {
+      // /send：跨会话消息需要目标会话运行——web 全局单运行模型不支持（CLI/TUI 用）
+      add('/send 需要目标会话串行运行，web 全局单运行模型暂不支持——请用 CLI/TUI 交互模式（/send <会话id> <消息>）。');
+      return { lines };
+    }
+
+    if (cmd === '/memory-apply' || cmd.startsWith('/memory-apply ')) {
+      // /memory-apply：应用待提交的项目记忆片段（.omni/memory-pending.md → 项目根 AGENTS.md）
+      const res = await applyProjectMemoryPending(process.cwd());
+      add(res.message);
       return { lines };
     }
 

@@ -19,6 +19,12 @@ export interface RunOptions {
   showThinking?: boolean;
   /** 安全护栏：权限分级（缺省 full = 直通，兼容旧调用） */
   permission?: PermissionTier;
+  /** 工作区信任（attachRuntime 设置；false = 未信任目录，只读降级 + 跳过项目级配置） */
+  trusted?: boolean;
+  /** TodoWrite 任务清单（P1：模型维护结构化 todo；todo_write 工具更新，/status 查看） */
+  todoList?: { content: string; status: 'in_progress' | 'completed' | 'pending' }[];
+  /** OS 级沙箱档位（attachRuntime 注入；run_command 包装用，/status 展示） */
+  sandbox?: import('../safety/sandbox.js').SandboxMode;
   /** 安全护栏：是否写审计日志 */
   auditLog?: boolean;
   /**
@@ -109,9 +115,14 @@ export interface RunOptions {
    */
   baseTools?: Tool[];
   /**
-   * MCP 服务器配置（/mcp 命令列出/重连用；attachRuntime 从 cfg 注入）。
+   * MCP 服务器配置（/mcp 命令列出/重连/增删用；attachRuntime 从 cfg 注入）。
    */
   mcpServers?: Record<string, import('../tools/mcp.js').McpServerConfig>;
+  /**
+   * MCP 服务器发现句柄（工具 + 资源 + 提示词 + instructions）：
+   * attachRuntime 发现后注入，/mcp 命令据此列出 resources/prompts，重连时更新。
+   */
+  mcpHandles?: import('../tools/mcp.js').McpServerHandle[];
   /**
    * Hooks 生命周期自动化运行器（入口 attachRuntime 按配置创建）：
    * loop 在工具调用前（PreToolUse）/后（PostToolUse）、回合结束（Stop）触发；
