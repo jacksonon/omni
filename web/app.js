@@ -19,7 +19,6 @@ const state = {
   session: null,        // 当前会话 id
   sessions: [],         // 会话列表
   status: null,         // 服务器状态
-  running: false,
   planMode: false,
   blocks: new Map(),    // blockId -> MessageBlock
   waiters: new Map(),   // interactionId -> { sessionId, type(approval|ask), el }
@@ -31,10 +30,10 @@ const state = {
   view: 'chat',
   selectedTool: null,
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
-  runningSessions: new Set(), // 1.0 P0-2 多会话并发：运行中的会话 id 集合
+  runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   tasks: [],            // 后台任务收件箱（1.0 P1-8）
-  messageQueue: [],     // 运行中 Enter 入队的消息
-  steerText: null,      // 运行中 Cmd+Enter 打断消息（仅一条，优先于 queue）
+  messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
+  steerText: null,      // 运行中 Cmd+Enter 打断消息（仅当前会话，优先于 queue）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -256,6 +255,7 @@ function thinkingBlock(sessionId) {
   b._head = head;
   b.finish = () => {
     box.classList.remove('running');
+    if (!b._chars) { wrap.remove(); return; } // 本轮无实际思考：移除预建空模块，不显示「思考 · 0 字符」
     head.textContent = `思考 · ${b._chars} 字符`;
     if (!body.classList.contains('hidden')) scrollBottom();
   };
@@ -323,12 +323,22 @@ function metaLine(sessionId, parts) {
 }
 
 /* 交互卡片（审批 / 提问），渲染在输入区上方 */
+function sessionLabel(sid) {
+  const s = state.sessions.find((x) => x.id === sid);
+  if (s?.title) return s.title;
+  if (s?.project) return s.project.split('/').filter(Boolean).pop() || s.project;
+  return String(sid || '').slice(0, 8) || '未知会话';
+}
 function interactionCard(ev) {
   const b = makeBlock(ev.type, ev.sessionId);
   b.sid = ev.sessionId; b.id = ev.id;
   const card = el('div', `interaction-card ${ev.type}`);
   const head = el('div', 'ic-head');
+  const isOther = ev.sessionId && ev.sessionId !== state.session;
   head.textContent = ev.type === 'approval' ? '⚠ 需要审批' : '❓ 向用户提问';
+  if (isOther) {
+    head.appendChild(el('span', 'ic-session', `· 来自会话「${sessionLabel(ev.sessionId)}」`));
+  }
   const body = el('div', 'ic-body');
 
   if (ev.type === 'approval') {
@@ -704,6 +714,7 @@ function showWorkspaceActions(e, project, count) {
         // 当前打开的会话若属于被移除的工作区，回草稿态
         if (state.session && !state.sessions.some((x) => x.id === state.session)) {
           state.session = null;
+          clearPendingMessages();
           clearMessages();
           renderWelcome();
           updateComposer();
@@ -759,6 +770,7 @@ function showSessionActions(e, s) {
         state.sessions = state.sessions.filter((x) => x.id !== s.id);
         if (state.session === s.id) {
           state.session = null;
+          clearPendingMessages();
           clearMessages();
           renderWelcome();
           updateComposer();
@@ -803,6 +815,13 @@ function clearMessages() {
   state.trace = [];
   state.selectedTool = null;
   updateDetails();
+}
+
+/** 清空当前会话的待发送队列（切换会话 / 新建 / 删除时调用，避免消息错发到别的会话） */
+function clearPendingMessages() {
+  state.messageQueue = [];
+  state.steerText = null;
+  updateComposer();
 }
 
 function renderWelcome() {
@@ -1227,6 +1246,7 @@ function setView(view) {
 
 async function selectSession(id, silent) {
   state.session = id;
+  clearPendingMessages(); // 待发送消息属于上一个会话，切换后清空避免错发
   clearMessages();
   renderSessionList();
   try {
@@ -1257,6 +1277,7 @@ async function selectSession(id, silent) {
  *  避免反复点「新会话」/ Cmd+K 在磁盘上积累大量空会话 */
 async function newSession() {
   state.session = null;
+  clearPendingMessages();
   clearMessages();
   $('#chat-title').textContent = '新会话';
   renderSessionList();
@@ -1272,13 +1293,17 @@ let statusTimer = null;
 function sessionRunning() {
   return !!(state.session && state.runningSessions.has(state.session));
 }
+function anyRunning() {
+  return state.runningSessions.size > 0;
+}
 function updateStatusText() {
   const dot = $('#status-dot');
   const txt = $('#status-text');
   const sidebarDot = $('#sidebar-status-dot');
+  const hasRunning = anyRunning();
   [dot, sidebarDot].forEach((n) => {
-    n.classList.toggle('running', state.running);
-    n.classList.toggle('ready', !state.running && !!state.status);
+    n.classList.toggle('running', hasRunning);
+    n.classList.toggle('ready', !hasRunning && !!state.status);
     n.classList.remove('error');
   });
   if (sessionRunning()) {
@@ -1460,6 +1485,7 @@ bus.on('status', (s) => {
   $('#plan-mode').checked = state.planMode;
   const sp = $('#set-plan');
   if (sp) sp.checked = state.planMode;
+  renderSessionList(); // 运行中绿点随 status 广播实时刷新
   updateDetails();
   updateComposer();
   updateStatusText();
@@ -1539,17 +1565,27 @@ bus.on('answer.end', (ev) => {
   }
 });
 
-const currentTools = [];
+const currentTools = new Map(); // seq -> toolBlock（并行工具结果乱序时按 seq 配对）
 bus.on('tool.start', (ev) => {
   if (ev.sessionId !== state.session) return;
-  currentTools.push(toolBlock(ev.sessionId, ev));
+  const block = toolBlock(ev.sessionId, ev);
+  currentTools.set(ev.seq ?? `f${currentTools.size}`, block);
   state.inFlight++;
   state.trace.push({ kind: 'tool', name: ev.name, args: ev.argsPreview });
   if (state.view === 'trajectory') renderTrajectory();
 });
 bus.on('tool.result', (ev) => {
   if (ev.sessionId !== state.session) return;
-  const currentTool = currentTools.shift();
+  const key = ev.seq;
+  let currentTool = null;
+  if (key !== undefined) {
+    currentTool = currentTools.get(key) ?? null;
+    if (currentTool) currentTools.delete(key);
+  } else {
+    // 兜底：无 seq 时按到达顺序配对（旧行为）
+    const first = currentTools.entries().next().value;
+    if (first) { currentTool = first[1]; currentTools.delete(first[0]); }
+  }
   if (currentTool) currentTool.result(ev);
   state.inFlight--;
 });
@@ -1576,7 +1612,7 @@ bus.on('subagent', (ev) => {
 bus.on('run.end', (ev) => {
   state.runningSessions.delete(ev.sessionId);
   if (ev.sessionId !== state.session) { refreshSessions(); return; }
-  state.running = false;
+  currentTools.clear(); // 取消/打断时部分工具可能无 result 到达，清理避免错配下一轮
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
   if (currentAssistant) {
     currentAssistant.paint();
@@ -1653,7 +1689,6 @@ bus.on('error', (ev) => {
 });
 
 bus.on('approval.request', (ev) => {
-  if (ev.sessionId !== state.session) return;
   interactionCard({ ...ev, type: 'approval', id: ev.approvalId });
   scrollBottom(true);
 });
@@ -1663,10 +1698,11 @@ bus.on('approval.resolved', (ev) => {
   if (w) removeInteractionCard(w);
   if (ev.sessionId === state.session) {
     metaLine(ev.sessionId, [ev.allow ? '✓ 已允许' : '✗ 已拒绝']);
+  } else {
+    metaLine(ev.sessionId, [ev.allow ? `✓ 已允许（会话 ${sessionLabel(ev.sessionId)}）` : `✗ 已拒绝（会话 ${sessionLabel(ev.sessionId)}）`]);
   }
 });
 bus.on('ask.request', (ev) => {
-  if (ev.sessionId !== state.session) return;
   interactionCard({ ...ev, type: 'ask', id: ev.askId });
   scrollBottom(true);
 });
@@ -1702,6 +1738,7 @@ bus.on('session.deleted', (ev) => {
   renderSessionList();
   if (state.session === ev.sessionId) {
     state.session = null;
+    clearPendingMessages();
     clearMessages();
     $('#chat-title').textContent = '新会话';
     renderWelcome();
@@ -2030,7 +2067,7 @@ input.addEventListener('keydown', (e) => {
       runSlashCommand(text);
       return;
     }
-    if (state.running) {
+    if (sessionRunning()) {
       if (e.metaKey || e.ctrlKey) steerMessage(text);
       else queueMessage(text);
     } else {
@@ -2042,7 +2079,7 @@ document.addEventListener('keydown', (e) => {
   const isNew = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
   if (isNew) {
     e.preventDefault();
-    if (!state.running) newSession().catch((err) => console.error(err));
+    if (!sessionRunning()) newSession().catch((err) => console.error(err));
   } else if (e.key === '/' && document.activeElement !== input && document.activeElement?.tagName !== 'INPUT') {
     e.preventDefault();
     $('#session-search').focus();
@@ -2068,26 +2105,26 @@ document.addEventListener('keydown', (e) => {
 async function doSend(text) {
   input.value = '';
   autoResize();
-  state.running = true;
   setEmptyState(false);
-  updateComposer();
-  updateStatusText();
   try {
     if (!state.session) {
       const data = await api('/api/sessions', { method: 'POST' });
       state.session = data.id;
       if (!state.sessions.some((s) => s.id === data.id)) {
-        state.sessions.unshift({ id: data.id, title: '新会话', messages: 0, created: Date.now(), updated: Date.now() });
+        state.sessions.unshift({ id: data.id, title: '新会话', messages: 0, created: Date.now(), updated: Date.now(), project: state.status?.cwd });
       }
       renderSessionList();
     }
+    state.runningSessions.add(state.session);
+    updateComposer();
+    updateStatusText();
     await api(`/api/sessions/${state.session}/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text }),
     });
   } catch (e) {
-    state.running = false;
+    state.runningSessions.delete(state.session);
     if (state.session) metaLine(state.session, [`✗ 发送失败：${e.message}`]);
     updateComposer();
     updateStatusText();
@@ -2494,14 +2531,18 @@ $('#messages').addEventListener('click', (e) => {
 /* 退出时触发 autoMemory（用 sendBeacon 保证页面关闭时仍能发送） */
 window.addEventListener('beforeunload', () => {
   if (navigator.sendBeacon) {
-    navigator.sendBeacon('/api/finalize');
+    navigator.sendBeacon('/api/finalize', new Blob([JSON.stringify({ sessionId: state.session })], { type: 'application/json' }));
   }
 });
 
 /* spinner 动画 */
 setInterval(() => {
   spinIdx++;
+  const frame = SPIN[spinIdx % SPIN.length];
   document.querySelectorAll('.tool-card.running .spin').forEach((n) => {
-    n.textContent = SPIN[spinIdx % SPIN.length];
+    n.textContent = frame;
   });
+  // 命令面板加载中的 spinner 也实时转动
+  const panelSpin = $('#cmd-panel .cmd-empty .spin');
+  if (panelSpin) panelSpin.textContent = frame;
 }, 200);

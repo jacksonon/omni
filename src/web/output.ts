@@ -44,6 +44,8 @@ export interface PendingAsk {
  */
 export class WebOutput implements Output {
   readonly thinking: ThinkingDisplay;
+  /** 工具配对序号兜底计数器（loop 未传 toolSeq 时自增，保证 start/result 一致） */
+  private _nextToolSeq = 0;
 
   constructor(
     readonly sessionId: string,
@@ -149,7 +151,8 @@ export class WebOutput implements Output {
     maxSteps: number,
     name: string,
     argsPreview: string,
-    args?: Record<string, unknown>
+    args?: Record<string, unknown>,
+    toolSeq?: number
   ): void {
     this.announce('tool.start', {
       step,
@@ -157,11 +160,18 @@ export class WebOutput implements Output {
       name,
       argsPreview,
       args: args ?? {},
+      seq: toolSeq ?? this._nextToolSeq++,
     });
   }
 
-  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
-    this.announce('tool.result', { ok, chars, preview: preview ?? [], detail });
+  onToolResult(
+    ok: boolean,
+    chars: number,
+    preview?: string[],
+    detail?: ToolResultDetail,
+    toolSeq?: number
+  ): void {
+    this.announce('tool.result', { ok, chars, preview: preview ?? [], detail, seq: toolSeq ?? this._nextToolSeq++ });
   }
 
   requestApproval(req: ApprovalRequest): Promise<boolean> {

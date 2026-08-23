@@ -631,6 +631,9 @@ export async function runAgent(
     // 安全护栏（审批/审计）逐调用独立。
     const calls = assistantMsg.tool_calls!;
     const toolsT0 = Date.now();
+    // 工具配对序号（跨 step 递增，会话内唯一）：并行工具结果可能乱序到达，
+    // 前端按 toolSeq 把 tool.start/tool.result 配到同一张卡片（不能靠到达顺序）
+    let toolSeq = 0;
     // **工具执行阶段可被 abort 立即结束**（用户反馈「esc 取消后再次发消息会先排队」）：
     // 工具本身不可中断（execute 无 signal），但取消/打断不必等它跑完——abort 后立即
     // 结束本轮（工具继续在后台执行完，副作用已发生，但结果不再回传等待——否则工具
@@ -648,7 +651,8 @@ export async function runAgent(
             if (!parsed.ok) {
               return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
             }
-            output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args);
+            const seq = ++toolSeq;
+            output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args, seq);
             // 轨迹：工具调用（callId = OpenAI 调用 id，与 tool/result 天然配对）
             opts.events?.toolCall(step, call.id, tool.name, JSON.stringify(parsed.args));
             // Hooks：PreToolUse——JSON 返回 decision:block 可**硬拦截**（规则型护栏，
@@ -724,7 +728,7 @@ export async function runAgent(
                 };
               }
             }
-            output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail);
+            output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail, seq);
             // 轨迹：工具结果（与 tool/call 按 callId 配对；耗时 = result - call）
             opts.events?.toolResult(call.id, !TOOL_ERROR_PREFIX.test(result), result.length);
             return result;

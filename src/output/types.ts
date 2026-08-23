@@ -70,10 +70,19 @@ export interface Output {
     maxSteps: number,
     name: string,
     argsPreview: string,
-    args?: Record<string, unknown>
+    args?: Record<string, unknown>,
+    /** 工具配对序号：同一次响应内并行工具结果可能乱序到达，前端按它把 start/result 配到同一张卡片 */
+    toolSeq?: number
   ): void;
   /** 一次工具执行完成（ok=是否成功；preview 为输出前几行，可空；detail 为展示用补充数据） */
-  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void;
+  onToolResult(
+    ok: boolean,
+    chars: number,
+    preview?: string[],
+    detail?: ToolResultDetail,
+    /** 与 onToolStep 相同的工具配对序号（并行工具结果乱序时前端据此配对） */
+    toolSeq?: number
+  ): void;
   /**
    * 工具调用审批（安全护栏，权限分级需要确认时调用）：返回 true = 允许执行。
    * 实现方负责 UI——console 用 readline 询问、TUI 用审批卡片（y/n 或鼠标左右半区）；
