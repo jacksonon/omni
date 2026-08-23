@@ -172,8 +172,7 @@ export function persistStatuslineToConfig(order: string[], cfg: OmniConfig): Per
  * 把界面语言写入配置文件的 language 字段（/settings 语言面板 Enter 保存持久化）。
  * 应用已即时生效（state.language 更新，界面 chrome 按新语言重绘），这里只落盘供下次会话加载。
  */
-export function persistLanguageToConfig(lang: string, cfg: OmniConfig): PersistModelResult {
-  const res = loadConfigObject(cfg);
+export function persistLanguageToConfig(lang: string, cfg: OmniConfig): PersistModelResult {  const res = loadConfigObject(cfg);
   if (!res.ok) {
     return { ok: false, file: null, message: `${res.message}（language 字段手动添加："${lang}"）` };
   }
@@ -188,6 +187,39 @@ export function persistLanguageToConfig(lang: string, cfg: OmniConfig): PersistM
     };
   }
   return { ok: true, file: res.file, message: `已保存语言配置 → ${res.file}（重启后同样生效）` };
+}
+
+/**
+ * 把 Web 界面主题写入**全局配置**的 webTheme 字段（设置面板「主题」tab 切换持久化）。
+ * 运行时已即时生效（前端按主题切换 CSS 类），这里只落盘供下次启动 web 自动应用。
+ * 与 webWorkspace 一致写全局配置（~/.config/omni/omni.json），不依赖项目级配置。
+ */
+export function persistWebThemeToConfig(theme: 'light' | 'dark' | 'system', _cfg: OmniConfig): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return {
+          ok: false, file: null,
+          message: `「${file}」带注释（JSONC），未自动修改——请手动添加 "webTheme": "${theme}"`,
+        };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常，未自动修改——请手动添加 "webTheme": "${theme}"` };
+  }
+  obj.webTheme = theme;
+  try {
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return { ok: true, file, message: `已保存主题配置 → ${file}（重启后同样生效）` };
 }
 
 /**

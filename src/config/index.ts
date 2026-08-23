@@ -120,6 +120,12 @@ export interface OmniConfig {
    */
   language: 'zh' | 'en';
   /**
+   * Web/Electron 界面主题：'light' 亮色 / 'dark' 暗色 / 'system' 跟随系统（默认）。
+   * 设置面板「主题」tab 切换并持久化到配置文件；前端按此设置 html 的 theme-light/theme-dark
+   * 类（无类 = 跟随系统，由 CSS prefers-color-scheme 自动处理）。
+   */
+  webTheme: 'light' | 'dark' | 'system';
+  /**
    * fallback 模型回退链（第七节 P0，对标 Claude Code fallbackModel）：主模型请求
    * 失败（429 限流 / 超时 / 5xx 网关错误——非 401 鉴权、非 abort）时**按序自动切换**
    * 备用端点重试本轮（最多 3 级），提示「已回退到 X」。条目为 models 表里的模型名
@@ -324,6 +330,7 @@ const DEFAULTS = {
   maxSubagentDepth: 5,
   statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
   language: 'zh' as 'zh' | 'en',
+  webTheme: 'system' as 'light' | 'dark' | 'system',
   sandbox: 'off' as SandboxMode,
   // 1.0 新增默认值：Web 并发上限 / 诊断闭环关 / 压缩占比 0.7
   webConcurrency: 3,
@@ -633,6 +640,10 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   }
   // 界面语言：只认 zh/en，其余回退默认中文
   if (data.language === 'zh' || data.language === 'en') cfg.language = data.language;
+  // Web 主题：只认 light/dark/system
+  if (data.webTheme === 'light' || data.webTheme === 'dark' || data.webTheme === 'system') {
+    cfg.webTheme = data.webTheme;
+  }
   // Web/Electron 上次工作目录（界面切换时持久化；启动时自动应用）
   if (typeof data.webWorkspace === 'string' && data.webWorkspace.trim()) {
     cfg.webWorkspace = data.webWorkspace.trim();

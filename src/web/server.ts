@@ -103,6 +103,7 @@ import {
   persistReasoningEffortToConfig,
   persistVariantToConfig,
   persistWebWorkspaceToConfig,
+  persistWebThemeToConfig,
   removeWebWorkspaceFromConfig,
 } from '../config/write.js';
 import type { PermissionTier } from '../safety/policy.js';
@@ -351,6 +352,7 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     reasoningEffort: runOpts.reasoningEffort ?? undefined,
     reasoningEffortOptions: runOpts.reasoningEffortOptions ?? undefined,
     activeVariant: runOpts.activeVariant ?? undefined,
+    webTheme: runOpts.cfg?.webTheme ?? 'system',
     // 1.0 P0-2 多会话并发：running = 是否存在任一运行；runningSessions = 全部运行中的会话 id
     running: runs.size > 0,
     runningSession: [...runs.keys()][0] ?? null,
@@ -1635,6 +1637,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         if (typeof body.planMode === 'boolean') {
           runOpts.planMode = body.planMode;
+        }
+        if (body.webTheme === 'light' || body.webTheme === 'dark' || body.webTheme === 'system') {
+          // 设置面板「主题」tab：运行时应用（buildStatus 下发）+ 持久化到配置文件
+          if (runOpts.cfg) runOpts.cfg.webTheme = body.webTheme;
+          persistWebThemeToConfig(body.webTheme, cfg);
         }
         void broadcast('status', await buildStatus(runOpts));
         json(res, 200, await buildStatus(runOpts));

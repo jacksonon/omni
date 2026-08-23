@@ -1328,6 +1328,64 @@ function updateStatusText() {
   }
 }
 
+/* ---------------- 主题（设置 → 主题 tab：亮色 / 暗色 / 跟随系统） ---------------- */
+const THEME_KEY = 'omni-web-theme';
+const THEME_OPTIONS = [
+  { v: 'light', label: '亮色' },
+  { v: 'dark', label: '暗色' },
+  { v: 'system', label: '跟随系统' },
+];
+function getStoredTheme() {
+  try { return localStorage.getItem(THEME_KEY); } catch { return null; }
+}
+function storeTheme(t) {
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* 隐私模式等场景忽略 */ }
+}
+function currentDark(theme) {
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+/** 应用主题：<html> 加 theme-light/theme-dark 类（无类 = 跟随系统，由 CSS 自动处理）；
+ *  同步 theme-color meta（浏览器地址栏/标题栏）与设置面板选项高亮。 */
+function applyTheme(theme) {
+  const t = theme && THEME_OPTIONS.some((o) => o.v === theme) ? theme : (getStoredTheme() || 'system');
+  const root = document.documentElement;
+  root.classList.toggle('theme-light', t === 'light');
+  root.classList.toggle('theme-dark', t === 'dark');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', currentDark(t) ? '#0f1115' : '#ffffff');
+  renderThemeOptions(t);
+  return t;
+}
+function renderThemeOptions(cur) {
+  const box = $('#theme-options');
+  if (!box) return;
+  box.innerHTML = '';
+  THEME_OPTIONS.forEach((o) => {
+    const b = el('button', 'seg-btn' + (o.v === cur ? ' active' : ''), o.label);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      if (o.v === cur) return;
+      applyTheme(o.v);
+      storeTheme(o.v);
+      // 后端持久化（配置文件 webTheme 字段，重启 web 仍生效）+ 广播 status
+      api('/api/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ webTheme: o.v }),
+      }).catch(() => {});
+    });
+    box.appendChild(b);
+  });
+}
+// 跟随系统时监听 OS 深浅色变化，刷新浏览器标题栏颜色
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  const t = getStoredTheme() || 'system';
+  if (t === 'system') {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', currentDark('system') ? '#0f1115' : '#ffffff');
+  }
+});
+
 function refreshStatus() {
   return api('/api/status').then((s) => {
     state.status = s;
@@ -1346,6 +1404,9 @@ function refreshStatus() {
     if (sp) sp.checked = state.planMode;
     $('#set-permission').value = s.permission || 'safe';
     renderSettingsModel(s);
+    // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
+    const theme = applyTheme(s.webTheme || 'system');
+    storeTheme(theme);
     const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || '当前工作区' : '当前工作区';
     $('#hero-workspace-name').textContent = workspaceName;
     updateDetails();
@@ -1501,6 +1562,8 @@ bus.on('status', (s) => {
   $('#plan-mode').checked = state.planMode;
   const sp = $('#set-plan');
   if (sp) sp.checked = state.planMode;
+  const theme = applyTheme(s.webTheme || 'system');
+  storeTheme(theme);
   renderSessionList(); // 运行中绿点随 status 广播实时刷新
   updateDetails();
   updateComposer();
@@ -2482,6 +2545,8 @@ $('#messages').addEventListener('click', (e) => {
 
 /* ---------------- 启动 ---------------- */
 (async function init() {
+  // 立即应用主题（读 localStorage，避免首帧闪白 / 主题闪烁）
+  applyTheme(getStoredTheme());
   connectSSE();
   try {
     await refreshStatus();

@@ -590,8 +590,39 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .settings-content { overflow-y: visible; padding: 16px; }
 }
 
+/* 暗色主题变量：手动 theme-dark 类一份 + 跟随系统 media query 一份（内容相同） */
+:root.theme-dark {
+  --bg: #0f1115;
+  --sidebar: #1b1b1c;
+  --surface: #232326;
+  --surface-muted: #353638;
+  --surface-hover: rgba(255, 255, 255, .08);
+  --surface-hover-solid: #353638;
+  --bubble: #2c2c2e;
+  --code: #1b1b1c;
+  --text: #f9fafb;
+  --text-secondary: #cfd3d6;
+  --text-tertiary: #adb2b8;
+  --text-caption: #81858c;
+  --line-1: rgba(255, 255, 255, .04);
+  --line-2: rgba(255, 255, 255, .08);
+  --line-3: rgba(255, 255, 255, .12);
+  --blue: #679efe;
+  --blue-fill: #679efe;
+  --blue-hover: #86b2ff;
+  --border: rgba(255, 255, 255, .12);
+  --text-dim: #adb2b8;
+  --bg-input: #353638;
+  --accent: #679efe;
+  --state-run-fg: #93c5fd;
+  --state-done-fg: #86efac;
+  --state-err-fg: #fca5a5;
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, .28), 0 1px 3px rgba(0, 0, 0, .35);
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  /* 跟随系统（无类 / system）：显式 light 时不套用 */
+  :root:not(.theme-light) {
     --bg: #0f1115;
     --sidebar: #1b1b1c;
     --surface: #232326;
@@ -623,6 +654,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .preview-badge { color: #d3e2ff; background: #34415b; }
   .empty-session .hero-glow { background: rgba(97, 135, 216, .1); }
 }
+:root.theme-dark .preview-badge { color: #d3e2ff; background: #34415b; }
+:root.theme-dark .empty-session .hero-glow { background: rgba(97, 135, 216, .1); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
