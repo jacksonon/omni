@@ -107,7 +107,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .fish-logo { display: inline-block; flex: none; color: var(--text); }
 .brand-fish { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
 .brand-name { overflow: hidden; font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
-.build-revision { flex: none; height: 16px; padding: 0 4px; border-radius: 3px; color: #fff; background: var(--text); font: 500 8px/16px var(--mono); white-space: nowrap; }
+.build-revision { flex: none; height: 16px; padding: 0 4px; border-radius: 3px; color: var(--bg); background: var(--text); font: 500 8px/16px var(--mono); white-space: nowrap; }
 .icon-button { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .icon-button:hover { background: var(--surface-hover); }
 .icon-button svg { width: 16px; height: 16px; }
