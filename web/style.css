@@ -129,49 +129,98 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .session-search input { width: 0; min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; opacity: 0; font-size: 13px; transition: opacity .12s var(--ease); }
 .session-search:focus-within input, .session-search input:not(:placeholder-shown) { opacity: 1; }
 .session-list { flex: 1; min-height: 0; margin: 0 calc(-1 * var(--side-pad)) 0 -4px; padding: 0 var(--side-pad) 24px 4px; overflow-y: auto; scrollbar-gutter: stable; }
-/* 会话项：ChatGPT 卡片（圆角白卡 + 浅边框 + 轻阴影），两行布局（标题 + 元信息） */
+/* iOS insetGrouped 风格：组头 sticky 吸顶 + 组内容圆角容器 + 列表行 */
+.ws-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  margin: 0 0 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--sidebar);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s var(--ease);
+}
+.ws-section-head:hover { background: var(--surface-hover); }
+.ws-section-head.current { color: var(--blue); }
+.ws-chev { width: 12px; height: 12px; flex: none; color: var(--text-caption); transform: rotate(-90deg); transition: transform .2s var(--ease); }
+.ws-section-head.expanded .ws-chev { transform: none; }
+.ws-gicon { width: 13px; height: 13px; flex: none; color: var(--text-tertiary); }
+.ws-section-head.current .ws-gicon { color: var(--blue); }
+.ws-gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-gcount { flex: none; min-width: 16px; text-align: center; padding: 0 5px; border-radius: 999px; background: var(--surface-muted); color: var(--text-caption); font-size: 10px; line-height: 16px; font-weight: 600; }
+.ws-gadd { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--text-caption); font-size: 13px; }
+.ws-gadd:hover { background: var(--surface-hover); color: var(--text); }
+/* 组内容圆角容器（iOS insetGrouped 分组浅背景） */
+.ws-section-body {
+  border-radius: 14px;
+  border: 1px solid var(--line-1);
+  background: var(--surface);
+  overflow: hidden;
+  margin-bottom: 8px;
+  animation: row-in .15s var(--ease);
+}
+/* 会话项：列表行（圆角容器内，行分隔线） */
 .session-item {
   position: relative;
   display: flex;
-  align-items: stretch;
-  gap: 6px;
-  min-height: 52px;
-  margin-bottom: 8px;
-  padding: 8px 8px 8px 14px;
-  border: 1px solid var(--line-2);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-1);
   color: var(--text);
   cursor: pointer;
   user-select: none;
-  animation: row-in .15s var(--ease);
-  transition: background .15s var(--ease), border-color .15s var(--ease), box-shadow .2s var(--ease), transform .12s var(--ease);
+  transition: background .12s var(--ease);
 }
-.session-item:hover { border-color: var(--line-3); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.ws-section-body > .session-item:first-child { border-top: 0; }
+.session-item:hover { background: var(--surface-hover); }
 .session-item.active {
-  border-color: color-mix(in srgb, var(--blue) 35%, var(--line-2));
-  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
 }
 /* 当前会话：左侧蓝色圆角竖条 */
 .session-item.active::before {
   content: "";
   position: absolute;
-  left: -1px; top: 9px; bottom: 9px;
+  left: 0; top: 8px; bottom: 8px;
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--blue);
+  pointer-events: none;
 }
 .session-icon { display: none; }
-.session-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
-.stitle { min-width: 0; overflow: hidden; font-size: 14px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.session-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.stitle { min-width: 0; overflow: hidden; font-size: 14px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
 .session-item.active .stitle { font-weight: 600; color: var(--blue); }
 .smeta { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 11px; line-height: 14px; }
 .smeta span:first-child { display: inline; }
-.session-more { display: none; flex: none; align-self: center; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 6px; color: var(--text-tertiary); }
+.session-more { display: none; flex: none; align-self: center; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 6px; color: var(--text-caption); }
 .session-more:hover { background: var(--surface-hover); color: var(--text); }
 .session-item:hover .session-more { display: block; }
 .session-list .empty { padding: 8px; color: var(--text-tertiary); font-size: 12px; }
+/* 运行中绿点 */
+.session-running-dot {
+  position: absolute;
+  left: 4px; top: 50%; transform: translateY(-50%);
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #22c55e 22%, transparent);
+  animation: pulse 1.4s infinite;
+  flex: none;
+}
 @keyframes row-in { from { opacity: 0; } }
 .sidebar-foot { flex: none; display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .settings-button { display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); cursor: pointer; }
@@ -449,21 +498,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .dirpicker-actions { display: flex; align-items: center; gap: 8px; }
 .dirpicker-spacer { flex: 1; }
 
-/* 侧栏工作区分组树（组=工作区，组内元素=会话） */
-.ws-group-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-1); cursor: pointer; color: var(--text-secondary); font-size: 12.5px; font-weight: 600; text-align: left; user-select: none; margin-bottom: 8px; transition: background .15s var(--ease), border-color .15s var(--ease), box-shadow .2s var(--ease), transform .12s var(--ease); }
-.ws-group-head:hover { border-color: var(--line-3); box-shadow: var(--shadow-2); transform: translateY(-1px); }
-.ws-group-head.current { color: var(--text); border-color: color-mix(in srgb, var(--blue) 30%, var(--line-2)); background: color-mix(in srgb, var(--blue) 6%, var(--surface)); }
-.ws-chev { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); transform: rotate(-90deg); transition: transform .2s var(--ease); }
-.ws-group-head.expanded .ws-chev { transform: none; }
-.ws-gicon { width: 14px; height: 14px; flex: none; color: var(--blue); }
-.ws-gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-group-head.current .ws-gname { color: var(--blue); }
-.ws-gcount { flex: none; min-width: 18px; text-align: center; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); font-size: 11px; line-height: 18px; font-weight: 600; }
-.ws-gadd { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--text-tertiary); font-size: 14px; }
-.ws-gadd:hover { background: var(--surface-hover-solid); color: var(--text); }
-/* 组内会话缩进 */
-#session-list .session-item { margin-left: 14px; }
-
 /* 会话操作菜单（⋯ → 重命名/删除） */
 .ctx-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 128px; padding: 4px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 40px rgba(0, 0, 0, .16); }
 .ctx-item { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
@@ -485,6 +519,14 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .pop-check { flex: none; color: var(--blue); }
 .pop-empty { padding: 8px 10px 10px; color: var(--text-caption); font-size: 12px; }
 .pop-item .pop-copy .pop-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 已存储模型列表（模型配置 tab 顶部） */
+.cfg-model-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.cfg-model-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer; transition: background .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease); }
+.cfg-model-chip:hover { border-color: var(--blue); }
+.cfg-model-chip.active { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, transparent); color: var(--blue); }
+.cmc-name { font-weight: 600; }
+.cmc-ep { color: var(--text-caption); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.cfg-model-empty { padding: 4px 0; color: var(--text-tertiary); font-size: 12px; }
 .pop-select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 9px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; cursor: pointer; }
 .pop-select:focus { border-color: var(--blue); }
 .pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
@@ -632,7 +674,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* ---- 全局过渡增强 ---- */
 button, .perm-pill, .model-pill, .new-session, .settings-button,
 .icon-button, .attach-button, .send-button, .primary-button, .secondary-button,
-.session-item, .ws-group-head, .crumb, .toggle-switch,
+.session-item, .ws-section-head, .crumb, .toggle-switch,
 .settings-nav-item, .pop-item, .cmd-item, .am-item, .pp-item, .dir-item, .ctx-item {
   transition: background .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease), transform .1s var(--ease), box-shadow .15s var(--ease), opacity .15s var(--ease);
 }
@@ -658,7 +700,7 @@ button:active, .send-button:active, .primary-button:active, .secondary-button:ac
 }
 
 /* ---- 工作区分组头展开/收起动画 ---- */
-.ws-group-head .ws-chev { transition: transform .2s var(--ease); }
+.ws-section-head .ws-chev { transition: transform .2s var(--ease); }
 
 /* ---- Popover 弹出动画 ---- */
 @keyframes pop-in {
@@ -851,11 +893,6 @@ body.cmd-open::before {
 @keyframes glow-breathe {
   0%, 100% { opacity: .8; transform: translateX(-50%) scale(1); }
   50% { opacity: 1; transform: translateX(-50%) scale(1.03); }
-}
-
-/* ---- 工作区组 hover 增强 ---- */
-.ws-group-head {
-  transition: background .12s var(--ease), border-color .12s var(--ease);
 }
 
 /* ---- Pop item hover 左移效果 ---- */
@@ -1082,13 +1119,13 @@ body.cmd-open::before {
 }
 
 /* ---- 工作区组头：展开/收起 chevron 旋转 ---- */
-.ws-group-head .ws-chev {
+.ws-section-head .ws-chev {
   transition: transform .25s var(--ease-spring);
 }
-.ws-group-head.expanded .ws-chev {
+.ws-section-head.expanded .ws-chev {
   transform: rotate(0deg);
 }
-.ws-group-head:not(.expanded) .ws-chev {
+.ws-section-head:not(.expanded) .ws-chev {
   transform: rotate(-90deg);
 }
 

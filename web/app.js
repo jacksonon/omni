@@ -188,6 +188,8 @@ const I18N_ZH = {
   'settings.browse': '切换…',
   'settings.cfgModel': '配置的模型',
   'settings.cfgModelDesc': '选择要编辑的模型，切换后下方字段同步为该模型的配置。',
+  'settings.savedModels': '已存储模型',
+  'settings.savedModelsDesc': '当前配置文件（omni.json 的 models 表）中已存储的模型，点击可编辑。',
   'settings.baseURL': '端点（baseURL）',
   'settings.baseURLDesc': 'OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1。',
   'settings.apiKey': 'API Key',
@@ -326,6 +328,8 @@ const I18N_EN = {
   'settings.browse': 'Browse…',
   'settings.cfgModel': 'Model to configure',
   'settings.cfgModelDesc': 'Select the model to edit; fields below follow its config.',
+  'settings.savedModels': 'Stored models',
+  'settings.savedModelsDesc': 'Models stored in the config file (models table of omni.json); click to edit.',
   'settings.baseURL': 'Endpoint (baseURL)',
   'settings.baseURLDesc': 'OpenAI-compatible API base URL, e.g. https://api.deepseek.com/v1.',
   'settings.apiKey': 'API Key',
@@ -747,8 +751,8 @@ function renderSessionList() {
     const items = groups.get(project).sort((a, b) => (b.updated || 0) - (a.updated || 0));
     const isCwd = project === cwd;
     const expanded = state.expandedGroups.has(project) || (isCwd && !state.expandedGroups.has(`!${project}`));
-    // 组头：原工作区图标 + 名称 + 会话数 + ＋（在该工作区新建会话）；chevron 旋转表示展开
-    const head = el('button', 'ws-group-head' + (isCwd ? ' current' : '') + (expanded ? ' expanded' : ''));
+    // 组头：sticky 吸顶（iOS insetGrouped 风格），独立于组容器
+    const head = el('button', 'ws-section-head' + (isCwd ? ' current' : '') + (expanded ? ' expanded' : ''));
     head.type = 'button';
     head.title = project;
     const chev = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -769,9 +773,7 @@ function renderSessionList() {
     addBtn.title = `在 ${projectName(project)} 新建会话`;
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      switchWorkspace(project)
-        .then(() => newSession())
-        .catch((err) => alert(`切换工作目录失败：${err.message}`));
+      switchWorkspace(project).then(() => newSession()).catch((err) => alert(`切换工作目录失败：${err.message}`));
     });
     head.appendChild(addBtn);
     const moreBtn = el('span', 'ws-gadd', '⋯');
@@ -782,7 +784,6 @@ function renderSessionList() {
     });
     head.appendChild(moreBtn);
     head.addEventListener('click', () => {
-      // 展开记忆：展开集合语义 = 强制展开的组；点击当前工作区组时用「!前缀」记录强制收起
       if (expanded) state.expandedGroups.delete(project) || state.expandedGroups.add(`!${project}`);
       else state.expandedGroups.delete(`!${project}`) || state.expandedGroups.add(project);
       renderSessionList();
@@ -790,12 +791,13 @@ function renderSessionList() {
     list.appendChild(head);
 
     if (!expanded) continue;
+    // 组内容圆角容器（iOS insetGrouped 分组背景）
+    const body = el('div', 'ws-section-body');
     for (const s of items) {
       const item = el('div', 'session-item' + (s.id === state.session ? ' active' : ''));
       if (state.runningSessions.has(s.id)) item.appendChild(el('span', 'session-running-dot', ''));
       const d = new Date(s.updated || s.created);
       const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      item.appendChild(el('span', 'session-icon', s.id === state.session ? '●' : '○'));
       const copy = el('div', 'session-copy');
       copy.appendChild(el('div', 'stitle', s.title || t('session.new')));
       const meta = el('div', 'smeta');
@@ -818,8 +820,9 @@ function renderSessionList() {
         if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => alert(`打开会话失败：${err.message}`));
         else doSelect();
       });
-      list.appendChild(item);
+      body.appendChild(item);
     }
+    list.appendChild(body);
   }
 }
 
@@ -1431,7 +1434,6 @@ function refreshStatus() {
     const sp = $('#set-plan');
     if (sp) sp.checked = state.planMode;
     $('#set-permission').value = s.permission || 'safe';
-    renderSettingsModel(s);
     fillModelConfigForm(s);
     applyLanguage(s.language || 'zh');
     // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
@@ -1509,47 +1511,6 @@ function modelLabel(m) {
   return bits.length ? `${name} · ${bits.join(' · ')}` : name;
 }
 
-/** 设置 → 模型面板：填充模型下拉与思考级别分段选择（签名去重，避免打断进行中的交互） */
-function renderSettingsModel(s) {
-  const sel = $('#set-model');
-  if (!sel) return;
-  const models = Array.isArray(s.models) ? s.models : [];
-  const sig = JSON.stringify([s.model, models.map((m) => [m.name, m.baseURL])]);
-  if (sel.dataset.sig !== sig) {
-    sel.dataset.sig = sig;
-    sel.innerHTML = '';
-    for (const m of models) {
-      const o = document.createElement('option');
-      o.value = m.name;
-      o.textContent = modelLabel(m);
-      o.selected = m.name === s.model;
-      sel.appendChild(o);
-    }
-  } else {
-    sel.value = s.model || '';
-  }
-  const cur = models.find((m) => m.name === s.model);
-  $('#set-model-desc').textContent = cur?.baseURL ? `端点 ${cur.baseURL}` : '端点沿用全局配置。';
-
-  const box = $('#set-efforts');
-  const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
-  const esig = JSON.stringify([efforts, s.reasoningEffort]);
-  if (box.dataset.sig === esig) return;
-  box.dataset.sig = esig;
-  box.innerHTML = '';
-  if (!efforts.length) {
-    box.appendChild(el('span', 'seg-empty', '该模型未提供思考级别'));
-    return;
-  }
-  efforts.forEach((t) => {
-    const b = el('button', 'seg-btn' + (t === (s.reasoningEffort || efforts[0]) ? ' active' : ''), t);
-    b.type = 'button';
-    b.addEventListener('click', () => {
-      applySettings({ reasoningEffort: t }).catch((err) => alert(`设置失败：${err.message}`));
-    });
-    box.appendChild(b);
-  });
-}
 
 /* ---------------- SSE ---------------- */
 function connectSSE() {
@@ -2418,9 +2379,6 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
     document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
   });
 });
-$('#set-model').addEventListener('change', (e) => {
-  applySettings({ model: e.target.value }).catch((err) => alert(`切换失败：${err.message}`));
-});
 $('#set-plan').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
 });
@@ -2446,6 +2404,34 @@ $('#set-language').addEventListener('change', (e) => {
   }).catch((err) => alert(`语言设置失败：${err.message}`));
 });
 /* ---------------- 模型配置表单（设置 → 模型配置 tab） ---------------- */
+/** 预览配置文件（omni.json models 表）中已存储的模型列表，点击切换编辑对象 */
+function renderSavedModelList(s) {
+  const box = $('#cfg-model-list');
+  if (!box) return;
+  const models = Array.isArray(s.models) ? s.models : [];
+  box.innerHTML = '';
+  if (!models.length) {
+    box.appendChild(el('div', 'cfg-model-empty', '暂无已存储模型'));
+    return;
+  }
+  const sel = $('#cfg-model');
+  const active = sel ? sel.value : (s.model || '');
+  models.forEach((m) => {
+    const item = el('button', 'cfg-model-chip' + (m.name === active ? ' active' : ''));
+    item.type = 'button';
+    item.appendChild(el('span', 'cmc-name', m.name));
+    if (m.baseURL) {
+      item.appendChild(el('span', 'cmc-ep', m.baseURL.replace(/^https?:\/\//, '').replace(/\/v\d+\/?$/, '')));
+    }
+    item.addEventListener('click', () => {
+      state.cfgModelName = m.name;
+      const sel2 = $('#cfg-model');
+      if (sel2) sel2.value = m.name;
+      fillModelConfigForm(state.status || {});
+    });
+    box.appendChild(item);
+  });
+}
 function fillModelConfigForm(s) {
   const sel = $('#cfg-model');
   if (!sel) return;
@@ -2463,6 +2449,7 @@ function fillModelConfigForm(s) {
     }
     sel.value = cur;
   }
+  renderSavedModelList(s);
   const m = models.find((x) => x.name === sel.value) || {};
   $('#cfg-baseurl').value = m.baseURL || '';
   const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
