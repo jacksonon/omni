@@ -187,11 +187,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .model-button:hover { background: var(--surface-hover); }
 .model-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-button svg { width: 12px; height: 12px; }
-.view-tabs { position: relative; z-index: 1; display: flex; gap: 36px; margin-top: 4px; padding-left: 8px; }
-.view-tab { position: relative; padding: 0 0 11px; border: 0; background: transparent; color: var(--text-tertiary); font-size: 13px; line-height: 16px; font-weight: 500; cursor: pointer; }
-.view-tab::after { content: ""; position: absolute; right: 0; bottom: 1px; left: 0; height: 2px; border-radius: 2px; background: transparent; }
-.view-tab.active { color: var(--blue); }
-.view-tab.active::after { background: var(--blue); }
 .mobile-only { display: none; }
 .scroll-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
 
@@ -268,7 +263,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .hero-heading, .hero-workspace, .hero-glow { display: none; }
 .empty-session .conversation-header { display: none; }
 .empty-session .scroll-body { justify-content: center; overflow-y: auto; }
-.empty-session .messages, .empty-session .trajectory-view { display: none; }
+.empty-session .messages { display: none; }
 .empty-session .composer-wrap { position: relative; bottom: auto; width: 100%; padding: 0 16px 32px; background: none; overflow: visible; }
 .empty-session .hero-heading { z-index: 1; display: grid; grid-template-columns: 34px auto auto; align-items: center; justify-content: center; column-gap: 10px; width: 100%; max-width: var(--composer-width); margin-bottom: 12px; color: var(--text); font-size: 26px; line-height: 32px; font-weight: 500; }
 .hero-fish { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; }
@@ -357,23 +352,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .ask-option.selected .checkbox { border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px var(--surface); }
 .ask-custom { margin-top: 10px; }
 .ask-custom input { width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 10px; outline: 0; color: var(--text); background: transparent; }
-
-/* Trajectory view. */
-.trajectory-view { flex: 1; width: 100%; max-width: 980px; margin: 0 auto; padding: 24px 32px 40px; }
-.trajectory-view .empty { padding: 40px 0; color: var(--text-tertiary); text-align: center; }
-.trace-row { display: grid; grid-template-columns: 100px minmax(0, 1fr); min-height: 36px; padding: 7px 12px; border-bottom: 1px solid var(--line-1); transition: background .1s var(--ease); animation: row-in .12s var(--ease); }
-.trace-row:hover { background: var(--surface-hover); }
-.trace-kind { color: var(--text-tertiary); font: 11px/20px var(--mono); font-weight: 500; }
-.trace-text { overflow: hidden; color: var(--text-secondary); font: 12px/20px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.trace-user .trace-kind { color: var(--blue); }
-.trace-tool .trace-kind { color: var(--amber); }
-.trace-thinking .trace-kind { color: var(--text-caption); }
-.trace-answer .trace-kind { color: var(--green); }
-.trace-usage .trace-kind { color: var(--text-tertiary); }
-.trace-usage .trace-text { color: var(--text-tertiary); font-size: 11px; }
-.trace-lap .trace-kind { color: var(--text-caption); }
-.trace-lap .trace-text { color: var(--text-caption); font-size: 11px; }
-.trace-row[data-kind="thinking-end"] { display: none; }
 
 /* Modal 基础（设置 / 目录选择共用） */
 .modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .24); backdrop-filter: blur(3px); }
@@ -624,7 +602,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* ---- 全局过渡增强 ---- */
 button, .perm-pill, .model-pill, .new-session, .settings-button,
 .icon-button, .attach-button, .send-button, .primary-button, .secondary-button,
-.session-item, .ws-group-head, .view-tab, .crumb, .toggle-switch,
+.session-item, .ws-group-head, .crumb, .toggle-switch,
 .settings-nav-item, .pop-item, .cmd-item, .am-item, .pp-item, .dir-item, .ctx-item {
   transition: background .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease), transform .1s var(--ease), box-shadow .15s var(--ease), opacity .15s var(--ease);
 }
@@ -790,14 +768,6 @@ body.cmd-open::before {
   width: 20px;
 }
 
-/* ---- Tab 切换下划线动画 ---- */
-.view-tab::after {
-  transition: background .15s var(--ease), transform .2s var(--ease);
-  transform: scaleX(0);
-}
-.view-tab.active::after {
-  transform: scaleX(1);
-}
 
 /* ---- 分段按钮（思考级别）动画 ---- */
 .seg-btn {
@@ -1259,15 +1229,6 @@ body.cmd-open::before {
 }
 @keyframes cmd-panel-exit {
   to { opacity: 0; transform: translate(-50%, -52%) scale(.96); }
-}
-
-/* ---- Tab 切换：ChatGPT 风格下划线滑动 ---- */
-.view-tab::after {
-  transition: background .15s var(--ease), transform .25s var(--ease-spring);
-  transform: scaleX(0);
-}
-.view-tab.active::after {
-  transform: scaleX(1);
 }
 
 /* ---- Toggle 开关：弹性动画 ---- */

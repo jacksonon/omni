@@ -26,8 +26,6 @@ const state = {
   inFlight: 0,          // 本轮未完成的请求计数（跑完才印统计行）
   turnTokens: { prompt: 0, completion: 0, cached: 0 },
   sessionFilter: '',
-  trace: [],
-  view: 'chat',
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
@@ -1117,7 +1115,6 @@ function clearMessages() {
   state.waiters.clear();
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
   state.inFlight = 0;
-  state.trace = [];
   updateDetails();
 }
 
@@ -1293,45 +1290,6 @@ function renderAddMenu() {
   pop.appendChild(tip);
 }
 
-const TRACE_ICONS = {
-  user: '→', thinking: '💭', tool: '⚙', answer: '✓', turn: '◆', usage: '⚡',
-  'thinking-end': '', lap: '⏱',
-};
-const TRACE_LABELS = {
-  user: '用户', thinking: '思考', tool: '工具', answer: '回答', turn: '轮次', usage: '用量',
-  'thinking-end': '', lap: '计时',
-};
-function renderTrajectory() {
-  const view = $('#trajectory-view');
-  view.innerHTML = '';
-  if (!state.trace.length) {
-    view.appendChild(el('div', 'empty', '当前会话还没有运行轨迹——发送消息后这里会记录每一步运行过程'));
-    return;
-  }
-  state.trace.forEach((row) => {
-    if (row.kind === 'thinking-end') return; // 分隔标记不显示
-    const line = el('div', 'trace-row trace-' + row.kind);
-    line.dataset.kind = row.kind;
-    const icon = TRACE_ICONS[row.kind] || '·';
-    const label = TRACE_LABELS[row.kind] || row.kind;
-    let text = '';
-    if (row.kind === 'tool') text = `${row.name || 'tool'}  ${row.args || ''}`;
-    else if (row.kind === 'usage') text = `⚡ 输入 ${row.prompt || 0} · 输出 ${row.completion || 0}${row.cached ? ' · 缓存 ' + row.cached : ''}`;
-    else text = (row.text || '').slice(0, 200);
-    line.appendChild(el('span', 'trace-kind', `${icon} ${label}`));
-    line.appendChild(el('span', 'trace-text', text));
-    view.appendChild(line);
-  });
-}
-
-function setView(view) {
-  state.view = view;
-  document.querySelectorAll('.view-tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === view));
-  $('#messages').classList.toggle('hidden', view !== 'chat');
-  $('#trajectory-view').classList.toggle('hidden', view !== 'trajectory');
-  if (view === 'trajectory') renderTrajectory();
-}
-
 async function selectSession(id, silent) {
   state.session = id;
   clearPendingMessages(); // 待发送消息属于上一个会话，切换后清空避免错发
@@ -1354,7 +1312,6 @@ async function selectSession(id, silent) {
     updateDetails();
     updateComposer();
     updateStatusText();
-    if (state.view === 'trajectory') renderTrajectory();
     $('#app').classList.remove('sidebar-open');
   } catch (e) {
     console.error(e);
@@ -1665,8 +1622,6 @@ bus.on('user.message', (ev) => {
   // steer 打断消息已进当前轮 → 消费「期望已插入」标记，run.end 不再重复发送
   if (ev.steer && state.steerText === ev.text) state.steerText = null;
   userBlock(ev.sessionId, ev.text);
-  state.trace.push({ kind: 'user', text: ev.text });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 
 /* 一轮开始的 thinking 块：预建（等待真正的 reasoning chunk） */
@@ -1675,25 +1630,17 @@ bus.on('thinking.start', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (currentThinking) { currentThinking.finish(); }
   currentThinking = thinkingBlock(ev.sessionId);
-  state.trace.push({ kind: 'thinking' });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 bus.on('thinking.chunk', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (!currentThinking) currentThinking = thinkingBlock(ev.sessionId);
   currentThinking._chars += ev.text.length;
   currentThinking._body.textContent += ev.text;
-  const lastThinking = state.trace[state.trace.length - 1];
-  if (lastThinking?.kind === 'thinking') lastThinking.text = (lastThinking.text || '') + ev.text;
-  if (state.view === 'trajectory') renderTrajectory();
   scrollBottom();
 });
 bus.on('thinking.end', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
-  // 标记思考段结束（下一条 trace 不再追加到此条）
-  state.trace.push({ kind: 'thinking-end' });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 
 let currentAssistant = null;
@@ -1701,10 +1648,6 @@ bus.on('answer.chunk', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (!currentAssistant) currentAssistant = assistantBlock(ev.sessionId);
   currentAssistant._text += ev.text;
-  const lastAnswer = state.trace[state.trace.length - 1];
-  if (lastAnswer?.kind === 'answer') lastAnswer.text += ev.text;
-  else state.trace.push({ kind: 'answer', text: ev.text });
-  if (state.view === 'trajectory') renderTrajectory();
   if (!currentAssistant._paintTimer) {
     currentAssistant._paintTimer = setTimeout(() => {
       currentAssistant.paint();
@@ -1728,8 +1671,6 @@ bus.on('tool.start', (ev) => {
   const block = toolBlock(ev.sessionId, ev);
   currentTools.set(ev.seq ?? `f${currentTools.size}`, block);
   state.inFlight++;
-  state.trace.push({ kind: 'tool', name: ev.name, args: ev.argsPreview });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 bus.on('tool.result', (ev) => {
   if (ev.sessionId !== state.session) return;
@@ -1753,8 +1694,6 @@ bus.on('usage', (ev) => {
   state.turnTokens.completion += ev.completion || 0;
   state.turnTokens.cached += ev.cached || 0;
   // 记录 token 用量轨迹
-  state.trace.push({ kind: 'usage', prompt: ev.prompt || 0, completion: ev.completion || 0, cached: ev.cached || 0 });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 
 bus.on('subagent', (ev) => {
@@ -1788,7 +1727,6 @@ bus.on('run.end', (ev) => {
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
   state.inFlight = 0;
   refreshSessions().then(updateDetails);
-  if (state.view === 'trajectory') renderTrajectory();
 
   // 消费 steer（优先）→ queue → 下一轮自动发送
   const next = state.steerText || (state.messageQueue.length ? state.messageQueue.shift() : null);
@@ -1804,8 +1742,6 @@ bus.on('run.end', (ev) => {
 // turn.step：本轮第 N 步
 bus.on('turn.step', (ev) => {
   if (ev.sessionId !== state.session) return;
-  state.trace.push({ kind: 'turn', text: `第 ${ev.step} 步 / ${ev.maxSteps}` });
-  if (state.view === 'trajectory') renderTrajectory();
 });
 
 // lap：LLM 请求墙钟 / 首 token
@@ -1814,8 +1750,6 @@ bus.on('lap', (ev) => {
   if (ev.llmMs) {
     const ms = ev.llmMs;
     const fmt = ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
-    state.trace.push({ kind: 'lap', text: `LLM ${fmt} · 首 token ${ev.firstTokenMs || 0}ms` });
-    if (state.view === 'trajectory') renderTrajectory();
   }
 });
 
@@ -1825,8 +1759,6 @@ bus.on('toolsLap', (ev) => {
   if (ev.toolsMs) {
     const ms = ev.toolsMs;
     const fmt = ms < 10000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
-    state.trace.push({ kind: 'lap', text: `工具执行 ${fmt}` });
-    if (state.view === 'trajectory') renderTrajectory();
   }
 });
 
@@ -2500,7 +2432,6 @@ $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
   renderSessionList();
 });
-document.querySelectorAll('.view-tab').forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
 $('#btn-sidebar-toggle').addEventListener('click', () => {
   $('#app').classList.toggle('sidebar-collapsed');
 });
