@@ -129,17 +129,47 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .session-search input { width: 0; min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; opacity: 0; font-size: 13px; transition: opacity .12s var(--ease); }
 .session-search:focus-within input, .session-search input:not(:placeholder-shown) { opacity: 1; }
 .session-list { flex: 1; min-height: 0; margin: 0 calc(-1 * var(--side-pad)) 0 -4px; padding: 0 var(--side-pad) 24px 4px; overflow-y: auto; scrollbar-gutter: stable; }
-.session-item { display: flex; align-items: center; height: 32px; gap: 0; padding: 0 8px; border-radius: 10px; border: 1px solid transparent; color: var(--text); cursor: pointer; user-select: none; animation: row-in .15s var(--ease); }
-.session-item:hover, .session-item.active { border-color: var(--line-2); background: var(--surface); }
-.session-item.active { background: color-mix(in srgb, var(--blue) 5%, var(--surface)); }
-.session-icon { display: inline-grid; place-items: center; flex: none; width: 16px; color: var(--text-tertiary); font-size: 8px; }
-.session-item.active .session-icon { color: var(--blue); }
-.session-copy { flex: 1; min-width: 0; display: flex; align-items: center; }
-.stitle { flex: 1; min-width: 0; margin: 0 6px 0 4px; overflow: hidden; font-size: 14px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
-.smeta { flex: none; color: var(--text-tertiary); font-size: 12px; line-height: 20px; }
-.smeta span:first-child { display: none; }
-.session-more { display: none; flex: none; width: 16px; color: var(--text-tertiary); text-align: center; }
-.session-item:hover .smeta { display: none; }
+/* 会话项：ChatGPT 卡片（圆角白卡 + 浅边框 + 轻阴影），两行布局（标题 + 元信息） */
+.session-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 52px;
+  margin-bottom: 8px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  animation: row-in .15s var(--ease);
+  transition: background .15s var(--ease), border-color .15s var(--ease), box-shadow .2s var(--ease), transform .12s var(--ease);
+}
+.session-item:hover { border-color: var(--line-3); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.session-item.active {
+  border-color: color-mix(in srgb, var(--blue) 35%, var(--line-2));
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+}
+/* 当前会话：左侧蓝色圆角竖条 */
+.session-item.active::before {
+  content: "";
+  position: absolute;
+  left: -1px; top: 9px; bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--blue);
+}
+.session-icon { display: none; }
+.session-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.stitle { min-width: 0; overflow: hidden; font-size: 14px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.session-item.active .stitle { font-weight: 600; color: var(--blue); }
+.smeta { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 11px; line-height: 14px; }
+.smeta span:first-child { display: inline; }
+.session-more { display: none; flex: none; align-self: center; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 6px; color: var(--text-tertiary); }
+.session-more:hover { background: var(--surface-hover); color: var(--text); }
 .session-item:hover .session-more { display: block; }
 .session-list .empty { padding: 8px; color: var(--text-tertiary); font-size: 12px; }
 @keyframes row-in { from { opacity: 0; } }
@@ -420,15 +450,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .dirpicker-spacer { flex: 1; }
 
 /* 侧栏工作区分组树（组=工作区，组内元素=会话） */
-.ws-group-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 500; text-align: left; user-select: none; margin-bottom: 1px; }
-.ws-group-head:hover { border-color: var(--line-2); background: var(--surface); }
-.ws-group-head.current { color: var(--text); border-color: var(--line-2); background: color-mix(in srgb, var(--blue) 5%, var(--surface)); }
-.ws-chev { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); transform: rotate(-90deg); transition: transform .15s var(--ease); }
+.ws-group-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-1); cursor: pointer; color: var(--text-secondary); font-size: 12.5px; font-weight: 600; text-align: left; user-select: none; margin-bottom: 8px; transition: background .15s var(--ease), border-color .15s var(--ease), box-shadow .2s var(--ease), transform .12s var(--ease); }
+.ws-group-head:hover { border-color: var(--line-3); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.ws-group-head.current { color: var(--text); border-color: color-mix(in srgb, var(--blue) 30%, var(--line-2)); background: color-mix(in srgb, var(--blue) 6%, var(--surface)); }
+.ws-chev { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); transform: rotate(-90deg); transition: transform .2s var(--ease); }
 .ws-group-head.expanded .ws-chev { transform: none; }
 .ws-gicon { width: 14px; height: 14px; flex: none; color: var(--blue); }
 .ws-gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-group-head.current .ws-gname { color: var(--blue); }
-.ws-gcount { flex: none; min-width: 18px; text-align: center; padding: 0 6px; border-radius: 999px; background: var(--surface-muted); color: var(--text-tertiary); font-size: 11px; line-height: 18px; font-weight: 500; }
+.ws-gcount { flex: none; min-width: 18px; text-align: center; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); font-size: 11px; line-height: 18px; font-weight: 600; }
 .ws-gadd { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--text-tertiary); font-size: 14px; }
 .ws-gadd:hover { background: var(--surface-hover-solid); color: var(--text); }
 /* 组内会话缩进 */
@@ -789,17 +819,6 @@ body.cmd-open::before {
   padding-left: 16px;
 }
 
-/* ---- 会话项 hover 增强 ---- */
-.session-item {
-  transition: background .12s var(--ease), border-color .12s var(--ease), transform .08s var(--ease);
-}
-.session-item:hover {
-  transform: translateX(2px);
-}
-.session-item.active {
-  border-color: color-mix(in srgb, var(--blue) 25%, var(--line-2));
-}
-
 /* ---- 连接状态点呼吸动画增强 ---- */
 .status-dot.running {
   animation: pulse 1.3s ease-in-out infinite;
@@ -1062,20 +1081,6 @@ body.cmd-open::before {
   50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--red) 0%, transparent); }
 }
 
-/* ---- 会话列表项：ChatGPT 风格滑入 + hover 左移 ---- */
-.session-item {
-  transition: background .15s var(--ease), border-color .15s var(--ease),
-              transform .12s var(--ease-out), padding-left .15s var(--ease);
-}
-.session-item:hover {
-  transform: translateX(3px);
-  background: var(--surface-hover);
-}
-.session-item.active {
-  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
-  border-color: color-mix(in srgb, var(--blue) 20%, var(--line-2));
-}
-
 /* ---- 工作区组头：展开/收起 chevron 旋转 ---- */
 .ws-group-head .ws-chev {
   transition: transform .25s var(--ease-spring);
@@ -1335,15 +1340,6 @@ body.cmd-open::before {
   transition: color .12s var(--ease);
 }
 
-/* ---- 工作区组头 ---- */
-.ws-group-head {
-  transition: background .15s var(--ease), border-color .15s var(--ease);
-  border-radius: 8px;
-}
-.ws-group-head:hover {
-  background: var(--surface-hover);
-}
-
 /* ---- 发送按钮隐藏/取消按钮显示的过渡 ---- */
 .send-button.cancel {
   transition: background .2s var(--ease), transform .12s var(--ease-spring),
@@ -1379,7 +1375,19 @@ body.cmd-open::before {
 .rewind-main, .task-main { flex: 1; min-width: 0; }
 .rewind-msg, .task-prompt { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rewind-meta, .task-meta { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
-.session-running-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: pulse 1.4s infinite; flex: none; }
+.session-running-dot {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 22%, transparent);
+  animation: pulse 1.4s infinite;
+  flex: none;
+}
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 .pane-sub { color: var(--text-dim); font-size: 12px; margin-top: -6px; }
 .inbox-add { display: flex; gap: 8px; margin-top: 10px; }
