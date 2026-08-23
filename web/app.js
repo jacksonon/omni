@@ -1046,7 +1046,11 @@ function renderProjectPop() {
     }
     b.addEventListener('click', () => {
       closeAllComposerPops();
-      if (!active) switchWorkspace(p).catch((e) => alert(e.message));
+      if (!active) {
+        switchWorkspace(p)
+          .then(() => metaLine('', [`✓ 已切换到工作区「${projectName(p)}」`]))
+          .catch((e) => alert(e.message));
+      }
     });
     list.appendChild(b);
   });
@@ -1102,7 +1106,8 @@ function renderLocationPop() {
     if (onClick) b.addEventListener('click', onClick);
     return b;
   };
-  list.appendChild(mk('i-laptop', '本地', true, () => closeAllComposerPops()));
+  const cwdName = (state.status?.cwd || '').split('/').filter(Boolean).pop() || '/';
+  list.appendChild(mk('i-laptop', '本地', true, () => closeAllComposerPops(), cwdName));
   list.appendChild(mk('i-branch', '新建本地工作树', false, () => {
     closeAllComposerPops();
     const branch = prompt('输入新分支名（将在父目录创建 worktree）');
@@ -1112,7 +1117,10 @@ function renderLocationPop() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ branch: branch.trim() }),
     })
-      .then(() => refreshStatus().then(() => { state.sessions = []; renderSessionList(); }).catch(() => {}))
+      .then(() => {
+        metaLine('', [`✓ 已创建 worktree「${branch.trim()}」并切换`]);
+        refreshStatus().then(() => { state.sessions = []; renderSessionList(); }).catch(() => {});
+      })
       .catch((e) => alert(`创建工作树失败：${e.message}`));
   }));
   pop.appendChild(list);
@@ -1176,7 +1184,10 @@ function renderBranchPop() {
       closeAllComposerPops();
       if (!active) {
         api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: b }) })
-          .then(() => refreshStatus().catch(()=>{}))
+          .then(() => {
+            metaLine('', [`✓ 已切换到分支「${b}」`]);
+            refreshStatus().catch(()=>{});
+          })
           .catch((e) => alert(`切换分支失败：${e.message}`));
       }
     });
@@ -1192,7 +1203,11 @@ function renderBranchPop() {
     const nb = prompt('新分支名');
     if (!nb) return;
     api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: nb, create: true }) })
-      .then(() => { closeAllComposerPops(); refreshStatus().catch(()=>{}); })
+      .then(() => {
+        closeAllComposerPops();
+        metaLine('', [`✓ 已创建并切换到分支「${nb}」`]);
+        refreshStatus().catch(()=>{});
+      })
       .catch((e) => alert(`创建分支失败：${e.message}`));
   });
   pop.appendChild(add);
@@ -1341,19 +1356,20 @@ function refreshStatus() {
 
 function updateComposer() {
   const send = $('#btn-send');
-  const cancel = $('#btn-cancel');
   const note = $('#composer-note');
   const curRun = sessionRunning();
-  // 按钮形态：空闲 ↑ 发送 / 运行中显示独立停止按钮
+  // 发送/停止合一：空闲 ↑ 发送；本会话运行中变停止按钮（点击取消当前任务）
   const use = send.querySelector('use');
-  if (use) use.setAttribute('href', '#i-arrow-up');
-  send.title = curRun ? '本会话正在运行' : '发送消息';
-  send.classList.toggle('paused', curRun);
-  send.disabled = curRun;
-  // 本会话运行中显示停止按钮；其它会话在跑不影响当前输入
-  if (cancel) cancel.classList.toggle('hidden', !curRun);
-  if (curRun) note.textContent = '任务运行中…';
-  else if (state.messageQueue.length) note.textContent = `⏳ 排队中（${state.messageQueue.length}）`;
+  if (use) use.setAttribute('href', curRun ? '#i-square' : '#i-arrow-up');
+  send.title = curRun ? '停止当前任务' : '发送消息';
+  send.classList.toggle('cancel', curRun);
+  send.classList.remove('paused');
+  send.disabled = false; // 运行中也保持可点（= 停止按钮）
+  if (curRun) {
+    note.textContent = state.messageQueue.length
+      ? `运行中 · ⏳ 排队 ${state.messageQueue.length} 条 · Enter 排队 · ⌘/Ctrl+Enter 打断`
+      : '运行中 · Enter 排队 · ⌘/Ctrl+Enter 打断';
+  } else if (state.messageQueue.length) note.textContent = `⏳ 排队中（${state.messageQueue.length}）`;
   else if (!state.session) note.textContent = '输入消息开始新对话';
   else note.textContent = '';
 }
@@ -1507,6 +1523,8 @@ bus.on('title', (ev) => {
 
 bus.on('user.message', (ev) => {
   if (ev.sessionId !== state.session) return;
+  // steer 打断消息已进当前轮 → 消费「期望已插入」标记，run.end 不再重复发送
+  if (ev.steer && state.steerText === ev.text) state.steerText = null;
   userBlock(ev.sessionId, ev.text);
   state.trace.push({ kind: 'user', text: ev.text });
   if (state.view === 'trajectory') renderTrajectory();
@@ -2153,24 +2171,36 @@ function steerMessage(text) {
   autoResize();
   updateComposer();
   if (state.session) {
-    // 调用 steer 端点：服务端写入 interruptPending + abort，loop 取走消息插入同一轮
+    // 「期望已插入」标记：steer 成功后服务端会广播 user.message(steer:true)（消息进当前轮），
+    // 收到即消费；若本轮在消息被取走前自然结束（极窄竞态，消息丢失），
+    // 标记保留 → run.end 时按普通消息补发，不丢消息。
+    state.steerText = text;
     api(`/api/sessions/${state.session}/steer`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text }),
     }).catch(() => {
-      // steer 失败则回退为取消 + 排队
-      state.steerText = text;
+      // steer 失败（如已停）则回退为取消 + 排队（run.end 消费）
       api(`/api/sessions/${state.session}/cancel`, { method: 'POST' }).catch(() => {});
     });
   }
 }
 
-$('#btn-send').addEventListener('click', sendMessage);
-$('#btn-cancel').addEventListener('click', () => {
+/* 取消当前会话的运行（停止按钮 / Esc） */
+function cancelCurrentRun() {
   if (state.session) {
     api(`/api/sessions/${state.session}/cancel`, { method: 'POST' }).catch(() => {});
+    // 乐观清理：停止后不再自动消费待发送队列
+    state.messageQueue = [];
+    state.steerText = null;
+    updateComposer();
+    updateStatusText();
   }
+}
+
+$('#btn-send').addEventListener('click', () => {
+  if (sessionRunning()) cancelCurrentRun();
+  else sendMessage();
 });
 function openSettings() {
   refreshStatus();
@@ -2254,127 +2284,63 @@ function renderModelPop(s) {
   const pop = $('#model-pop');
   if (!pop) return;
   pop.innerHTML = '';
-  // 按截图布局：两行条目（模型 / 推理强度）+ 可折叠高级
+  // 平铺结构：模型列表 + 推理强度列表，点击即切换（去掉两级展开与高级折叠）
   const models = Array.isArray(s.models) ? s.models : [];
-  const cur = models.find((m) => m.name === s.model);
   const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
-  const row = (label, value, onClick) => {
-    const b = el('button', 'model-pop-row');
-    b.type = 'button';
-    b.appendChild(el('span', 'mpr-label', label));
-    const rv = el('span', 'mpr-value', value);
-    b.appendChild(rv);
-    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ic.setAttribute('class', 'mpr-chev');
-    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    u.setAttribute('href', '#i-chevron-right');
-    ic.appendChild(u);
-    b.appendChild(ic);
-    if (onClick) b.addEventListener('click', onClick);
-    return b;
+  const mkCheck = (active) => {
+    if (!active) return null;
+    const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ck.setAttribute('class', 'pop-check');
+    const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    cu.setAttribute('href', '#i-check');
+    ck.appendChild(cu);
+    return ck;
   };
-  // 模型行：点击展开子菜单（简化为直接在原位展开选择器）
-  const modelVal = s.model || '—';
-  const modelRow = row('模型', modelVal, () => {
-    // 展开模型选择子列表
-    pop.innerHTML = '';
-    pop.appendChild(el('div', 'pop-head', '选择模型'));
+
+  // 模型
+  pop.appendChild(el('div', 'pop-head', '模型'));
+  if (!models.length) {
+    pop.appendChild(el('div', 'pop-empty', '当前无可用模型'));
+  } else {
     models.forEach((m) => {
       const it = el('button', 'pop-item' + (m.name === s.model ? ' active' : ''));
       it.type = 'button';
-      it.appendChild(el('span', 'pop-name', modelLabel(m)));
-      if (m.baseURL && !m.baseURL.includes('api.openai.com')) it.appendChild(el('span', 'pop-sub', m.baseURL));
-      if (m.name === s.model) {
-        const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        ck.setAttribute('class', 'pop-check');
-        const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-        cu.setAttribute('href', '#i-check');
-        ck.appendChild(cu);
-        it.appendChild(ck);
-      }
+      const copy = el('div', 'pop-copy');
+      copy.appendChild(el('span', 'pop-name', modelLabel(m)));
+      if (m.baseURL && !m.baseURL.includes('api.openai.com')) copy.appendChild(el('span', 'pop-sub', m.baseURL));
+      it.appendChild(copy);
+      const ck = mkCheck(m.name === s.model);
+      if (ck) it.appendChild(ck);
       it.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (m.name === s.model) { closeModelPop(); return; }
         applySettings({ model: m.name }).then(() => { closeModelPop(); }).catch((err) => alert(`切换失败：${err.message}`));
       });
       pop.appendChild(it);
     });
-  });
-  pop.appendChild(modelRow);
-  const effVal = s.reasoningEffort || efforts[0] || '—';
-  const effRow = row('推理强度', effVal, () => {
-    if (!efforts.length) return;
-    pop.innerHTML = '';
-    pop.appendChild(el('div', 'pop-head', '推理强度'));
+  }
+
+  // 推理强度
+  pop.appendChild(el('div', 'pop-sep'));
+  pop.appendChild(el('div', 'pop-head', '推理强度'));
+  if (!efforts.length) {
+    pop.appendChild(el('div', 'pop-empty', '该模型未提供思考级别'));
+  } else {
+    const curEff = s.reasoningEffort || efforts[0];
     efforts.forEach((eff) => {
-      const it = el('button', 'pop-item' + (eff === s.reasoningEffort ? ' active' : ''));
+      const it = el('button', 'pop-item' + (eff === curEff ? ' active' : ''));
       it.type = 'button';
       it.appendChild(el('span', 'pop-name', eff));
-      if (eff === s.reasoningEffort) {
-        const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        ck.setAttribute('class', 'pop-check');
-        const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-        cu.setAttribute('href', '#i-check');
-        ck.appendChild(cu);
-        it.appendChild(ck);
-      }
+      const ck = mkCheck(eff === curEff);
+      if (ck) it.appendChild(ck);
       it.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (eff === curEff) { closeModelPop(); return; }
         applySettings({ reasoningEffort: eff }).then(() => closeModelPop()).catch((err) => alert(`设置失败：${err.message}`));
       });
       pop.appendChild(it);
     });
-  });
-  pop.appendChild(effRow);
-  // 高级折叠
-  const adv = el('button', 'model-pop-adv');
-  adv.type = 'button';
-  adv.innerHTML = '高级 <svg class="chev"><use href="#i-chevron-up"/></svg>';
-  let advOpen = false;
-  const advBody = el('div', 'model-pop-adv-body hidden');
-  // 高级内容：显示当前模型端点与 slider 备用（可复用原 slider 作为高级设置）
-  if (efforts.length > 1) {
-    const sliderWrap = el('div', 'pop-adv-slider');
-    sliderWrap.appendChild(el('div', 'pop-head', '思考级别（精细调节）'));
-    const val = el('span', 'pop-val', s.reasoningEffort || efforts[0]);
-    const headRow = el('div', 'pop-head-row');
-    headRow.appendChild(el('div', 'pop-head', ''));
-    headRow.appendChild(val);
-    sliderWrap.appendChild(headRow);
-    const idx = Math.max(0, efforts.indexOf(s.reasoningEffort));
-    const range = document.createElement('input');
-    range.type = 'range';
-    range.className = 'pop-slider';
-    range.min = '0';
-    range.max = String(efforts.length - 1);
-    range.step = '1';
-    range.value = String(idx);
-    let applied = idx;
-    range.addEventListener('input', () => { val.textContent = efforts[Number(range.value)] ?? ''; });
-    range.addEventListener('change', () => {
-      const pos = Number(range.value);
-      const v = efforts[pos];
-      if (pos === applied || !v) return;
-      applySettings({ reasoningEffort: v }).then(() => { applied = pos; closeModelPop(); }).catch((err) => { alert(`设置失败：${err.message}`); range.value = String(applied); val.textContent = efforts[applied]; });
-    });
-    sliderWrap.appendChild(range);
-    const ticks = el('div', 'pop-ticks');
-    efforts.forEach((t) => ticks.appendChild(el('span', null, t)));
-    sliderWrap.appendChild(ticks);
-    advBody.appendChild(sliderWrap);
   }
-  if (cur?.baseURL) {
-    const ep = el('div', 'pop-head', `端点 ${cur.baseURL}`);
-    ep.style.fontSize = '11px';
-    advBody.appendChild(ep);
-  }
-  adv.addEventListener('click', (e) => {
-    e.stopPropagation();
-    advOpen = !advOpen;
-    advBody.classList.toggle('hidden', !advOpen);
-    adv.querySelector('svg').style.transform = advOpen ? 'rotate(180deg)' : '';
-  });
-  pop.appendChild(adv);
-  pop.appendChild(advBody);
 }
 
 /* 点击 popover 外关闭（统一处理所有 composer 相关 pop） */
