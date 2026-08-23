@@ -2284,62 +2284,65 @@ function renderModelPop(s) {
   const pop = $('#model-pop');
   if (!pop) return;
   pop.innerHTML = '';
-  // 平铺结构：模型列表 + 推理强度列表，点击即切换（去掉两级展开与高级折叠）
   const models = Array.isArray(s.models) ? s.models : [];
   const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
-  const mkCheck = (active) => {
-    if (!active) return null;
-    const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ck.setAttribute('class', 'pop-check');
-    const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    cu.setAttribute('href', '#i-check');
-    ck.appendChild(cu);
-    return ck;
-  };
 
-  // 模型
+  // 模型：下拉框（change 即切换）
   pop.appendChild(el('div', 'pop-head', '模型'));
   if (!models.length) {
     pop.appendChild(el('div', 'pop-empty', '当前无可用模型'));
   } else {
-    models.forEach((m) => {
-      const it = el('button', 'pop-item' + (m.name === s.model ? ' active' : ''));
-      it.type = 'button';
-      const copy = el('div', 'pop-copy');
-      copy.appendChild(el('span', 'pop-name', modelLabel(m)));
-      if (m.baseURL && !m.baseURL.includes('api.openai.com')) copy.appendChild(el('span', 'pop-sub', m.baseURL));
-      it.appendChild(copy);
-      const ck = mkCheck(m.name === s.model);
-      if (ck) it.appendChild(ck);
-      it.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (m.name === s.model) { closeModelPop(); return; }
-        applySettings({ model: m.name }).then(() => { closeModelPop(); }).catch((err) => alert(`切换失败：${err.message}`));
-      });
-      pop.appendChild(it);
+    const sel = document.createElement('select');
+    sel.className = 'pop-select';
+    for (const m of models) {
+      const o = document.createElement('option');
+      o.value = m.name;
+      o.textContent = modelLabel(m);
+      o.selected = m.name === s.model;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      const v = sel.value;
+      if (v === s.model) return;
+      applySettings({ model: v }).then(() => closeModelPop()).catch((err) => alert(`切换失败：${err.message}`));
     });
+    pop.appendChild(sel);
   }
 
-  // 推理强度
+  // 推理强度：slider（拖动实时预览，松手生效）
   pop.appendChild(el('div', 'pop-sep'));
   pop.appendChild(el('div', 'pop-head', '推理强度'));
   if (!efforts.length) {
     pop.appendChild(el('div', 'pop-empty', '该模型未提供思考级别'));
   } else {
     const curEff = s.reasoningEffort || efforts[0];
-    efforts.forEach((eff) => {
-      const it = el('button', 'pop-item' + (eff === curEff ? ' active' : ''));
-      it.type = 'button';
-      it.appendChild(el('span', 'pop-name', eff));
-      const ck = mkCheck(eff === curEff);
-      if (ck) it.appendChild(ck);
-      it.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (eff === curEff) { closeModelPop(); return; }
-        applySettings({ reasoningEffort: eff }).then(() => closeModelPop()).catch((err) => alert(`设置失败：${err.message}`));
-      });
-      pop.appendChild(it);
+    const headRow = el('div', 'pop-head-row');
+    headRow.appendChild(el('div', 'pop-head', ''));
+    const val = el('span', 'pop-val', curEff);
+    headRow.appendChild(val);
+    pop.appendChild(headRow);
+    const idx = Math.max(0, efforts.indexOf(curEff));
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.className = 'pop-slider';
+    range.min = '0';
+    range.max = String(efforts.length - 1);
+    range.step = '1';
+    range.value = String(idx);
+    let applied = idx;
+    range.addEventListener('input', () => { val.textContent = efforts[Number(range.value)] ?? ''; });
+    range.addEventListener('change', () => {
+      const pos = Number(range.value);
+      const v = efforts[pos];
+      if (pos === applied || !v) return;
+      applySettings({ reasoningEffort: v })
+        .then(() => { applied = pos; closeModelPop(); })
+        .catch((err) => { alert(`设置失败：${err.message}`); range.value = String(applied); val.textContent = efforts[applied]; });
     });
+    pop.appendChild(range);
+    const ticks = el('div', 'pop-ticks');
+    efforts.forEach((t) => ticks.appendChild(el('span', null, t)));
+    pop.appendChild(ticks);
   }
 }
 
