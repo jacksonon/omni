@@ -1,1 +1,0 @@
-mock-write-content
