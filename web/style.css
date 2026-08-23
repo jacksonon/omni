@@ -283,33 +283,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .empty-session .composer-card { min-height: 120px; }
 .empty-session #input { min-height: 52px; }
 
-/* ——— 新版输入区：顶部上下文条 + 底部工具/模型胶囊 ——— */
-.composer-context { display: flex; align-items: center; gap: 8px; width: 100%; max-width: var(--composer-width); margin-bottom: 10px; overflow-x: auto; scrollbar-width: none; }
-.composer-context::-webkit-scrollbar { display: none; }
-.ctx-wrap { position: relative; flex: none; }
-.context-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); color: var(--text); font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; }
-.context-chip:hover { background: var(--surface-hover-solid); }
-.context-chip svg { width: 14px; height: 14px; flex: none; color: var(--text-secondary); }
-.context-chip .chev { width: 10px; height: 10px; color: var(--text-caption); }
-/* 上下文 pop（项目/本地/分支） */
-.context-pop { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 50; width: 268px; max-height: min(380px, 56vh); overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--line-2); border-radius: 14px; background: var(--surface); box-shadow: 0 16px 48px rgba(0,0,0,.18); }
-.context-pop .pop-search { flex: none; display: flex; align-items: center; gap: 8px; margin: 8px 8px 0; padding: 0 10px; height: 32px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--surface-muted); color: var(--text-tertiary); font-size: 12.5px; }
-.context-pop .pop-search input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12.5px; }
-.context-pop .pop-search input::placeholder { color: var(--text-caption); }
-.context-pop .pop-search svg { width: 14px; height: 14px; flex: none; color: var(--text-caption); }
-.context-pop .pop-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
-.context-pop .pop-section { padding: 6px 8px 2px; color: var(--text-caption); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
-.context-pop .pop-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
-.context-pop .pop-item:hover { background: var(--surface-hover-solid); }
-.context-pop .pop-item.active { background: color-mix(in srgb, var(--blue) 9%, transparent); color: var(--text); }
-.context-pop .pop-item .pi-icon { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); }
-.context-pop .pop-item .pi-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-pop .pop-item .pi-sub { color: var(--text-caption); font-size: 11.5px; font-family: var(--mono); flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-pop .pop-item .pi-check { width: 14px; height: 14px; flex: none; color: var(--blue); }
-.context-pop .pop-divider { height: 1px; margin: 6px 4px; background: var(--line-1); }
-.context-pop .pop-foot { flex: none; display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--line-1); }
-.context-pop .pop-foot button { flex: 1; }
-
 /* 输入框容器内：+ 按钮包一层用于定位 add-menu */
 .attach-wrap { position: relative; flex: none; }
 
@@ -666,7 +639,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* ==================== 动效与交互增强 ==================== */
 
 /* ---- 全局过渡增强 ---- */
-button, .context-chip, .perm-pill, .model-pill, .new-session, .settings-button,
+button, .perm-pill, .model-pill, .new-session, .settings-button,
 .icon-button, .attach-button, .send-button, .primary-button, .secondary-button,
 .session-item, .ws-group-head, .view-tab, .crumb, .toggle-switch,
 .settings-nav-item, .pop-item, .cmd-item, .am-item, .pp-item, .dir-item, .ctx-item {
@@ -700,7 +673,7 @@ button:active, .send-button:active, .primary-button:active, .secondary-button:ac
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(6px) scale(.98); }
 }
-.context-pop, .permission-pop, .add-menu, .model-pop {
+.permission-pop, .add-menu, .model-pop {
   animation: pop-in .16s var(--ease);
   transform-origin: bottom left;
 }
@@ -907,13 +880,6 @@ body.cmd-open::before {
   0%, 100% { opacity: .8; transform: translateX(-50%) scale(1); }
   50% { opacity: 1; transform: translateX(-50%) scale(1.03); }
 }
-
-/* ---- 上下文 chip hover 增强 ---- */
-.context-chip {
-  transition: background .12s var(--ease), border-color .12s var(--ease), transform .08s var(--ease);
-}
-.context-chip:hover { transform: translateY(-1px); }
-.context-chip:active { transform: translateY(0); }
 
 /* ---- 工作区组 hover 增强 ---- */
 .ws-group-head {
@@ -1372,19 +1338,11 @@ body.cmd-open::before {
 @keyframes pop-enter {
   from { opacity: 0; transform: translateY(6px) scale(.98); }
 }
-.context-pop, .permission-pop, .add-menu, .model-pop {
+.permission-pop, .add-menu, .model-pop {
   animation: pop-enter .18s var(--ease-out);
   transform-origin: bottom left;
 }
 .model-pop { transform-origin: bottom right; }
-
-/* ---- 上下文 chip hover ---- */
-.context-chip {
-  transition: background .15s var(--ease), border-color .15s var(--ease),
-              transform .1s var(--ease);
-}
-.context-chip:hover { transform: translateY(-1px); }
-.context-chip:active { transform: translateY(0); }
 
 /* ---- 目录项/菜单项 hover ---- */
 .dir-item, .pop-item, .pp-item, .am-item, .ctx-item {

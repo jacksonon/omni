@@ -1156,18 +1156,12 @@ function updateDetails() {
     $('#details-output').textContent = selected._output || '运行中…';
     $('#details-output').classList.toggle('error', !!selected._error);
   }
-  updateComposerContext();
+  updatePermissionPill();
 }
 
-function updateComposerContext() {
+/* 权限 pill（composer 底栏左侧）：label 文本 + 配色类 */
+function updatePermissionPill() {
   const st = state.status || {};
-  const cwd = st.cwd || '';
-  const proj = cwd ? (cwd.split('/').filter(Boolean).pop() || cwd) : '—';
-  const pj = $('#ctx-project-label');
-  if (pj) pj.textContent = proj;
-  const br = st.gitBranch || st.branch || '';
-  const bl = $('#ctx-branch-label');
-  if (bl) bl.textContent = br || '—';
   const perm = st.permission || 'safe';
   const map = { full: t('perm.full'), safe: t('perm.safe'), ask: t('perm.ask'), read: t('perm.read') };
   const pl = $('#perm-label');
@@ -1176,9 +1170,9 @@ function updateComposerContext() {
   if (pill) pill.className = 'perm-pill' + (perm === 'full' ? ' full' : perm === 'ask' ? ' ask' : perm === 'read' ? ' ask' : '');
 }
 
-/* —— 权限 / 添加 / 上下文 pop 渲染 —— */
+/* —— 权限 / 添加 / 模型 pop 渲染 —— */
 function closeAllComposerPops() {
-  ['#permission-pop', '#add-menu', '#model-pop', '#project-pop', '#location-pop', '#branch-pop'].forEach((sel) => {
+  ['#permission-pop', '#add-menu', '#model-pop'].forEach((sel) => {
     const n = $(sel);
     if (n) n.classList.add('hidden');
   });
@@ -1316,220 +1310,6 @@ function renderAddMenu() {
   tip.style.textTransform = 'none';
   tip.style.fontWeight = '400';
   pop.appendChild(tip);
-}
-function renderProjectPop() {
-  const pop = $('#project-pop');
-  if (!pop) return;
-  pop.innerHTML = '';
-  const srow = el('div', 'pop-search');
-  const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  u.setAttribute('href', '#i-search');
-  ic.appendChild(u);
-  srow.appendChild(ic);
-  const inp = document.createElement('input');
-  inp.placeholder = '搜索项目';
-  srow.appendChild(inp);
-  pop.appendChild(srow);
-  const list = el('div', 'pop-list');
-  const cwd = state.status?.cwd || '';
-  const workspaces = (state.status?.workspaces || []).length ? state.status.workspaces : [cwd].filter(Boolean);
-  // 也加入最近会话的 project 去重
-  const extra = [...new Set(state.sessions.map((s) => s.project).filter(Boolean))];
-  const all = [...new Set([...workspaces, ...extra])];
-  all.forEach((p) => {
-    const active = p === cwd;
-    const b = el('button', 'pop-item' + (active ? ' active' : ''));
-    b.type = 'button';
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('class', 'pi-icon');
-    const iu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    iu.setAttribute('href', '#i-folder');
-    icon.appendChild(iu);
-    b.appendChild(icon);
-    b.appendChild(el('span', 'pi-main', p.split('/').filter(Boolean).pop() || p));
-    if (active) {
-      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      ck.setAttribute('class', 'pi-check');
-      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      cu.setAttribute('href', '#i-check');
-      ck.appendChild(cu);
-      b.appendChild(ck);
-    }
-    b.addEventListener('click', () => {
-      closeAllComposerPops();
-      if (!active) {
-        switchWorkspace(p)
-          .then(() => metaLine('', [`✓ 已切换到工作区「${projectName(p)}」`]))
-          .catch((e) => alert(e.message));
-      }
-    });
-    list.appendChild(b);
-  });
-  const more = el('button', 'pop-item');
-  more.type = 'button';
-  more.innerHTML = '<span class="pi-main">＋ 新建项目</span>';
-  more.addEventListener('click', () => { closeAllComposerPops(); browseWorkspace(); });
-  list.appendChild(more);
-  const none = el('button', 'pop-item');
-  none.type = 'button';
-  none.innerHTML = '<span class="pi-main">× 不在项目中工作</span>';
-  none.addEventListener('click', () => closeAllComposerPops());
-  list.appendChild(none);
-  pop.appendChild(list);
-  inp.addEventListener('input', () => {
-    const q = inp.value.trim().toLowerCase();
-    list.querySelectorAll('.pop-item').forEach((row) => {
-      const t = row.textContent?.toLowerCase() || '';
-      row.style.display = !q || t.includes(q) ? '' : 'none';
-    });
-  });
-}
-function renderLocationPop() {
-  const pop = $('#location-pop');
-  if (!pop) return;
-  pop.innerHTML = '';
-  const head = el('div', 'pop-section', '工作位置');
-  pop.appendChild(head);
-  const list = el('div', 'pop-list');
-  const mk = (icon, title, active, onClick, extra) => {
-    const b = el('button', 'pop-item' + (active ? ' active' : ''));
-    b.type = 'button';
-    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ic.setAttribute('class', 'pi-icon');
-    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    u.setAttribute('href', `#${icon}`);
-    ic.appendChild(u);
-    b.appendChild(ic);
-    b.appendChild(el('span', 'pi-main', title));
-    if (extra) {
-      const e = el('span', 'pi-sub', extra);
-      e.style.marginLeft = 'auto';
-      b.appendChild(e);
-    }
-    if (active) {
-      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      ck.setAttribute('class', 'pi-check');
-      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      cu.setAttribute('href', '#i-check');
-      ck.appendChild(cu);
-      b.appendChild(ck);
-    }
-    if (onClick) b.addEventListener('click', onClick);
-    return b;
-  };
-  const cwdName = (state.status?.cwd || '').split('/').filter(Boolean).pop() || '/';
-  list.appendChild(mk('i-laptop', '本地', true, () => closeAllComposerPops(), cwdName));
-  list.appendChild(mk('i-branch', '新建本地工作树', false, () => {
-    closeAllComposerPops();
-    const branch = prompt('输入新分支名（将在父目录创建 worktree）');
-    if (!branch || !branch.trim()) return;
-    api('/api/git/worktree', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ branch: branch.trim() }),
-    })
-      .then(() => {
-        metaLine('', [`✓ 已创建 worktree「${branch.trim()}」并切换`]);
-        refreshStatus().then(() => { state.sessions = []; renderSessionList(); }).catch(() => {});
-      })
-      .catch((e) => alert(`创建工作树失败：${e.message}`));
-  }));
-  pop.appendChild(list);
-}
-function renderBranchPop() {
-  const pop = $('#branch-pop');
-  if (!pop) return;
-  pop.innerHTML = '';
-  const st = state.status || {};
-  const cur = st.gitBranch || st.branch || 'main';
-  const dirty = st.gitDirty || 0;
-  const head = el('div', 'pop-search');
-  const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  u.setAttribute('href', '#i-search');
-  ic.appendChild(u);
-  head.appendChild(ic);
-  const inp = document.createElement('input');
-  const cwdName = (st.cwd || '').split('/').filter(Boolean).pop() || '项目';
-  inp.placeholder = `搜索 ${cwdName} 分支`;
-  head.appendChild(inp);
-  pop.appendChild(head);
-  const sec = el('div', 'pop-section', '分支');
-  pop.appendChild(sec);
-  const list = el('div', 'pop-list');
-  const branches = st.gitBranches && Array.isArray(st.gitBranches) && st.gitBranches.length ? st.gitBranches : [cur, 'master', 'develop'].filter(Boolean);
-  const uniq = [...new Set(branches)];
-  uniq.forEach((b) => {
-    const active = b === cur;
-    const row = el('button', 'pop-item' + (active ? ' active' : ''));
-    row.type = 'button';
-    const ic2 = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ic2.setAttribute('class', 'pi-icon');
-    const u2 = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    u2.setAttribute('href', '#i-branch');
-    ic2.appendChild(u2);
-    row.appendChild(ic2);
-    const main = el('div', 'pi-main');
-    main.textContent = b;
-    if (active && dirty) {
-      const sub = el('span', 'pi-sub', `未提交：${dirty} 个文件`);
-      sub.style.display = 'block';
-      sub.style.fontSize = '11px';
-      const wrap = el('div', '');
-      wrap.appendChild(main);
-      wrap.appendChild(sub);
-      wrap.style.flex = '1';
-      row.appendChild(wrap);
-    } else {
-      row.appendChild(main);
-    }
-    if (active) {
-      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      ck.setAttribute('class', 'pi-check');
-      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      cu.setAttribute('href', '#i-check');
-      ck.appendChild(cu);
-      row.appendChild(ck);
-    }
-    row.addEventListener('click', () => {
-      closeAllComposerPops();
-      if (!active) {
-        api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: b }) })
-          .then(() => {
-            metaLine('', [`✓ 已切换到分支「${b}」`]);
-            refreshStatus().catch(()=>{});
-          })
-          .catch((e) => alert(`切换分支失败：${e.message}`));
-      }
-    });
-    list.appendChild(row);
-  });
-  pop.appendChild(list);
-  const foot = el('div', 'pop-divider');
-  pop.appendChild(foot);
-  const add = el('button', 'pop-item');
-  add.type = 'button';
-  add.innerHTML = '<span class="pi-main">＋ 创建并检出新分支…</span>';
-  add.addEventListener('click', () => {
-    const nb = prompt('新分支名');
-    if (!nb) return;
-    api('/api/git/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: nb, create: true }) })
-      .then(() => {
-        closeAllComposerPops();
-        metaLine('', [`✓ 已创建并切换到分支「${nb}」`]);
-        refreshStatus().catch(()=>{});
-      })
-      .catch((e) => alert(`创建分支失败：${e.message}`));
-  });
-  pop.appendChild(add);
-  inp.addEventListener('input', () => {
-    const q = inp.value.trim().toLowerCase();
-    list.querySelectorAll('.pop-item').forEach((r) => {
-      const t = r.textContent?.toLowerCase() || '';
-      r.style.display = !q || t.includes(q) ? '' : 'none';
-    });
-  });
 }
 
 const TRACE_ICONS = {
@@ -2480,7 +2260,7 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     $('#session-search').focus();
   } else if (e.key === 'Escape') {
-    const anyPopOpen = ['#permission-pop', '#add-menu', '#project-pop', '#location-pop', '#branch-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
+    const anyPopOpen = ['#permission-pop', '#add-menu', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
     if (!$('#rewind-modal').classList.contains('hidden')) $('#rewind-modal').classList.add('hidden');
     else if (!$('#inbox-modal').classList.contains('hidden')) $('#inbox-modal').classList.add('hidden');
@@ -2621,30 +2401,6 @@ $('#btn-permission').addEventListener('click', (e) => {
   $('#add-menu').classList.add('hidden');
   $('#model-pop').classList.add('hidden');
 });
-$('#ctx-project').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const pop = $('#project-pop');
-  if (pop.classList.contains('hidden')) { renderProjectPop(); pop.classList.remove('hidden'); }
-  else pop.classList.add('hidden');
-  $('#location-pop').classList.add('hidden');
-  $('#branch-pop').classList.add('hidden');
-});
-$('#ctx-location').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const pop = $('#location-pop');
-  if (pop.classList.contains('hidden')) { renderLocationPop(); pop.classList.remove('hidden'); }
-  else pop.classList.add('hidden');
-  $('#project-pop').classList.add('hidden');
-  $('#branch-pop').classList.add('hidden');
-});
-$('#ctx-branch').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const pop = $('#branch-pop');
-  if (pop.classList.contains('hidden')) { renderBranchPop(); pop.classList.remove('hidden'); }
-  else pop.classList.add('hidden');
-  $('#project-pop').classList.add('hidden');
-  $('#location-pop').classList.add('hidden');
-});
 
 /* ---------------- 模型 / 思考级别 popover（composer 内联切换） ---------------- */
 function openModelPop() {
@@ -2732,8 +2488,8 @@ document.addEventListener('click', (e) => {
     return n && (n.contains(target) || (n.previousElementSibling && n.previousElementSibling.contains && n.previousElementSibling.contains(target)));
   };
   // 统一关闭逻辑：若点击不在任何 pop/触发器内则全关
-  const pops = ['#model-pop', '#permission-pop', '#add-menu', '#project-pop', '#location-pop', '#branch-pop'];
-  const triggers = ['#composer-model', '#btn-permission', '#btn-attach', '#ctx-project', '#ctx-location', '#ctx-branch'];
+  const pops = ['#model-pop', '#permission-pop', '#add-menu'];
+  const triggers = ['#composer-model', '#btn-permission', '#btn-attach'];
   const hitPop = pops.some((sel) => { const n = $(sel); return n && n.contains(target); });
   const hitTrig = triggers.some((sel) => { const n = $(sel); return n && n.contains(target); });
   if (!hitPop && !hitTrig) closeAllComposerPops();
