@@ -31,6 +31,7 @@ const state = {
   selectedTool: null,
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
+  cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
   tasks: [],            // 后台任务收件箱（1.0 P1-8）
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
   steerText: null,      // 运行中 Cmd+Enter 打断消息（仅当前会话，优先于 queue）
@@ -1404,6 +1405,7 @@ function refreshStatus() {
     if (sp) sp.checked = state.planMode;
     $('#set-permission').value = s.permission || 'safe';
     renderSettingsModel(s);
+    fillModelConfigForm(s);
     // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
     const theme = applyTheme(s.webTheme || 'system');
     storeTheme(theme);
@@ -2470,14 +2472,74 @@ $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.tog
 $('#set-permission').addEventListener('change', (e) => {
   applySettings({ permission: e.target.value }).catch((err) => alert(`设置失败：${err.message}`));
 });
-$('#btn-save-apikey').addEventListener('click', () => {
-  const v = $('#set-apikey').value.trim();
-  if (!v) return;
-  applySettings({ apiKey: v }).then(() => {
+/* ---------------- 模型配置表单（设置 → 模型配置 tab） ---------------- */
+function fillModelConfigForm(s) {
+  const sel = $('#cfg-model');
+  if (!sel) return;
+  const models = Array.isArray(s.models) ? s.models : [];
+  const cur = state.cfgModelName && models.some((m) => m.name === state.cfgModelName) ? state.cfgModelName : (s.model || '');
+  const sig = JSON.stringify([models.map((m) => m.name), cur]);
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = '';
+    for (const m of models) {
+      const o = document.createElement('option');
+      o.value = m.name; o.textContent = modelLabel(m);
+      o.selected = m.name === cur;
+      sel.appendChild(o);
+    }
+    sel.value = cur;
+  }
+  const m = models.find((x) => x.name === sel.value) || {};
+  $('#cfg-baseurl').value = m.baseURL || '';
+  const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
+  $('#cfg-efforts').value = opts.join(', ');
+  const curEff = m.reasoningEffort || s.reasoningEffort || opts[0] || '';
+  const effSel = $('#cfg-effort-current');
+  const esig = JSON.stringify([opts, curEff]);
+  if (effSel.dataset.sig !== esig) {
+    effSel.dataset.sig = esig;
+    effSel.innerHTML = '';
+    for (const o of opts) {
+      const op = document.createElement('option');
+      op.value = o; op.textContent = o;
+      op.selected = o === curEff;
+      effSel.appendChild(op);
+    }
+    effSel.value = curEff;
+  }
+  $('#cfg-context').value = m.limit?.context || '';
+}
+// 模型下拉切换时刷新表单
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'cfg-model') {
+    state.cfgModelName = e.target.value;
+    fillModelConfigForm(state.status || {});
+  }
+});
+// 保存模型配置
+$('#btn-save-model').addEventListener('click', () => {
+  const sel = $('#cfg-model');
+  const name = sel.value;
+  if (!name) { alert('没有可保存的模型'); return; }
+  const mc = {
+    modelName: name,
+    baseURL: $('#cfg-baseurl').value.trim() || undefined,
+    apiKey: $('#set-apikey').value.trim() || undefined,
+    reasoningEffortOptions: $('#cfg-efforts').value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
+    reasoningEffort: $('#cfg-effort-current').value || undefined,
+    contextLimit: Number($('#cfg-context').value) > 0 ? Number($('#cfg-context').value) : undefined,
+  };
+  api('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ modelConfig: mc }),
+  }).then(() => {
     $('#set-apikey').value = '';
-    const note = $('#apikey-note');
+    const note = $('#model-save-note');
     note.classList.remove('hidden');
     setTimeout(() => note.classList.add('hidden'), 2500);
+    refreshStatus().catch(() => {});
   }).catch((err) => alert(`保存失败：${err.message}`));
 });
 $('#plan-mode').addEventListener('change', (e) => {

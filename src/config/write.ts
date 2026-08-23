@@ -222,6 +222,58 @@ export function persistWebThemeToConfig(theme: 'light' | 'dark' | 'system', _cfg
   return { ok: true, file, message: `已保存主题配置 → ${file}（重启后同样生效）` };
 }
 
+export interface ModelConfigPatch {
+  modelName: string;
+  baseURL?: string;
+  apiKey?: string;
+  reasoningEffortOptions?: string[];
+  reasoningEffort?: string;
+  contextLimit?: number;
+}
+
+/**
+ * 把模型配置写入**全局配置**的 models.<name> 字段（设置面板「模型配置」tab 保存时调用）。
+ * 合并已有字段（保留 userAgent、limit.output 等未改字段），结构对齐 omni.json 的 models 条目。
+ */
+export function persistModelConfigToGlobal(patch: ModelConfigPatch, _cfg: OmniConfig): PersistModelResult {
+  const name = patch.modelName;
+  if (!name) return { ok: false, file: null, message: '缺少模型名' };
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try { obj = JSON.parse(text) as Record<string, unknown>; }
+      catch {
+        return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动在 models 字段配置` };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: '全局配置格式异常，未自动修改——请手动在 models 字段配置' };
+  }
+  const models = (obj.models && typeof obj.models === 'object' && !Array.isArray(obj.models)
+    ? (obj.models as Record<string, unknown>) : {}) as Record<string, unknown>;
+  const cur = (models[name] && typeof models[name] === 'object' && !Array.isArray(models[name])
+    ? { ...(models[name] as Record<string, unknown>) } : {}) as Record<string, unknown>;
+  if (patch.baseURL !== undefined) cur.baseURL = patch.baseURL;
+  if (patch.apiKey !== undefined) cur.apiKey = patch.apiKey;
+  if (patch.reasoningEffortOptions !== undefined) cur.reasoningEffortOptions = patch.reasoningEffortOptions;
+  if (patch.reasoningEffort !== undefined) cur.reasoningEffort = patch.reasoningEffort;
+  if (patch.contextLimit !== undefined) {
+    const limit = cur.limit && typeof cur.limit === 'object' && !Array.isArray(cur.limit) ? { ...(cur.limit as Record<string, unknown>) } : {};
+    limit.context = patch.contextLimit;
+    cur.limit = limit;
+  }
+  models[name] = cur;
+  obj.models = models;
+  try { writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`); }
+  catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return { ok: true, file, message: `已保存模型配置 → ${file}` };
+}
+
 /**
  * 把默认模型名写入配置文件顶层 model 字段（/model <名称> 切换 / 面板确认持久化）。
  * 运行时已即时生效（interactive 重建 client + 更新 modelRuntime），这里只落盘供下次会话加载。

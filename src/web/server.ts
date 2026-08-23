@@ -104,6 +104,7 @@ import {
   persistVariantToConfig,
   persistWebWorkspaceToConfig,
   persistWebThemeToConfig,
+  persistModelConfigToGlobal,
   removeWebWorkspaceFromConfig,
 } from '../config/write.js';
 import type { PermissionTier } from '../safety/policy.js';
@@ -1642,6 +1643,53 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           // 设置面板「主题」tab：运行时应用（buildStatus 下发）+ 持久化到配置文件
           if (runOpts.cfg) runOpts.cfg.webTheme = body.webTheme;
           persistWebThemeToConfig(body.webTheme, cfg);
+        }
+        // 设置面板「模型配置」tab：保存所选模型的端点/密钥/级别/上下文到全局配置 + 运行时应用
+        if (body.modelConfig && typeof body.modelConfig === 'object') {
+          const mc = body.modelConfig as Record<string, unknown>;
+          const name = typeof mc.modelName === 'string' && mc.modelName.trim()
+            ? mc.modelName.trim() : (runOpts.modelRuntime?.model ?? cfg.model);
+          const baseURL = typeof mc.baseURL === 'string' && mc.baseURL.trim() ? mc.baseURL.trim() : undefined;
+          const apiKey = typeof mc.apiKey === 'string' && mc.apiKey.trim() ? mc.apiKey.trim() : undefined;
+          const efforts = Array.isArray(mc.reasoningEffortOptions)
+            ? (mc.reasoningEffortOptions as unknown[]).map(String).filter((x) => x.trim())
+            : undefined;
+          const effort = typeof mc.reasoningEffort === 'string' && mc.reasoningEffort.trim() ? mc.reasoningEffort.trim() : undefined;
+          const ctxLimit = typeof mc.contextLimit === 'number' && mc.contextLimit > 0 ? Math.floor(mc.contextLimit) : undefined;
+          persistModelConfigToGlobal(
+            { modelName: name, baseURL, apiKey, reasoningEffortOptions: efforts, reasoningEffort: effort, contextLimit: ctxLimit },
+            cfg
+          );
+          // 同步内存 models 表 + 运行时应用（仅当保存的是当前模型）
+          const isCurrent = name === (runOpts.modelRuntime?.model ?? cfg.model);
+          if (runOpts.models) {
+            const idx = runOpts.models.findIndex((m) => m.name === name);
+            const patch: Record<string, unknown> = {};
+            if (baseURL) patch.baseURL = baseURL;
+            if (apiKey) patch.apiKey = apiKey;
+            if (efforts) patch.reasoningEffortOptions = efforts;
+            if (effort) patch.reasoningEffort = effort;
+            if (ctxLimit) patch.limit = { context: ctxLimit };
+            if (idx >= 0) runOpts.models[idx] = { ...runOpts.models[idx], ...patch };
+            else runOpts.models.push({ name, ...patch });
+          }
+          if (isCurrent) {
+            if (baseURL || apiKey) {
+              const ep = runOpts.models?.find((m) => m.name === name);
+              const client = createClient(
+                {
+                  name,
+                  baseURL: baseURL ?? ep?.baseURL ?? cfg.baseURL,
+                  apiKey: apiKey ?? ep?.apiKey ?? cfg.apiKey,
+                  userAgent: ep?.userAgent ?? cfg.userAgent,
+                },
+                apiKey ?? ep?.apiKey ?? cfg.apiKey ?? ''
+              );
+              runOpts.modelRuntime = { client, model: name };
+            }
+            if (efforts) runOpts.reasoningEffortOptions = efforts;
+            if (effort) runOpts.reasoningEffort = effort;
+          }
         }
         void broadcast('status', await buildStatus(runOpts));
         json(res, 200, await buildStatus(runOpts));

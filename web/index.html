@@ -176,7 +176,7 @@
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span>主题</span></button>
         <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span>模型</span></button>
         <button class="settings-nav-item" type="button" data-pane="workspace"><svg><use href="#i-folder"/></svg><span>工作区</span></button>
-        <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span>API 密钥</span></button>
+        <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span>模型配置</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
       </nav>
       <div class="settings-content">
@@ -233,16 +233,36 @@
         </section>
 
         <section class="settings-pane" data-pane="apikey">
-          <h3 class="settings-pane-title">API 密钥</h3>
-          <p class="settings-pane-sub">覆盖本次运行的密钥，仅保存在当前进程，不写入配置文件。</p>
+          <h3 class="settings-pane-title">模型配置</h3>
+          <p class="settings-pane-sub">配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。</p>
           <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info"><h4>配置的模型</h4><p>选择要编辑的模型，切换后下方字段同步为该模型的配置。</p></div>
+              <select id="cfg-model" class="setting-control"></select>
+            </div>
             <div class="setting-row col">
-              <div class="setting-info"><h4>API Key</h4><p>留空表示沿用配置文件中的密钥，保存后立即生效。</p></div>
+              <div class="setting-info"><h4>端点（baseURL）</h4><p>OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
+              <input type="text" id="cfg-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="setting-row col">
+              <div class="setting-info"><h4>API Key</h4><p>留空表示沿用配置文件中已保存的密钥。</p></div>
               <div class="apikey-row">
                 <input type="password" id="set-apikey" placeholder="sk-…" autocomplete="off">
-                <button id="btn-save-apikey" class="primary-button" type="button">保存</button>
+                <button id="btn-save-model" class="primary-button" type="button">保存</button>
               </div>
-              <p id="apikey-note" class="save-note hidden">✓ 已生效（本次运行）</p>
+              <p id="model-save-note" class="save-note hidden">✓ 已保存到配置文件</p>
+            </div>
+            <div class="setting-row col">
+              <div class="setting-info"><h4>思考级别选项（variants）</h4><p>逗号分隔，如 <code>low,medium,high</code>；模型只支持这些级别。</p></div>
+              <input type="text" id="cfg-efforts" class="cfg-text" placeholder="low,medium,high" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4>当前思考级别</h4><p>默认使用哪一个级别。</p></div>
+              <select id="cfg-effort-current" class="setting-control"></select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4>上下文长度（context）</h4><p>模型的上下文窗口大小（token 数），如 <code>128000</code>。</p></div>
+              <input type="number" id="cfg-context" class="setting-control" style="width:160px" placeholder="128000" min="0" step="1000">
             </div>
           </div>
         </section>
