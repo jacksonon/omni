@@ -398,6 +398,7 @@ a separate panel and never pollutes the conversation flow):
 | `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
 | `/undo` | undo the latest file edit (`/undo all` rolls back everything; write_file snapshots automatically) |
 | `/redo` | redo the last undo |
+| `/rewind` | session checkpoints: roll workspace files back to any past turn (`/rewind` lists · `/rewind <N>` restores; auto-checkpointed every turn, survives session restore, conversation kept — files only) |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites existing) |
 | `/skill` | skill management: list / `find <word>` online search on skills.sh / `add <repo>` install / `show <name>` view |
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
@@ -412,7 +413,7 @@ a separate panel and never pollutes the conversation flow):
 | `/rename` | rename the session (terminal window title + persisted meta) |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace panel (right sidebar): per-turn request/tool/message ledger, click a row for the detail page |
-| `/diff` | view uncommitted changes (git diff + untracked files, first 60 lines) |
+| `/diff` | view uncommitted changes (git diff + untracked files, first 60 lines; `--stat` summary only · `--full` untruncated) |
 | `/config` | show config file paths and sources |
 | `/mcp` | MCP management: list servers/tools; `/mcp reconnect` reconnects |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |

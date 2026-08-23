@@ -13,10 +13,15 @@ import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { visualWidth } from '../tui/width.js';
 
-/** 标题系统提示：直接输出标题本身，不要任何解释/引号/标点结尾 */
-const TITLE_SYSTEM_PROMPT =
-  '你是会话标题生成器。根据下面的对话内容生成一个简洁的中文标题（概括主题，不超过 15 个字）。' +
-  '只输出标题本身：不要引号、不要书名号、不要标点结尾、不要任何解释。';
+/** 标题系统提示：直接输出标题本身，不要任何解释/引号/标点结尾。
+ *  语言按界面语言（config language）选择——中文会话出中文标题、英文会话出英文标题。 */
+function titleSystemPrompt(lang: 'zh' | 'en'): string {
+  return lang === 'en'
+    ? 'You are a session title generator. Based on the conversation below, produce a concise English title (summarize the topic, max 8 words). ' +
+        'Output only the title: no quotes, no trailing punctuation, no explanation.'
+    : '你是会话标题生成器。根据下面的对话内容生成一个简洁的中文标题（概括主题，不超过 15 个字）。' +
+        '只输出标题本身：不要引号、不要书名号、不要标点结尾、不要任何解释。';
+}
 
 /** 标题最大显示列宽（超长截断 + 省略号；CJK 全角算 2 列） */
 const TITLE_MAX_COLS = 24;
@@ -43,12 +48,14 @@ export function cleanTitle(raw: string): string | null {
 /**
  * 用首条用户消息 + 首条助手回答生成会话标题（fire-and-forget 调用方）。
  *
+ * @param lang 标题语言（跟随界面语言 config language；缺省中文）
  * @returns 标题；任何失败返回 null（调用方静默忽略，不打扰对话）
  */
 export async function generateSessionTitle(
   client: OpenAI,
   model: string,
-  messages: ChatCompletionMessageParam[]
+  messages: ChatCompletionMessageParam[],
+  lang: 'zh' | 'en' = 'zh'
 ): Promise<string | null> {
   try {
     // 取首条用户消息与首条助手消息。注意：工具调用轮次的 assistant 消息 content 为
@@ -66,7 +73,7 @@ export async function generateSessionTitle(
     const stream = await client.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: TITLE_SYSTEM_PROMPT },
+        { role: 'system', content: titleSystemPrompt(lang) },
         { role: 'user', content: excerpt },
       ],
       max_tokens: 50,

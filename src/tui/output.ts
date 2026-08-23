@@ -292,6 +292,12 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
+  /** fallback 回退成功（P0）：meta 行提示（对话流可见，不打断流程） */
+  onFallback(model: string): void {
+    pushLine(this.state, { kind: 'meta', text: `↩ 已回退到备用模型 ${model}` });
+    this.schedulePaint();
+  }
+
   onThinkingSaved(_len: number, _file: string | null): void {
     // TUI 中思考已完整展示，无需落盘提示
   }

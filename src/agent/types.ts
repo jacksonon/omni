@@ -110,6 +110,12 @@ export interface RunOptions {
    */
   modelRuntime?: import('../client.js').ModelRuntime;
   /**
+   * fallback 回退链（第七节 P0，attachRuntime 从 config fallbackModels 展开）：
+   * 主模型请求失败（429/超时/5xx——非 401、非 abort）时按序切换的备用端点。
+   * 条目已展开为完整端点（baseURL/apiKey 按 models 表回退顶层）；空/缺省 = 不回退。
+   */
+  fallbackEndpoints?: import('../client.js').ModelEndpoint[];
+  /**
    * 非 MCP 的基础工具链（静态 + delegate；/mcp 重连时以此为基底重建 runOpts.tools）。
    * attachRuntime 注入。
    */

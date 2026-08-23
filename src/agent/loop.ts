@@ -17,6 +17,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { createClient } from '../client.js';
 import { formatToolCall, previewOutput, countDiffLines } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
@@ -70,6 +71,28 @@ export function buildSystemPrompt(
 
 /** 工具返回的错误前缀（用于 ✓/✗ 判定与自我纠错提示） */
 const TOOL_ERROR_PREFIX = /^(错误|执行失败|已拦截)/;
+
+/**
+ * 请求错误是否值得 fallback 回退（P0）：429 限流 / 408·5xx 网关 / 超时 / 网络层
+ * （fetch failed / ECONNRESET 等）→ 可重试；401 鉴权、400 参数、404 模型不存在
+ * → 配置问题，换端点同样失败，不浪费回退。
+ */
+export function isRetryableRequestError(err: unknown): boolean {
+  const e = err as { status?: number; code?: string; message?: string; name?: string };
+  if (typeof e?.status === 'number') {
+    return e.status === 408 || e.status === 429 || (e.status >= 500 && e.status <= 599);
+  }
+  const msg = `${e?.message ?? ''} ${e?.code ?? ''}`.toLowerCase();
+  return (
+    msg.includes('timeout') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('fetch failed') ||
+    msg.includes('network')
+  );
+}
 
 /** 构造 AbortError（bun/Node 通用；流式逐 chunk 检查与工具等待共用） */
 const abortError = (): Error => {
@@ -166,6 +189,10 @@ export async function runAgent(
   // 强推理模型、执行模式用 editor 轻模型（缺省 = 当前模型；同一端点下发模型名）。
   // 每轮按 planMode 决定——/plan 切换即时生效；delegate 子代理同规则（delegate.ts）
   const routedModel = planMode ? (opts.architectModel ?? model) : (opts.editorModel ?? model);
+  // 本回合实际发请求用的 client/model：fallback 回退成功后切换为备用端点
+  //（本轮内后续请求继续用备用；下一回合重新从主模型开始——主模型可能已恢复）
+  let activeClient = client;
+  let routedModelRuntime = routedModel;
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
   // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批 reason
@@ -229,7 +256,9 @@ export async function runAgent(
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
     const llmT0 = Date.now();
     let firstTokenAt: number | null = null;
-    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> | null = null;
+    /** fallback 回退链（P0）：主模型失败时按序尝试的 [client, model] 对（惰性构建一次） */
+    let fallbacks: { client: OpenAI; model: string }[] | null = null;
     try {
       // 附加参数：stream_options.include_usage（TUI footer token 用量）+ reasoning_effort
       //（/variants 思考级别）。个别网关不认会直接报错 → 回退为不带这些参数的普通流式请求
@@ -237,8 +266,8 @@ export async function runAgent(
       // 首 chunk 才 resolve——waitAbort 包一层，abort 立即 reject（连接后台继续收完自然关闭）
       try {
         stream = await waitAbort(
-          client.chat.completions.create({
-            model: routedModel,
+          activeClient.chat.completions.create({
+            model: routedModelRuntime,
             messages: requestMessages,
             tools: toolSchemas,
             stream: true,
@@ -254,8 +283,8 @@ export async function runAgent(
         );
       } catch {
         stream = await waitAbort(
-          client.chat.completions.create({
-            model: routedModel,
+          activeClient.chat.completions.create({
+            model: routedModelRuntime,
             messages: requestMessages,
             tools: toolSchemas,
             stream: true,
@@ -265,14 +294,11 @@ export async function runAgent(
         );
       }
     } catch (err) {
-      // 请求失败（网络 / 401 / 端点错误等）：已在界面提示（TUI 警告行 / console 提示），
-      // **不再抛出**——抛出会让错误一路冒到入口层把整个进程打崩（用户换模型后 401
-      // 发消息闪退的根因）。优雅结束本轮，让用户看到错误后修正配置重试。
-      output.onLlmLap?.(Date.now() - llmT0, null); // 失败也计入 LLM 墙钟（首 token 无）
-      // 取消/打断：abort 信号已触发时（如工具执行期间被 steer 打断），create 立刻抛
+      // 取消/打断优先判定：abort 信号已触发时（如工具执行期间被 steer 打断），create 立刻抛
       // AbortError——打断则取走消息**同一轮内继续**（模型直接回答打断消息）；
       // 取消（/stop / Esc）时槽为空 → 优雅结束本轮（abort 不是请求错误，不报「请求失败」）
       if ((err as Error)?.name === 'AbortError') {
+        output.onLlmLap?.(Date.now() - llmT0, null);
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
@@ -285,10 +311,45 @@ export async function runAgent(
         if (output.thinking.shown) output.thinking.finish(); // 预建的 thinking 头行复位
         return;
       }
-      output.onRequestFailed(err);
-      opts.events?.turnEnd('error', (err as Error)?.message); // 轨迹：请求失败结束本轮
-      if (output.thinking.shown) output.thinking.finish(); // 同上：不留 thinkingShown 残留
-      return;
+      // **fallback 模型回退链（第七节 P0）**：可重试错误（429 限流 / 超时 / 5xx 网关 /
+      // 网络错误——非 401 鉴权、非 400 参数）按序切换备用端点重试本轮；成功后提示
+      // 「已回退到 X」（meta 行 + 轨迹），本轮后续请求继续用该备用端点（activeClient）。
+      // 401/400 是配置问题——换端点也一样失败，直接走失败路径不浪费重试。
+      if (isRetryableRequestError(err) && (opts.fallbackEndpoints?.length ?? 0) > 0) {
+        fallbacks ??= opts.fallbackEndpoints!.map((ep) => ({ client: createClient(ep, ep.apiKey ?? ''), model: ep.name }));
+        for (const fb of fallbacks) {
+          try {
+            stream = await waitAbort(
+              fb.client.chat.completions.create({
+                model: fb.model,
+                messages: requestMessages,
+                tools: toolSchemas,
+                stream: true,
+                ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
+              }),
+              opts.abortSignal
+            );
+            activeClient = fb.client;
+            routedModelRuntime = fb.model;
+            output.onFallback?.(fb.model);
+            break; // 该备用端点可用：跳出回退循环
+          } catch (fbErr) {
+            if ((fbErr as Error)?.name === 'AbortError' || !isRetryableRequestError(fbErr)) {
+              err = fbErr; // abort / 非可重试错误 → 交给下方失败路径如实呈现
+              break;
+            }
+            err = fbErr; // 该备用也挂：记下错误继续下一个
+          }
+        }
+      }
+      // 全部备用端点都不可用 / 未配置 fallback：优雅结束本轮（原语义）
+      if (stream === null) {
+        output.onLlmLap?.(Date.now() - llmT0, null); // 失败也计入 LLM 墙钟（首 token 无）
+        output.onRequestFailed(err);
+        opts.events?.turnEnd('error', (err as Error)?.message); // 轨迹：请求失败结束本轮
+        if (output.thinking.shown) output.thinking.finish(); // 同上：不留 thinkingShown 残留
+        return;
+      }
     }
 
     // 流式累积：思考（reasoning）、正文（content）与工具调用（tool_calls）

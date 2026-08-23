@@ -276,7 +276,12 @@ export async function prepareContext(
   );
   if (skillsFile && !hasSkills && messages.length > 0) {
     const skills = await discoverSkills();
-    if (skills.length > 0) messages.unshift(skillMessage(skills));
+    if (skills.length > 0) {
+      // 任务文本 = 最近一条用户消息（技能清单按任务相关性排序——第十节 P2）
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      const taskText = lastUser && typeof lastUser.content === 'string' ? lastUser.content : undefined;
+      messages.unshift(skillMessage(skills, taskText));
+    }
   }
   // -0.5) 代码库结构感知（repo map，P1）：首轮注入一次紧凑符号地图（文件: 符号列表）——
   //       模型对项目结构有概览，避免盲目 list_directory。可配置关闭。

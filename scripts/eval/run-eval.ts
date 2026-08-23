@@ -4,6 +4,9 @@
  * 用法：
  *   npm run eval          —— 真实 API（用当前 omni.json 配置的模型）
  *   npm run eval:mock     —— 离线（自动起本地 mock server，确定性，可进 CI）
+ *   npm run eval -- --compare modelA,modelB[,modelC]
+ *                         —— 多模型对比（第七节 P2）：同一组任务各模型跑一遍，
+ *                            输出对比报告 eval-compare.json + 终端对比表。
  *
  * 每个任务：spawn `npx tsx src/index.ts "<prompt>"`（真实 CLI 路径，含全部入口逻辑），
  * 捕获 stdout 做子串断言（expect 全命中 / notExpect 零出现），超时 kill。
@@ -18,6 +21,11 @@ import { EVAL_TASKS_MOCK, EVAL_TASKS_REAL, type EvalTask } from './tasks.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const useMock = process.argv.includes('--mock');
 const tasks = useMock ? EVAL_TASKS_MOCK : EVAL_TASKS_REAL;
+// --compare m1,m2：多模型对比模式（逗号分隔模型名；真实 API 用——mock 只有一个模型）
+const compareIdx = process.argv.indexOf('--compare');
+const compareModels = compareIdx >= 0
+  ? (process.argv[compareIdx + 1] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  : [];
 
 interface TaskResult {
   name: string;
@@ -52,10 +60,14 @@ async function startMock(): Promise<() => void> {
   return () => child.kill();
 }
 
-function runTask(task: EvalTask, env: Record<string, string>): Promise<TaskResult> {
+function runTask(task: EvalTask, env: Record<string, string>, model?: string): Promise<TaskResult> {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn('npx', ['tsx', 'src/index.ts', task.prompt], {
+    // --compare 模式：-m <模型名> 覆盖配置（端点按 models 表展开；无该表条目回退顶层 baseURL）
+    const args = ['tsx', 'src/index.ts'];
+    if (model) args.push('-m', model);
+    args.push(task.prompt);
+    const child = spawn('npx', args, {
       cwd: ROOT,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -79,7 +91,59 @@ function runTask(task: EvalTask, env: Record<string, string>): Promise<TaskResul
   });
 }
 
+/** 多模型对比（第七节 P2）：同一组任务 × 各模型跑一遍，输出对比报告 */
+async function runCompare(): Promise<void> {
+  console.log(`\n🧪 Omni 多模型对比评估 · 模型 ${compareModels.join(' vs ')} · 任务 ${tasks.length} 个\n`);
+  // 对比模式只支持真实 API（mock 单模型无对比意义）
+  const perModel: { model: string; results: TaskResult[]; passed: number; totalMs: number }[] = [];
+  for (const model of compareModels) {
+    console.log(`── ${model} ──`);
+    const env: Record<string, string> = {};
+    let stopMock: (() => void) | null = null;
+    if (useMock) {
+      stopMock = await startMock();
+      env.OMNI_BASE_URL = 'http://127.0.0.1:8791/v1';
+      env.OMNI_API_KEY = 'mock';
+    }
+    try {
+      const results: TaskResult[] = [];
+      for (const task of tasks) {
+        const r = await runTask(task, env, model);
+        results.push(r);
+        console.log(`  ${r.ok ? '✓' : '✗'} ${r.name}（${r.ms}ms）${r.ok ? '' : `— ${r.reason}`}`);
+      }
+      perModel.push({
+        model,
+        results,
+        passed: results.filter((r) => r.ok).length,
+        totalMs: results.reduce((a, r) => a + r.ms, 0),
+      });
+    } finally {
+      stopMock?.();
+    }
+  }
+  // 终端对比表 + 报告落盘
+  console.log('\n📊 对比结果：');
+  console.log(`  ${'模型'.padEnd(24)}完成率${'   '}总耗时`);
+  for (const m of perModel) {
+    const rate = ((m.passed / tasks.length) * 100).toFixed(0);
+    console.log(`  ${m.model.padEnd(24)}${m.passed}/${tasks.length}（${rate}%）   ${(m.totalMs / 1000).toFixed(1)}s`);
+  }
+  writeFileSync(
+    path.join(ROOT, 'eval-compare.json'),
+    JSON.stringify({ mode: useMock ? 'mock' : 'real', runAt: new Date().toISOString(), models: compareModels, perModel }, null, 2)
+  );
+  console.log('\n报告已写入 eval-compare.json');
+  process.exit(perModel.every((m) => m.passed === tasks.length) ? 0 : 1);
+}
+
 async function main(): Promise<void> {
+  // --compare：多模型对比分支（独立流程，不写 eval-report.json）
+  if (compareModels.length >= 2) return runCompare();
+  if (compareModels.length === 1) {
+    console.error('--compare 至少需要两个模型：--compare modelA,modelB');
+    process.exit(1);
+  }
   console.log(`\n🧪 Omni 评估（${useMock ? 'mock 离线' : '真实 API'}）· 任务 ${tasks.length} 个\n`);
   const env: Record<string, string> = {};
   let stopMock: (() => void) | null = null;

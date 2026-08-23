@@ -198,11 +198,44 @@ export async function loadSkillContent(
   }
 }
 
-/** 技能清单 → system 消息（只列 name+description + 渐进披露截断 + 过滤 disable-model-invocation） */
-export function skillMessage(skills: SkillInfo[]): ChatCompletionMessageParam {
+/**
+ * 技能与任务的相关度（P2 清单按关键词注入）：name/description 命中任务关键词
+ * 越多越相关。关键词 = 任务文本里的 CJK 词片段与 ASCII 单词（去停用词，≥2 字符）。
+ * 返回命中数（0 = 无直接相关——仍会列出，只是排序靠后）。
+ */
+export function skillRelevance(s: { name: string; description: string }, taskText: string): number {
+  if (!taskText.trim()) return 0;
+  // 提取查询词：ASCII 单词（≥3 字符）+ CJK 连续片段按 2 字切分（中文无空格分词的近似）
+  const words = new Set<string>();
+  for (const w of taskText.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? []) words.add(w);
+  for (const seg of taskText.match(/[一-鿿]+/g) ?? []) {
+    for (let i = 0; i + 2 <= seg.length; i++) words.add(seg.slice(i, i + 2));
+  }
+  const hay = `${s.name} ${s.description}`.toLowerCase();
+  let hits = 0;
+  for (const w of words) {
+    if (hay.includes(w)) hits++;
+  }
+  return hits;
+}
+
+/**
+ * 技能清单 → system 消息（只列 name+description + 渐进披露截断 + 过滤 disable-model-invocation）。
+ * taskText 提供时按**任务相关性排序**（命中最多的在前；无关技能保持原序靠后）——
+ * 技能很多时模型先看到最相关的（对标 opencode 可用技能索引）。
+ */
+export function skillMessage(skills: SkillInfo[], taskText?: string): ChatCompletionMessageParam {
   const visible = skills.filter((s) => !s.disableModelInvocation);
   const total = visible.length;
-  const listed = visible.slice(0, SKILL_LIST_MAX);
+  let listed = visible.slice(0, SKILL_LIST_MAX);
+  if (taskText && total > SKILL_LIST_MAX) {
+    // 相关性排序（稳定：同分保持原序）→ 取最相关的前 N 条
+    listed = visible
+      .map((s, i) => ({ s, i, rel: skillRelevance(s, taskText) }))
+      .sort((a, b) => b.rel - a.rel || a.i - b.i)
+      .slice(0, SKILL_LIST_MAX)
+      .map((x) => x.s);
+  }
   const body = listed.map((s) => {
     let line = `- ${s.name}：${s.description}`;
     if (s.context === 'fork') line += '（子代理执行）';

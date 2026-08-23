@@ -40,10 +40,27 @@
   // git reset --hard、git clean -f、chmod -R 777、curl | sh、sudo 危险操作
   // "dangerousPatterns": ["(\s|^)docker\s+rm\s+-f\b", "(\s|^)az\s+logout\b"],
 
-  // OS 级沙箱（可选；默认 off）：用 sandbox-exec（macOS）/ bwrap（Linux）包裹 run_command，
+  // OS 级沙箱（可选；默认 off）：用 sandbox-exec（macOS）/ bwrap / firejail（Linux）包裹 run_command，
   // 限制其副作用范围。read-only 拒绝全部文件写 + 网络；workspace-write 仅允许工作目录写 +
   // 拒绝网络；danger-full-access = 不沙箱（等同 off）。平台不支持时自动降级并提示。
   // "sandbox": "off",
+  // workspace-write 白名单（可选）：额外允许沙箱内命令写的绝对路径（如共享临时目录）。
+  // "sandboxWritePaths": ["/tmp/omni-shared"],
+
+  // fallback 模型回退链（可选，最多 3 级）：主模型可重试失败（429 限流/超时/5xx 网关）
+  // 时按序自动切换备用端点重试本轮，提示「已回退到 X」。条目须在 models 表中有定义。
+  // "fallbackModels": ["deepseek-chat", "glm-4-flash"],
+
+  // 自动 git commit（默认 false）：每轮对话结束若工作区有改动则自动提交
+  //（消息 = 本轮用户消息摘要；仅 git 仓库内生效）。
+  // "autoCommit": false,
+
+  // 配置 profile 档案（可选）：多套配置快照一键切换（--profile 工作档 / OMNI_PROFILE 环境变量）。
+  // 档案字段覆盖合并到层叠配置之上（环境变量仍可临时覆盖）。
+  // "profiles": {
+  //   "work": { "model": "claude-sonnet", "permission": "ask" },
+  //   "offline": { "baseURL": "http://127.0.0.1:11434/v1", "model": "qwen3", "sandbox": "workspace-write" }
+  // },
 
   // 代码库结构感知（repo map，默认 true）：首轮注入紧凑符号地图（文件: 函数/类/常量清单），
   // 模型对项目结构有概览；repoMapMaxSymbols 控制符号上限。

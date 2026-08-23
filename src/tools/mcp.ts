@@ -279,6 +279,88 @@ class HttpTransport implements McpTransport {
     }).catch(() => {});
   }
 
+  /**
+   * 服务器通知流（第八节 P2，2025-03-26 协议 GET SSE）：对同一 url 发起 **GET**
+   * 长连接（Accept: text/event-stream + Mcp-Session-Id），接收服务器主动推送的
+   * JSON-RPC 通知（notifications/resources/*、notifications/tools/* 等）。
+   * 每条通知经 onNotify 回调分发；断线自动重连（指数退避封顶 30s）；close() 终止。
+   * 服务器不支持 GET 流（405 Method Not Allowed = 明确拒绝）→ 安静放弃（协议允许）。
+   */
+  subscribeNotifications(onNotify: (method: string, params: Record<string, unknown>) => void): void {
+    const url = this.cfg.url;
+    if (!url || this.closed) return;
+    this.notifyCallback = onNotify;
+    if (this.notifying) return; // 已在订阅
+    this.notifying = true;
+    void this.notificationLoop();
+  }
+
+  private notifyCallback: ((method: string, params: Record<string, unknown>) => void) | null = null;
+  private notifying = false;
+  /** 通知流重连代数（close 后自增使旧循环退出） */
+  private notifyGen = 0;
+
+  private async notificationLoop(): Promise<void> {
+    const gen = ++this.notifyGen;
+    let backoff = 1000;
+    while (!this.closed && gen === this.notifyGen) {
+      try {
+        const resp = await fetch(this.cfg.url!, {
+          method: 'GET',
+          headers: { ...this.headers(), Accept: 'text/event-stream' },
+        });
+        // 405 = 服务器不支持 GET 流（协议明确允许）→ 不再重试
+        if (resp.status === 405) {
+          this.notifying = false;
+          return;
+        }
+        if (!resp.ok) throw new Error(`GET ${resp.status}`);
+        backoff = 1000; // 连上即复位退避
+        const reader = resp.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || this.closed || gen !== this.notifyGen) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            let method: string | null = null;
+            let params: unknown = {};
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              try {
+                const msg = JSON.parse(line.slice(5).trim()) as { method?: string; params?: unknown };
+                if (msg.method) {
+                  method = msg.method;
+                  params = msg.params ?? {};
+                }
+              } catch {
+                // 忽略非法帧
+              }
+            }
+            if (method && this.notifyCallback && !this.closed) {
+              try {
+                this.notifyCallback(method, params as Record<string, unknown>);
+              } catch {
+                // 回调异常不拖垮通知循环
+              }
+            }
+          }
+        }
+      } catch {
+        // 断线：退避后重连
+      }
+      if (this.closed || gen !== this.notifyGen) break;
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, 30_000);
+    }
+    this.notifying = false;
+  }
+
   /** OAuth 登录（/mcp login <name> 调用）：成功后更新 token */
   async login(): Promise<boolean> {
     if (!this.cfg.url) return false;
@@ -292,6 +374,7 @@ class HttpTransport implements McpTransport {
 
   close(): void {
     this.closed = true;
+    this.notifyGen++; // 使通知循环退出
   }
 }
 
@@ -324,6 +407,16 @@ export class McpClient {
     })) as InitResult | undefined;
     this.initResult = res ?? null;
     transport.notify('notifications/initialized', {});
+    // HTTP 服务器通知流（第八节 P2）：GET SSE 长连接接收服务器主动推送
+    // （resources 变更 / tools 列表变化等）；当前仅 debug 日志呈现——消费动作
+    // （如自动刷新工具列表）待后续按需接入。405 安静放弃（协议允许）。
+    if (transport instanceof HttpTransport) {
+      transport.subscribeNotifications((method, params) => {
+        if (process.env.OMNI_DEBUG) {
+          console.error(`[MCP:${this.serverName}] 通知 ${method} ${JSON.stringify(params).slice(0, 200)}`);
+        }
+      });
+    }
   }
 
   /** OAuth 登录（仅 HTTP 传输） */

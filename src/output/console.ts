@@ -68,6 +68,11 @@ export class ConsoleOutput implements Output {
     console.log(red(`✗ ${(err as Error)?.message ?? String(err)}`));
   }
 
+  /** fallback 回退成功（P0）：dim 行提示（回退已生效，仅告知） */
+  onFallback(model: string): void {
+    console.log(dim(`↩ 已回退到备用模型 ${model}`));
+  }
+
   onThinkingSaved(len: number, file: string | null): void {
     // 管道模式（非 TTY）下思考不内联显示，提示已落盘便于回溯
     if (this.opts.showThinking && !isTTY && this.opts.stream) {

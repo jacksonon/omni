@@ -21,7 +21,7 @@ import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
-import { createCheckpoint } from '../agent/rewind.js';
+import { autoGitCommit, createCheckpoint } from '../agent/rewind.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
@@ -896,6 +896,11 @@ export async function runTuiInteractive(
         break;
       }
       await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件 + 轨迹事件落盘
+      // 自动 git commit（config autoCommit，Aider 原子提交）：有改动则提交
+      if (runOpts.cfg?.autoCommit) {
+        const committed = await autoGitCommit(cmd).catch(() => null);
+        if (committed) pushLine(state, { kind: 'meta', text: `✓ ${committed}` });
+      }
       // 轨迹投影刷新（/trace 面板数据源）：每轮结束重新折叠——面板下次重绘即为最新
       if (runOpts.events) refreshTrace(state, runOpts.events.events);
       turn++;
@@ -903,7 +908,7 @@ export async function runTuiInteractive(
       // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；
       // 失败静默，不打扰对话）
       if (turn === 1 && state.sessionTitle === null) {
-        void generateSessionTitle(currentClient, currentModel, messages).then((title) => {
+        void generateSessionTitle(currentClient, currentModel, messages, state.language).then((title) => {
           if (title && state.sessionTitle === null) {
             state.sessionTitle = title;
             setTerminalTitle(title);

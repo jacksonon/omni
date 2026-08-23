@@ -47,6 +47,7 @@ import {
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
 import {
+  autoGitCommit,
   checkpointSummaryLine,
   createCheckpoint,
   loadCheckpoint,
@@ -1072,6 +1073,11 @@ export async function runInteractive(
       console.log(red(`运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`));
     }
     await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
+    // 自动 git commit（config autoCommit，Aider 原子提交）：有改动则提交（消息 = 本轮用户消息）
+    if (runOpts.cfg?.autoCommit) {
+      const committed = await autoGitCommit(cmd).catch(() => null);
+      if (committed) console.log(dim(`✓ ${committed}`));
+    }
     out.onTurnEnd();
     safePrompt();
   }

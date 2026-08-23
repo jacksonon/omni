@@ -249,3 +249,26 @@ export async function removeCheckpoints(sessionPath: string | undefined, cwd = p
     // 静默
   }
 }
+
+/**
+ * 自动 git commit（第五节 P2 git 集成深化，Aider 原子提交）：
+ * 工作区有未提交改动时 `git add -A` + `git commit`（消息 = 用户消息摘要）。
+ * 非 git 仓库 / 无改动 / 无 user.email 配置 → 返回 null（静默跳过）；
+ * 成功返回 commit 摘要行。由交互循环在每轮 persistTurn 后调用（config autoCommit）。
+ */
+export async function autoGitCommit(userMessage: string, cwd = process.cwd()): Promise<string | null> {
+  try {
+    const { stdout: status } = await execAsync('git status --porcelain', { cwd, timeout: 5000, maxBuffer: 1024 * 1024 });
+    if (!status.trim()) return null; // 无改动
+    await execAsync('git add -A', { cwd, timeout: 10_000 });
+    // 消息：用户消息首行摘要（截 72 字符；空消息回退固定文案）
+    const firstLine = userMessage.replace(/\s+/g, ' ').trim().slice(0, 72) || 'omni 自动提交';
+    const escaped = firstLine.replace(/"/g, '\\"');
+    const { stdout } = await execAsync(`git commit -m "${escaped}"`, { cwd, timeout: 10_000 });
+    const hash = stdout.match(/\[.*? ([0-9a-f]+)\]/)?.[1] ?? '';
+    return `已自动提交 ${hash ? `${hash} ` : ''}：${firstLine}`;
+  } catch {
+    // 非 git 仓库 / 无 user.email / hook 拒绝等 → 静默跳过
+    return null;
+  }
+}

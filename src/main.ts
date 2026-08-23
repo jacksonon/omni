@@ -45,7 +45,7 @@ import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { countDiffLines } from './output/format.js';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { dim, red } from './ui.js';
+import { dim, green, red, yellow } from './ui.js';
 import { VERSION } from './version.js';
 
 /** 读文件当前内容（write_file diff 审批统计用）；不存在/读失败返回 null */
@@ -74,14 +74,14 @@ export interface RunContext {
  * 执行前把命令经 wrapSandboxCommand 包装（sandbox-exec / bwrap），结果附带沙箱提示。
  * 非 run_command / off / danger-full-access → 原样返回。
  */
-function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode): Tool {
+function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, writePaths?: string[]): Tool {
   if (tool.name !== 'run_command' || mode === 'off' || mode === 'danger-full-access') return tool;
   const original = tool.execute;
   return {
     ...tool,
     execute: async (args) => {
       const command = String(args.command ?? '');
-      const wrapped = wrapSandboxCommand(mode, process.cwd(), command);
+      const wrapped = wrapSandboxCommand(mode, process.cwd(), command, { writePaths });
       let result = await original({ ...args, command: wrapped.command });
       if (wrapped.note) {
         const warn = wrapped.protected ? wrapped.note : `⚠️ ${wrapped.note}`;
@@ -247,6 +247,14 @@ export async function attachRuntime(
       })),
   ];
   ctx.runOpts.models = modelEndpoints;
+  // fallback 回退链（第七节 P0）：config fallbackModels 按名展开为完整端点
+  //（缺省字段回退顶层；不在 models 表的名字忽略——没有端点信息无法回退）
+  if (cfg.fallbackModels?.length) {
+    const fallbackEndpoints = cfg.fallbackModels
+      .map((name) => modelEndpoints.find((m) => m.name === name))
+      .filter((e): e is ModelEndpoint => !!e);
+    if (fallbackEndpoints.length > 0) ctx.runOpts.fallbackEndpoints = fallbackEndpoints;
+  }
   // 完整配置（/status /context /doctor /config 等命令读取；interactive 透传给 ctx）
   ctx.runOpts.cfg = cfg;
   // 当前模型运行时引用：/model 切换时重建 client 并更新 → 主循环与子代理（delegate）共用
@@ -278,9 +286,9 @@ export async function attachRuntime(
   // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
   const undoStack = new UndoStack();
   let tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
-  // OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap 限制副作用范围）
+  // OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap / firejail 限制副作用范围）
   if (cfg.sandbox && cfg.sandbox !== 'off' && cfg.sandbox !== 'danger-full-access') {
-    tracked = tracked.map((t) => wrapRunCommandWithSandbox(t, cfg.sandbox));
+    tracked = tracked.map((t) => wrapRunCommandWithSandbox(t, cfg.sandbox, cfg.sandboxWritePaths));
   }
   // skills=false（含未信任目录）时从工具链移除 skill 工具（模型不可见/不可调用）
   if (cfg.skills === false || !trusted) tracked = tracked.filter((t) => t.name !== 'skill');
@@ -452,11 +460,49 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     await runMcpServer(overrides);
     return;
   }
+  // omni acp：ACP（Agent Client Protocol）端点（stdio JSON-RPC，Zed 等编辑器生态集成）
+  if (taskArgs[0] === 'acp') {
+    const { runAcpServer } = await import('./acp.js');
+    await runAcpServer(overrides);
+    return;
+  }
   // omni web：启动本地后端服务（REST + SSE）+ Web 界面——前端可以由 CLI 与网页
   // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
   if (taskArgs[0] === 'web') {
     await runWeb(taskArgs.slice(1), overrides);
     return;
+  }
+  // omni import：从 Claude Code 迁移配置（CLAUDE.md/skills/agents → omni 格式）
+  if (taskArgs[0] === 'import') {
+    const { importFromClaudeCode } = await import('./cli/import-claude.js');
+    const r = importFromClaudeCode();
+    console.log('从 Claude Code 迁移到 omni：');
+    for (const d of r.done) console.log(green(`  ✓ ${d}`));
+    for (const s of r.skipped) console.log(dim(`  - 跳过 ${s}`));
+    for (const f of r.failed) console.log(red(`  ✗ ${f}`));
+    for (const h of r.hints) console.log(yellow(`  ⚠ ${h}`));
+    console.log(dim(r.done.length > 0 ? `完成（${r.done.length} 项迁移）。重启会话生效。` : '没有可迁移的内容。'));
+    process.exitCode = r.failed.length > 0 ? 1 : 0;
+    return;
+  }
+  // omni watch：Watch 模式——监听 AI!/AI? 注释标记触发 agent 执行（第十二节 P2，Aider 同款）。
+  // 复用交互模式的运行时装配（工具链/安全闸/审批回调），console 输出；Ctrl+C 退出。
+  if (taskArgs[0] === 'watch') {
+    const ctxW = prepareRun(overrides);
+    const outputW = makeOutput(ctxW.cfg);
+    const trustW = await resolveWorkspaceTrust(process.cwd(), outputW);
+    await attachRuntime(ctxW, outputW, { trust: trustW });
+    const { runWatch } = await import('./agent/watch.js');
+    const stop = await runWatch(
+      ctxW.client, ctxW.cfg.model, undefined as never,
+      ctxW.runOpts, outputW, (text) => console.log(dim(text))
+    );
+    // Ctrl+C 退出（清理 watcher）
+    process.on('SIGINT', () => {
+      stop();
+      process.exit(130);
+    });
+    return; // watch 常驻：runWatch 内部监听循环保持进程存活
   }
 
   const ctx = prepareRun(overrides);

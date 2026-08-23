@@ -88,6 +88,8 @@ import {
 } from '../agent/rewind.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
+import type { RunOptions } from '../agent/types.js';
+import type { Output } from '../output/types.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
@@ -223,6 +225,10 @@ const approvals = new Map<string, PendingApproval>();
 const asks = new Map<string, PendingAsk>();
 let running: RunningRun | null = null;
 
+/** /send 排队（第六节 P2 轻量多会话协调）：当前运行结束后逐条执行（FIFO） */
+const queuedSends: { targetId: string; text: string }[] = [];
+
+
 const pendingRegistry = {
   addApproval(sessionId: string, req: ApprovalRequest): Promise<boolean> {
     const id = `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -265,12 +271,13 @@ function lastRunReason(recorder?: EventRecorder): string {
   return 'completed';
 }
 
-/** 生成会话标题（fire-and-forget）：首轮对话后异步调用，写入 meta + 广播 */
-function maybeAutoTitle(s: WebSession, client: OpenAI, model: string): void {
+/** 生成会话标题（fire-and-forget）：首轮对话后异步调用，写入 meta + 广播。
+ *  语言跟随配置 language（第十二节 P2 标题本地化）。 */
+function maybeAutoTitle(s: WebSession, client: OpenAI, model: string, lang: 'zh' | 'en' = 'zh'): void {
   if (s.title) return;
   const hasAnswer = s.messages.some((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content);
   if (!hasAnswer) return;
-  void generateSessionTitle(client, model, s.messages)
+  void generateSessionTitle(client, model, s.messages, lang)
     .then((title) => {
       if (!title || s.title) return;
       s.title = title;
@@ -343,6 +350,51 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   const overrides = opts.overrides ?? {};
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 3080;
+
+  /**
+   * 消费排队的跨会话消息（第六节 P2 轻量多会话协调）：串行对每个目标会话跑一轮
+   * （目标会话载入 → 追加消息 → runAgent → 本轮新增落盘）。全局单运行闸门保证
+   * 只在无任务运行时被调用；结果广播 meta 提示（不注入任何对话流）。
+   */
+  const drainQueuedSends = async (): Promise<void> => {
+    while (queuedSends.length > 0 && !running) {
+      const job = queuedSends.shift()!;
+      const target = sessions.get(job.targetId);
+      const file = target?.file ?? (await findSessionById(job.targetId));
+      if (!file) continue;
+      try {
+        const loaded = await loadSession(file);
+        if (!loaded) continue;
+        // 后台会话的独立 runOpts（共享工具链/闸门，但独立的 events——
+        // 与主运行互不影响；单运行闸门下串行安全）
+        const bgRunOpts: RunOptions = {
+          ...runOpts,
+          sessionPath: file,
+          events: await EventRecorder.open(file),
+        };
+        const msgs = [...loaded.messages, { role: 'user' as const, content: job.text }];
+        const client = runOpts.modelRuntime?.client;
+        const model = runOpts.modelRuntime?.model ?? cfg.model;
+        if (!client) continue;
+        await prepareContext(client, model, msgs, bgRunOpts.context ?? {}, bgRunOpts.events);
+        const quietOutput: Output = {
+          banner() {}, thinking: { write() {}, finish() {}, get shown() { return false; } },
+          onRound() {}, onStreamStart() {}, onAnswer() {}, onAnswerEnd() {}, onUsage() {},
+          onRequestFailed() {}, onThinkingSaved() {}, onToolStep() {}, onToolResult() {},
+          onMaxSteps() {}, onUserMessage() {}, onTurnEnd() {}, onWaitForInput() {},
+          clearScrollback() {}, showHelp() {},
+        };
+        await runAgent(client, model, msgs, bgRunOpts, quietOutput);
+        // 本轮新增落盘到目标会话文件
+        await appendSessionMessages(file, persistableMessages(msgs)).catch(() => {});
+        if (bgRunOpts.events) await bgRunOpts.events.flush().catch(() => {});
+        await finalizeSession(file).catch(() => {});
+        for (const l of listeners) l('meta.add', { sessionId: job.targetId, text: `[跨会话消息已处理] ${job.text.slice(0, 50)}` });
+      } catch {
+        // 失败静默（排队任务不打断主流程）
+      }
+    }
+  };
 
   const broadcast: WebBroadcast = (type, data) => {
     for (const l of listeners) {
@@ -435,13 +487,15 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (s.file) await finalizeSession(s.file).catch(() => {});
 
         // 运行结束后自动生成标题（首轮）
-        maybeAutoTitle(s, runOpts.modelRuntime!.client, runOpts.modelRuntime!.model);
+        maybeAutoTitle(s, runOpts.modelRuntime!.client, runOpts.modelRuntime!.model, cfg.language);
 
         const reason = lastRunReason(runOpts.events);
         currentOutput = null;
         running = null;
         broadcast('run.end', { sessionId, reason });
         broadcast('status', buildStatus(runOpts));
+        // 排队的跨会话消息（/send）：当前运行结束 → 逐条后台执行
+        void drainQueuedSends();
       }
     })();
 
@@ -819,8 +873,18 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/send' || cmd.startsWith('/send ')) {
-      // /send：跨会话消息需要目标会话运行——web 全局单运行模型不支持（CLI/TUI 用）
-      add('/send 需要目标会话串行运行，web 全局单运行模型暂不支持——请用 CLI/TUI 交互模式（/send <会话id> <消息>）。');
+      // /send（第六节 P2 轻量多会话协调）：web 端把目标会话消息**排队为后台任务**——
+      // 目标会话在当前运行结束后自动执行（复用全局单运行的串行闸门，不并发交错）；
+      // 结果落盘到目标会话文件（侧栏刷新可见），不注入 web 当前对话流。
+      const arg = cmd.slice('/send'.length).trim();
+      const m2 = arg.match(/^(\S+)\s+([\s\S]+)$/);
+      if (!m2) { add('用法：/send <会话id> <消息>'); return { lines }; }
+      const cands = await findSessionCandidates(m2[1]);
+      const currentId = s ? s.id : '';
+      const target = cands.find((c) => c.id !== currentId);
+      if (!target) { add(`会话「${m2[1]}」不存在（或即当前会话）`); return { lines }; }
+      queuedSends.push({ targetId: target.id, text: m2[2].trim() });
+      add(`已排队：向会话 ${target.id} 发送「${m2[2].trim().slice(0, 50)}」（当前任务结束后自动执行，结果写入目标会话）。`);
       return { lines };
     }
 

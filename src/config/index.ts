@@ -109,6 +109,19 @@ export interface OmniConfig {
    */
   language: 'zh' | 'en';
   /**
+   * fallback 模型回退链（第七节 P0，对标 Claude Code fallbackModel）：主模型请求
+   * 失败（429 限流 / 超时 / 5xx 网关错误——非 401 鉴权、非 abort）时**按序自动切换**
+   * 备用端点重试本轮（最多 3 级），提示「已回退到 X」。条目为 models 表里的模型名
+   * （缺省字段回退顶层 baseURL/apiKey）；空数组 = 不启用。
+   */
+  fallbackModels?: string[];
+  /**
+   * 自动 git commit（第五节 P2 git 集成深化，Aider 原子提交）：每轮对话结束后，
+   * 若工作区有未提交改动则 `git add -A && git commit`（消息 = 该轮用户消息摘要）。
+   * 仅在 git 仓库内生效；commit 失败静默（不打扰对话）。默认 false（显式开启）。
+   */
+  autoCommit?: boolean;
+  /**
    * MCP 服务器（外部工具生态）：{ 名称: { command, args?, env? } } */
   mcpServers?: Record<string, McpServerConfig>;
   /**
@@ -119,6 +132,12 @@ export interface OmniConfig {
   dangerousPatterns?: string[];
   /** OS 级沙箱档位：'off'（默认）| 'read-only' | 'workspace-write' | 'danger-full-access' */
   sandbox: SandboxMode;
+  /**
+   * workspace-write 沙箱的额外可写白名单（绝对路径；TODO 第九节 P2）。
+   * 允许沙箱内命令写工作目录之外的指定路径（如 /tmp/omni-shared、家目录子集）；
+   * 非绝对路径忽略。仅 workspace-write 档位生效（read-only 保持全禁写）。
+   */
+  sandboxWritePaths?: string[];
   /** 是否注入代码库结构感知地图（repo map，P1；默认 true） */
   repoMap?: boolean;
   /** repo map 符号上限（默认 200） */
@@ -143,6 +162,13 @@ export interface OmniConfig {
    * matcher 按工具名过滤（`*`=全部，`read_*` 前缀通配）；超时/失败降级放行不阻塞主流程。
    */
   hooks?: HooksConfig;
+  /**
+   * 配置 profile 档案（第十二节 P2）：{ 档案名: { 部分配置字段 } }。
+   * `--profile <名>` 把档案字段覆盖合并到层叠配置之上（工作/个人/离线多套一键切换）。
+   * 仅 loadConfig 内部消费——最终返回的 OmniConfig 会删除该字段。
+   * @internal
+   */
+  profiles?: Record<string, unknown>;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
   sources: string[];
 }
@@ -153,6 +179,29 @@ export interface ConfigOverrides {
   configPath?: string;
   /** --model <name> */
   model?: string;
+  /** --profile <名>：套用配置档案（config profiles 字段；工作/个人/离线多套快照一键切换） */
+  profile?: string;
+}
+
+/**
+ * 配置 profile 档案（第十二节 P2，对标 Codex profiles）：
+ * cfg.profiles = { 档案名: { 部分配置字段 } }；--profile <名> 把该档案的字段
+ * **覆盖合并**到已加载的层叠结果之上（在项目/自定义配置之后、环境变量之前——
+ * 环境变量仍可临时覆盖 profile）。档案里可放 model/baseURL/apiKey/maxSteps/
+ * permission/sandbox/fallbackModels/models 等任意合法字段。
+ * 未知名 → 报错提示可用名单（不静默——拼错名字继续跑比失败更危险）。
+ */
+function applyProfile(cfg: OmniConfig, profile: string, sources: string[]): void {
+  const chosen = cfg.profiles?.[profile];
+  if (!chosen || typeof chosen !== 'object' || Array.isArray(chosen)) {
+    const names = Object.keys(cfg.profiles ?? {});
+    console.error(`⚠️ 配置档案「${profile}」不存在。可用：${names.length > 0 ? names.join('、') : '（配置中无 profiles 定义）'}`);
+    return;
+  }
+  // 档案子对象复用 apply 的字段解析（同一套类型校验）；sources 记为 profile 来源
+  const tmpSources: string[] = [];
+  apply(cfg, chosen as Record<string, unknown>, `profile:${profile}`, tmpSources);
+  addSource(sources, `profile:${profile}`);
 }
 
 // 轮次上限默认 50：典型任务（探索 ~3 + 修改 ~4 + 验证 ~2 + 修复迭代 ~4）在 15 次内
@@ -282,10 +331,25 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     );
     if (arr.length > 0) cfg.dangerousPatterns = arr;
   }
+  // fallback 回退链：最多 3 级、去重、不与主模型同名（与主模型相同无意义）
+  if (Array.isArray(data.fallbackModels)) {
+    const arr = [...new Set((data.fallbackModels as unknown[]).filter(
+      (x): x is string => typeof x === 'string' && !!x.trim()
+    ).map((x) => x.trim()))].slice(0, 3);
+    if (arr.length > 0 && !(arr.length === 1 && arr[0] === data.model)) cfg.fallbackModels = arr;
+  }
+  if (typeof data.autoCommit === 'boolean') cfg.autoCommit = data.autoCommit;
   // OS 级沙箱档位：非法值回退 off
   const sb = String(data.sandbox ?? '');
   if (['off', 'read-only', 'workspace-write', 'danger-full-access'].includes(sb)) {
     cfg.sandbox = sb as SandboxMode;
+  }
+  // workspace-write 白名单：只收绝对路径字符串
+  if (Array.isArray(data.sandboxWritePaths)) {
+    const arr = [...new Set((data.sandboxWritePaths as unknown[]).filter(
+      (x): x is string => typeof x === 'string' && x.startsWith('/')
+    ))];
+    if (arr.length > 0) cfg.sandboxWritePaths = arr;
   }
   // 状态行段配置：只保留合法 id（非法/未知 id 丢弃，避免渲染层找不到段）；
   // 空数组 = 不显示状态行（用户全部取消勾选）；未配置保持默认全段
@@ -368,6 +432,12 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     }
     if (Object.keys(servers).length > 0) cfg.mcpServers = servers;
   }
+  // 配置 profile 档案定义：原样保留在 cfg 上（--profile 消费；不参与字段级校验——
+  // 档案内容千差万别，只在被选中时经 applyProfile 二次解析）
+  if (data.profiles && typeof data.profiles === 'object' && !Array.isArray(data.profiles)) {
+    cfg.profiles = { ...(cfg.profiles ?? {}), ...(data.profiles as Record<string, unknown>) };
+    // 不留在最终配置上暴露给运行时（仅 loadConfig 内部消费）——导出前由 loadConfig 删除
+  }
   addSource(sources, label);
 }
 
@@ -395,6 +465,13 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
       console.error(`⚠️ 自定义配置文件不存在：${p}`);
     }
   }
+
+  // 3.5) 配置 profile（--profile / OMNI_PROFILE）：档案字段覆盖层叠结果
+  //（环境变量在其后仍可临时覆盖——profile 是持久预设，env 是临时指定）
+  const profileName = overrides.profile || process.env.OMNI_PROFILE;
+  if (profileName) applyProfile(cfg, profileName, sources);
+  // profiles 定义只在加载期消费，不暴露给运行时（/status 等不需要看到）
+  delete cfg.profiles;
 
   // 4) 环境变量
   if (process.env.OMNI_API_KEY) {

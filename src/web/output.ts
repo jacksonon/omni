@@ -139,6 +139,11 @@ export class WebOutput implements Output {
     });
   }
 
+  /** fallback 回退成功（P0）：SSE 通知前端（meta 提示行） */
+  onFallback(model: string): void {
+    this.announce('meta.add', { text: `↩ 已回退到备用模型 ${model}` });
+  }
+
   onToolStep(
     step: number,
     maxSteps: number,

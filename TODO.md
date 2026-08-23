@@ -99,20 +99,24 @@
       runAgent → 本轮新增落盘 → 恢复当前上下文）；结果以 `[跨会话响应：会话 <id>]` system 消息
       注入当前上下文（模型可见），对话流显示摘要；CLI/TUI 支持，Web 提示全局单运行限制。
 
-## 五、恢复与撤销（✅ 基线：/undo /redo 快照栈、/permission 分级、/diff /review、write_file diff 预览）
+## 五、恢复与撤销（✅ 基线：/undo /redo 快照栈、**/rewind 会话检查点**、/permission 分级、/diff --stat/--full /review、write_file diff 预览与确认审批）
 
-- [ ] **P0 会话检查点 /rewind**（Claude Code / Cursor checkpoints / Roo shadow-git 同款）：
-      与 /undo 的区别 = **按用户回合打点、可回滚到任意历史时刻**——每轮用户消息提交前把
-      工作区文件快照进 shadow git 仓库（排除 node_modules/dist/.env，Roo 方案）或复用
-      UndoStack 扩展为「回合级快照链表」；`/rewind` 打开列表（每条 = 用户消息摘要 + 时间），
-      选择恢复（code-only / 全部），恢复后向消息注入提示；**会话恢复后仍可 /rewind**
-      （快照存盘，Claude Code 关键特性）。
-- [ ] **P1 检查点可视化**（Roo/Cursor）：TUI 面板展示快照 diff（增删行），确认后再恢复。
-- [ ] **P2 diff 确认审批**：write_file 前展示变更 diff 供确认（审批扩展到写操作）。
-- [ ] **P2 git 集成深化**（Aider 原子 commit）：可选「每次达成子目标自动 git commit +
-      描述消息」（/undo 变 git revert）；现有 /diff 输出前 60 行可加 `--full`/`--stat`。
+- [x] **P0 会话检查点 /rewind**（第一百六十四次，Claude Code / Cursor checkpoints 同款）：
+      每轮用户消息提交后把工作区「已跟踪且已修改」文件快照进 `.omni/checkpoints/<会话id>/<N>.json`
+      （纯文件方案——不依赖 shadow git，无 git 目录也可用；排除 node_modules/dist/.env 等，
+      单文件 1MB 上限）；`/rewind` 无参列出（用户消息摘要 + 时间 + 文件数）、`/rewind <N>` 回滚
+      工作区文件到该回合状态（对话历史保留，注入 system 提示告知模型）；快照持久化——
+      **会话恢复后仍可 /rewind**。CLI/TUI/Web 三端。
+- [x] **P1 检查点可视化**（第一百六十四次）：TUI/Web `/rewind` 列表每条附与当前工作区的
+      差异统计（Δ +A −B 行，checkpointDiffStats 行级 LCS），一致时显示「与当前一致」。
+- [x] **P2 diff 确认审批**（第一百六十四次）：write_file 需要审批的场景（safe 危险档/ask 全询问）
+      在审批 reason 附变更统计（新增 N 行 / 修改 +A −B 行，数据源 = UndoStack 执行前快照，
+      与工具卡片 diff 同源）；read 档位硬拒绝不变。
+- [x] **P2 git 集成深化**（第一百六十四次）：config `autoCommit` 开启后每轮对话结束自动
+      `git add -A && git commit`（消息 = 本轮用户消息摘要；非 git/无改动静默跳过）；
+      `/diff --stat`（只看统计摘要）/ `--full`（不截断）三端支持。
 
-## 六、子代理与编排（✅ 基线：delegate 隔离上下文小循环、共用安全闸、计划模式只读）
+## 六、子代理与编排（✅ 基线：delegate 隔离上下文小循环、共用安全闸、计划模式只读、web 排队跨会话消息）
 
 - [x] **P1 子代理嵌套 + 技能预载**（第一百三十五次）：`.agents/subagents/*.md` frontmatter 定义
       （name/description/model/permission/tools/skills/maxSteps），per-agent 模型/权限/工具白名单，
@@ -125,12 +129,15 @@
       `/plan` 计划模式自动用 architect（强模型）、执行阶段用 editor（轻模型）；缺省回退当前模型。
 - [x] **P2 动态工作流轻量版**（第一百三十五次）：`/orchestrate` 固定 pipeline——fan-out 并行 delegate
       （默认 3 worker）→ 汇总器 → 对抗审查（adversarial review），暂不支持模型写 JS 脚本。
-- [ ] **P2 agent teams / 多会话并行协调**（Claude Code）：跨会话树形协调，依赖第五节跨会话消息
-      与第六节可视化；需多会话运行能力（opencode multi-session）。
+- [ ] **P2 agent teams / 多会话并行协调**（Claude Code）→ **轻量版已落地**（第一百六十四次）：
+      web 端 `/send <会话id> <消息>` 排队为后台任务（全局单运行闸门下当前任务结束后
+      串行执行，结果落盘目标会话）；完整树形协调（多会话并发 + 父子关系可视化）
+      待 per-session runOpts 克隆后评估。
+- [x] **P2 Watch 模式** → 见第十二节（`omni watch` 已落地）。
 - [x] **P2 /loop 循环任务 + /goal 硬性完成要求**（第一百三十五次）：`/loop` 命令循环执行任务直至
       验收标准满足（内置目标循环模块：执行 → 校验满足 → 不满足带反馈继续），含迭代日志输出。
 
-## 七、模型与多端点（✅ 基线：models 多端点、/model 切换与添加、/variants 思考级别、持久化）
+## 七、模型与多端点（✅ 基线：models 多端点、/model 切换与添加、/variants 思考级别、持久化、**fallback 回退链**）
 
 > 2026-08-22 需求修订（参考 opencode V2 providers / models.dev 目录设计）：
 > 支持一个 baseURL 挂多个模型、每个模型带自己的 variants 与元数据
@@ -188,9 +195,11 @@
 
 ### 7.2 现状盘点：模型与多端点待优化项
 
-- [ ] **P0 fallback 模型回退链**（Claude Code fallbackModel：最多 3 级按序回退）：
-      主模型 429/超时/网关错误时自动切换备用端点（现有 models 表已可配，loop 错误处理处加
-      回退重试），提示「已回退到 X」。
+- [x] **P0 fallback 模型回退链**（第一百六十四次，Claude Code fallbackModel 同款）：
+      config `fallbackModels: []`（最多 3 级按序回退；条目为 models 表模型名）——主模型
+      可重试失败（429 限流 / 超时 / 5xx 网关 / 网络错误；401/400 配置问题不浪费回退）
+      自动切换备用端点重试本轮，提示「已回退到 X」（meta 行）；本轮内后续请求继续用
+      备用端点（activeClient），下一回合从主模型重新开始。三端 Output 均有回退提示。
 - [ ] **P1 architect/editor 跨端点路由**：现状 loop 只在同一 client 上换模型名
       （`routedModel`；config 注释明说「不同端点的 architect/editor 需配 models 表，
       MVP 不做跨端点路由」）——architect 与 editor 配在不同网关时不生效。
@@ -205,9 +214,12 @@
       「请求失败静默重试不带」探测（每次换不兼容网关都白付一轮失败往返）；有了
       capabilities 元数据后事前决定是否携带。兼容性字段 `compatibility.reasoningField`
       （DeepSeek 系 `reasoning_content` 已内置识别，其余字段名可配置扩展，对标 opencode）。
-- [ ] **P2 多模型对比 eval**：同一任务多模型跑 eval 输出对比报告（--eval 已铺路）。
+- [x] **P2 多模型对比 eval**（第一百六十四次）：`npm run eval -- --compare modelA,modelB`
+      ——同一组任务各模型跑一遍（-m 覆盖配置），终端对比表（完成率 + 总耗时）+
+      `eval-compare.json` 报告落盘。
 
-## 八、MCP 增强（✅ 基线：tools 协议、stdio/streamable-HTTP 双传输、/mcp 列表/资源/提示词/增删/登录、instructions 注入、per-tool 审批、OAuth）
+
+## 八、MCP 增强（✅ 基线：tools 协议、stdio/streamable-HTTP 双传输、/mcp 列表/资源/提示词/增删/登录、instructions 注入、per-tool 审批、OAuth、**GET 通知流订阅**)
 
 - [x] **P1 MCP Resources 协议**（第一百五十九次）：`resources/list` / `resources/read`——外部数据流/文件
       按需读取进上下文（不只工具调用）；server 声明时注册 `<server>_read_resource` 辅助工具。
@@ -223,8 +235,10 @@
 - [x] **P2 streamable HTTP + OAuth**（第一百五十九次）：McpTransport 传输抽象——stdio 与 streamable HTTP
       （POST JSON + SSE 响应 + Mcp-Session-Id + 自定义 headers）；OAuth 登录（`/mcp login`，RFC 8414
       discovery + 授权码 PKCE + token 持久化 ~/.config/omni/mcp-oauth.json）。
-- [ ] **P2 streamable HTTP 服务器通知流**：GET 长连接接收服务器主动推送（resources 变更通知等）——
-      当前只处理 POST 响应流，服务器→客户端单向通知未订阅。
+- [x] **P2 streamable HTTP 服务器通知流**（第一百六十四次）：GET 长连接（SSE）接收服务器
+      主动推送的 JSON-RPC 通知（resources 变更等）——HttpTransport.subscribeNotifications：
+      断线自动重连（指数退避封顶 30s）、405 安静放弃（协议允许）、close 终止；OMNI_DEBUG
+      下打印通知内容（消费动作按需接入）。
 
 ## 九、安全与信任（✅ 基线：permission 四档分级、审批卡片/队列、审计日志、危险命令正则（内置+扩展）、工作区信任、OS 级沙箱）
 
@@ -243,9 +257,11 @@
       read-only / workspace-write / danger-full-access——macOS `sandbox-exec`（Seatbelt profile：
       deny 写/网络）、Linux `bwrap`（--ro-bind + --unshare-net）包裹 run_command；平台不支持
       降级执行 + 提示（fail-open）。
-- [ ] **P2 沙箱细化**：Linux 无 bwrap 时回退 `firejail`；Windows 沙箱（AppContainer / 容器）；
-      workspace-write 增加临时目录/家目录白名单配置；沙箱对 MCP HTTP 服务器请求头注入
-      （透传 token 的进程外工具不在沙箱内）。
+- [x] **P2 沙箱细化**（第一百六十四次）：Linux 无 bwrap 时回退 `firejail`
+      （--net=none 断网 + --private 工作目录 + --read-only=/ 只读）；config
+      `sandboxWritePaths`（workspace-write 白名单：额外允许写的绝对路径——macOS 追加
+      subpath allow / bwrap 追加 --bind / firejail 追加 --whitelist）。Windows 沙箱
+      （AppContainer）仍不支持（降级提示不变——重投入项后置）。
 
 ## 十、技能系统（✅ 基线：SKILL.md 发现（项目+全局）、frontmatter 扩展、skill 工具按需加载、/skill find/add/show、安装即时生效、渐进披露）
 
@@ -261,25 +277,34 @@
       提示复制到 `~/.config/omni/skills/`）+ 列表展示来源标记（全局/仅手动/子代理/来源）。
 - [x] **P2 技能清单渐进披露**（第一百六十一次）：`skillMessage` 最多列 15 条 + 「还有 N 个未列出
       （/skill 查看全部；模型可直接尝试调用未列出的技能名）」；`/skill` 列表命令展示全部不截断。
-- [ ] **P2 清单按关键词/分类注入**：技能很多时按任务关键词过滤注入（对标 opencode 可用技能
-      索引；现为固定 15 条截断，未做任务相关性排序）。
+- [x] **P2 清单按关键词/分类注入**（第一百六十四次）：技能超过 15 条截断时按**任务相关性
+      排序**注入（skillRelevance：name/description 命中任务关键词数排序，同分保持原序）——
+      模型先看到最相关的技能；任务文本 = 最近一条用户消息。
 
-## 十一、评测与基准（✅ 基线：mock 离线 eval 可进 CI、真实 API 手动 eval、/model 多端点）
+## 十一、评测与基准（✅ 基线：mock 离线 eval 可进 CI、**headless eval 结构化输出**、真实 API 手动 eval、多模型对比、/model 多端点）
 
-- [ ] **P1 headless eval 自动化**：`omni exec --output-format json` 落地后（第二节），
-      eval 脚本直接消费结构化输出——CI 可跑的轻量真实评测（限速/成本控制）或定时报告。
+- [x] **P1 headless eval 自动化**（第一百六十四次）：`scripts/eval/run-headless-eval.ts`
+      ——用 `omni exec --output-format json` 跑任务组，直接消费结构化结果
+      （result/num_turns/session_id/exit_code 断言）；mock 离线确定性（默认）/ --real
+      真实 API；报告落盘 eval-report.json（headless 标记）。CI 定时评测已铺路。
 - [ ] **P2 Terminal-Bench / SWE-bench 接入**：社区基准套件（重投入，容器化环境，OpenHands
       提供 Docker 沙箱参考）。
-- [ ] **P2 多模型对比运行**（见第七节）。
+- [x] **P2 多模型对比运行**：见第七节 `--compare`。
 
 ## 十二、其他
 
-- [ ] **P2 ACP（Agent Client Protocol）支持**（Qwen Code / Kilo Code）：暴露 ACP 端点，
-      Zed/编辑器生态集成。
-- [ ] **P2 Watch 模式**（Aider AI!/AI? 注释监听）：文件系统监听，检测到 `# TODO AI!` 注释
-      触发 agent 执行并清除——有趣的差异化功能，需 fs watch + 差分提交。
-- [ ] **P2 会话标题本地化**（Claude Code：标题按会话语言生成）：现有标题固定中文 prompt，
-      可跟随 i18n 语言配置（低成本小项）。
-- [ ] **P2 配置 profile 档案**（Codex profiles）：多套配置快照（工作/个人/离线）一键切换。
-- [ ] **P2 迁移工具**（Codex 支持导入 Claude Code 配置）：反向——从 Claude Code 迁移
-      CLAUDE.md/skills/agents 到 omni 格式（`omni import`），降低迁移成本。
+- [x] **P2 ACP（Agent Client Protocol）支持**（第一百六十四次）：`omni acp`——stdio JSON-RPC
+      端点（initialize / session/new / session/prompt / session/cancel），会话复用 JSONL
+      持久化；Zed/编辑器生态可把 omni 当 agent 后端。
+- [x] **P2 Watch 模式**（第一百六十四次，Aider AI!/AI? 注释监听）：`omni watch`——fs.watch
+      递归监听工作区（排除 node_modules/.git/dist 等），检测到「AI! 任务」注释触发执行并删行、
+      「AI? 问题」触发问答并把答案写回为下一行注释；去抖聚合 + 执行期停监听防自触发。
+- [x] **P2 会话标题本地化**（第一百六十四次）：标题语言跟随界面语言（config language）——
+      中文会话出中文标题、英文会话出英文标题（titleSystemPrompt 按语言选择；TUI/Web 双端接线）。
+- [x] **P2 配置 profile 档案**（第一百六十四次，Codex profiles）：config `profiles` 字段
+      （{ 档案名: { 部分配置字段 } }）+ `--profile <名>` / OMNI_PROFILE 环境变量——
+      档案字段覆盖合并到层叠配置之上（项目/自定义之后、环境变量之前）；未知名报错列可用名单。
+- [x] **P2 迁移工具**（第一百六十四次，Codex 支持导入 Claude Code 配置）：`omni import`——
+      CLAUDE.md → AGENTS.md、.claude/skills/ → .agents/skills/（目录复制）、
+      .claude/agents/*.md → .agents/subagents/（frontmatter 转换）、settings.json deny
+      规则 → dangerousPatterns 建议（只提示）；**只增不改**（目标已存在一律跳过）。

@@ -46,6 +46,9 @@ export function parseArgs(args: string[]): ParsedArgs {
       case '-C':
         overrides.configPath = takeValue();
         break;
+      case '--profile':
+        overrides.profile = takeValue();
+        break;
       case '--no-tui':
         flags.noTui = true;
         break;
@@ -89,6 +92,9 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
 
 Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访问同一个后端）：
   omni web                       启动后端服务（REST + SSE）并托管 Web UI（默认 http://127.0.0.1:3080）
+  omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
+  omni watch                     Watch 模式：监听 AI!/AI? 注释标记触发 agent 执行（Aider 同款；Ctrl+C 退出）
+  omni acp                       ACP 端点（Agent Client Protocol，stdio JSON-RPC；Zed 等编辑器生态集成）
   omni web --port 4000           指定端口
   omni web --no-open             不自动打开浏览器
   · Web UI 支持多会话 / 流式回复 / 思考与工具卡片 / 审批与提问卡片 / 模型与权限设置
@@ -102,6 +108,7 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   -m, --model <名称>    指定模型（覆盖配置文件）
   -c, --continue        恢复当前项目最近一次会话（-c 已从 --config 让位；config 用 -C）
   -C, --config <路径>   指定配置文件（覆盖自动发现）
+      --profile <名>    套用配置档案（config profiles 字段；如工作/个人/离线多套快照）
   -s, -r, --resume <会话id>   恢复指定会话
       --no-tui          禁用全屏 TUI（默认：bun + 终端时自动启用）
   -h, --help            显示帮助

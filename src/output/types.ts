@@ -57,6 +57,11 @@ export interface Output {
   onToolsLap?(toolsMs: number): void;
   /** 模型请求失败 */
   onRequestFailed(err: unknown): void;
+  /**
+   * fallback 模型回退成功（第七节 P0）：主模型可重试失败后切换到备用端点。
+   * TUI/meta 行提示「已回退到 X」；缺省 = 静默（回退仍生效，仅不提示）。
+   */
+  onFallback?(model: string): void;
   /** 思考内容落盘完成 */
   onThinkingSaved(len: number, file: string | null): void;
   /** 一次工具调用开始（argsPreview 为 formatToolCall 的人类可读摘要，非裸 JSON） */
