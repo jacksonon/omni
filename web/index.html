@@ -150,7 +150,6 @@
       <nav class="settings-nav" aria-label="设置分类">
         <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span data-i18n="settings.general">通用</span></button>
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
-        <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span data-i18n="settings.model">模型</span></button>
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
@@ -188,24 +187,15 @@
           </div>
         </section>
 
-        <section class="settings-pane" data-pane="model">
-          <h3 class="settings-pane-title" data-i18n="settings.model">模型</h3>
-          <p class="settings-pane-sub" data-i18n="settings.modelSub">切换对话使用的模型与思考深度。</p>
-          <div class="settings-group">
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.modelName">模型</h4><p id="set-model-desc"></p></div>
-              <select id="set-model" class="setting-control"></select>
-            </div>
-            <div class="setting-row col">
-              <div class="setting-info"><h4 data-i18n="settings.variants">思考级别</h4><p>越高推理越深、响应越慢；可选项由模型配置决定。</p></div>
-              <div id="set-efforts" class="seg-group"></div>
-            </div>
-          </div>
-        </section>
-
         <section class="settings-pane" data-pane="apikey">
           <h3 class="settings-pane-title" data-i18n="settings.apikey">模型配置</h3>
-          <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。</p>
+          <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段共享，保存后写入全局配置文件。</p>
+          <div class="settings-group">
+            <div class="setting-row col">
+              <div class="setting-info"><h4 data-i18n="settings.savedModels">已存储模型</h4><p data-i18n="settings.savedModelsDesc">当前配置文件（omni.json 的 models 表）中已存储的模型，点击可编辑。</p></div>
+              <div id="cfg-model-list" class="cfg-model-list"></div>
+            </div>
+          </div>
           <div class="settings-group">
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.cfgModel">配置的模型</h4><p data-i18n="settings.cfgModelDesc">选择要编辑的模型，切换后下方字段同步为该模型的配置。</p></div>
