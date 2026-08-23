@@ -151,7 +151,6 @@
         <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span data-i18n="settings.general">通用</span></button>
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
         <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span data-i18n="settings.model">模型</span></button>
-        <button class="settings-nav-item" type="button" data-pane="workspace"><svg><use href="#i-folder"/></svg><span data-i18n="settings.workspace">工作区</span></button>
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
@@ -200,17 +199,6 @@
             <div class="setting-row col">
               <div class="setting-info"><h4 data-i18n="settings.variants">思考级别</h4><p>越高推理越深、响应越慢；可选项由模型配置决定。</p></div>
               <div id="set-efforts" class="seg-group"></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-pane" data-pane="workspace">
-          <h3 class="settings-pane-title" data-i18n="settings.workspace">工作区</h3>
-          <p class="settings-pane-sub" data-i18n="settings.workspaceSub">智能体读写文件、执行命令所用的根目录。</p>
-          <div class="settings-group">
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.cwd">当前目录</h4><p><code id="ws-cwd"></code></p></div>
-              <button id="btn-browse-workspace" class="secondary-button" type="button" data-i18n="settings.browse">切换…</button>
             </div>
           </div>
         </section>

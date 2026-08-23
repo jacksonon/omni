@@ -1424,8 +1424,6 @@ function refreshStatus() {
     $('#ver').textContent = `v${s.version}`;
     $('#cwd').textContent = s.cwd;
     $('#cwd').title = s.cwd;
-    $('#ws-cwd').textContent = s.cwd;
-    $('#ws-cwd').title = s.cwd;
     $('#about-version').textContent = `v${s.version}`;
     $('#about-tools').textContent = s.tools.join(', ');
     $('#about-server').textContent = `http://${location.host}`;
@@ -2426,7 +2424,6 @@ $('#set-model').addEventListener('change', (e) => {
 $('#set-plan').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
 });
-$('#btn-browse-workspace').addEventListener('click', () => browseWorkspace());
 
 $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
