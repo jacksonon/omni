@@ -1005,7 +1005,36 @@ export const TUI_COMMANDS: TuiCommand[] = [
     name: 'variants',
     description: '切换模型思考级别（reasoning_effort；选项来自配置 reasoningEffortOptions）',
     descriptionEn: 'Switch reasoning effort (options from config)',
-    run: (ctx) => openVariantsMenu(ctx.state),
+    run: (ctx) => openVariantsMenu(ctx.state, ctx.runOpts?.models),
+  },
+  {
+    name: 'spec',
+    description: '规格三件套（/spec <特性>）：生成 .omni/specs/<slug>/ 的 requirements/design/tasks（EARS 验收条款；任务同步会话清单）',
+    descriptionEn: 'Spec trio (/spec <feature>): requirements(EARS)/design/tasks under .omni/specs/',
+    autoClose: false,
+    run: async (ctx) => {
+      const feature = (ctx.args ?? '').trim();
+      if (!feature || !ctx.client) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/spec <功能特性>' + (!ctx.client ? '（需要可用模型客户端）' : '') });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `正在为「${feature}」生成规格三件套…` }, '/spec');
+      await ctx.session.paint().catch(() => {});
+      const { generateSpec } = await import('../agent/spec.js');
+      const r = await generateSpec(ctx.client, ctx.model ?? ctx.state.model, feature, process.cwd(), ctx.runOpts?.todoList);
+      pushCmdLine(ctx.state, { kind: r.ok ? 'meta' : 'warn', text: r.message }, '/spec');
+    },
+  },
+  {
+    name: 'preset',
+    description: '能力一键预设（/preset browser）：安装 Playwright MCP + Chrome DevTools MCP 到全局配置',
+    descriptionEn: 'Capability preset (/preset browser): install browser MCP pair into global config',
+    autoClose: true,
+    run: async (ctx) => {
+      const { runPreset } = await import('../agent/preset.js');
+      const r = await runPreset((ctx.args ?? '').trim() || 'browser');
+      for (const l of r.lines) pushCmdLine(ctx.state, { kind: 'meta', text: l }, '/preset');
+    },
   },
   {
     name: 'settings',
@@ -1051,13 +1080,38 @@ export const TUI_COMMANDS: TuiCommand[] = [
     descriptionEn: 'Switch/add model (/model panel · /model <name> · /model add <name> [...])',
     autoClose: true, // 面板路径空输出自动收起；add/<名称> 切换为动作 → 执行完自动收起
     run: (ctx) => {
+      // /model fetch [名称]：拉取网关 GET /v1/models 自动补全可用模型（1.0 P1 模型发现）
+      if (/^fetch/.test((ctx.args ?? '').trim())) {
+        const target = ctx.args!.trim().slice('fetch'.length).trim();
+        const eps = ctx.runOpts?.models ?? [];
+        const ep = target ? eps.find((m) => m.name === target) : eps.find((m) => m.name === ctx.model);
+        if (!ep?.baseURL) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `/model fetch${target ? ` ${target}` : ''}：未找到带 baseURL 的端点` });
+          return;
+        }
+        pushCmdLine(ctx.state, { kind: 'meta', text: `正在拉取 ${ep.baseURL}/models …` }, '/model');
+        void import('../client.js')
+          .then(({ discoverModels }) => discoverModels(ep))
+          .then((ids) => {
+            const known = new Set(eps.map((m) => m.name).concat(eps.map((m) => m.apiModel ?? '')));
+            const fresh = ids.filter((id) => !known.has(id));
+            pushCmdLine(ctx.state, { kind: 'meta', text: `远端共 ${ids.length} 个模型，未在本地列表的 ${fresh.length} 个：` });
+            for (const id of fresh.slice(0, 30)) pushCmdLine(ctx.state, { kind: 'answer', text: `· ${id}` });
+            if (fresh.length > 30) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${fresh.length - 30} 个` });
+            pushCmdLine(ctx.state, { kind: 'meta', text: '添加：/model add <名> --base-url <端点>；或直接编辑 config providers/models' });
+          })
+          .catch((err) => {
+            pushCmdLine(ctx.state, { kind: 'warn', text: `模型发现失败：${err instanceof Error ? err.message : err}` });
+          });
+        return;
+      }
       // /model：打开切换面板（↑↓/数字 + Enter）
       // /model <名称>：直接切换（交互模式已注册端点）
       // /model add <名称> [--base-url] [--api-key] [--user-agent]：
       //   解析 → 运行时注册（缺省字段回退顶层配置）→ 切换 → 持久化到配置文件
       const args = (ctx.args ?? '').trim();
       if (!args) {
-        openModelMenu(ctx.state, ctx.models ?? []);
+        openModelMenu(ctx.state, modelMenuLabels(ctx.runOpts?.models ?? [], ctx.models ?? []));
         return;
       }
       if (/^add(?:\s|$)/.test(args)) {
@@ -1721,12 +1775,31 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
   state.status = t(state.language, 'menu.session.status');
 }
 
-/** 打开模型切换面板（/model）：列出可用模型，高亮当前；↑/↓/数字 + Enter/Esc 操作 */
-export function openModelMenu(state: TuiState, models: string[] = state.models): void {
-  const options = (models.length > 0 ? models : [state.model || 'gpt-4o-mini']).map((m) => ({
-    label: m,
-    value: m,
-  }));
+/** 模型菜单条目：label 附元数据摘要（上下文/输出上限），value = 切换名 */
+function modelMenuLabels(
+  endpoints: import('../client.js').ModelEndpoint[],
+  fallbackNames: string[]
+): { label: string; value: string }[] {
+  const names = fallbackNames.length > 0 ? fallbackNames : endpoints.map((m) => m.name);
+  return names.map((n) => {
+    const ep = endpoints.find((m) => m.name === n);
+    const bits: string[] = [];
+    if (ep?.provider) bits.push(ep.provider);
+    if (ep?.limit?.context) bits.push(`${Math.round(ep.limit.context / 1000)}k`);
+    if (ep?.limit?.output) bits.push(`出 ${Math.round(ep.limit.output / 1000)}k`);
+    if (ep?.disabled) bits.push('已禁用');
+    return { label: bits.length > 0 ? `${n} · ${bits.join(' · ')}` : n, value: n };
+  });
+}
+
+/** 打开模型切换面板（/model）：列出可用模型（附元数据摘要），高亮当前；↑/↓/数字 + Enter/Esc 操作 */
+export function openModelMenu(
+  state: TuiState,
+  entries: string[] | { label: string; value: string }[] = state.models
+): void {
+  const options = (entries.length > 0 ? entries : [state.model || 'gpt-4o-mini']).map((m) =>
+    typeof m === 'string' ? { label: m, value: m } : m
+  );
   const current = state.model;
   const idx = Math.max(0, options.findIndex((o) => o.value === current));
   state.menu = {
@@ -1740,13 +1813,23 @@ export function openModelMenu(state: TuiState, models: string[] = state.models):
   state.status = t(state.language, 'menu.model.status');
 }
 
-/** 打开思考级别面板（/variants）：高亮当前级别，供 ↑/↓/数字 + Enter/Esc 操作 */
-export function openVariantsMenu(state: TuiState): void {
-  const options = (state.reasoningEffortOptions ?? ['low', 'medium', 'high']).map((v) => ({
+/** 打开思考级别面板（/variants）：字符串级别 + 命名 variants（1.0 P0-3）混合列表；
+ *  命名项 value = `variant:<id>`，confirmMenu 据此前缀分流；↑/↓/数字 + Enter/Esc 操作 */
+export function openVariantsMenu(
+  state: TuiState,
+  endpoints?: import('../client.js').ModelEndpoint[]
+): void {
+  const ep = endpoints?.find((m) => m.name === state.model);
+  const efforts = (state.reasoningEffortOptions ?? ['low', 'medium', 'high']).map((v) => ({
     label: v,
     value: v,
   }));
-  const current = state.reasoningEffort || '';
+  const named = Object.entries(ep?.variants ?? {}).map(([id, def]) => ({
+    label: `${id}（命名${def.description ? ` · ${def.description}` : ''}${def.reasoningEffort ? ` · ${def.reasoningEffort}` : ''}）`,
+    value: `variant:${id}`,
+  }));
+  const options = [...efforts, ...named];
+  const current = state.activeVariant ? `variant:${state.activeVariant}` : (state.reasoningEffort || '');
   const idx = Math.max(0, options.findIndex((o) => o.value === current));
   state.menu = {
     id: 'variants',
@@ -1924,13 +2007,21 @@ export function confirmMenu(state: TuiState): void {
     state.permission = opt.value as PermissionTier;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.permission', { label }) }, '/permission');
   } else if (menu.id === 'variants') {
-    // 切换思考级别：interactive 每轮把 state.reasoningEffort 同步进 runOpts.reasoningEffort
-    // （loop 请求带 reasoning_effort 参数；网关不认自动回退不带）。
-    // 持久化：记录待落盘意图（interactive 每轮写入配置文件 reasoningEffort 字段——
-    // 用户要求切换后下次启动仍是新思考级别）
-    state.reasoningEffort = opt.value;
+    // 切换思考级别 / 命名 variant（1.0 P0-3）：interactive 每轮消费 variantsSave——
+    // `variant:<id>` 写 models."<模型>".variant 并同步 runOpts.activeVariant；
+    // 普通级别同步 runOpts.reasoningEffort（loop 请求带 reasoning_effort）并清除命名叠加。
+    if (opt.value.startsWith('variant:')) {
+      const id = opt.value.slice('variant:'.length);
+      state.activeVariant = id;
+      pushCmdLine(state, { kind: 'meta', text: `已切换命名变体 → ${id}` }, '/variants');
+    } else {
+      state.activeVariant = null;
+      state.reasoningEffort = opt.value;
+    }
     state.variantsSave = opt.value;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.variants', { label }) }, '/variants');
+    if (!opt.value.startsWith('variant:')) {
+      pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.variants', { label }) }, '/variants');
+    }
   } else if (menu.id === 'model') {
     // 切换模型：交给 interactive 的 switchModel 回调（重建 client + 更新 modelRuntime）。
     // confirmMenu 是纯 state 操作拿不到回调——这里只记录意图，interactive 每轮

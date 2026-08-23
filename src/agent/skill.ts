@@ -361,3 +361,37 @@ export function parseSkillFindResults(output: string): string[] {
     .map((l) => l.trim())
     .filter((l) => /^[\w.-]+\/[\w.-]+@[\w.-]+/.test(l));
 }
+// ── 技能校验（1.0 P1-9，skills-ref validate 兼容）────────────────
+
+export interface SkillValidation {
+  ok: boolean;
+  /** 阻断性问题（frontmatter 缺失 / 名字非法等） */
+  errors: string[];
+  /** 建议项（描述过长、缺 body 等不阻断） */
+  warnings: string[];
+}
+
+/**
+ * 校验一个技能（对标 skills-ref validate 的核心规则子集）：
+ * · SKILL.md 存在且 frontmatter 可解析；name 必填且符合 ^[a-z0-9]+(-[a-z0-9]+)*$；
+ * · name 与目录名一致；description 必填（建议 ≤ 200 字符——渐进披露清单里可读）；
+ * · 正文非空；disable-model-invocation 等扩展字段值合法。
+ * info=null 表示 frontmatter 解析失败（errors 直接给解析问题）。
+ */
+export function validateSkill(info: SkillInfo | null, dirName?: string): SkillValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (!info) {
+    return { ok: false, errors: ['SKILL.md 不存在或 frontmatter 无法解析'], warnings };
+  }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(info.name)) {
+    errors.push(`name「${info.name}」不合法（须小写字母/数字，连字符分段）`);
+  }
+  if (dirName && info.name !== dirName) {
+    errors.push(`name「${info.name}」与目录名「${dirName}」不一致`);
+  }
+  if (!info.description?.trim()) errors.push('description 必填');
+  else if (info.description.length > 200) warnings.push(`description ${info.description.length} 字符偏长（建议 ≤ 200——清单渐进披露时可读性）`);
+  if (info.path && !existsSync(info.path)) errors.push(`SKILL.md 路径不存在：${info.path}`);
+  return { ok: errors.length === 0, errors, warnings };
+}

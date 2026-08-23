@@ -31,6 +31,8 @@ const state = {
   view: 'chat',
   selectedTool: null,
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
+  runningSessions: new Set(), // 1.0 P0-2 多会话并发：运行中的会话 id 集合
+  tasks: [],            // 后台任务收件箱（1.0 P1-8）
   messageQueue: [],     // 运行中 Enter 入队的消息
   steerText: null,      // 运行中 Cmd+Enter 打断消息（仅一条，优先于 queue）
 };
@@ -477,6 +479,7 @@ function renderSessionList() {
     if (!expanded) continue;
     for (const s of items) {
       const item = el('div', 'session-item' + (s.id === state.session ? ' active' : ''));
+      if (state.runningSessions.has(s.id)) item.appendChild(el('span', 'session-running-dot', ''));
       const d = new Date(s.updated || s.created);
       const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       item.appendChild(el('span', 'session-icon', s.id === state.session ? '●' : '○'));
@@ -522,6 +525,163 @@ function projectName(p) {
 function escSessionActions(e) {
   if (e.key === 'Escape') closeSessionActions();
 }
+
+/* —— 会话动作菜单（chat-title 点击 / ⋯ 共用）+ 分叉 / 检查点 / 收件箱 —— */
+function showChatActions(e) {
+  closeSessionActions();
+  if (!state.session) return;
+  const sid = state.session;
+  const menu = el('div', 'ctx-menu');
+  const mk = (label, fn) => {
+    const b = el('button', 'ctx-item', label);
+    b.type = 'button';
+    b.addEventListener('click', () => { closeSessionActions(); fn(sid); });
+    return b;
+  };
+  const ren = mk('重命名', async (id) => {
+    const t = prompt('会话标题', $('#chat-title').textContent || '');
+    if (!t || !t.trim()) return;
+    await api(`/api/sessions/${id}/rename`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: t.trim() }) });
+    $('#chat-title').textContent = t.trim();
+    refreshSessions().catch(() => {});
+  });
+  const forkB = mk('分叉新会话（/fork）', (id) => openForkDialog({ id }));
+  const exp = mk('导出 Markdown（/export）', (id) => window.open(`/api/sessions/${id}/export`, '_blank'));
+  const rw = mk('会话检查点（/rewind）', (id) => openRewindModal(id));
+  const del = mk('删除会话', async (id) => {
+    if (!confirm('删除该会话？此操作不可恢复。')) return;
+    await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => alert(`删除失败：${err.message}`));
+  });
+  menu.append(ren, forkB, exp, rw, del);
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(e.clientX, window.innerWidth - rect.width - 8)}px`;
+  menu.style.top = `${Math.min(e.clientY, window.innerHeight - rect.height - 8)}px`;
+  setTimeout(() => {
+    document.addEventListener('click', closeSessionActions, true);
+    document.addEventListener('keydown', escSessionActions, true);
+  }, 0);
+}
+
+/** /fork 对话框：输入保留前 N 条消息 */
+function openForkDialog(s) {
+  api(`/api/sessions/${s.id}/messages`).then((data) => {
+    const maxN = data.messages.length;
+    const raw = prompt(`分叉新会话：保留前 N 条消息（1..${maxN}，原会话保留）`, String(Math.max(1, Math.min(maxN, 4))));
+    if (raw === null) return;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > maxN) { alert(`N 须为 1..${maxN} 的整数`); return; }
+    api(`/api/sessions/${s.id}/fork`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ n }),
+    })
+      .then(() => refreshSessions())
+      .catch((err) => alert(`fork 失败：${err.message}`));
+  }).catch(() => {});
+}
+
+/** /rewind 面板：列出检查点（附与当前工作区差异），一键回滚 */
+async function openRewindModal(sessionId) {
+  $('#rewind-modal').classList.remove('hidden');
+  const list = $('#rewind-list');
+  list.innerHTML = '<div class="dir-empty">加载检查点…</div>';
+  try {
+    const cps = await api(`/api/sessions/${sessionId}/checkpoints`);
+    list.innerHTML = '';
+    if (!cps.length) {
+      list.innerHTML = '<div class="dir-empty">暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）</div>';
+      return;
+    }
+    [...cps].reverse().forEach((c) => {
+      const row = el('div', 'rewind-row');
+      const main = el('div', 'rewind-main');
+      main.appendChild(el('div', 'rewind-msg', `#${c.index} · ${c.userMessage || '（无文本）'}`));
+      const d = c.diff || { add: 0, rem: 0 };
+      const diffTxt = d.add + d.rem > 0 ? `与当前差 Δ${d.add + d.rem} 行（+${d.add} −${d.rem}）` : '与当前一致';
+      main.appendChild(el('div', 'rewind-meta', `${new Date(c.time).toLocaleString()} · ${c.files} 个文件 · ${diffTxt}`));
+      row.appendChild(main);
+      const btn = el('button', 'primary', '回滚到此处');
+      btn.type = 'button';
+      btn.addEventListener('click', async () => {
+        if (!confirm(`回滚工作区文件到检查点 #${c.index}？（对话历史保留）`)) return;
+        try {
+          await api(`/api/sessions/${sessionId}/rewind`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ index: c.index }),
+          });
+          $('#rewind-modal').classList.add('hidden');
+          metaLine(state.session, [`已回滚到检查点 #${c.index}（${c.files} 个文件处理）`]);
+        } catch (err) { alert(`回滚失败：${err.message}`); }
+      });
+      row.appendChild(btn);
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="dir-empty">加载失败：${esc(err.message)}</div>`;
+  }
+}
+$('#btn-close-rewind').addEventListener('click', () => $('#rewind-modal').classList.add('hidden'));
+$('#rewind-modal').addEventListener('click', (e) => { if (e.target === $('#rewind-modal')) $('#rewind-modal').classList.add('hidden'); });
+
+/* ---------------- 后台任务收件箱 UI（1.0 P1-8）---------------- */
+async function openInboxModal() {
+  $('#inbox-modal').classList.remove('hidden');
+  try { state.tasks = await api('/api/tasks'); } catch { /* ignore */ }
+  updateInboxBadge();
+  renderTaskList();
+}
+function renderTaskList() {
+  const list = $('#task-list');
+  list.innerHTML = '';
+  if (!state.tasks.length) {
+    list.appendChild(el('div', 'dir-empty', '暂无后台任务——长任务入队后在空闲容量时自动执行'));
+    return;
+  }
+  for (const t of state.tasks) {
+    const row = el('div', 'task-row');
+    const main = el('div', 'task-main');
+    main.appendChild(el('div', 'task-prompt', t.prompt));
+    const metaBits = [new Date(t.created).toLocaleString()];
+    if (t.error) metaBits.push(t.error);
+    main.appendChild(el('div', 'task-meta', metaBits.join(' · ')));
+    row.appendChild(main);
+    row.appendChild(el('span', 'task-state ' + t.status, t.status === 'pending' ? '排队中' : t.status === 'running' ? '执行中' : t.status === 'done' ? '已完成' : '失败'));
+    if (t.sessionId) {
+      const open = el('button', '', '打开会话');
+      open.type = 'button';
+      open.addEventListener('click', () => {
+        $('#inbox-modal').classList.add('hidden');
+        selectSession(t.sessionId).catch(() => {});
+      });
+      row.appendChild(open);
+    }
+    if (t.status === 'pending') {
+      const del = el('button', '', '移除');
+      del.type = 'button';
+      del.addEventListener('click', () => {
+        api(`/api/tasks/${t.id}`, { method: 'DELETE' })
+          .then(() => { state.tasks = state.tasks.filter((x) => x.id !== t.id); updateInboxBadge(); renderTaskList(); })
+          .catch((err) => alert(err.message));
+      });
+      row.appendChild(del);
+    }
+    list.appendChild(row);
+  }
+}
+$('#btn-inbox').addEventListener('click', () => openInboxModal().catch(() => {}));
+$('#btn-close-inbox').addEventListener('click', () => $('#inbox-modal').classList.add('hidden'));
+$('#inbox-modal').addEventListener('click', (e) => { if (e.target === $('#inbox-modal')) $('#inbox-modal').classList.add('hidden'); });
+$('#btn-task-add').addEventListener('click', () => {
+  const inp = $('#task-input');
+  const v = inp.value.trim();
+  if (!v) return;
+  inp.value = '';
+  api('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: v }) })
+    .then((t) => { upsertTask(t); })
+    .catch((err) => alert(`入队失败：${err.message}`));
+});
 
 /** 工作区操作菜单（组头 ⋯）：移除工作区（清单去掉 + 删该区全部会话记录，目录本身不动） */
 function showWorkspaceActions(e, project, count) {
@@ -608,6 +768,18 @@ function showSessionActions(e, s) {
       })
       .catch((err) => alert(`删除失败：${err.message}`));
   });
+  if (s.project === (state.status?.cwd || '')) {
+    const forkB = el('button', 'ctx-item', '分叉新会话（/fork）');
+    forkB.type = 'button';
+    forkB.addEventListener('click', () => { closeSessionActions(); openForkDialog(s); });
+    const exp = el('button', 'ctx-item', '导出 Markdown（/export）');
+    exp.type = 'button';
+    exp.addEventListener('click', () => { closeSessionActions(); window.open(`/api/sessions/${s.id}/export`, '_blank'); });
+    const rw = el('button', 'ctx-item', '会话检查点（/rewind）');
+    rw.type = 'button';
+    rw.addEventListener('click', () => { closeSessionActions(); openRewindModal(s.id); });
+    menu.append(forkB, exp, rw);
+  }
   menu.append(ren, del);
   document.body.appendChild(menu);
   // 定位到点击点附近并钳制在视口内
@@ -746,11 +918,16 @@ function renderAddMenu() {
   sIcon.appendChild(sUse);
   searchRow.appendChild(sIcon);
   const inp = document.createElement('input');
-  inp.placeholder = '添加';
+  inp.placeholder = '搜索文件和文件夹…';
   inp.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllComposerPops(); });
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    pop.querySelectorAll('.am-item').forEach((row) => {
+      const t = row.textContent?.toLowerCase() || '';
+      row.style.display = !q || t.includes(q) ? '' : 'none';
+    });
+  });
   searchRow.appendChild(inp);
-  // 让输入占位为 "文件和文件夹" 的搜索
-  inp.placeholder = '文件和文件夹';
   const fIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   const fUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
   fUse.setAttribute('href', '#i-folder');
@@ -1092,6 +1269,9 @@ async function newSession() {
 /* ---------------- 服务器状态 / 设置 ---------------- */
 let statusTimer = null;
 
+function sessionRunning() {
+  return !!(state.session && state.runningSessions.has(state.session));
+}
 function updateStatusText() {
   const dot = $('#status-dot');
   const txt = $('#status-text');
@@ -1101,7 +1281,7 @@ function updateStatusText() {
     n.classList.toggle('ready', !state.running && !!state.status);
     n.classList.remove('error');
   });
-  if (state.running) {
+  if (sessionRunning()) {
     txt.textContent = '运行中…';
   } else {
     txt.textContent = state.session ? '就绪' : '选择或新建会话';
@@ -1111,7 +1291,7 @@ function updateStatusText() {
 function refreshStatus() {
   return api('/api/status').then((s) => {
     state.status = s;
-    state.running = s.running;
+    syncRunningSessions(s);
     state.planMode = !!s.planMode;
     $('#ver').textContent = `v${s.version}`;
     $('#cwd').textContent = s.cwd;
@@ -1138,15 +1318,16 @@ function updateComposer() {
   const send = $('#btn-send');
   const cancel = $('#btn-cancel');
   const note = $('#composer-note');
+  const curRun = sessionRunning();
   // 按钮形态：空闲 ↑ 发送 / 运行中显示独立停止按钮
   const use = send.querySelector('use');
   if (use) use.setAttribute('href', '#i-arrow-up');
-  send.title = '发送消息';
-  send.classList.toggle('paused', state.running);
-  send.disabled = state.running;
-  // 运行中显示停止按钮，空闲时隐藏
-  if (cancel) cancel.classList.toggle('hidden', !state.running);
-  if (state.running) note.textContent = '任务运行中…';
+  send.title = curRun ? '本会话正在运行' : '发送消息';
+  send.classList.toggle('paused', curRun);
+  send.disabled = curRun;
+  // 本会话运行中显示停止按钮；其它会话在跑不影响当前输入
+  if (cancel) cancel.classList.toggle('hidden', !curRun);
+  if (curRun) note.textContent = '任务运行中…';
   else if (state.messageQueue.length) note.textContent = `⏳ 排队中（${state.messageQueue.length}）`;
   else if (!state.session) note.textContent = '输入消息开始新对话';
   else note.textContent = '';
@@ -1185,6 +1366,17 @@ function applySettings(patch) {
   }).then(refreshStatus);
 }
 
+/** 模型展示标签（1.0 元数据）：provider · 上下文 k · 输出 k */
+function modelLabel(m) {
+  if (!m) return '';
+  const bits = [];
+  if (m.provider) bits.push(m.provider);
+  if (m.limit?.context) bits.push(`${Math.round(m.limit.context / 1000)}k`);
+  if (m.limit?.output) bits.push(`出 ${Math.round(m.limit.output / 1000)}k`);
+  const name = m.displayName || m.name;
+  return bits.length ? `${name} · ${bits.join(' · ')}` : name;
+}
+
 /** 设置 → 模型面板：填充模型下拉与思考级别分段选择（签名去重，避免打断进行中的交互） */
 function renderSettingsModel(s) {
   const sel = $('#set-model');
@@ -1197,7 +1389,7 @@ function renderSettingsModel(s) {
     for (const m of models) {
       const o = document.createElement('option');
       o.value = m.name;
-      o.textContent = m.baseURL && !m.baseURL.includes('api.openai.com') ? `${m.name} · ${m.baseURL}` : m.name;
+      o.textContent = modelLabel(m);
       o.selected = m.name === s.model;
       sel.appendChild(o);
     }
@@ -1239,7 +1431,7 @@ function connectSSE() {
     'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
-    'workspace.changed',
+    'workspace.changed', 'session.deleted', 'task.added', 'task.updated',
   ].forEach(on);
   es.onerror = () => {
     $('#status-dot').classList.add('error');
@@ -1257,9 +1449,13 @@ function connectSSE() {
 /* ---------------- 事件处理 ---------------- */
 
 bus.on('ready', () => {});
+const syncRunningSessions = (st) => {
+  const list = Array.isArray(st?.runningSessions) ? st.runningSessions : (st?.running && st.runningSession ? [st.runningSession] : []);
+  state.runningSessions = new Set(list);
+};
 bus.on('status', (s) => {
   state.status = s;
-  state.running = s.running;
+  syncRunningSessions(s);
   state.planMode = !!s.planMode;
   $('#plan-mode').checked = state.planMode;
   const sp = $('#set-plan');
@@ -1378,7 +1574,8 @@ bus.on('subagent', (ev) => {
 });
 
 bus.on('run.end', (ev) => {
-  if (ev.sessionId !== state.session) return;
+  state.runningSessions.delete(ev.sessionId);
+  if (ev.sessionId !== state.session) { refreshSessions(); return; }
   state.running = false;
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
   if (currentAssistant) {
@@ -1499,6 +1696,36 @@ bus.on('clear', (ev) => {
   if (ev.sessionId !== state.session) return;
   clearMessages();
 });
+// 会话删除广播：列表移除；若为当前打开的会话回草稿态
+bus.on('session.deleted', (ev) => {
+  state.sessions = state.sessions.filter((x) => x.id !== ev.sessionId);
+  renderSessionList();
+  if (state.session === ev.sessionId) {
+    state.session = null;
+    clearMessages();
+    $('#chat-title').textContent = '新会话';
+    renderWelcome();
+    updateComposer();
+    updateStatusText();
+  }
+});
+/* ---------------- 后台任务收件箱（事件同步）---------------- */
+function updateInboxBadge() {
+  const n = state.tasks.filter((t) => t.status === 'pending' || t.status === 'running').length;
+  const b = $('#inbox-count');
+  if (!b) return;
+  b.textContent = String(n);
+  b.classList.toggle('hidden', n === 0);
+}
+function upsertTask(t) {
+  const i = state.tasks.findIndex((x) => x.id === t.id);
+  if (i >= 0) state.tasks[i] = t;
+  else state.tasks.unshift(t);
+  updateInboxBadge();
+  if (!$('#inbox-modal').classList.contains('hidden')) renderTaskList();
+}
+bus.on('task.added', (ev) => upsertTask(ev.task));
+bus.on('task.updated', (ev) => upsertTask(ev.task));
 
 /* ---------------- 会话列表刷新 ---------------- */
 function refreshSessions() {
@@ -1521,7 +1748,7 @@ const SLASH_COMMANDS = [
   { name: '/clear', desc: '清空当前会话上下文' },
   { name: '/plan', desc: '切换计划模式（只读调研）' },
   { name: '/permission', desc: '切换安全权限档位（低/中/高/全量）' },
-  { name: '/model', desc: '查看/切换/添加模型' },
+  { name: '/model', desc: '查看/切换/添加模型（/model fetch 拉取网关模型清单）' },
   { name: '/variants', desc: '切换思考级别（low/medium/high）' },
   { name: '/undo', desc: '撤销最近的文件修改（all = 全部）' },
   { name: '/redo', desc: '重做上次撤销（all = 全部）' },
@@ -1539,11 +1766,13 @@ const SLASH_COMMANDS = [
   { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
   { name: '/export', desc: '导出会话为 Markdown' },
   { name: '/config', desc: '查看配置文件路径' },
-  { name: '/mcp', desc: '管理 MCP 服务器（reconnect 重连）' },
+  { name: '/mcp', desc: 'MCP 管理：reconnect / resources / prompts（设置面板可 add/remove/install/login）' },
   { name: '/rename', desc: '修改会话标题' },
   { name: '/session', desc: '会话管理（列出/恢复/all 全部）' },
   { name: '/resume', desc: '恢复历史会话（列出/恢复）' },
   { name: '/doctor', desc: '环境诊断（Node/API/配置）' },
+  { name: '/spec', desc: '规格三件套（/spec <特性>）：requirements(EARS)/design/tasks 落盘 .omni/specs/' },
+  { name: '/preset', desc: '能力一键预设（/preset browser 安装浏览器自动化双雄 MCP）' },
   { name: '/settings', desc: '打开设置面板' },];
 
 const cmdPalette = $('#cmd-palette');
@@ -1820,6 +2049,8 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     const anyPopOpen = ['#permission-pop', '#add-menu', '#project-pop', '#location-pop', '#branch-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
+    if (!$('#rewind-modal').classList.contains('hidden')) $('#rewind-modal').classList.add('hidden');
+    else if (!$('#inbox-modal').classList.contains('hidden')) $('#inbox-modal').classList.add('hidden');
     if (!$('#dirpicker-modal').classList.contains('hidden')) closeDirPicker();
     else if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
     else if (!$('#cmd-panel').classList.contains('hidden')) closeCmdPanel();
@@ -1867,7 +2098,7 @@ async function doSend(text) {
 function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
-  if (state.running) return; // 运行中不再发送（用独立停止按钮）
+  if (sessionRunning()) return; // 仅本会话运行中拦截（其它会话可并行）
   doSend(text);
 }
 
@@ -1915,6 +2146,9 @@ function closeSettings() {
 }
 
 $('#btn-new').addEventListener('click', () => newSession().catch((e) => console.error(e)));
+$('#chat-title').addEventListener('click', (e) => { e.stopPropagation(); if (state.session) showChatActions(e); });
+// 修复死交互：空态工作区条点击 = 浏览切换工作目录（此前 chevron 无任何监听）
+$('.hero-workspace')?.addEventListener('click', () => browseWorkspace());
 $('#btn-new-brand').addEventListener('click', () => newSession().catch((e) => console.error(e)));
 $('#btn-session-add').addEventListener('click', () => browseWorkspace());
 $('#btn-settings').addEventListener('click', () => openSettings());
@@ -2011,7 +2245,7 @@ function renderModelPop(s) {
     models.forEach((m) => {
       const it = el('button', 'pop-item' + (m.name === s.model ? ' active' : ''));
       it.type = 'button';
-      it.appendChild(el('span', 'pop-name', m.name));
+      it.appendChild(el('span', 'pop-name', modelLabel(m)));
       if (m.baseURL && !m.baseURL.includes('api.openai.com')) it.appendChild(el('span', 'pop-sub', m.baseURL));
       if (m.name === s.model) {
         const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -2248,6 +2482,7 @@ $('#messages').addEventListener('click', (e) => {
   } catch (e) {
     $('#status-text').textContent = '无法连接服务器';
   }
+  try { state.tasks = await api('/api/tasks'); updateInboxBadge(); } catch { /* ignore */ }
   try {
     state.sessions = await api('/api/sessions');
     renderSessionList();

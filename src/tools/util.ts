@@ -12,9 +12,12 @@ export function num(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** 把工具参数里的路径解析为绝对路径（基于进程 cwd） */
-export function resolvePath(p: string): string {
-  return path.resolve(process.cwd(), p);
+/**
+ * 把工具参数里的路径解析为绝对路径。cwd 缺省 = 进程工作目录；
+ * worktree 子代理场景由调用方经 ToolContext.cwd 显式传入（1.0 P0-6）。
+ */
+export function resolvePath(p: string, cwd?: string): string {
+  return path.resolve(cwd ?? process.cwd(), p);
 }
 
 /** 对返回给模型的内容统一截断，防止上下文被撑爆 */

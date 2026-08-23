@@ -23,9 +23,9 @@ export const searchCodeTool: Tool = {
     },
     required: ['pattern'],
   },
-  async execute(args) {
+  async execute(args, ctx) {
     const pattern = String(args.pattern ?? '');
-    const dir = resolvePath(String(args.path ?? '.'));
+    const dir = resolvePath(String(args.path ?? '.'), ctx?.cwd);
 
     // 优先使用 ripgrep
     const rg = spawnSync(

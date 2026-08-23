@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/exec-result.v1.json",
+  "title": "omni exec --output-format json 结果（协议冻结 v1，semver 承诺：破坏性变更升 minor+）",
+  "type": "object",
+  "required": ["result", "cost_usd", "duration_ms", "num_turns", "session_id", "exit_code"],
+  "properties": {
+    "result": { "type": "string", "description": "最终回答文本（stdout 唯一内容）" },
+    "cost_usd": { "type": "number", "description": "估算成本（$；按 OMNI_INPUT_PRICE_PER_M / OMNI_OUTPUT_PRICE_PER_M，默认 1/2 每百万 token）" },
+    "duration_ms": { "type": "integer" },
+    "num_turns": { "type": "integer", "description": "LLM 请求回合数" },
+    "session_id": { "type": ["string", "null"], "description": "会话 id（exec resume <id> 续跑）" },
+    "exit_code": { "enum": [0, 1], "description": "0 完成 / 1 失败·超限·schema 不符" },
+    "tokens": {
+      "type": "object",
+      "required": ["prompt", "completion", "cached"],
+      "properties": { "prompt": { "type": "integer" }, "completion": { "type": "integer" }, "cached": { "type": "integer" } }
+    },
+    "idle_turns": { "type": "integer", "description": "无工具调用的空转回合数" },
+    "error_type": { "enum": ["completed", "error", "max-steps", "aborted", "schema-fail", "unknown"] }
+  }
+}

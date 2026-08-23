@@ -159,6 +159,7 @@ export class ExecOutput implements Output {
   /** 会话累计 token 用量（onUsage 累计；cost 估算用） */
   inTokens = 0;
   outTokens = 0;
+  cachedTokens = 0;
   /** 最终回答文本（onAnswer 累计；结果提取以 messages 为准，这里仅兜底） */
   answerText = '';
 
@@ -197,6 +198,7 @@ export class ExecOutput implements Output {
   onUsage(u: TokenUsage): void {
     this.inTokens += u.prompt ?? 0;
     this.outTokens += u.completion ?? 0;
+    this.cachedTokens += u.cached ?? 0;
   }
   onRequestFailed(err: unknown): void {
     this.log(red(`✗ 请求失败：${(err as Error)?.message ?? String(err)}`));
@@ -358,6 +360,12 @@ export interface HeadlessResult {
   numTurns: number;
   sessionId: string | null;
   exitCode: number;
+  /** token 用量（1.0 P1-10 成本效率报告；onUsage 累计） */
+  tokens: { prompt: number; completion: number; cached: number };
+  /** 无工具调用的回合数（纯对话轮——「空转」检测：模型没动工具就收尾） */
+  idleTurns: number;
+  /** 失败类别：completed / error / max-steps / aborted / schema-fail（成本报告维度） */
+  errorType: string;
 }
 
 /** 输入/输出单价（$/1M tokens，估算用；可用 OMNI_INPUT_PRICE_PER_M / OMNI_OUTPUT_PRICE_PER_M 覆盖） */
@@ -432,6 +440,18 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
     }
   }
   const costUsd = (output.inTokens / 1e6) * INPUT_PRICE_PER_M + (output.outTokens / 1e6) * OUTPUT_PRICE_PER_M;
+  // 1.0 P1-10：token 用量 / 空转回合 / 失败类别（成本效率报告维度）
+  const tokens = { prompt: output.inTokens, completion: output.outTokens, cached: output.cachedTokens };
+  const idleTurns = messages.filter(
+    (m): m is import('openai/resources/chat/completions.js').ChatCompletionAssistantMessageParam =>
+      m.role === 'assistant' && !('tool_calls' in m) || (m.role === 'assistant' && !(m as { tool_calls?: unknown }).tool_calls)
+  ).length;
+  const errorType =
+    exitCode !== 0 && opts.outputSchema ? 'schema-fail'
+    : reason === 'completed' ? 'completed'
+    : reason === 'max-steps' ? 'max-steps'
+    : reason === 'aborted' ? 'aborted'
+    : 'error';
   return {
     result,
     costUsd: Number(costUsd.toFixed(6)),
@@ -439,6 +459,9 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
     numTurns: runOpts.events?.turn ?? 0,
     sessionId: sessionIdOf(sessionPath),
     exitCode,
+    tokens,
+    idleTurns,
+    errorType,
   };
 }
 
@@ -451,6 +474,10 @@ export function resultJson(res: HeadlessResult, extra: Record<string, unknown> =
     num_turns: res.numTurns,
     session_id: res.sessionId,
     exit_code: res.exitCode,
+    // 1.0 P1-10 成本效率字段（additive）
+    tokens: res.tokens,
+    idle_turns: res.idleTurns,
+    error_type: res.errorType,
     ...extra,
   };
 }

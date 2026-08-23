@@ -1,4 +1,5 @@
 {
+  "$schema": "./config.schema.json",
   // Omni 配置示例 —— 复制为 omni.json（或 omni.jsonc）后按需修改
   // 优先级（从低到高）：默认值 < 全局配置 < 项目配置 < 自定义配置 < 环境变量 < CLI 参数
   // 全局配置位置：~/.config/omni/omni.json
@@ -69,6 +70,11 @@
 
   // WebFetch 工具域名允许列表（可选）：空 = 允许抓取任意 URL；配置后仅允许列出的域名（含子域名）。
   // "webFetchDomains": ["developer.mozilla.org", "nodejs.org"],
+
+  // ── 兼容性字段（P2 能力驱动请求构建）──────────────────────
+  // 自定义 reasoning 字段名：除内置 reasoning_content / reasoning / thinking 外，
+  // 部分网关用私有字段返回思考内容（如 custom_thinking）——在此配置后 loop 自动识别。
+  // "compatibility": { "reasoningField": "custom_thinking" },
 
   // ── 工作区信任（workspace trust）──────────────────────────
   // 首次进入未信任目录时提示信任（TUI 审批卡片 / console readline）；信任清单持久化到

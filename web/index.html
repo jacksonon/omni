@@ -59,7 +59,10 @@
       <div id="session-list" class="session-list"></div>
     </div>
     <div class="sidebar-foot">
-      <button id="btn-settings" class="settings-button" type="button"><svg><use href="#i-settings"/></svg><span>设置</span></button>
+      <div class="sidebar-foot-row">
+        <button id="btn-inbox" class="settings-button" type="button" title="后台任务收件箱"><svg><use href="#i-doc"/></svg><span>后台任务</span><span id="inbox-count" class="inbox-badge hidden">0</span></button>
+        <button id="btn-settings" class="settings-button" type="button"><svg><use href="#i-settings"/></svg><span>设置</span></button>
+      </div>
       <div class="connection-line"><span class="status-dot" id="sidebar-status-dot"></span><span id="cwd" title=""></span></div>
     </div>
   </aside>
@@ -69,7 +72,7 @@
       <div class="title-row">
         <div class="title-cluster">
           <button id="btn-mobile-sidebar" class="icon-button mobile-only" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
-          <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" disabled>新会话</button></nav>
+          <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" title="会话操作（分叉/导出/检查点…）">新会话</button></nav>
           <span class="header-status"><span class="status-dot" id="status-dot"></span><span id="status-text">就绪</span></span>
         </div>
         <div class="header-actions">
@@ -145,6 +148,23 @@
     <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
   </div>
   <div class="cmd-panel-body" id="cmd-panel-body"></div>
+</div>
+
+
+<div id="rewind-modal" class="modal hidden" role="dialog" aria-label="会话检查点">
+  <div class="modal-card">
+    <div class="modal-head"><h2>会话检查点（/rewind）</h2><button class="icon-button" id="btn-close-rewind" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <p class="pane-sub">每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。</p>
+    <div id="rewind-list" class="rewind-list"></div>
+  </div>
+</div>
+
+<div id="inbox-modal" class="modal hidden" role="dialog" aria-label="后台任务">
+  <div class="modal-card">
+    <div class="modal-head"><h2>后台任务收件箱</h2><button class="icon-button" id="btn-close-inbox" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="inbox-add"><input id="task-input" type="text" placeholder="长任务描述，空闲容量时自动在独立会话执行…"><button id="btn-task-add" class="primary">入队</button></div>
+    <div id="task-list" class="task-list"></div>
+  </div>
 </div>
 
 <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">

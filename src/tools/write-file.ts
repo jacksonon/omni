@@ -18,8 +18,8 @@ export const writeFileTool: Tool = {
     },
     required: ['path', 'content'],
   },
-  async execute(args) {
-    const filePath = resolvePath(String(args.path ?? ''));
+  async execute(args, ctx) {
+    const filePath = resolvePath(String(args.path ?? ''), ctx?.cwd);
     const content = String(args.content ?? '');
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, content, 'utf8');

@@ -41,6 +41,11 @@ export interface SafetyOptions {
    * 用户据此决定放行/拒绝。由入口层注入（loop 的 UndoStack 快照同源数据）。
    */
   writeDiffSummary?: (tool: string, args: Record<string, unknown>) => string | null;
+  /**
+   * Hooks 运行器（1.0 P1-1）：配置了 PermissionRequest hook 时在弹审批 UI 前
+   * 先问 hook——返回 decision approve/deny 可短路人工审批（规则化自动放行/拒绝）。
+   */
+  hooks?: import('../hooks/index.js').HookRunner;
 }
 
 export class Safety {
@@ -78,6 +83,19 @@ export class Safety {
     if (tool.name === 'write_file' && this.opts.writeDiffSummary) {
       const diffLine = this.opts.writeDiffSummary(tool.name, args);
       if (diffLine) reason = `${reason}\n${diffLine}`;
+    }
+    // PermissionRequest hook（1.0 P1-1）：审批前介入——decision approve/deny 可
+    // 短路人工 UI；default / 无 hook / hook 失败 → 走正常审批回调
+    if (this.opts.hooks?.has('PermissionRequest')) {
+      const pr = await this.opts.hooks.permissionRequest(tool.name, args, reason);
+      if (pr.decision === 'approve') {
+        this.record(tool.name, summary, 'approved:hook');
+        return { allow: true };
+      }
+      if (pr.decision === 'deny') {
+        this.record(tool.name, summary, `deny:${pr.reason ?? 'PermissionRequest hook'}`);
+        return { allow: false, reason: pr.reason ?? '已拒绝（PermissionRequest hook）' };
+      }
     }
     // 需要审批：交给 Output 层的回调（console readline / TUI 审批卡片）
     const ok = await this.requestApproval({ tool: tool.name, summary, reason });

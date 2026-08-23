@@ -98,10 +98,14 @@ export function createThinkingDisplay(enabled: boolean): ThinkingDisplay {
 }
 
 /** 从流式 delta 中提取思考内容（兼容 reasoning_content / reasoning / thinking 三种字段命名） */
-export function extractReasoning(delta: unknown): string | undefined {
+export function extractReasoning(delta: unknown, extraField?: string): string | undefined {
   if (!delta || typeof delta !== 'object') return undefined;
   const d = delta as Record<string, unknown>;
-  for (const key of ['reasoning_content', 'reasoning', 'thinking']) {
+  // 内置字段（DeepSeek 系 reasoning_content / 通用 reasoning / thinking）+ 用户自定义
+  //（config compatibility.reasoningField——网关私有字段扩展，对标 opencode）
+  const keys = ['reasoning_content', 'reasoning', 'thinking'];
+  if (extraField && !keys.includes(extraField)) keys.push(extraField);
+  for (const key of keys) {
     const v = d[key];
     if (typeof v === 'string' && v.length > 0) return v;
   }

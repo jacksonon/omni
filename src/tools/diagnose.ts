@@ -47,12 +47,13 @@ export function createDiagnoseTool(root: string): Tool {
         },
       },
     },
-    async execute() {
-      const cmd = detectCheckCommand(root);
+    async execute(_args, ctx) {
+      const root2 = ctx?.cwd ?? root;
+      const cmd = detectCheckCommand(root2);
       if (!cmd) return '项目没有 typecheck/lint/test 脚本（package.json scripts 缺失）——可用 run_command 手动运行检查工具。';
       try {
         const { stdout, stderr } = await execAsync(`npm run ${cmd.name} --silent`, {
-          cwd: root,
+          cwd: root2,
           timeout: 120_000,
           maxBuffer: 10 * 1024 * 1024,
         });

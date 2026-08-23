@@ -62,15 +62,26 @@ export interface OmniConfig {
    * reasoningEffort = 该模型的当前思考级别——两者缺省回退顶层同名字段（只配置了端点
    * 的模型自动继承全局思考级别配置）。/model 切换到该模型时自动带出（面板选项/请求同步）。
    * 顶层 `model` 为默认模型（总是可用）。
+   *
+   * 1.0 模型元数据（TODO 七 7.1）：limit（context/output token 上限）、modalities
+   * （输入/输出类型数组）、capabilities（tools/reasoning/temperature）、apiModel 别名、
+   * displayName、disabled 隐藏；variants = 命名请求叠加层表。未声明时的兜底假设见
+   * client.ts MODEL_DEFAULTS。**providers 分组展开后也合并进本表**（向后兼容扁平形态）。
    */
-  models?: Record<
+  models?: Record<string, ModelEntryConfig>;
+  /**
+   * Provider 分组（1.0 P0-3，对标 opencode providers）：一个 baseURL 挂多个模型——
+   * 同网关共享 baseURL/apiKey/userAgent/headers，models 只写差异字段。
+   * 加载期展开合并进 `models` 表（key 冲突时显式 models 条目优先），扁平形态继续可用。
+   */
+  providers?: Record<
     string,
     {
       baseURL?: string;
       apiKey?: string;
       userAgent?: string;
-      reasoningEffortOptions?: string[];
-      reasoningEffort?: string;
+      headers?: Record<string, string>;
+      models?: Record<string, Omit<ModelEntryConfig, 'baseURL' | 'apiKey' | 'userAgent' | 'headers'>>;
     }
   >;
   /** 最多预载文件数（默认 5） */
@@ -138,6 +149,26 @@ export interface OmniConfig {
    * 非绝对路径忽略。仅 workspace-write 档位生效（read-only 保持全禁写）。
    */
   sandboxWritePaths?: string[];
+  /**
+   * 沙箱网络白名单（1.0 P0-4 沙箱 2.0）：允许出站访问的 hostname 列表。
+   * 配置后 attachRuntime 启动内置过滤代理（CONNECT 按 hostname 白名单放行，
+   * 不解密 TLS），沙箱内命令经 http_proxy/https_proxy 环境变量走代理出网；
+   * macOS Seatbelt 同时把「拒绝网络」收紧为「仅允许连代理端口」。
+   * 空 = 维持全禁网（read-only / workspace-write 默认）。
+   */
+  sandboxNetworkAllow?: string[];
+  /**
+   * 沙箱不可用时 fail-closed（1.0 P0-4，企业安全门）：默认 false = 降级直接执行 +
+   * 提示（fail-open，不卡主流程）；true = 平台无 sandbox-exec/bwrap/firejail 时
+   * **拒绝执行命令**并提示安装方式——宁可不跑也不裸奔。
+   */
+  sandboxFailClosed?: boolean;
+  /**
+   * 沙箱凭证 masking（1.0 P0-4）：传给沙箱内命令的环境变量里，命中名单或
+   * 内置模式（*_KEY/*_TOKEN/*_SECRET/*_PASSWORD）的变量值替换为 sentinel 占位符
+   * `__OMNI_MASKED__<原名>`——防 agent 执行的命令把凭据 echo 进上下文。
+   */
+  sandboxMaskEnv?: boolean;
   /** 是否注入代码库结构感知地图（repo map，P1；默认 true） */
   repoMap?: boolean;
   /** repo map 符号上限（默认 200） */
@@ -169,8 +200,74 @@ export interface OmniConfig {
    * @internal
    */
   profiles?: Record<string, unknown>;
+  /**
+   * Web 多会话并发上限（1.0 P0-2）：同时运行的会话数上限（默认 3；每会话仍限 1 个
+   * 并发运行）。超过时新发送返回 409 提示等待。0/负数回退默认。
+   */
+  webConcurrency?: number;
+  /**
+   * LSP 反馈闭环（1.0 P1-3）：write_file 成功后自动跑一次快速项目检查
+   * （typecheck→lint，detectCheckCommand），诊断摘要以 `[诊断]` 追加进工具结果，
+   * 模型即时自修复（opencode/Crush 的招牌差异点）。默认 false（显式开启——
+   * 大仓库 typecheck 可能秒级耗时）。
+   */
+  diagnoseAfterEdit?: boolean;
+  /**
+   * 上下文压缩触发占比（1.0 P1-4）：模型 limit.context 已知时，估算 token 超过
+   * context × 该占比即触发摘要压缩（消息数阈值 summarizeAt 仍然生效，两者取先到）。
+   * 默认 0.7。
+   */
+  contextCompressRatio?: number;
+  /**
+   * OpenTelemetry 导出（1.0 P1-11）：**默认关闭、opt-in 显式**。开启后按 OTLP/HTTP
+   * JSON 协议导出 session/token/cost/tool activity 指标与 span 到 endpoint；
+   * prompt/工具内容默认脱敏（redact=true 只发元数据，不含任何用户文本）。
+   */
+  telemetry?: {
+    enabled?: boolean;
+    /** OTLP HTTP 基址（如 http://localhost:4318）——拼 /v1/metrics 与 /v1/traces */
+    endpoint?: string;
+    serviceName?: string;
+    /** prompt 内容脱敏开关（默认 true = 只发长度/哈希等元数据） */
+    redact?: boolean;
+  };
+  /**
+   * 兼容性字段（P2 能力驱动请求构建）：自定义网关私有字段名——
+   * compatibility.reasoningField = 该网关返回思考内容的字段名（DeepSeek 系
+   * reasoning_content 已内置识别；其余字段名在此可配扩展，对标 opencode）。
+   */
+  compatibility?: { reasoningField?: string };
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
   sources: string[];
+}
+
+/**
+ * 单个模型的配置条目（顶层 models 表 / providers.*.models 展开前的通用形态）。
+ * 元数据字段见 ModelEndpoint 同名注释。
+ */
+export interface ModelEntryConfig {
+  /** 所属 provider 名（providers 展开时由加载器写入） */
+  provider?: string;
+  baseURL?: string;
+  apiKey?: string;
+  userAgent?: string;
+  headers?: Record<string, string>;
+  reasoningEffortOptions?: string[];
+  reasoningEffort?: string;
+  /** 当前选中的命名 variant（/variants <id> 切换后持久化到这里） */
+  variant?: string;
+  /** 命名 variants 叠加层表：{ id: { description?, reasoningEffort?, body?, headers? } } */
+  variants?: Record<
+    string,
+    { description?: string; reasoningEffort?: string; body?: Record<string, unknown>; headers?: Record<string, string> }
+  >;
+  /** 发给 API 的真实模型名（目录友好名 ≠ API 名） */
+  apiModel?: string;
+  displayName?: string;
+  limit?: { context?: number; output?: number };
+  modalities?: { input?: string[]; output?: string[] };
+  capabilities?: { tools?: boolean; reasoning?: boolean; temperature?: boolean };
+  disabled?: boolean;
 }
 
 /** 来自 CLI 的覆盖项 */
@@ -228,6 +325,10 @@ const DEFAULTS = {
   statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
   language: 'zh' as 'zh' | 'en',
   sandbox: 'off' as SandboxMode,
+  // 1.0 新增默认值：Web 并发上限 / 诊断闭环关 / 压缩占比 0.7
+  webConcurrency: 3,
+  diagnoseAfterEdit: false,
+  contextCompressRatio: 0.7,
 };
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -243,6 +344,84 @@ function readJson(file: string): Record<string, unknown> | null {
 
 function addSource(sources: string[], s: string): void {
   if (!sources.includes(s)) sources.push(s);
+}
+
+/* ---------------- 1.0 模型元数据字段解析（纯函数，非法值丢弃） ---------------- */
+
+/** variants 表解析：只收 id 合法 + 至少一个已知字段的条目 */
+function parseVariantsField(
+  v: unknown
+): { variants?: Record<string, { description?: string; reasoningEffort?: string; body?: Record<string, unknown>; headers?: Record<string, string> }> } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, { description?: string; reasoningEffort?: string; body?: Record<string, unknown>; headers?: Record<string, string> }> = {};
+  for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const e = raw as Record<string, unknown>;
+    const def: (typeof out)[string] = {
+      ...(typeof e.description === 'string' ? { description: e.description } : {}),
+      ...(typeof e.reasoningEffort === 'string' && e.reasoningEffort.trim()
+        ? { reasoningEffort: e.reasoningEffort.trim() }
+        : {}),
+      ...(e.body && typeof e.body === 'object' && !Array.isArray(e.body)
+        ? { body: e.body as Record<string, unknown> }
+        : {}),
+      ...(e.headers && typeof e.headers === 'object' && !Array.isArray(e.headers)
+        ? { headers: e.headers as Record<string, string> }
+        : {}),
+    };
+    if (Object.keys(def).length > 0) out[id] = def;
+  }
+  return Object.keys(out).length > 0 ? { variants: out } : {};
+}
+
+function parseLimitField(v: unknown): { limit?: { context?: number; output?: number } } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const e = v as Record<string, unknown>;
+  const limit: { context?: number; output?: number } = {};
+  if (typeof e.context === 'number' && Number.isFinite(e.context) && e.context > 0) limit.context = Math.floor(e.context);
+  if (typeof e.output === 'number' && Number.isFinite(e.output) && e.output > 0) limit.output = Math.floor(e.output);
+  return Object.keys(limit).length > 0 ? { limit } : {};
+}
+
+const MODALITY_KINDS = ['text', 'image', 'pdf', 'audio'];
+function parseModalitiesField(v: unknown): { modalities?: { input?: string[]; output?: string[] } } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const e = v as Record<string, unknown>;
+  const pick = (x: unknown): string[] | undefined =>
+    Array.isArray(x)
+      ? (x as unknown[]).filter((s): s is string => typeof s === 'string' && MODALITY_KINDS.includes(s))
+      : undefined;
+  const input = pick(e.input);
+  const output = pick(e.output);
+  return input || output ? { modalities: { ...(input ? { input } : {}), ...(output ? { output } : {}) } } : {};
+}
+
+function parseCapabilitiesField(v: unknown): { capabilities?: { tools?: boolean; reasoning?: boolean; temperature?: boolean } } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const e = v as Record<string, unknown>;
+  const cap: { tools?: boolean; reasoning?: boolean; temperature?: boolean } = {};
+  for (const k of ['tools', 'reasoning', 'temperature'] as const) {
+    if (typeof e[k] === 'boolean') cap[k] = e[k] as boolean;
+  }
+  return Object.keys(cap).length > 0 ? { capabilities: cap } : {};
+}
+
+/**
+ * `{env:VAR}` 引用替换（1.0 P1）：密钥不进配置文件——配置里写
+ * `"apiKey": "{env:GLM_KEY}"`，加载期替换为环境变量真实值；未设置时移除该字段
+ * （回退顶层/环境变量的既有解析链），并提示一次。
+ */
+export function resolveEnvRef(value: string | undefined): string | undefined {
+  if (!value) return value;
+  const m = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value.trim());
+  if (!m) return value;
+  const name = m[1]!;
+  const real = process.env[name];
+  if (!real) {
+    console.error(`⚠️ 配置引用的环境变量 ${name} 未设置——该字段按缺省处理（回退顶层/环境变量链）。`);
+    return undefined;
+  }
+  return real;
 }
 
 function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: string, sources: string[]): void {
@@ -274,14 +453,17 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.reasoningEffort = data.reasoningEffort.trim();
   }
   if (data.models && typeof data.models === 'object' && !Array.isArray(data.models)) {
-    const models: Record<string, { baseURL?: string; apiKey?: string; userAgent?: string; reasoningEffortOptions?: string[]; reasoningEffort?: string }> = {};
+    const models: Record<string, ModelEntryConfig> = {};
     for (const [name, v] of Object.entries(data.models as Record<string, unknown>)) {
       if (!v || typeof v !== 'object') continue;
       const e = v as Record<string, unknown>;
-      models[name] = {
+      const entry: ModelEntryConfig = {
         ...(typeof e.baseURL === 'string' ? { baseURL: e.baseURL } : {}),
         ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey } : {}),
         ...(typeof e.userAgent === 'string' ? { userAgent: e.userAgent } : {}),
+        ...(e.headers && typeof e.headers === 'object' && !Array.isArray(e.headers)
+          ? { headers: e.headers as Record<string, string> }
+          : {}),
         // per-model variants：只收非空字符串数组/字符串；非法值丢弃（回退顶层）
         ...(Array.isArray(e.reasoningEffortOptions)
           ? {
@@ -293,9 +475,72 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
         ...(typeof e.reasoningEffort === 'string' && e.reasoningEffort.trim()
           ? { reasoningEffort: e.reasoningEffort.trim() }
           : {}),
+        ...(typeof e.variant === 'string' && e.variant.trim() ? { variant: e.variant.trim() } : {}),
+        ...parseVariantsField(e.variants),
+        ...(typeof e.apiModel === 'string' && e.apiModel.trim() ? { apiModel: e.apiModel.trim() } : {}),
+        ...(typeof e.displayName === 'string' && e.displayName.trim()
+          ? { displayName: e.displayName.trim() }
+          : {}),
+        ...parseLimitField(e.limit),
+        ...parseModalitiesField(e.modalities),
+        ...parseCapabilitiesField(e.capabilities),
+        ...(e.disabled === true ? { disabled: true } : {}),
       };
+      models[name] = entry;
     }
     if (Object.keys(models).length > 0) cfg.models = models;
+  }
+  // Provider 分组（1.0 P0-3）：原样校验保留，loadConfig 末尾统一展开合并进 models
+  if (data.providers && typeof data.providers === 'object' && !Array.isArray(data.providers)) {
+    const providers: NonNullable<OmniConfig['providers']> = {};
+    for (const [name, v] of Object.entries(data.providers as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue;
+      const p = v as Record<string, unknown>;
+      const entry: NonNullable<OmniConfig['providers']>[string] = {
+        ...(typeof p.baseURL === 'string' ? { baseURL: p.baseURL } : {}),
+        ...(typeof p.apiKey === 'string' ? { apiKey: p.apiKey } : {}),
+        ...(typeof p.userAgent === 'string' ? { userAgent: p.userAgent } : {}),
+        ...(p.headers && typeof p.headers === 'object' && !Array.isArray(p.headers)
+          ? { headers: p.headers as Record<string, string> }
+          : {}),
+      };
+      if (p.models && typeof p.models === 'object' && !Array.isArray(p.models)) {
+        const pmodels: NonNullable<NonNullable<OmniConfig['providers']>[string]['models']> = {};
+        for (const [mid, mv] of Object.entries(p.models as Record<string, unknown>)) {
+          if (!mv || typeof mv !== 'object') continue;
+          const e = mv as Record<string, unknown>;
+          if (Object.keys(e).length === 0) {
+            pmodels[mid] = {};
+            continue;
+          }
+          pmodels[mid] = {
+            ...(Array.isArray(e.reasoningEffortOptions)
+              ? {
+                  reasoningEffortOptions: (e.reasoningEffortOptions as unknown[]).filter(
+                    (x): x is string => typeof x === 'string' && !!x.trim()
+                  ),
+                }
+              : {}),
+            ...(typeof e.reasoningEffort === 'string' && e.reasoningEffort.trim()
+              ? { reasoningEffort: e.reasoningEffort.trim() }
+              : {}),
+            ...(typeof e.variant === 'string' && e.variant.trim() ? { variant: e.variant.trim() } : {}),
+            ...parseVariantsField(e.variants),
+            ...(typeof e.apiModel === 'string' && e.apiModel.trim() ? { apiModel: e.apiModel.trim() } : {}),
+            ...(typeof e.displayName === 'string' && e.displayName.trim()
+              ? { displayName: e.displayName.trim() }
+              : {}),
+            ...parseLimitField(e.limit),
+            ...parseModalitiesField(e.modalities),
+            ...parseCapabilitiesField(e.capabilities),
+            ...(e.disabled === true ? { disabled: true } : {}),
+          };
+        }
+        entry.models = pmodels;
+      }
+      providers[name] = entry;
+    }
+    if (Object.keys(providers).length > 0) cfg.providers = providers;
   }
   if (Array.isArray(data.reasoningEffortOptions)) {
     const arr = (data.reasoningEffortOptions as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim());
@@ -351,6 +596,33 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     ))];
     if (arr.length > 0) cfg.sandboxWritePaths = arr;
   }
+  // 沙箱 2.0（1.0 P0-4）：网络白名单 / fail-closed / 凭证 masking
+  if (Array.isArray(data.sandboxNetworkAllow)) {
+    const arr = [...new Set((data.sandboxNetworkAllow as unknown[]).filter(
+      (x): x is string => typeof x === 'string' && !!x.trim()
+    ).map((x) => x.trim().toLowerCase()))];
+    if (arr.length > 0) cfg.sandboxNetworkAllow = arr;
+  }
+  if (typeof data.sandboxFailClosed === 'boolean') cfg.sandboxFailClosed = data.sandboxFailClosed;
+  if (typeof data.sandboxMaskEnv === 'boolean') cfg.sandboxMaskEnv = data.sandboxMaskEnv;
+  // Web 并发上限（1.0 P0-2）
+  if (typeof data.webConcurrency === 'number' && Number.isFinite(data.webConcurrency)) {
+    cfg.webConcurrency = Math.max(1, Math.min(16, Math.floor(data.webConcurrency)));
+  }
+  // 诊断闭环开关（1.0 P1-3）与压缩占比（1.0 P1-4）
+  if (typeof data.diagnoseAfterEdit === 'boolean') cfg.diagnoseAfterEdit = data.diagnoseAfterEdit;
+  if (typeof data.contextCompressRatio === 'number' && Number.isFinite(data.contextCompressRatio)) {
+    cfg.contextCompressRatio = Math.min(0.95, Math.max(0.3, data.contextCompressRatio));
+  }
+  if (data.telemetry && typeof data.telemetry === 'object' && !Array.isArray(data.telemetry)) {
+    const t = data.telemetry as Record<string, unknown>;
+    cfg.telemetry = {
+      ...(typeof t.enabled === 'boolean' ? { enabled: t.enabled } : {}),
+      ...(typeof t.endpoint === 'string' && t.endpoint.trim() ? { endpoint: t.endpoint.trim() } : {}),
+      ...(typeof t.serviceName === 'string' && t.serviceName.trim() ? { serviceName: t.serviceName.trim() } : {}),
+      ...(typeof t.redact === 'boolean' ? { redact: t.redact } : {}),
+    };
+  }
   // 状态行段配置：只保留合法 id（非法/未知 id 丢弃，避免渲染层找不到段）；
   // 空数组 = 不显示状态行（用户全部取消勾选）；未配置保持默认全段
   if (Array.isArray(data.statusline)) {
@@ -383,9 +655,13 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
       for (const d of defs) {
         if (!d || typeof d !== 'object') continue;
         const v = d as Record<string, unknown>;
-        if (typeof v.command !== 'string' || !v.command.trim()) continue;
+        // 1.0 P1-1：command 与 http 两种 handler——command 或 url 至少一个
+        const hasCommand = typeof v.command === 'string' && !!v.command.trim();
+        const hasUrl = typeof v.url === 'string' && /^https?:\/\//.test(v.url.trim());
+        if (!hasCommand && !hasUrl) continue;
         list.push({
-          command: v.command.trim(),
+          ...(hasCommand ? { command: (v.command as string).trim() } : {}),
+          ...(hasUrl ? { url: (v.url as string).trim() } : {}),
           matcher: typeof v.matcher === 'string' && v.matcher.trim() ? v.matcher.trim() : undefined,
           timeoutMs:
             typeof v.timeoutMs === 'number' && Number.isFinite(v.timeoutMs)
@@ -431,6 +707,13 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
       }
     }
     if (Object.keys(servers).length > 0) cfg.mcpServers = servers;
+  }
+  // 兼容性字段：reasoningField 只收非空字符串
+  if (data.compatibility && typeof data.compatibility === 'object' && !Array.isArray(data.compatibility)) {
+    const c = data.compatibility as Record<string, unknown>;
+    if (typeof c.reasoningField === 'string' && c.reasoningField.trim()) {
+      cfg.compatibility = { reasoningField: c.reasoningField.trim() };
+    }
   }
   // 配置 profile 档案定义：原样保留在 cfg 上（--profile 消费；不参与字段级校验——
   // 档案内容千差万别，只在被选中时经 applyProfile 二次解析）
@@ -513,6 +796,50 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   if (!cfg.apiKey && process.env.OPENAI_API_KEY) {
     cfg.apiKey = process.env.OPENAI_API_KEY;
     addSource(sources, '环境变量 OPENAI_API_KEY');
+  }
+
+  /* ---------------- 1.0 模型层收尾：{env:VAR} 替换 + providers 展开合并 ---------------- */
+  const envResolvedKey = resolveEnvRef(cfg.apiKey);
+  if (envResolvedKey === undefined && cfg.apiKey) cfg.apiKey = undefined;
+  else if (envResolvedKey) cfg.apiKey = envResolvedKey;
+  if (cfg.models) {
+    for (const [name, e] of Object.entries(cfg.models)) {
+      if (e.apiKey) {
+        const r = resolveEnvRef(e.apiKey);
+        if (r === undefined) delete e.apiKey;
+        else e.apiKey = r;
+      }
+      void name;
+    }
+  }
+  if (cfg.providers) {
+    for (const p of Object.values(cfg.providers)) {
+      if (p.apiKey) {
+        const r = resolveEnvRef(p.apiKey);
+        if (r === undefined) delete p.apiKey;
+        else p.apiKey = r;
+      }
+    }
+    // Provider 展开（1.0 P0-3）：provider 级 → model 级逐字段覆盖，合并进扁平 models 表。
+    // key 冲突策略：显式顶层 models 条目优先保留原名；被占用的 provider 条目改挂
+    // `provider/modelID`（/model 面板按该名切换，语义清晰）。
+    const models: Record<string, ModelEntryConfig> = {};
+    for (const [pname, p] of Object.entries(cfg.providers)) {
+      for (const [mid, m] of Object.entries(p.models ?? {})) {
+        const merged: ModelEntryConfig = {
+          ...(p.baseURL ? { baseURL: p.baseURL } : {}),
+          ...(p.apiKey ? { apiKey: p.apiKey } : {}),
+          ...(p.userAgent ? { userAgent: p.userAgent } : {}),
+          ...(p.headers ? { headers: p.headers } : {}),
+          ...m,
+        };
+        const key = mid.includes('/') || cfg.models?.[mid] ? `${pname}/${mid}` : mid;
+        merged.apiModel ??= mid; // 目录友好名 ≠ API 名：缺省 apiModel = 原始 modelID
+        merged.provider = pname;
+        models[key] = merged;
+      }
+    }
+    if (Object.keys(models).length > 0) cfg.models = models;
   }
 
   return cfg;

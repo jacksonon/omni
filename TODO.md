@@ -145,7 +145,7 @@
 
 ### 7.1 配置模型重构（provider 分组 + 模型元数据）
 
-- [ ] **P0 Provider 分组：一个 baseURL 挂多个模型**（对标 opencode `providers`）：
+- [x] **P0 Provider 分组（第一百六十五次）**（对标 opencode `providers`）：
       现状 `models` 是以「模型名」为 key 的扁平表
       （`{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffort?… } }`）——同一网关下挂 N 个
       模型要么重复写 N 遍端点字段，要么全部挤在顶层唯一 baseURL 回退上，
@@ -172,7 +172,7 @@
       解析顺序 = provider 级 → model 级逐字段覆盖；`/model` 面板按 `provider/model`
       展示与切换（`providerID` 不含 `/`，`modelID` 可含 `/`，opencode 同规则）；
       createClient 按 provider 复用缓存（同组多模型共享一个客户端实例）。
-- [ ] **P0 模型元数据：limit + modalities + capabilities**（每个模型自己的参数画像，
+- [x] **P0 模型元数据（第一百六十五次）**：limit·modalities·capabilities·apiModel·displayName·disabled + 兜底假设 + 消费点 max_tokens·压缩占比·多模态校验（工具结果缩放未做——可选兜底项）（每个模型自己的参数画像，
       对标 opencode model 条目的 limit/modalities/capabilities）：
       - `limit: { context, output }`——输入上限（上下文窗口）/ 输出 max（token 数）；
       - `modalities: { input: [...], output: [...] }`——**输入/输出类型数组**
@@ -186,7 +186,7 @@
       ② summarizeContext 从「消息数阈值」升级为按 context 窗口占比触发；
       ③ 工具结果 8000 字符固定截断可按模型预算缩放；
       ④ 多模态前置校验（用户消息含图片而该模型 input 无 image → 明确提示而非网关侧报错）。
-- [ ] **P1 variants 升级为命名请求叠加层**（对标 opencode custom variants）：
+- [x] **P1 命名 variants 叠加层（第一百六十五次）**：{id, reasoningEffort?, body?, headers?} + /variants 面板 + 未知报错 + 字符串兼容 + 持久化（对标 opencode custom variants）：
       现状 variants 只有 reasoning_effort 一个维度（`reasoningEffortOptions` 字符串数组 +
       `reasoningEffort` 当前值）；升级为 `{ id, settings?, body?, headers? }` 命名叠加层——
       deep-merge 到该模型的请求配置上（例：`fast` = effort low；`deep` = effort high +
@@ -200,17 +200,17 @@
       可重试失败（429 限流 / 超时 / 5xx 网关 / 网络错误；401/400 配置问题不浪费回退）
       自动切换备用端点重试本轮，提示「已回退到 X」（meta 行）；本轮内后续请求继续用
       备用端点（activeClient），下一回合从主模型重新开始。三端 Output 均有回退提示。
-- [ ] **P1 architect/editor 跨端点路由**：现状 loop 只在同一 client 上换模型名
+- [x] **P1 architect/editor 跨端点路由（第一百六十五次）**：resolveModelRoute 按名反查 + getClient 缓存 + loop 每步重算：现状 loop 只在同一 client 上换模型名
       （`routedModel`；config 注释明说「不同端点的 architect/editor 需配 models 表，
       MVP 不做跨端点路由」）——architect 与 editor 配在不同网关时不生效。
       基于 provider 分组解析出 per-model 端点，路由时同步切换/复用对应 client
       （ModelRuntime 已支持重建，缺的是按模型名反查端点的解析层）。
-- [ ] **P1 模型发现与列表增强**：a) `/model add` 与启动时可选拉取网关 `GET /v1/models`
+- [x] **P1 模型发现与列表增强（第一百六十五次）**：/model fetch 三端 + 面板元数据标签 + {env:VAR} 引用——启动自动发现保持按需命令形态：a) `/model add` 与启动时可选拉取网关 `GET /v1/models`
       自动补全可用模型（OpenAI 兼容协议通用能力；对标 opencode 对 Ollama/LM Studio/vLLM
       的后台自动发现）；b) /model 面板与 Web 设置面板的模型下拉展示显示名 + 上下文窗口/
       输出上限（来自元数据，当前只有裸模型名）；c) `{env:VAR}` 引用统一替换——密钥不进
       配置文件（现状只有顶层 OMNI_API_KEY 环境变量一条路，models 表里只能明文）。
-- [ ] **P2 能力驱动的请求构建**：`reasoning_effort` / `stream_options` 等参数目前靠
+- [x] **P2 能力驱动的请求构建（第一百六十五次）**：capabilities.reasoning/tools 事前决定是否携带参数 + compatibility.reasoningField 自定义 reasoning 字段名：`reasoning_effort` / `stream_options` 等参数目前靠
       「请求失败静默重试不带」探测（每次换不兼容网关都白付一轮失败往返）；有了
       capabilities 元数据后事前决定是否携带。兼容性字段 `compatibility.reasoningField`
       （DeepSeek 系 `reasoning_content` 已内置识别，其余字段名可配置扩展，对标 opencode）。

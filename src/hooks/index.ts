@@ -6,11 +6,18 @@
  *   · UserPromptSubmit —— 用户提交 prompt 后（返回 `updatedPrompt` 可改写 prompt）
  *   · PreToolUse —— 工具调用前（JSON 返回 `decision: "block"` 可**硬拦截**；`updatedInput` 改写参数）
  *   · PostToolUse —— 工具调用后（`hookSpecificOutput` 输出回传上下文字段，如 lint 结果）
+ *   · PostToolUseFailure —— 工具执行失败后（1.0 P1-1：诊断提示回传模型自修复）
+ *   · PermissionRequest —— 需要人工审批前（1.0 P1-1：decision approve/deny 可短路 UI）
  *   · Stop —— agent 准备结束（返回 block 可要求继续修；`stop_hook_active` 只允许续一次防死循环）
  *   · Notification —— fire-and-forget 通知（会话完成等）
  *   · SessionStart —— 会话开始（每会话一次；`hookSpecificOutput` 注入上下文）
  *   · SubagentStart / SubagentStop —— 子代理开始/结束（任务与结论回传）
  *   · PreCompact —— 长对话摘要压缩前（可做归档/通知；fire-and-forget）
+ *   · PostCompact —— 摘要压缩完成后（1.0 P1-1：通知/记录新摘要长度）
+ *
+ * handler 类型（1.0 P1-1，对标 Claude Code command/http 两类）：
+ *   · command —— { command, timeoutMs? }：spawn shell，stdin 喂 JSON、stdout 收决策
+ *   · http    —— { url, timeoutMs? }：POST 事件 JSON 到 URL，响应体为同协议 JSON
  *
  * matcher 按工具名过滤（`*` = 全部，`read_*` = 前缀通配，缺省 = `*`）；
  * 超时 / 命令不存在 / 输出非 JSON → **降级放行**（不阻塞主流程），并把原因（含 stderr）回显。
@@ -24,30 +31,38 @@ export type HookEventName =
   | 'UserPromptSubmit'
   | 'PreToolUse'
   | 'PostToolUse'
+  | 'PostToolUseFailure'
+  | 'PermissionRequest'
   | 'Stop'
   | 'Notification'
   | 'SessionStart'
   | 'SubagentStart'
   | 'SubagentStop'
-  | 'PreCompact';
+  | 'PreCompact'
+  | 'PostCompact';
 
 export const HOOK_EVENTS: HookEventName[] = [
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
   'Stop',
   'Notification',
   'SessionStart',
   'SubagentStart',
   'SubagentStop',
   'PreCompact',
+  'PostCompact',
 ];
 
 export interface HookDefinition {
-  /** 匹配工具名：`*` = 全部（缺省）；`read_*` / `*_file` = 通配；仅 PreToolUse / PostToolUse 有意义 */
+  /** 匹配工具名：`*` = 全部（缺省）；`read_*` / `*_file` = 通配；仅 Pre/PostToolUse 类事件有意义 */
   matcher?: string;
-  /** shell 命令（如 `sh lint.sh`）：事件 JSON 经 stdin 喂入，stdout JSON 为决策 */
-  command: string;
+  /** shell 命令（如 `sh lint.sh`）：事件 JSON 经 stdin 喂入，stdout JSON 为决策。与 url 二选一 */
+  command?: string;
+  /** HTTP 端点（1.0 P1-1）：POST 事件 JSON，响应 JSON 为决策。与 command 二选一 */
+  url?: string;
   /** 超时毫秒（默认 60s）；超时 = 降级放行 */
   timeoutMs?: number;
 }
@@ -74,8 +89,8 @@ export interface HookInput {
 
 /** hook 脚本的 stdout JSON 决策（各事件取自己关心的字段，其余忽略） */
 export interface HookOutputJson {
-  /** PreToolUse / Stop：approve | block / continue | block */
-  decision?: 'approve' | 'block' | 'continue';
+  /** PreToolUse / Stop：approve | block / continue | block；PermissionRequest 另支持 deny（1.0 P1-1） */
+  decision?: 'approve' | 'block' | 'continue' | 'deny';
   /** SessionStart / 其它：注入上下文的额外说明（如启动策略） */
   description?: string;
   /** block 时的原因（回传模型/回显） */
@@ -194,6 +209,37 @@ function parseHookJson(text: string): HookOutputJson | null {
   }
 }
 
+/**
+ * http 型 handler：POST 事件 JSON → 响应体解析为同协议 JSON 决策。
+ * 超时/非 2xx/非法 JSON → failed（调用方降级放行）。
+ */
+export async function runHttpHook(
+  url: string,
+  input: HookInput,
+  timeoutMs: number
+): Promise<HookRunResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      signal: ctrl.signal,
+    });
+    const raw = await res.text();
+    if (!res.ok) {
+      return { json: parseHookJson(raw), raw, failed: true, failReason: `HTTP ${res.status}` };
+    }
+    return { json: parseHookJson(raw), raw, failed: false };
+  } catch (err) {
+    const msg = (err as Error)?.name === 'AbortError' ? `超时（>${timeoutMs}ms）` : `请求失败：${(err as Error)?.message ?? err}`;
+    return { json: null, raw: '', failed: true, failReason: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 把 hook 输出回显（截断行数，防刷屏；完整 hookSpecificOutput 仍回传模型） */
 const ECHO_LINES = 5;
 function echoOutput(opts: HookRunnerOptions | undefined, event: HookEventName, lines: string[]): void {
@@ -226,7 +272,12 @@ export class HookRunner {
   ): Promise<HookRunResult[]> {
     const defs = this.defsFor(event, toolName);
     return Promise.all(
-      defs.map((d, i) => runHook(d.command, buildInput(d, i), d.timeoutMs ?? 60_000, this.opts.cwd))
+      defs.map((d, i) => {
+        const input = buildInput(d, i);
+        // 1.0 P1-1：http 型 handler——POST JSON 到 url，响应即决策
+        if (d.url) return runHttpHook(d.url, input, d.timeoutMs ?? 60_000);
+        return runHook(d.command!, input, d.timeoutMs ?? 60_000, this.opts.cwd);
+      })
     );
   }
 
@@ -405,6 +456,58 @@ export class HookRunner {
   /** PreCompact：长对话摘要压缩前（归档/通知）；fire-and-forget */
   preCompact(messageCount: number): void {
     void this.fireAndCollect('PreCompact', { message_type: 'pre_compact', message_count: messageCount });
+  }
+
+  /** PostCompact：摘要压缩完成后（1.0 P1-1；记录新长度等）；fire-and-forget */
+  postCompact(summaryLength: number): void {
+    void this.fireAndCollect('PostCompact', { message_type: 'post_compact', summary_length: summaryLength });
+  }
+
+  /**
+   * PostToolUseFailure：工具执行失败后（1.0 P1-1）。与 PostToolUse 同语义收集
+   * hookSpecificOutput 作为 extra 追加进工具结果——模型据此自修复。
+   */
+  async postToolUseFailure(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    error: string
+  ): Promise<{ extra: string[] }> {
+    if (!this.has('PostToolUseFailure')) return { extra: [] };
+    const results = await this.runAll(
+      'PostToolUseFailure',
+      () => this.baseInput('PostToolUseFailure', { tool_name: toolName, tool_input: toolInput, tool_response: error }),
+      toolName
+    );
+    const extra: string[] = [];
+    for (const r of results) {
+      if (r.json?.hookSpecificOutput?.length) extra.push(...r.json.hookSpecificOutput);
+    }
+    echoOutput(this.opts, 'PostToolUseFailure', extra);
+    return { extra };
+  }
+
+  /**
+   * PermissionRequest：需要人工审批前（1.0 P1-1）。任一 hook decision approve/deny
+   * 即生效（短路审批 UI）；default / 失败 → 走正常人工审批。
+   */
+  async permissionRequest(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    reason: string
+  ): Promise<{ decision: 'approve' | 'deny' | 'default'; reason?: string }> {
+    if (!this.has('PermissionRequest')) return { decision: 'default' };
+    const results = await this.runAll(
+      'PermissionRequest',
+      () => this.baseInput('PermissionRequest', { tool_name: toolName, tool_input: toolInput }),
+      toolName
+    );
+    for (const r of results) {
+      if (r.failed) continue; // 失败降级：不短路人工审批
+      const d = r.json?.decision;
+      if (d === 'approve') return { decision: 'approve' };
+      if (d === 'deny') return { decision: 'deny', reason: r.json?.reason ?? 'PermissionRequest hook 拒绝了该操作' };
+    }
+    return { decision: 'default' };
   }
 
   /** 会话开始标记（SessionStart 每会话一次；runAgent 首轮置位） */

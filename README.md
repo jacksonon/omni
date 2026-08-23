@@ -32,12 +32,30 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **Hooks (lifecycle automation)**: attach shell commands to lifecycle events — rewrite user prompts (`UserPromptSubmit`), hard-block tool calls (`PreToolUse`), feed post-tool output back to the model such as lint results (`PostToolUse`), require the agent to keep working before it stops (`Stop`), session-complete notifications (`Notification`), plus `SessionStart` context injection, subagent hooks (`SubagentStart`/`SubagentStop` + Pre/Post around subagent tool calls) and `PreCompact`; JSON protocol over stdin/stdout, wildcard tool-name matchers, config layers merged (global + project), stderr captured, timeout/failure degrade to pass-through
 - **MCP enhancements**: Resources (list + `read_resource` tool) and Prompts (list + `get_prompt` tool) protocols, server `instructions` injected into the system prompt, per-tool approval mode (`defaultToolsApprovalMode`: auto/prompt/writes/approve) + tool whitelist/blacklist, runtime `add`/`remove`/`login` (OAuth PKCE), streamable HTTP transport alongside stdio
 - **Swappable backends**: `OMNI_BASE_URL` is compatible with any OpenAI-protocol service (OpenAI / DeepSeek / Zhipu / Moonshot / Grok etc.)
+- **1.0 model layer (P0-3)**: `providers` groups (one baseURL, many models) · per-model metadata (`limit` context/output · `modalities` input/output types · `capabilities` tools/reasoning/temperature) · named `variants` request overlays (deep-merge body/headers/effort) · cross-endpoint architect/editor routing · `{env:VAR}` key references (no keys in config files) · `max_tokens ≤ limit.output` · multimodal pre-check · `/model fetch` gateway model discovery
+- **Sandbox 2.0 (P0-4)**: network allowlist via a built-in filtering proxy (CONNECT by hostname, TLS untouched; Seatbelt tightened to only the proxy port) · `sandboxFailClosed` (deny-run when no sandbox primitive) · credential masking in sandboxed commands · policy-file write guard
+- **Multi-session concurrency (P0-2)**: the web backend runs several sessions at once — per-session runOpts clones (prototype chain over the shared runtime), independent undo stacks / events / abort signals, a global concurrency cap + per-session single-run, and a background **inbox** for long tasks (`POST /api/tasks`), each task running in its own session with live status
+- **Subagent worktree isolation (P0-6)**: `delegate` gains `worktree` (auto `git worktree add` on a temp branch; tools run inside it via a threaded `ToolContext.cwd`; result reports changed files + merge instructions, `cleanup` optional)
+- **Hooks extended (P1-1)**: `PermissionRequest` (approve/deny before the approval UI) · `PostCompact` · `PostToolUseFailure` (diagnostics fed back for self-fixing) · `http` handler type (POST event JSON) alongside `command`
+- **Structured memory (P1-2)**: global memory upgraded to `MEMORY.md` index + `topics/*.md` (progressive disclosure), Amp-style `globs` conditional injection, topic TTL archival — legacy `AGENTS.md` still loaded read-only
+- **Compaction 2.0 (P1-4)**: trigger by context-window ratio (model `limit.context`) instead of message count alone + tool-result folding (clear_tool_uses equivalent)
+- **MCP + presets + spec (P1-5/6/7/9)**: tool `annotations.readOnlyHint` consumed (read-only pass-through) · `/mcp install <id>` registry one-click · `omni preset browser` (Playwright MCP + Chrome DevTools MCP into global config) · `/spec <feature>` spec trio (requirements-EARS / design / tasks under `.omni/specs/`, tasks synced to the session todo list) · `skill validate`
+- **Headless protocol freeze (P0-5)**: JSON Schemas under `schemas/` (`exec-result` / `stream-json` / `session-jsonl` / `mcp-server` / `hook-protocol`) + `config.schema.json` + `omni-action` GitHub Action + `Doc/Headless-Protocol.md`; exec result extended with `tokens` / `idle_turns` / `error_type` (cost-efficiency reporting, P1-10)
+- **Telemetry (P1-11)**: opt-in OTLP/HTTP JSON exporter (zero deps), prompt content redacted by default, fire-and-forget — config `telemetry`
+- **LSP feedback loop (P1-3)**: `diagnoseAfterEdit` runs a quick typecheck/lint after `write_file` and appends diagnostics so the model self-fixes
 - **Web mode (`omni web`)**: local backend service (REST + SSE, zero new dependencies) + browser UI — multi-session sidebar, live thinking/tool/answer streaming, approval & ask_user cards, model/permission/reasoning settings, cancel, per-turn token stats; works in both browser and the Electron desktop app
 - **Electron desktop app** (macOS / Windows / Linux): a standalone app bundling the web backend via Electron's own Node runtime (no system Node needed); built automatically by GitHub Actions on tag push (mac arm64/x64 zip, win x64 exe, linux x64 AppImage) and attached to the GitHub Release
 - **Layered config**: defaults → global config → project config → custom config → env vars → CLI args (JSONC with comments)
 - **Build artifacts**: single-file JS bundle (`dist/omni.cjs`, console) · native binary (`release/omni`, TUI) · console npm package (`omni-<version>.tgz`) · TUI npm package (`omni-tui-<version>.tgz`, requires bun) · web assets embedded (`npm run web:sync` → `src/web/assets.ts`) · **Electron desktop apps** (`npm run electron:build` → `release-electron/`); GitHub Actions builds and publishes automatically on tag push
 
 ## Quick Start
+
+### Option 0: curl one-liner (native binary, zero deps, includes full TUI)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omni/omni/main/scripts/install.sh | sh
+omni "show me the structure of this directory"   # full-screen TUI on a real TTY
+```
 
 ### Option 1: npm global install (console, requires Node ≥ 18)
 
@@ -131,6 +149,16 @@ Config fields (see `omni.example.jsonc` for a full example):
   "permission": "safe",                  // safety tier: full / safe (default) / ask / read
   "dangerousPatterns": [],               // extra dangerous-command regexes (optional; prompt on match in safe+ tiers)
   "sandbox": "off",                      // OS-level sandbox: off (default) / read-only / workspace-write / danger-full-access
+  "sandboxNetworkAllow": ["api.openai.com"],  // sandbox network allowlist (hostnames; via built-in filtering proxy, TLS untouched)
+  "sandboxFailClosed": false,                // true = refuse to run when no sandbox primitive exists (fail-closed, enterprise)
+  "sandboxWritePaths": [],                   // extra writable paths for workspace-write (absolute)
+  "providers": {                              // 1.0: one gateway, many models — merged into `models` at load (flat form still works)
+    "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
+                  "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
+  },
+  "diagnoseAfterEdit": false,                // run quick typecheck/lint after write_file, feed diagnostics back
+  "telemetry": { "enabled": false, "endpoint": "http://localhost:4318" }, // opt-in OTLP/HTTP JSON (redacted by default)
+  "compatibility": { "reasoningField": "custom_thinking" }, // custom gateway reasoning field name (P2 capability-driven requests)
   "repoMap": true,                       // codebase structure map (symbol map in first turn)
   "repoMapMaxSymbols": 200,              // repo map symbol cap
   "webFetchDomains": [],                 // web_fetch allowed domains (empty = all)
@@ -388,7 +416,10 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace panel (right sidebar): per-turn LLM request / tool / message ledger, click for detail page |
 | `/diff` · `/config` | uncommitted changes · config paths & sources |
-| `/mcp` | MCP management: list servers/tools/resources/prompts, `/mcp reconnect` after config edits, `/mcp add <name> <command|--url>` add at runtime, `/mcp remove <name>`, `/mcp login <name>` OAuth for HTTP servers |
+| `/mcp` | MCP management: list servers/tools/resources/prompts, `/mcp reconnect` after config edits, `/mcp add <name> <command|--url>` add at runtime, `/mcp remove <name>`, `/mcp login <name>` OAuth for HTTP servers, `/mcp install <id>` registry one-click |
+| `/model fetch` | pull `GET {baseURL}/models` and list models not yet in the local table (Ollama/LM Studio/vLLM/any OpenAI-compatible gateway) |
+| `/spec <feature>` | spec trio: `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, tasks synced to the session todo list |
+| `/preset browser` | install the browser automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` · `/exit` (alias `/quit`) · `/help` | clear view · quit (autoMemory + session finalize) · help |
 
@@ -523,6 +554,10 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 - [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
 - [x] **Hooks lifecycle automation**: `UserPromptSubmit` prompt rewrite / `PreToolUse` hard-block + arg rewrite / `PostToolUse` output feedback (lint) / `Stop` require-continue (once) / `Notification` + `SessionStart` context injection / `SubagentStart`·`SubagentStop` subagent hooks / `PreCompact` — JSON protocol with wildcard matchers, layered config (global+project merged), stderr capture, timeout/failure degrade to pass-through; enforcement examples (guard-env / guard-dangerous / guard-git-push) in `examples/hooks/`
 - [x] **Headless & CI integration (modeled on codex exec / claude -p)**: `omni exec "<task>"` (stdout result-only / stderr progress, `--output-format text|json|stream-json`, stdin two forms, `--max-turns`, `--allowed-tools` filtering, exit code 0/1 pipeline branching) + `--output-schema` structured validation + `exec resume <id>` session continuation + `omni mcp-server` (omni_exec / omni_reply) + CI workflow template (`examples/ci/omni-fix-ci.yml`: read-only job generates the patch → separate job opens the PR, keys never enter the patch-generating job)
+- [x] **1.0 model layer**: providers / metadata (limit·modalities·capabilities) / named variants / cross-endpoint routing / `{env:VAR}` / max_tokens / model discovery
+- [x] **Sandbox 2.0**: network allowlist proxy + fail-closed + credential masking
+- [x] **Web multi-session concurrency** + background inbox tasks + full web parity (buttons wired: fork/export/checkpoints/tasks)
+- [x] **Subagent worktree isolation**, hooks extension (PermissionRequest etc. + http handler), structured memory (MEMORY.md+topics+globs), compaction 2.0, LSP feedback, MCP annotations/registry, presets, spec trio, telemetry, headless protocol freeze + omni-action
 - [ ] Advanced: SWE-bench eval
 
 ## Tech Stack

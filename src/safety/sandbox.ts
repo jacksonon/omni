@@ -35,6 +35,18 @@ export const SANDBOX_MODES: SandboxMode[] = ['off', 'read-only', 'workspace-writ
 export interface SandboxOptions {
   /** workspace-write 下额外允许写的绝对路径（config sandboxWritePaths） */
   writePaths?: string[];
+  /**
+   * 网络白名单（1.0 P0-4）：hostname 列表。非空时沙箱内命令经内置过滤代理出网
+   * （需配合 proxyPort）；空/缺省 = 全禁网。
+   */
+  networkAllow?: string[];
+  /** 内置白名单代理端口（networkAllow 非空时由 attachRuntime 启动并传入） */
+  proxyPort?: number;
+  /**
+   * 凭证 masking（1.0 P0-4）：环境变量名列表——这些变量在沙箱命令里被替换为
+   * sentinel `__OMNI_MASKED__<名>`，防凭据被 echo 进工具结果。
+   */
+  maskEnvVars?: string[];
 }
 
 /** 沙箱包装结果 */
@@ -111,17 +123,53 @@ function resolvePath(p: string): string {
   return `/${out.join('/')}`;
 }
 
-/** macOS Seatbelt profile：工作目录写权限（+ 白名单路径） */
-function seatbeltProfile(mode: SandboxMode, cwd: string, writePaths: string[]): string {
+/** macOS Seatbelt profile：工作目录写权限（+ 白名单路径）；网络按白名单收紧或全禁 */
+function seatbeltProfile(mode: SandboxMode, cwd: string, writePaths: string[], opts: SandboxOptions): string {
   const esc = cwd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const extras = writePaths
     .map((p) => `(allow file-write* (subpath "${p.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"))`)
     .join('\n');
+  // 网络：无白名单 → 全禁；有白名单 + 代理端口 → 仅允许连本地代理（内核层强制，
+  // 出站目标由代理按 hostname 白名单二次过滤）
+  const hasProxy = !!(opts.networkAllow?.length && opts.proxyPort);
+  const network = hasProxy
+    ? `(deny network*)\n(allow network-outgoing (remote tcp "127.0.0.1:${opts.proxyPort}"))`
+    : '(deny network*)';
   if (mode === 'read-only') {
-    return `(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(deny mach-lookup (global-name "com.apple.distributed_notifications"))`;
+    return `(version 1)\n(allow default)\n${network}\n(deny file-write*)\n(deny mach-lookup (global-name "com.apple.distributed_notifications"))`;
   }
   // workspace-write：允许 cwd 内写 + 白名单路径，其余写与网络拒绝
-  return `(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(allow file-write* (subpath "${esc}"))${extras ? `\n${extras}` : ''}`;
+  return `(version 1)\n(allow default)\n${network}\n(deny file-write*)\n(allow file-write* (subpath "${esc}"))${extras ? `\n${extras}` : ''}`;
+}
+
+/**
+ * 沙箱内命令的「自我保护」检查：拒绝修改 omni 自身策略面（配置文件 / hooks /
+ * 审计日志 / 信任清单）——否则沙箱内的 agent 可以改配置给自己提权。
+ * 只在沙箱启用时对 run_command 生效；误报代价低（提示用户临时关沙箱执行）。
+ */
+const SANDBOX_POLICY_PATTERNS: RegExp[] = [
+  /\bomni\.jsonc?\b/,
+  /~?\/?\.config\/omni\//,
+  /\btrusted-workspaces\.json\b/,
+  /\baudit\.log\b/,
+];
+
+export function touchesSandboxPolicy(command: string): string | null {
+  for (const re of SANDBOX_POLICY_PATTERNS) {
+    if (re.test(command)) return re.source;
+  }
+  return null;
+}
+
+/** 沙箱出网所需的代理环境变量赋值串（POSIX `env` 前缀形态） */
+function proxyEnvPrefix(port: number): string {
+  return (
+    ` http_proxy=http://127.0.0.1:${port}` +
+    ` https_proxy=http://127.0.0.1:${port}` +
+    ` HTTP_PROXY=http://127.0.0.1:${port}` +
+    ` HTTPS_PROXY=http://127.0.0.1:${port}` +
+    ` NO_PROXY=localhost,127.0.0.1`
+  );
 }
 
 /**
@@ -133,46 +181,64 @@ export function wrapSandboxCommand(mode: SandboxMode, cwd: string, command: stri
     return { command, protected: false, note: mode === 'danger-full-access' ? 'danger-full-access：不沙箱（全访问）' : undefined };
   }
   const writePaths = normalizeWritePaths(opts.writePaths, cwd);
+  const hasProxy = !!(opts.networkAllow?.length && opts.proxyPort);
+  // 环境前缀：代理变量（白名单出网）+ 凭证 masking（值替换为 sentinel）
+  let envPrefix = '';
+  if (hasProxy && opts.proxyPort) envPrefix += proxyEnvPrefix(opts.proxyPort);
+  if (opts.maskEnvVars?.length) {
+    for (const name of opts.maskEnvVars) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) envPrefix += ` ${name}=__OMNI_MASKED__${name}`;
+    }
+  }
   if (process.platform === 'darwin' && hasSandboxExec()) {
-    const profile = seatbeltProfile(mode, cwd, writePaths);
-    const wrapped = `sandbox-exec -p ${JSON.stringify(profile)} -- ${command}`;
+    const profile = seatbeltProfile(mode, cwd, writePaths, opts);
+    const wrapped = `sandbox-exec -p ${JSON.stringify(profile)} -- env${envPrefix || ' '} ${command}`;
     return {
       command: wrapped,
       protected: true,
       note:
-        mode === 'read-only'
-          ? 'sandbox（只读 + 无网络）'
-          : `sandbox（仅工作目录可写 + 无网络）${writePaths.length ? ` + ${writePaths.length} 个白名单路径` : ''}`,
+        (mode === 'read-only'
+          ? 'sandbox（只读 + 网络'
+          : `sandbox（仅工作目录可写 + 网络${writePaths.length ? ` + ${writePaths.length} 个白名单路径` : ''}`) +
+        (hasProxy ? `：仅经本地白名单代理（${opts.networkAllow!.join('、')}）` : '全禁') +
+        '）',
     };
   }
   if (process.platform === 'linux') {
     if (hasBwrap()) {
-      const base = 'bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --unshare-uts --unshare-pid';
+      // 白名单出网时不能 --unshare-net（否则连本机代理都不可达）——降为代理环境
+      // 变量尽力而为；无白名单保持断网硬隔离。
+      const netFlags = hasProxy ? '' : ' --unshare-net';
+      const base = `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp${netFlags} --unshare-uts --unshare-pid`;
       const binds =
         mode === 'workspace-write'
           ? ['', ...writePaths].map((p) => (p ? ` --bind ${JSON.stringify(p)} ${JSON.stringify(p)}` : ` --bind ${JSON.stringify(cwd)} ${JSON.stringify(cwd)}`)).join('')
           : '';
       return {
-        command: `${base}${binds} ${command}`,
+        command: `${base}${binds} -- env${envPrefix || ' '} ${command}`,
         protected: true,
-        note: mode === 'read-only' ? 'bwrap（只读 + 无网络）' : 'bwrap（仅工作目录可写 + 无网络）',
+        note:
+          (mode === 'read-only' ? 'bwrap（只读 + 网络' : 'bwrap（仅工作目录可写 + 网络') +
+          (hasProxy ? `：白名单经代理，非白名单目标依赖工具遵循 proxy 变量（尽力而为）` : '全禁') +
+          '）',
       };
     }
     // bwrap 缺失 → firejail 回退（第九节 P2）：--net=none 断网 + 只读化根 +
-    // workspace-write 用 --whitelist 放行工作目录写入（firejail 默认允许用户写自己家，
-    // 这里用 read-only 覆盖再放行白名单，尽量收敛到与 bwrap 同等强度）
+    // workspace-write 用 --whitelist 放行工作目录写入。白名单出网时放开网络、
+    // 由代理环境变量约束（firejail 无按 hostname 过滤能力——尽力而为）。
     if (hasFirejail()) {
       const ro = mode === 'read-only' ? ' --read-only=/' : '';
       const wl = mode === 'workspace-write'
         ? ['', ...writePaths].map((p) => ` --whitelist=${p || cwd}`).join('')
         : '';
+      const netFlag = hasProxy ? '' : ' --net=none';
       return {
-        command: `firejail --net=none --private=${cwd}${ro}${wl} -- ${command}`,
+        command: `firejail${netFlag} --private=${cwd}${ro}${wl} -- env${envPrefix || ' '} ${command}`,
         protected: true,
         note:
-          mode === 'read-only'
-            ? 'firejail（只读 + 无网络；bwrap 未安装已回退）'
-            : `firejail（仅工作目录可写 + 无网络；bwrap 未安装已回退）${writePaths.length ? ` + ${writePaths.length} 个白名单路径` : ''}`,
+          (mode === 'read-only' ? 'firejail（只读 + 网络' : `firejail（仅工作目录可写 + 网络`) +
+          (hasProxy ? `：白名单经代理（尽力而为）；bwrap 未安装已回退）` : '全禁；bwrap 未安装已回退）') +
+        '',
       };
     }
   }

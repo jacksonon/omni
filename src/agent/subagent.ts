@@ -65,6 +65,11 @@ export interface SubagentOptions {
   parentId?: string | null;
   /** 嵌套深度（0 = 主代理直接委托；每层 +1） */
   depth?: number;
+  /**
+   * 子代理工作目录（1.0 P0-6 worktree 隔离）：提供时全部工具调用以它为 cwd——
+   * 路径解析与命令执行都落在独立工作树里；缺省 undefined = 进程 cwd。
+   */
+  cwd?: string;
 }
 
 /** 事件回调统一收口（start/step/end；onEvent 缺省 no-op） */
@@ -94,6 +99,7 @@ export async function runSubagent(
   const prompt =
     SUBAGENT_PROMPT +
     task +
+    (opts.cwd ? `\n\n当前工作目录：${opts.cwd}（独立 git 工作树——你的文件读写与命令执行都发生在这里，不影响主工作区）` : '') +
     (opts.skills ? `\n\n已预载技能：\n${opts.skills}` : '');
   const messages: ChatCompletionMessageParam[] = [{ role: 'user', content: prompt }];
   const toolSchemas = opts.tools.map((t) => ({
@@ -192,7 +198,7 @@ export async function runSubagent(
           result = `已拦截：${g!.reason}`;
         } else {
           try {
-            result = await tool.execute(args);
+            result = await tool.execute(args, { cwd: opts.cwd });
           } catch (err: any) {
             result = `执行失败：${err?.message ?? err}`;
           }

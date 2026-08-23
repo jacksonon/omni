@@ -29,7 +29,7 @@ import { refreshTrace } from './trace.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
-import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig } from '../config/write.js';
+import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig, persistVariantToConfig } from '../config/write.js';
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import type { TuiOutput } from './output.js';
@@ -454,6 +454,8 @@ export async function runTuiInteractive(
     // 思考级别选项：初始取入口配置（runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions）；
     // /model 切换模型时 applyEndpoint 按该模型配置联动（per-model variants）
     state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? state.reasoningEffortOptions;
+    // 命名 variant（1.0 P0-3）：初始取运行时（来自 models.<model>.variant 配置）
+    state.activeVariant = runOpts.activeVariant ?? null;
     // 可用模型列表：顶层 model + config `models`（/model 面板列出）；当前模型初始取运行时
     state.models = (runOpts.models ?? []).map((m) => m.name);
     state.model = runOpts.modelRuntime?.model ?? model;
@@ -472,11 +474,14 @@ export async function runTuiInteractive(
       }
       // per-model variants 联动：切换到该模型时，思考级别与 /variants 面板选项
       // 自动跟随该模型的配置（端点已在 modelEndpoints 展开时回退全局缺省）——
-      // loop 请求（runOpts.reasoningEffort）与面板（state）立即反映新模型
+      // loop 请求（runOpts.reasoningEffort）与面板（state）立即反映新模型；
+      // 命名 variant（1.0 P0-3）同样随端点带出（models.<名>.variant 初始值）
       runOpts.reasoningEffort = endpoint.reasoningEffort;
       runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
       state.reasoningEffort = endpoint.reasoningEffort ?? '';
       if (endpoint.reasoningEffortOptions) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
+      runOpts.activeVariant = endpoint.variant;
+      state.activeVariant = endpoint.variant ?? null;
     };
     const syncModel = (): void => {
       // 对比 state.model（/model 面板确认后变更）与当前运行时模型，变了才真正切换：
@@ -564,17 +569,27 @@ export async function runTuiInteractive(
       // 文件 models 表有专属条目时写 models.<模型>.reasoningEffort（仅该模型生效），
       // 否则写顶层全局默认（persistReasoningEffortToConfig 内部按 modelName 分流）
       if (state.variantsSave) {
-        const v = state.variantsSave;
+        const raw = state.variantsSave;
         state.variantsSave = null;
         const cfg = runOpts.cfg;
-        if (cfg) {
-          const res = persistReasoningEffortToConfig(v, cfg, currentModel);
-          if (res.ok) {
-            pushCmdLine(state, { kind: 'meta', text: res.message }, '/variants');
-          } else {
-            pushCmdLine(state, { kind: 'warn', text: res.message }, '/variants');
+        // 命名 variant（1.0 P0-3）：值形如 `variant:<id>`——写 models."<模型>".variant
+        if (raw.startsWith('variant:')) {
+          const id = raw.slice('variant:'.length);
+          runOpts.activeVariant = id;
+          if (cfg) {
+            const res = persistVariantToConfig(id, cfg, currentModel);
+            pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message }, '/variants');
+            await session.paint();
           }
-          await session.paint();
+        } else {
+          const v = raw;
+          runOpts.activeVariant = undefined; // 普通级别：清除命名叠加
+          state.activeVariant = null;
+          if (cfg) {
+            const res = persistReasoningEffortToConfig(v, cfg, currentModel);
+            pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message }, '/variants');
+            await session.paint();
+          }
         }
       }
       // /session 面板确认：恢复所选会话（异步加载；每轮只处理一次，处理完清空意图）

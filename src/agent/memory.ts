@@ -136,11 +136,40 @@ export async function loadProjectMemory(
   return out;
 }
 
-/** 读取全局记忆：~/.config/omni/AGENTS.md；无文件返回 null */
+/**
+ * 读取全局记忆（1.0 P1-2 结构化）：遗留 ~/.config/omni/AGENTS.md（只读兼容）+
+ * memory/MEMORY.md 索引（新写入都在结构化布局）——两段拼接注入。
+ * 无任何文件返回 null。
+ */
 export async function loadGlobalMemory(): Promise<{ path: string; content: string } | null> {
-  const file = globalMemoryPath();
-  if (!existsSync(file)) return null;
-  return readMemoryFile(file);
+  const parts: string[] = [];
+  let label = '';
+  const legacy = globalMemoryPath();
+  if (existsSync(legacy)) {
+    const mem = await readMemoryFile(legacy);
+    if (mem) {
+      parts.push(mem.content);
+      label = legacy;
+    }
+  }
+  const { memoryIndexFile, memoryTopicsDir } = await import('./memory-topics.js');
+  const idxFile = memoryIndexFile();
+  if (existsSync(idxFile)) {
+    try {
+      const raw = await readFile(idxFile, 'utf8');
+      if (raw.trim()) {
+        parts.push(raw);
+        if (!label) label = idxFile;
+      }
+    } catch {
+      // 读失败忽略
+    }
+  } else if (!label && existsSync(memoryTopicsDir())) {
+    // 只有 topics 没有 index（极端）→ 以目录为标签
+    label = memoryTopicsDir();
+  }
+  if (parts.length === 0) return null;
+  return { path: label || idxFile, content: parts.join('\n\n') };
 }
 
 /** AGENTS.md → system 消息（注入 messages 首部；循环的 SYSTEM_PROMPT 仍放在最前）。
@@ -361,75 +390,39 @@ export function applyMemoryTTL(sections: string[]): { kept: string[]; expired: s
 }
 
 export async function appendGlobalMemory(entry: string): Promise<boolean> {
+  // 1.0 P1-2 记忆结构化升级：**新写入全部进结构化布局**（memory/MEMORY.md 索引 +
+  // memory/topics/<主题>.md）；遗留 AGENTS.md 只读保留。已知条目 = 遗留文件 +
+  // 现有主题条目合并计算（规范化相等 / 长包含去重——防重复学习），矛盾替换在
+  // 结构化布局里退化为「追加修正条目」（旧值留在历史里可追溯）。
   try {
-    const file = globalMemoryPath();
-    await mkdir(path.dirname(file), { recursive: true });
-    let existing = '';
-    try {
-      existing = await readFile(file, 'utf8');
-    } catch {
-      // 文件不存在 → 从空开始
-    }
-    // 拆分为手写头部 + 自动段落列表（段落后按日期倒序追加，最早的在前）
-    const firstIdx = existing.indexOf(AUTO_SECTION_MARK);
-    const header = firstIdx < 0 ? existing.trimEnd() : existing.slice(0, firstIdx).trimEnd();
-    const sections: string[] = [];
-    if (firstIdx >= 0) {
-      const rest = existing.slice(firstIdx);
-      let pos = 0;
-      for (;;) {
-        const next = rest.indexOf(AUTO_SECTION_MARK, pos + 1);
-        if (next < 0) {
-          sections.push(rest.slice(pos));
-          break;
-        }
-        sections.push(rest.slice(pos, next));
-        pos = next;
-      }
-    }
-    // TTL：超期段落移入归档
-    const { kept, expired } = applyMemoryTTL(sections);
-    // 已知条目：手写头部 + 保留的历史段落 + 归档段落里的 - 条目（避免 TTL 后重复学习）
+    const { listTopics, writeTopicEntry } = await import('./memory-topics.js');
     const known = new Map<string, string>();
-    for (const item of extractMemoryItems([header, ...kept, ...expired].join('\n'))) {
+    const legacyRaw = existsSync(globalMemoryPath()) ? await readFile(globalMemoryPath(), 'utf8').catch(() => '') : '';
+    for (const item of extractMemoryItems(legacyRaw)) {
       const norm = normalizeMemoryItem(item);
       if (norm) known.set(norm, item);
     }
+    for (const t of await listTopics()) {
+      for (const line of t.content.split('\n')) {
+        const l = line.replace(/^-\s*/, '').trim();
+        if (!l) continue;
+        const norm = normalizeMemoryItem(l);
+        if (norm && !known.has(norm)) known.set(norm, l);
+      }
+    }
     const items = extractMemoryItems(entry);
     const { fresh, replaced } = dedupMemoryItems(known, items);
-    if (fresh.length === 0 && replaced.size === 0) return false; // 全重复，无新内容
-    // 矛盾替换：在头部/历史段落里原位替换旧条目文本
-    const applyReplace = (text: string): string => {
-      let t = text;
-      for (const [old, neu] of replaced) {
-        t = t.split(old).join(neu);
-      }
-      return t;
-    };
-    const parts: string[] = [];
-    const newHeader = applyReplace(header);
-    if (newHeader) parts.push(newHeader);
-    // 归档段（在自动段落之前，头部之后）
-    if (expired.length > 0) {
-      const arch = `${ARCHIVE_MARK}\n\n${expired.map((s) => s.trim()).join('\n\n')}\n\n`;
-      parts.push(applyReplace(arch));
+    // 结构化布局：fresh = 新条目；replaced = 同主题矛盾（旧值→新值）——新值作为修正条目追加进主题文件
+    const toWrite = [...fresh, ...replaced.values()];
+    if (toWrite.length === 0) return false; // 全重复，无新内容
+    let wrote = false;
+    for (const item of toWrite) {
+      // writeTopicEntry 会自己加 `- ` 前缀，去掉条目自带的以防双短横
+      const clean = item.replace(/^-\s*/, '').trim();
+      const ok = await writeTopicEntry(topicKey(item), clean).catch(() => false);
+      wrote = wrote || ok;
     }
-    parts.push(...kept.map(applyReplace).filter((s) => s.trim()));
-    if (fresh.length > 0) {
-      const date = new Date().toISOString().slice(0, 10);
-      parts.push(`${AUTO_SECTION_MARK}${date}）\n\n${fresh.join('\n')}\n\n`);
-    }
-    let next = parts.join('\n\n').trimEnd() + '\n';
-    // 超限：从最早段落开始裁剪（保留手写头部与最近段落）
-    while (Buffer.byteLength(next, 'utf8') > GLOBAL_FILE_MAX_BYTES) {
-      const idx = next.indexOf(AUTO_SECTION_MARK);
-      if (idx < 0) break; // 没有段落可裁
-      const end = next.indexOf(AUTO_SECTION_MARK, idx + 1);
-      if (end < 0) break; // 只剩一段，保留
-      next = next.slice(0, idx) + next.slice(end);
-    }
-    await writeFile(file, next, 'utf8');
-    return true;
+    return wrote;
   } catch {
     return false;
   }

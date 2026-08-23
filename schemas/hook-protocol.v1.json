@@ -1,0 +1,8 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/hook-protocol.v1.json",
+  "title": "omni Hooks JSON 协议（协议冻结 v1）",
+  "description": "事件上下文经 stdin 喂入 hook 进程，stdout 返回 JSON 决策。字段：cwd/hook_event_name/source/tool_name/tool_input/tool_response/prompt/stop_hook_active/session_id/transcript_path。",
+  "type": "object",
+  "required": ["cwd", "hook_event_name", "source"]
+}

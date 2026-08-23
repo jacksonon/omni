@@ -110,52 +110,52 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
       尊重 .gitignore；检测嵌套 git 则禁用）；`/rewind` 列表选择恢复点，恢复选项
       **code-only / conversation-only / both** 三选；恢复前 diff 预览面板确认；
       快照随会话落盘（resume 后仍可 rewind）；滚动上限（100 个 / 30 天）。
-- [ ] **P0-2 Web/Electron 多会话并发运行**：per-session runOpts 克隆 + 独立 Safety 闸门 /
+- [x] **P0-2 Web/Electron 多会话并发运行**（已落地：per-session runOpts 原型链克隆 + 独立 undo/events/abort + 全局并发上限 + 后台收件箱 + 前端徽标/按钮全对齐）：per-session runOpts 克隆 + 独立 Safety 闸门 /
       UndoStack / events / abortSignal；全局并发上限与会话级排队治理；
       这是 client/server 架构的成人礼（opencode 教科书级参照）。
-- [ ] **P0-3 模型层重构落地**（即 TODO.md 第七节修订需求）：providers 分组（一个 baseURL 挂多模型）
+- [x] **P0-3 模型层重构落地**（providers 分组 + limit/modalities/capabilities 元数据 + 命名 variants + 跨端点路由 + `{env:VAR}` + max_tokens + 模型发现 + 配置向后兼容）（即 TODO.md 第七节修订需求）：providers 分组（一个 baseURL 挂多模型）
       + limit/modalities/capabilities 元数据 + 命名 variants 叠加层 + provider fallback chain
       + architect/editor 跨端点路由 + `{env:VAR}` 密钥引用 + max_tokens 按 limit.output 下发
       + /v1/models 发现与列表增强。**配置向后兼容扁平 models 表。**
-- [ ] **P0-4 沙箱 2.0：网络隔离 + Windows fail-closed**：出站流量走内置代理按 hostname 白名单放行
+- [x] **P0-4 沙箱 2.0**（网络白名单过滤代理 + fail-closed + 凭据 masking + 策略文件写保护；Windows fail-closed 文档说明）：出站流量走内置代理按 hostname 白名单放行
       （不解密 TLS）；凭证 masking（沙箱内读到 sentinel 占位符，代理注入真实值）；
       Windows 无 bwrap/sandbox-exec 等价物时 **fail-closed 可配**（failIfUnavailable 选项，
       企业安全门）；settings 类文件自动 deny 写入防策略篡改。
-- [ ] **P0-5 Headless 协议冻结 + 官方 GitHub Action**：stream-json 事件名/payload 发布 JSON Schema
+- [x] **P0-5 Headless 协议冻结 + omni-action**（`schemas/*.v1.json` + `config.schema.json` + `omni-action` + `Doc/Headless-Protocol.md` + 发布工程脚本）：stream-json 事件名/payload 发布 JSON Schema
       并 semver 承诺（破坏性变更升 minor+弃用窗口）；会话 JSONL 行结构与 mcp-server 协议面明示冻结；
       发布 `omni-action`——只读 job 生成 patch → 独立 job 开 PR（密钥隔离，升级现有 examples/ci 模板）。
-- [ ] **P0-6 子代理 worktree 隔离**：delegate 增加 worktree 选项——并行子代理各自在独立 git worktree
+- [x] **P0-6 子代理 worktree 隔离**（`delegate` worktree 参数 + `ToolContext.cwd` 贯穿 + 对比统计/合并提示/清理）：delegate 增加 worktree 选项——并行子代理各自在独立 git worktree
       运行防写冲突，结束后可选合并/保留/清理（对标 Droid `--worktree`、Amp/Cursor 并行模式）。
 
 **验收线**：以上 6 项全部落地 + 探针回归全绿 + eval:mock 100% + 新增场景快照全绿。
 
 ### 4.2 P1 —— 竞争力增强
 
-- [ ] **P1-1 hooks 事件扩展**：PermissionRequest（审批前介入）/ PostCompact / PostToolUseFailure；
+- [x] **P1-1 hooks 事件扩展**（PermissionRequest / PostCompact / PostToolUseFailure + http handler 类型）：PermissionRequest（审批前介入）/ PostCompact / PostToolUseFailure；
       handler 类型增加 http（对标 Claude Code command/http/mcp/prompt/agent 五类型中的 http）。
-- [ ] **P1-2 记忆结构化升级**：MEMORY.md 索引 + topics/*.md 主题文件渐进披露（对标 Claude Code
+- [x] **P1-2 记忆结构化升级**（MEMORY.md 索引 + topics/*.md + globs 条件注入 + TTL 归档；向后兼容遗留 AGENTS.md）：MEMORY.md 索引 + topics/*.md 主题文件渐进披露（对标 Claude Code
       auto memory）；后台整理循环（会话结束异步归并）；Amp 式 globs 条件注入
       （记忆条目声明 glob，命中任务上下文才注入）。
-- [ ] **P1-3 LSP 反馈进上下文**（opencode/Crush 的招牌差异点）：diagnose 工具升级——至少 TS/Python
+- [x] **P1-3 LSP 反馈进上下文**（`diagnoseAfterEdit` 配置，write_file 后跑快速检查回传诊断）（opencode/Crush 的招牌差异点）：diagnose 工具升级——至少 TS/Python
       内置语言服务器探测，编辑后把诊断实时回传模型自修复；只读、按需启动。
-- [ ] **P1-4 上下文压缩 2.0**：cache 友好的压缩顺序（避免打爆 prompt cache）；工具结果清理
+- [x] **P1-4 上下文压缩 2.0**（limit.context 窗口占比触发 + 工具结果折叠 clear_tool_uses 等价）：cache 友好的压缩顺序（避免打爆 prompt cache）；工具结果清理
       （clear_tool_uses 等价：保留最近 N 次工具原文、更早的折成摘要）；触发条件从消息数升级为
       context 窗口占比（依赖 P0-3 元数据）。
-- [ ] **P1-5 MCP 深水区小步**：tool annotations 消费（readOnlyHint → 免审批直通只读工具）；
+- [x] **P1-5 MCP 深水区**（tool annotations readOnlyHint 消费 + registry 一键安装 `/mcp install`）：tool annotations 消费（readOnlyHint → 免审批直通只读工具）；
       registry 一键安装（`/mcp install <registry-id>`）。
-- [ ] **P1-6 浏览器能力一键预设**：`omni preset browser` = 安装 Playwright MCP +
+- [x] **P1-6 浏览器能力一键预设**（`omni preset browser` 写入全局配置）：`omni preset browser` = 安装 Playwright MCP +
       chrome-devtools-mcp 并写入配置（自动化找 Playwright、调试/性能找 DevTools）；
       不自研浏览器栈。
-- [ ] **P1-7 spec-driven 强化**：`/plan` 产物可落盘 `.omni/specs/<feature>/`三件套——
+- [x] **P1-7 spec-driven 强化**（`/spec` 三件套：requirements-EARS/design/tasks 落盘 `.omni/specs/`，tasks 同步会话清单）：`/plan` 产物可落盘 `.omni/specs/<feature>/`三件套——
       requirements.md（EARS 格式验收条款）/ design.md / tasks.md；tasks 与 TodoWrite 打通逐项执行
       （对标 Kiro 方法论，轻量版）。
-- [ ] **P1-8 本地后台任务队列 + Web 收件箱**：cron/手动入队长任务，跑完 Web 通知 + diff 审查；
+- [x] **P1-8 本地后台任务队列 + Web 收件箱**（`POST /api/tasks` + worker 自动建独立会话 + 实时状态 SSE + 前端面板）：cron/手动入队长任务，跑完 Web 通知 + diff 审查；
       云端远程执行不在本期（见不做清单）。
-- [ ] **P1-9 skills 生态完善**：skills-ref validate 兼容校验（`/skill validate`）；
+- [x] **P1-9 skills 生态完善**（`/skill validate` 校验 + 团队仓库分发文档 + `npx skills add` 已支持）：skills-ref validate 兼容校验（`/skill validate`）；
       团队 git 仓库分发（技能仓库独立存放、agent 可自己提交更新，对标 Amp）。
-- [ ] **P1-10 eval 成本效率报告**：完成率之外输出 token/解题成本、无动作轮次、失败类别向量；
+- [x] **P1-10 eval 成本效率报告**（headless eval 输出 token/成本/空转回合/失败类别；多模型对比已有）：完成率之外输出 token/解题成本、无动作轮次、失败类别向量；
       多模型对比表（harness-model pair 口径）。
-- [ ] **P1-11 OpenTelemetry 导出开关**：默认关、opt-in 显式、prompt 内容默认脱敏；
+- [x] **P1-11 OpenTelemetry 导出开关**（零依赖 OTLP/HTTP JSON 导出器 + loop 挂接；默认关、脱敏、fire-and-forget）：默认关、opt-in 显式、prompt 内容默认脱敏；
       指标族命名对齐 claude_code.* 惯例（session/token/cost/tool activity），Grafana 即插即用。
 
 ### 4.3 P2 —— 远期/按需

@@ -1,0 +1,88 @@
+name: 'Omni Fix CI'
+description: >-
+  Run Omni (headless) to fix a CI failure or task, produce a git patch artifact.
+  Keys never enter this job — apply the patch in a separate job with write permissions
+  (see examples/ci/omni-fix-ci.yml for the full two-job workflow).
+inputs:
+  task:
+    description: 'Task prompt (can include ${FAILURE_LOG} injected from the failing step)'
+    required: true
+  api-key:
+    description: 'OpenAI-compatible API key (OMNI_API_KEY)'
+    required: true
+  base-url:
+    description: 'OpenAI-compatible base URL (OMNI_BASE_URL)'
+    required: false
+  model:
+    description: 'Model name (OMNI_MODEL)'
+    required: false
+  max-turns:
+    description: '--max-turns cap (default 30)'
+    required: false
+    default: '30'
+  allowed-tools:
+    description: 'Comma-separated tool whitelist for --allowed-tools (default: read/run only)'
+    required: false
+    default: 'read_file,write_file,list_directory,search_code,run_command,web_fetch,skill,todo_write'
+outputs:
+  patch-file:
+    description: 'Path of the generated git diff patch (git diff --binary > patch.diff)'
+    value: ${{ steps.omni.outputs.patch-file }}
+  exit-code:
+    description: 'omni exec exit code (0 success / 1 failed)'
+    value: ${{ steps.omni.outputs.exit-code }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Omni (curl, GitHub Release binary)
+      shell: bash
+      run: |
+        set -e
+        if ! command -v omni >/dev/null 2>&1; then
+          # 平台探测：darwin-arm64 / darwin-x64 / linux-x64 / win32-x64
+          case "$(uname -s)-$(uname -m)" in
+            Darwin-arm64)  ASSET=omni-darwin-arm64 ;;
+            Darwin-x86_64) ASSET=omni-darwin-x64 ;;
+            Linux-x86_64)  ASSET=omni-linux-x64 ;;
+            Linux-aarch64) ASSET=omni-linux-arm64 ;;
+            *) echo "::error::unsupported platform $(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          VERSION="${OMNI_VERSION:-latest}"
+          URL="https://github.com/$(echo "${GITHUB_REPOSITORY:-omni/omni}" | sed 's|/[^/]*$||')/$(basename "${GITHUB_REPOSITORY:-omni/omni}")/releases/${OMNI_VERSION:+download/$OMNI_VERSION}${OMNI_VERSION:+$ASSET}${OMNI_VERSION:-latest/download/$ASSET}"
+          # 默认从 omni 官方发布获取；可被 OMNI_DOWNLOAD_URL 覆盖
+          URL="${OMNI_DOWNLOAD_URL:-https://github.com/${{ github.repository }}/releases/latest/download/$ASSET}"
+          echo "::group::download omni ($ASSET)"
+          curl -fsSL -o /tmp/omni "$URL"
+          chmod +x /tmp/omni
+          echo "::endgroup::"
+        fi
+    - name: Run Omni exec
+      id: omni
+      shell: bash
+      env:
+        OMNI_API_KEY: ${{ inputs.api-key }}
+        OMNI_BASE_URL: ${{ inputs.base-url }}
+        OMNI_MODEL: ${{ inputs.model }}
+        OMNI_PERMISSION: full
+        OMNI_STRICT: '1'
+      run: |
+        set -e
+        OMNI_BIN="$(command -v omni || echo /tmp/omni)"
+        set +e
+        "$OMNI_BIN" exec "${{ inputs.task }}" \
+          --output-format json \
+          --max-turns ${{ inputs.max-turns }} \
+          --allowed-tools "${{ inputs.allowed-tools }}" \
+          > omni-result.json 2> omni-progress.log
+        EXIT=$?
+        set -e
+        git diff --binary > patch.diff || true
+        echo "exit-code=$EXIT" >> "$GITHUB_OUTPUT"
+        echo "patch-file=patch.diff" >> "$GITHUB_OUTPUT"
+        echo "::group::omni progress (stderr)"
+        tail -n 40 omni-progress.log || true
+        echo "::endgroup::"
+        echo "::group::omni result"
+        cat omni-result.json || true
+        echo "::endgroup::"
+        exit 0 # 补丁已产出；结果判定由下游 job 按 exit-code output 处理

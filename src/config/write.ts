@@ -261,6 +261,51 @@ export function persistReasoningEffortToConfig(
   };
 }
 
+/**
+ * 把命名 variant 选择写入配置文件（1.0 P0-3，/variants <id> 切换命名叠加层后持久化）：
+ * 写 models."<模型>".variant（仅该模型生效）；variantId = null 表示清除（回到基础级别）。
+ * 命名 variant 是 per-model 概念——没有 models 条目时报错提示先在配置里定义 variants。
+ */
+export function persistVariantToConfig(
+  variantId: string | null,
+  cfg: OmniConfig,
+  modelName?: string
+): PersistModelResult {
+  const res = loadConfigObject(cfg);
+  if (!res.ok) {
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（variant 字段手动添加${modelName ? `：models."${modelName}".variant` : ''}${variantId ? ` = "${variantId}"` : '（删除该字段）'}）`,
+    };
+  }
+  const cfgObj = res.obj;
+  const models =
+    cfgObj.models && typeof cfgObj.models === 'object' && !Array.isArray(cfgObj.models)
+      ? (cfgObj.models as Record<string, unknown>)
+      : null;
+  const modelEntry = modelName ? models?.[modelName] : undefined;
+  if (!modelName || !modelEntry || typeof modelEntry !== 'object') {
+    return {
+      ok: false,
+      file: res.file,
+      message: `命名 variant 仅支持配置文件 models 表里的模型（当前模型 ${modelName ?? ''} 无条目）——请先在 models."${modelName ?? ''}".variants 定义。`,
+    };
+  }
+  if (variantId) (modelEntry as Record<string, unknown>).variant = variantId;
+  else delete (modelEntry as Record<string, unknown>).variant;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(cfgObj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return {
+    ok: true,
+    file: res.file,
+    message: `已保存命名变体 → ${res.file}（仅对模型 ${modelName} 生效${variantId ? '' : '，已清除'}）`,
+  };
+}
+
 /* ---------------- Web / Electron 工作目录持久化 ---------------- */
 
 /**
@@ -277,6 +322,33 @@ function globalConfigFile(): string {
   const jsonc = path.join(dir, 'omni.jsonc');
   if (existsSync(jsonc)) return jsonc;
   return json; // 都不存在 → 新建 omni.json
+}
+
+/**
+ * 把 MCP server 写入**全局**配置的 mcpServers 字段（1.0 P1-6 预设用——预设是
+ * 机器级能力，不进项目配置）。JSONC 文件拒绝自动改（提示手动）；同名覆盖。
+ */
+export function persistMcpServerToGlobal(name: string, serverCfg: McpServerConfig): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = parseJsonc(readFileSync(file, 'utf8'));
+    obj = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch (err) {
+    return { ok: false, file, message: `全局配置不是纯 JSON（${(err as Error)?.message ?? '解析失败'}）——请手动把 ${name} 加进 mcpServers 字段。` };
+  }
+  if (!obj || typeof obj !== 'object') obj = {};
+  const servers = (obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)
+    ? (obj.mcpServers as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  servers[name] = serverCfg;
+  obj.mcpServers = servers;
+  try {
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return { ok: true, file, message: `已写入全局配置 mcpServers.${name} → ${file}` };
 }
 
 /** 读取持久化的 Web/Electron 工作目录（webWorkspace 字段；无/非法返回 null） */

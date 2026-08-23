@@ -585,11 +585,15 @@ export async function discoverMcpServers(
       const defs = await client.listTools();
       const tools: Tool[] = defs.map((def) => {
         const toolName = mcpToolName(name, def.name);
+        // 1.0 P1-5 tool annotations 消费：readOnlyHint → 标记只读 + 审批 auto
+        //（safe 档位天然放行只读；writes 档位也不再误询问纯读工具）
+        const readOnly = (def as McpToolDef & { annotations?: { readOnlyHint?: boolean } }).annotations?.readOnlyHint === true;
         return {
           name: toolName,
-          description: `[MCP:${name}] ${def.description ?? ''}（外部工具，经 MCP 服务器 ${name} 执行；同样受权限/审批管控）`,
+          description: `[MCP:${name}] ${def.description ?? ''}（外部工具，经 MCP 服务器 ${name} 执行；同样受权限/审批管控）${readOnly ? '（server 声明只读）' : ''}`,
           parameters: (def.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>,
-          approvalMode: client.approvalMode,
+          approvalMode: readOnly ? 'auto' : client.approvalMode,
+          readOnly,
           execute: async (args) => {
             const r = await client.callTool(def.name, args);
             return (r.isError ? '错误：' : '') + r.text;
@@ -702,4 +706,59 @@ export function mcpInstructionsMessage(handles: McpServerHandle[]): string | nul
   return instructions
     .map((h) => `[MCP server instructions：${h.name}]\n${h.instructions}`)
     .join('\n\n');
+}
+
+// ── MCP Registry 一键安装（1.0 P1-5）────────────────────────────
+
+export interface McpInstallResult {
+  ok: boolean;
+  message: string;
+  /** 解析出的服务器配置（ok 时携带；调用方负责持久化 + 重连） */
+  config?: McpServerConfig;
+}
+
+interface RegistryServer {
+  name?: string;
+  description?: string;
+  remotes?: { url?: string; headers?: Record<string, string> }[];
+  packages?: { registry_type?: string; identifier?: string; environment_variables?: Record<string, string> }[];
+}
+
+/**
+ * 从官方 MCP Registry 检索并解析安装配置（best-effort，离线/结构变化时明确报错）：
+ * · 远端 server（remotes[0].url）→ HTTP 传输配置；
+ * · npm 包（packages[].registry_type=npm）→ `npx -y <pkg>` stdio 配置。
+ */
+export async function installFromRegistry(id: string): Promise<McpInstallResult> {
+  const base = process.env.OMNI_MCP_REGISTRY || 'https://registry.modelcontextprotocol.io';
+  const url = `${base}/v0/servers?search=${encodeURIComponent(id)}&version=latest`;
+  let data: { servers?: { server?: RegistryServer }[] };
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return { ok: false, message: `MCP Registry 查询失败：HTTP ${res.status}` };
+    data = (await res.json()) as typeof data;
+  } catch (err) {
+    return { ok: false, message: `MCP Registry 不可达（${err instanceof Error ? err.message : err}）——可手动编辑 mcpServers 配置。` };
+  }
+  const servers = data.servers ?? [];
+  if (servers.length === 0) return { ok: false, message: `Registry 中没有匹配「${id}」的服务器。` };
+  const first = servers.find((s) => s.server?.name === id)?.server ?? servers[0]!.server;
+  if (!first?.name) return { ok: false, message: `Registry 返回数据无法解析「${id}」。` };
+  const remote = first.remotes?.find((r) => r.url);
+  if (remote?.url) {
+    return {
+      ok: true,
+      message: `已从 Registry 解析远端服务器 ${first.name}${first.description ? `（${first.description.slice(0, 80)}）` : ''}`,
+      config: { url: remote.url, ...(remote.headers ? { headers: remote.headers as Record<string, string> } : {}) },
+    };
+  }
+  const pkg = first.packages?.find((p) => p.registry_type === 'npm' && p.identifier);
+  if (pkg?.identifier) {
+    return {
+      ok: true,
+      message: `已从 Registry 解析 npm 包 ${pkg.identifier}${first.description ? `（${first.description.slice(0, 80)}）` : ''}`,
+      config: { command: 'npx', args: ['-y', pkg.identifier] },
+    };
+  }
+  return { ok: false, message: `「${id}」没有可自动安装的传输（无 remotes/npm 包）——请按其文档手动配置。` };
 }

@@ -26,12 +26,12 @@ export const runCommandTool: Tool = {
     },
     required: ['command'],
   },
-  async execute(args) {
+  async execute(args, ctx) {
     const command = String(args.command ?? '');
     const timeout = Math.min(120_000, Math.max(1_000, num(args.timeoutMs, 30_000)));
     try {
       const { stdout, stderr } = await execAsync(command, {
-        cwd: process.cwd(),
+        cwd: ctx?.cwd ?? process.cwd(),
         timeout,
         maxBuffer: 10 * 1024 * 1024,
       });

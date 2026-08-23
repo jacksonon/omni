@@ -17,7 +17,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { createClient } from '../client.js';
+import { createClient, findEndpointByName, getClient, resolveModelRoute, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
 import { formatToolCall, previewOutput, countDiffLines } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
@@ -25,6 +25,90 @@ import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
+
+/** 消息里是否含图片输入（多模态前置校验用：content 为分段数组且带 image 类型） */
+export function messagesHaveImage(messages: ChatCompletionMessageParam[]): boolean {
+  return messages.some((m) => {
+    const c: unknown = (m as { content?: unknown }).content;
+    return (
+      Array.isArray(c) &&
+      c.some((p) => {
+        const t = (p as { type?: string })?.type;
+        return t === 'image_url' || t === 'input_image' || t === 'image';
+      })
+    );
+  });
+}
+
+/** deep-merge（命名 variants 的 body 叠加）：对象递归合并，其余类型直接覆盖 */
+function deepMerge<T extends Record<string, unknown>>(base: T, patch: Record<string, unknown> | undefined): T {
+  if (!patch) return base;
+  for (const [k, v] of Object.entries(patch)) {
+    const cur = base[k];
+    if (v && typeof v === 'object' && !Array.isArray(v) && cur && typeof cur === 'object' && !Array.isArray(cur)) {
+      deepMerge(cur as Record<string, unknown>, v as Record<string, unknown>);
+    } else {
+      (base as Record<string, unknown>)[k] = v;
+    }
+  }
+  return base;
+}
+
+/** 解析命名 variants 叠加层（1.0 P0-3）：未知/未选返回空叠加（切换入口负责报错） */
+function resolveVariantOverlay(
+  endpoint: ModelEndpoint | undefined,
+  activeVariant: string | undefined
+): { reasoningEffort?: string; body?: Record<string, unknown>; headers?: Record<string, string> } {
+  if (!activeVariant) return {};
+  const v = endpoint?.variants?.[activeVariant];
+  return v ? { reasoningEffort: v.reasoningEffort, body: v.body, headers: v.headers } : {};
+}
+
+/**
+ * 组装一轮流式请求参数（1.0 P0-3 能力驱动构建）：
+ * · max_tokens ≤ limit.output（元数据声明时才下发——长回答不再被网关默认值截断）；
+ * · 命名 variants 叠加层：{ reasoningEffort?, body?, headers? } deep-merge 进请求；
+ * · reasoning_effort（/variants 思考级别；variant 自带时覆盖）。
+ */
+function buildStreamParams(
+  endpoint: ModelEndpoint | undefined,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  tools: ReturnType<typeof buildToolSchemas>,
+  extra: { includeUsage?: boolean; signal?: AbortSignal; reasoningEffort?: string; activeVariant?: string }
+): { params: Record<string, unknown>; headers: Record<string, string> | undefined; options: { headers?: Record<string, string>; signal?: AbortSignal } } {
+  const overlay = resolveVariantOverlay(endpoint, extra.activeVariant);
+  // P2 能力驱动请求构建：capabilities 元数据**事前**决定是否携带参数——
+  // reasoning=false → 不带 reasoning_effort（即便配置了，也避免白付一次失败往返）；
+  // tools=false → 传空工具表（模型无工具调用能力时网关不报错）
+  const canReason = endpoint?.capabilities?.reasoning !== false;
+  const canTools = endpoint?.capabilities?.tools !== false;
+  const params: Record<string, unknown> = {
+    model,
+    messages,
+    tools: canTools ? tools : [],
+    stream: true,
+  };
+  if (extra.includeUsage) params.stream_options = { include_usage: true };
+  const effort = canReason ? (overlay.reasoningEffort ?? extra.reasoningEffort) : undefined;
+  if (effort) {
+    params.reasoning_effort = effort as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming['reasoning_effort'];
+  }
+  if (endpoint?.limit?.output) params.max_tokens = Math.max(1, Math.floor(endpoint.limit.output));
+  deepMerge(params, overlay.body);
+  // signal / headers 走 SDK 的 RequestOptions 第二参（不进请求体）
+  const requestOptions = {
+    ...(Object.keys({ ...(endpoint?.headers ?? {}), ...(overlay.headers ?? {}) }).length
+      ? { headers: { ...(endpoint?.headers ?? {}), ...(overlay.headers ?? {}) } }
+      : {}),
+    ...(extra.signal ? { signal: extra.signal } : {}),
+  };
+  return {
+    params,
+    headers: Object.keys(requestOptions).length ? (requestOptions.headers as Record<string, string> | undefined) : undefined,
+    options: requestOptions as { headers?: Record<string, string>; signal?: AbortSignal },
+  };
+}
 
 /** 非默认权限档位的护栏说明（safe 为默认档位：不注入，保持默认提示词精简） */
 const PERMISSION_NOTE: Record<Exclude<PermissionTier, 'safe'>, string> = {
@@ -92,6 +176,17 @@ export function isRetryableRequestError(err: unknown): boolean {
     msg.includes('fetch failed') ||
     msg.includes('network')
   );
+}
+
+/**
+ * 判定一个错误是否为「取消/打断」类：原生 AbortError 之外，OpenAI SDK 在
+ * signal 触发时会抛 `APIUserAbortError`（Node25 undici 下 in-flight fetch 真被中断）。
+ * 若只认 AbortError，SDK 的 rejection 会逃逸成 unhandledRejection——Node ≥15 默认
+ * 直接杀死进程（web 服务整台挂掉）。所有取消判定点统一走这里。
+ */
+export function isAbortLike(err: unknown): boolean {
+  const e = err as { name?: string; message?: string };
+  return e?.name === 'AbortError' || e?.name === 'APIUserAbortError' || /was aborted|aborted/i.test(e?.message ?? '');
 }
 
 /** 构造 AbortError（bun/Node 通用；流式逐 chunk 检查与工具等待共用） */
@@ -186,13 +281,18 @@ export async function runAgent(
   const planMode = opts.planMode === true;
   const toolSchemas = buildToolSchemas(opts.tools, planMode);
   // architect/editor 模型路由（第六节 P1，对标 Aider 双模型）：/plan 用 architect
-  // 强推理模型、执行模式用 editor 轻模型（缺省 = 当前模型；同一端点下发模型名）。
-  // 每轮按 planMode 决定——/plan 切换即时生效；delegate 子代理同规则（delegate.ts）
+  // 强推理模型、执行模式用 editor 轻模型（缺省 = 当前模型）。
+  // 1.0 P0-3 跨端点路由：按模型名从 runOpts.models 反查端点——architect/editor 配在
+  // 不同网关时自动换对应客户端（缓存复用，getClient）；同端点复用默认 client。
   const routedModel = planMode ? (opts.architectModel ?? model) : (opts.editorModel ?? model);
   // 本回合实际发请求用的 client/model：fallback 回退成功后切换为备用端点
   //（本轮内后续请求继续用备用；下一回合重新从主模型开始——主模型可能已恢复）
   let activeClient = client;
   let routedModelRuntime = routedModel;
+  /** 当前生效端点（元数据消费：max_tokens / variants / modalities 校验） */
+  let activeEndpoint: ModelEndpoint | undefined;
+  /** fallback 已接管本回合（不再重算基础路由——保持回退语义） */
+  let fallbackActive = false;
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
   // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批 reason
@@ -203,6 +303,7 @@ export async function runAgent(
     requestApproval: opts.requestApproval ?? (() => false),
     summarize: formatToolCall,
     dangerousPatterns: opts.cfg?.dangerousPatterns,
+    hooks: opts.hooks, // PermissionRequest hook（1.0 P1-1）
     writeDiffSummary: (tool, args) => {
       if (tool !== 'write_file') return null;
       const snap = opts.undoStack?.latestFor(String(args.path ?? ''));
@@ -242,15 +343,36 @@ export async function runAgent(
       ...messages,
     ];
 
+    // 1.0 跨端点路由：每步重算基础路由（/model、/plan 运行时切换即时生效）；
+    // fallback 已接管时保持备用端点不重算。找不到端点 = 默认 client + 原模型名。
+    if (!fallbackActive) {
+      const route = resolveModelRoute(opts, routedModel, client, model);
+      activeClient = route.client;
+      activeEndpoint = route.endpoint;
+      routedModelRuntime = route.model;
+    }
+    // 多模态前置校验（1.0 P0-3 元数据消费点④）：消息含图片而该模型 input 无 image
+    // → 明确报错而非等网关侧模糊失败；未声明 modalities 按兜底假设（含 image）放行。
+    const inputMods = activeEndpoint?.modalities?.input ?? MODEL_DEFAULTS.modalities.input ?? [];
+    if (!inputMods.includes('image') && messagesHaveImage(requestMessages)) {
+      const err = new Error(
+        `当前模型「${activeEndpoint?.name ?? routedModel}」不支持图片输入（modalities.input=${inputMods.join('/')}）。` +
+          `请切换 vision 模型（/model）或移除图片后重试。`
+      );
+      output.onRequestFailed(err);
+      opts.events?.turnEnd('error', err.message);
+      return;
+    }
+
     // 调试开关：OMNI_DEBUG=1 时打印发往 LLM 的请求体（用 stderr，避免污染流式输出）
     if (process.env.OMNI_DEBUG) {
       console.error(`\n[OMNI_DEBUG] 第 ${step + 1} 轮请求 → POST {baseURL}/chat/completions`);
-      console.error(`[OMNI_DEBUG] model=${routedModel} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
-      console.error(JSON.stringify({ model, messages: requestMessages, tools: toolSchemas }, null, 2).slice(0, 6000));
+      console.error(`[OMNI_DEBUG] model=${routedModelRuntime} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
+      console.error(JSON.stringify({ model: routedModelRuntime, messages: requestMessages, tools: toolSchemas }, null, 2).slice(0, 6000));
     }
 
     // 轨迹事件：LLM 请求快照（模型 + 可调工具名 + 消息数；轻量版，不存提示词全文）
-    opts.events?.requestHeader(step, routedModel, toolSchemas.map((s) => s.function.name), requestMessages.length);
+    opts.events?.requestHeader(step, routedModelRuntime, toolSchemas.map((s) => s.function.name), requestMessages.length);
 
     output.onRound(step, maxSteps);
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
@@ -258,38 +380,35 @@ export async function runAgent(
     let firstTokenAt: number | null = null;
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> | null = null;
     /** fallback 回退链（P0）：主模型失败时按序尝试的 [client, model] 对（惰性构建一次） */
-    let fallbacks: { client: OpenAI; model: string }[] | null = null;
+    let fallbacks: { client: OpenAI; model: string; endpoint?: ModelEndpoint }[] | null = null;
     try {
       // 附加参数：stream_options.include_usage（TUI footer token 用量）+ reasoning_effort
-      //（/variants 思考级别）。个别网关不认会直接报错 → 回退为不带这些参数的普通流式请求
+      //（/variants 思考级别）+ max_tokens（元数据 limit.output）+ 命名 variants 叠加层。
+      // 个别网关不认会直接报错 → 回退为不带这些参数的普通流式请求。
       // **create 阶段也可立即取消**：bun 的 fetch 不响应 in-flight abort，create 会挂到
       // 首 chunk 才 resolve——waitAbort 包一层，abort 立即 reject（连接后台继续收完自然关闭）
       try {
+        const built = buildStreamParams(activeEndpoint, routedModelRuntime, requestMessages, toolSchemas, {
+          includeUsage: true,
+          signal: opts.abortSignal,
+          reasoningEffort: opts.reasoningEffort,
+          activeVariant: opts.activeVariant,
+        });
         stream = await waitAbort(
-          activeClient.chat.completions.create({
-            model: routedModelRuntime,
-            messages: requestMessages,
-            tools: toolSchemas,
-            stream: true,
-            stream_options: { include_usage: true },
-            // reasoning_effort：OpenAI 系枚举（low/medium/high）；配置的值若非枚举会运行时校验失败回退
-            ...(opts.reasoningEffort
-              ? { reasoning_effort: opts.reasoningEffort as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming['reasoning_effort'] }
-              : {}),
-            // 取消信号（/stop / Esc / steer 打断）：中断流式响应
-            ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
-          }),
+          activeClient.chat.completions.create(built.params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming, built.options),
           opts.abortSignal
         );
-      } catch {
+      } catch (createErr) {
+        if ((createErr as Error)?.name === 'AbortError') throw createErr;
+        // 回退：不带 include_usage/reasoning_effort/max_tokens 等增强参数的普通流式请求
+        const plain = buildStreamParams(activeEndpoint, routedModelRuntime, requestMessages, toolSchemas, {
+          signal: opts.abortSignal,
+        });
+        delete plain.params.stream_options;
+        delete plain.params.reasoning_effort;
+        delete plain.params.max_tokens;
         stream = await waitAbort(
-          activeClient.chat.completions.create({
-            model: routedModelRuntime,
-            messages: requestMessages,
-            tools: toolSchemas,
-            stream: true,
-            ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
-          }),
+          activeClient.chat.completions.create(plain.params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming, plain.options),
           opts.abortSignal
         );
       }
@@ -297,7 +416,7 @@ export async function runAgent(
       // 取消/打断优先判定：abort 信号已触发时（如工具执行期间被 steer 打断），create 立刻抛
       // AbortError——打断则取走消息**同一轮内继续**（模型直接回答打断消息）；
       // 取消（/stop / Esc）时槽为空 → 优雅结束本轮（abort 不是请求错误，不报「请求失败」）
-      if ((err as Error)?.name === 'AbortError') {
+      if (isAbortLike(err)) {
         output.onLlmLap?.(Date.now() - llmT0, null);
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
@@ -316,21 +435,28 @@ export async function runAgent(
       // 「已回退到 X」（meta 行 + 轨迹），本轮后续请求继续用该备用端点（activeClient）。
       // 401/400 是配置问题——换端点也一样失败，直接走失败路径不浪费重试。
       if (isRetryableRequestError(err) && (opts.fallbackEndpoints?.length ?? 0) > 0) {
-        fallbacks ??= opts.fallbackEndpoints!.map((ep) => ({ client: createClient(ep, ep.apiKey ?? ''), model: ep.name }));
+        // 1.0：备用端点客户端走缓存工厂（同 provider 复用连接池）；请求参数同样带
+        // 该端点的 max_tokens / 命名 variant（同 id 存在于备用端点时叠加）。
+        fallbacks ??= opts.fallbackEndpoints!.map((ep) => ({
+          client: getClient(ep, opts.fallbackApiKey ?? ep.apiKey ?? ''),
+          model: ep.apiModel?.trim() || ep.name,
+          endpoint: ep,
+        }));
         for (const fb of fallbacks) {
           try {
+            const fbBuilt = buildStreamParams(fb.endpoint, fb.model, requestMessages, toolSchemas, {
+              signal: opts.abortSignal,
+              reasoningEffort: opts.reasoningEffort,
+              activeVariant: opts.activeVariant,
+            });
             stream = await waitAbort(
-              fb.client.chat.completions.create({
-                model: fb.model,
-                messages: requestMessages,
-                tools: toolSchemas,
-                stream: true,
-                ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
-              }),
+              fb.client.chat.completions.create(fbBuilt.params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming, fbBuilt.options),
               opts.abortSignal
             );
             activeClient = fb.client;
             routedModelRuntime = fb.model;
+            activeEndpoint = fb.endpoint;
+            fallbackActive = true;
             output.onFallback?.(fb.model);
             break; // 该备用端点可用：跳出回退循环
           } catch (fbErr) {
@@ -385,7 +511,7 @@ export async function runAgent(
         }
         if (chunk.usage) lastUsage = chunk.usage; // include_usage 时末 chunk 携带用量
         const delta = chunk.choices[0]?.delta;
-        const piece = extractReasoning(delta);
+        const piece = extractReasoning(delta, opts.compatibility?.reasoningField);
         if (piece) {
           reasoning += piece;
           thinking.write(piece);
@@ -407,7 +533,7 @@ export async function runAgent(
     } catch (err) {
       // 用户点击「取消」（abort 中断流式响应）：优雅结束本轮——已输出的内容保留，
       // 半截 assistant 消息不入上下文（push 在流结束后），下一轮不受污染
-      if ((err as Error)?.name === 'AbortError') {
+      if (isAbortLike(err)) {
         if (content) output.onAnswerEnd();
         output.onLlmLap?.(Date.now() - llmT0, firstTokenAt !== null ? Date.now() - firstTokenAt : null);
         if (thinking.shown) finishThinking();
@@ -423,6 +549,12 @@ export async function runAgent(
           continue; // 下一轮循环：模型看到打断消息并回答
         }
         opts.events?.turnEnd('aborted'); // 轨迹：流式阶段取消（/stop / Esc）
+        return;
+      }
+      // SDK 的 APIUserAbortError 可能在我们已消费打断消息后从迭代器内部再次冒出：
+      // 这里兜底按取消优雅结束（不向上抛——runAgent 上抛会变成 unhandledRejection）
+      if (isAbortLike(err)) {
+        opts.events?.turnEnd('aborted');
         return;
       }
       throw err;
@@ -541,16 +673,39 @@ export async function runAgent(
               result = `已拦截：${gate!.reason}\n请向用户说明情况，由其决定如何继续。`;
             } else {
               try {
-                result = await tool.execute(args);
+                result = await tool.execute(args, { cwd: process.cwd() });
               } catch (err: any) {
                 // 自我纠错：把错误信息喂回模型，让它自己修正
                 result = `执行失败：${err?.message ?? err}`;
+                // PostToolUseFailure（1.0 P1-1）：失败诊断提示追加回传，加速自修复
+                if (opts.hooks?.has('PostToolUseFailure')) {
+                  const fail = await opts.hooks.postToolUseFailure(tool.name, args, result).catch(() => ({ extra: [] }));
+                  if (fail.extra.length > 0) result = `${result}\n\n[失败诊断 hook]\n${fail.extra.join('\n')}`;
+                }
               }
               // Hooks：PostToolUse——hookSpecificOutput 追加回传上下文（如 lint 结果让
               // 模型自修复）；工具结果照常回传，hook 输出是补充信息
               if (opts.hooks?.has('PostToolUse')) {
                 const post = await opts.hooks.postToolUse(tool.name, args, result);
                 if (post.extra.length > 0) result = `${result}\n\n[hook 输出]\n${post.extra.join('\n')}`;
+              }
+              // LSP 反馈闭环（1.0 P1-3，opencode/Crush 招牌差异点）：config diagnoseAfterEdit
+              // 开启时，write_file 成功后跑一次快速项目检查（typecheck→lint），诊断摘要
+              // 追加回传——模型即时自修复，不用等用户手动跑检查。限时 12s，失败静默。
+              if (tool.name === 'write_file' && opts.cfg?.diagnoseAfterEdit) {
+                try {
+                  const { detectCheckCommand: detect2 } = await import('../tools/diagnose.js');
+                  const { captureCommand } = await import('./review.js');
+                  const checkCmd = detect2(process.cwd());
+                  if (checkCmd) {
+                    const diag = await captureCommand(`npm run ${checkCmd.name} --silent`, 12_000);
+                    if (diag.output && diag.output !== '（无输出）') {
+                      result = `${result}\n\n[诊断（${checkCmd.name}）]\n${diag.output.slice(0, 2500)}`;
+                    }
+                  }
+                } catch {
+                  // 诊断是可选增强，失败静默
+                }
               }
             }
             // 预览只取前几行（终端展示用），完整结果仍回传给模型；
@@ -580,7 +735,7 @@ export async function runAgent(
     } catch (err) {
       // 工具执行阶段 abort：立即结束本轮——打断（steer）取消息**同一轮内继续**；
       // 取消（Esc //stop）优雅结束。工具结果丢弃不回传（后台工具继续跑完）
-      if ((err as Error)?.name === 'AbortError') {
+      if (isAbortLike(err)) {
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });

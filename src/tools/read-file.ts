@@ -19,8 +19,8 @@ export const readFileTool: Tool = {
     },
     required: ['path'],
   },
-  async execute(args) {
-    const filePath = resolvePath(String(args.path ?? ''));
+  async execute(args, ctx) {
+    const filePath = resolvePath(String(args.path ?? ''), ctx?.cwd);
     const offset = Math.max(0, num(args.offset, 0));
     const limit = Math.max(1, num(args.limit, 200));
     const content = await fs.readFile(filePath, 'utf8');

@@ -115,7 +115,16 @@ async function main(): Promise<void> {
     env.OMNI_PERMISSION = 'full';
   }
   try {
-    const results: { name: string; ok: boolean; reason: string; ms: number; turns?: number; sessionId?: string }[] = [];
+    // 1.0 P1-10：成本效率报告——token/成本/空转回合/失败类别（harness-model pair 口径）
+    const results: {
+      name: string; ok: boolean; reason: string; ms: number; turns?: number; sessionId?: string;
+      tokens?: { prompt: number; completion: number; cached: number };
+      costUsd?: number; idleTurns?: number; errorType?: string;
+    }[] = [];
+    let totalTokens = 0;
+    let totalCost = 0;
+    let totalIdle = 0;
+    const errorBins = new Map<string, number>();
     for (const task of tasks) {
       const t0 = Date.now();
       const r = await runExec(task.prompt, env, task.timeoutMs ?? 120_000);
@@ -126,6 +135,14 @@ async function main(): Promise<void> {
         if (!(r.json?.result ?? '').includes(inc)) problems.push(`result 缺「${inc}」`);
       }
       if (task.minTurns && (r.json?.num_turns ?? 0) < task.minTurns) problems.push(`turns ${r.json?.num_turns} < ${task.minTurns}`);
+      const t = r.json?.tokens as { prompt: number; completion: number; cached: number } | undefined;
+      const cost = r.json?.cost_usd as number | undefined;
+      const idle = r.json?.idle_turns as number | undefined;
+      const errType = (r.json?.error_type as string) ?? 'unknown';
+      totalTokens += (t?.prompt ?? 0) + (t?.completion ?? 0);
+      totalCost += cost ?? 0;
+      totalIdle += idle ?? 0;
+      errorBins.set(errType, (errorBins.get(errType) ?? 0) + 1);
       results.push({
         name: task.name,
         ok: problems.length === 0,
@@ -133,15 +150,35 @@ async function main(): Promise<void> {
         ms,
         turns: r.json?.num_turns,
         sessionId: r.json?.session_id,
+        tokens: t, costUsd: cost, idleTurns: idle, errorType: errType,
       });
-      console.log(`  ${results.at(-1)!.ok ? '✓' : '✗'} ${task.name}（${ms}ms${r.json ? ` · ${r.json.num_turns} 轮` : ''}）${results.at(-1)!.ok ? '' : `— ${problems.join('、')}`}`);
+      const costStr = cost !== undefined ? ` · $${cost.toFixed(4)}` : '';
+      const tokStr = t ? ` · ${(t.prompt + t.completion).toLocaleString()} tok` : '';
+      console.log(`  ${results.at(-1)!.ok ? '✓' : '✗'} ${task.name}（${ms}ms${r.json ? ` · ${r.json.num_turns} 轮` : ''}${costStr}${tokStr}${idle ? ` · 空转 ${idle} 轮` : ''}）${results.at(-1)!.ok ? '' : `— ${problems.join('、')}`}`);
     }
     const passed = results.filter((r) => r.ok).length;
     const rate = ((passed / results.length) * 100).toFixed(0);
-    console.log(`\n📊 完成率：${passed}/${results.length}（${rate}%）\n`);
+    const costPerTask = totalCost / results.length;
+    console.log(`\n📊 完成率：${passed}/${results.length}（${rate}%）`);
+    console.log(`💰 成本：$${totalCost.toFixed(4)} 合计 · $${costPerTask.toFixed(4)}/任务 · ${totalTokens.toLocaleString()} tokens · 空转回合 ${totalIdle}`);
+    if (errorBins.size > 0) {
+      console.log(`🧭 失败类别：${[...errorBins.entries()].map(([k, v]) => `${k}=${v}`).join(' · ')}`);
+    }
+    console.log('');
     writeFileSync(
       path.join(ROOT, 'eval-report.json'),
-      JSON.stringify({ mode: useReal ? 'headless-real' : 'headless-mock', runAt: new Date().toISOString(), total: results.length, passed, rate: `${rate}%`, results }, null, 2)
+      JSON.stringify({
+        mode: useReal ? 'headless-real' : 'headless-mock',
+        runAt: new Date().toISOString(),
+        total: results.length,
+        passed,
+        rate: `${rate}%`,
+        costUsd: Number(totalCost.toFixed(6)),
+        tokens: totalTokens,
+        idleTurns: totalIdle,
+        errorBins: Object.fromEntries(errorBins),
+        results,
+      }, null, 2)
     );
     console.log('报告已写入 eval-report.json');
     process.exit(passed === results.length ? 0 : 1);

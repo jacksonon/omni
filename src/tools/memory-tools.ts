@@ -34,6 +34,13 @@ export async function searchMemory(
   const files = new Set<string>();
   for (const f of findAgentsFiles(cwd)) files.add(f);
   if (existsSync(globalMemoryPath())) files.add(globalMemoryPath());
+  // 结构化主题文件（1.0 P1-2）：memory/topics/*.md 也参与检索
+  try {
+    const { listTopics } = await import('../agent/memory-topics.js');
+    for (const t of await listTopics()) files.add(t.file);
+  } catch {
+    // 模块加载失败忽略（旧 bundle 兼容）
+  }
   // 多关键词（空白分隔）：全部命中才计入（近似语义：AND 检索）
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const hits: { file: string; line: number; text: string }[] = [];

@@ -88,9 +88,9 @@ export class UndoStack {
    * 注意：只有 ENOENT（确实不存在）才记录「新建」；权限错误/目录等其它 stat
    * 失败不记录，避免产生误导性的撤销条目（review 抓到的边界）。
    */
-  async snapshotWrite(filePath: string): Promise<boolean> {
+  async snapshotWrite(filePath: string, cwd?: string): Promise<boolean> {
     this.clearRedo(); // 新写入使 redo 历史失效（见 clearRedo 注释）
-    const abs = resolvePath(filePath);
+    const abs = resolvePath(filePath, cwd);
     let st: Awaited<ReturnType<typeof stat>> | null = null;
     try {
       st = await stat(abs);
@@ -196,9 +196,10 @@ export function withUndoSnapshot(tool: Tool, stack: UndoStack): Tool {
   if (tool.name !== 'write_file') return tool;
   return {
     ...tool,
-    async execute(args) {
-      await stack.snapshotWrite(String(args.path ?? ''));
-      return tool.execute(args);
+    async execute(args, ctx) {
+      // 快照与写入按同一 cwd 解析（worktree 子代理场景快照独立工作树内的文件）
+      await stack.snapshotWrite(String(args.path ?? ''), ctx?.cwd);
+      return tool.execute(args, ctx);
     },
   };
 }

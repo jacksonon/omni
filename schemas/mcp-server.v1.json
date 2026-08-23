@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/mcp-server.v1.json",
+  "title": "omni mcp-server 工具（协议冻结 v1）",
+  "type": "object",
+  "description": "stdio JSON-RPC（协议版本 2024-11-05）：initialize / tools/list（omni_exec·omni_reply）/ tools/call。omni_exec = 新建会话执行；omni_reply = 按 session_id 续跑。请求串行、isError 透传退出码。",
+  "properties": {
+    "omni_exec": { "type": "object", "properties": { "task": { "type": "string" }, "model": { "type": "string" }, "max_turns": { "type": "integer" }, "allowed_tools": { "type": "string" }, "output_schema": { "type": "object" } }, "required": ["task"] },
+    "omni_reply": { "type": "object", "properties": { "session_id": { "type": "string" }, "prompt": { "type": "string" } }, "required": ["session_id", "prompt"] }
+  }
+}

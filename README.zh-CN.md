@@ -32,6 +32,17 @@
 - **Hooks（生命周期自动化）**：在生命周期事件上挂 shell 命令——改写用户 prompt（`UserPromptSubmit`）、硬拦截工具调用（`PreToolUse`）、把工具后的输出回传模型（`PostToolUse`，如 lint 结果）、要求 agent 修完再停（`Stop`）、会话完成通知（`Notification`），另有 `SessionStart` 注入上下文、子代理 hooks（`SubagentStart`/`SubagentStop` + 子代理工具 Pre/Post）、`PreCompact`；JSON 协议（stdin 喂入 / stdout 返回），matcher 工具名通配，配置分层合并（全局+项目），stderr 捕获，超时/失败降级放行
 - **MCP 增强**：Resources 协议（列表 + `read_resource` 工具）与 Prompts 协议（列表 + `get_prompt` 工具）、server `instructions` 注入系统提示、per-tool 审批模式（`defaultToolsApprovalMode`：auto/prompt/writes/approve）+ 工具白黑名单、运行时 `add`/`remove`/`login`（OAuth PKCE）、stdio 之外新增 streamable HTTP 传输
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
+- **1.0 模型层（P0-3）**：`providers` 分组（一个网关挂多个模型）· 每模型元数据（`limit` 上下文/输出 · `modalities` 输入/输出类型 · `capabilities` tools/reasoning/temperature）· 命名 `variants` 请求叠加层（body/headers/effort 深度合并）· architect/editor 跨端点路由 · `{env:VAR}` 密钥引用（密钥不进配置文件）· `max_tokens ≤ limit.output` · 多模态前置校验 · `/model fetch` 网关模型发现
+- **沙箱 2.0（P0-4）**：网络白名单（内置过滤代理按 hostname 放行、TLS 不解密；Seatbelt 收紧为仅连代理端口）· `sandboxFailClosed`（无沙箱原语时拒绝执行）· 沙箱命令内凭据 masking · 策略文件写保护
+- **Web 多会话并发（P0-2）**：多个会话同时运行——per-session runOpts 克隆（原型链共享运行时）+ 独立 undo/events/abort + 全局并发上限 + 每会话单运行；**后台任务收件箱**（`POST /api/tasks`，长任务在独立会话跑、实时状态）
+- **子代理 worktree 隔离（P0-6）**：`delegate` 新增 `worktree`（自动 `git worktree add` 临时分支；工具经 `ToolContext.cwd` 在工作树内执行；结果附改动统计与合并提示，`cleanup` 可选）
+- **Hooks 扩展（P1-1）**：`PermissionRequest`（审批 UI 前 approve/deny 短路）· `PostCompact` · `PostToolUseFailure`（失败诊断回传自修复）· `http` handler 类型（POST 事件 JSON）
+- **记忆结构化（P1-2）**：全局记忆升级为 `MEMORY.md` 索引 + `topics/*.md`（渐进披露）+ Amp 式 `globs` 条件注入 + 主题 TTL 归档——遗留 AGENTS.md 仍只读加载
+- **压缩 2.0（P1-4）**：按模型 `limit.context` 窗口占比触发（不再只看消息数）+ 工具结果折叠（clear_tool_uses 等价）
+- **MCP/预设/规格（P1-5/6/7/9）**：工具 `annotations.readOnlyHint` 消费（只读直通）· `/mcp install <id>` Registry 一键装 · `omni preset browser`（Playwright MCP + Chrome DevTools MCP 写入全局配置）· `/spec <特性>` 规格三件套（requirements-EARS / design / tasks 落盘 `.omni/specs/`，tasks 同步会话清单）· `skill validate`
+- **Headless 协议冻结（P0-5）**：`schemas/` 下 JSON Schema（exec-result / stream-json / session-jsonl / mcp-server / hook）+ `config.schema.json` + `omni-action` GitHub Action + `Doc/Headless-Protocol.md`；exec 结果扩展 `tokens` / `idle_turns` / `error_type`（成本效率报告 P1-10）
+- **遥测（P1-11）**：opt-in OTLP/HTTP JSON 导出（零依赖），prompt 默认脱敏，fire-and-forget——config `telemetry`
+- **LSP 反馈闭环（P1-3）**：`diagnoseAfterEdit` 在 write_file 后跑快速 typecheck/lint 并回传诊断，模型即时自修复
 - **Web 模式（`omni web`）**：本地后端服务（REST + SSE，零新增依赖）+ 浏览器界面——多会话侧栏、思考/工具/回答实时流式、审批与提问卡片、模型/权限/思考级别设置、取消、每轮 token 统计；浏览器与 Electron 桌面应用均可使用
 - **Electron 桌面应用**（macOS / Windows / Linux）：独立桌面应用，内置 web 后端（走 Electron 自带的 Node，无需系统安装 Node）；GitHub Actions 打 tag 自动构建（mac arm64/x64 zip、win x64 exe、linux x64 AppImage）并附到 GitHub Release
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
@@ -123,6 +134,16 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "permission": "safe",                  // 安全护栏：full / safe（默认）/ ask / read
   "dangerousPatterns": [],               // 危险命令扩展正则（可选）：内置清单之外在 safe+ 档位触发审批
   "sandbox": "off",                      // OS 级沙箱：off（默认）/ read-only / workspace-write / danger-full-access
+  "sandboxNetworkAllow": ["api.openai.com"],  // 沙箱网络白名单（hostname；经内置过滤代理出网，TLS 不解密）
+  "sandboxFailClosed": false,                // true = 无沙箱原语时拒绝执行（fail-closed，企业安全门）
+  "sandboxWritePaths": [],                   // workspace-write 额外可写白名单（绝对路径）
+  "providers": {                              // 1.0：一个网关挂多个模型——加载期合并进 models（扁平形态向后兼容）
+    "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
+                  "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
+  },
+  "diagnoseAfterEdit": false,                // write_file 后跑快速检查并回传诊断（LSP 反馈闭环）
+  "telemetry": { "enabled": false, "endpoint": "http://localhost:4318" }, // opt-in OTLP/HTTP JSON（默认脱敏）
+  "compatibility": { "reasoningField": "custom_thinking" }, // 自定义网关 reasoning 字段名（P2 能力驱动请求）
   "repoMap": true,                       // 代码库结构感知：首轮注入符号地图
   "repoMapMaxSymbols": 200,              // repo map 符号上限
   "webFetchDomains": [],                 // web_fetch 工具域名允许列表（空 = 全部）
@@ -379,7 +400,10 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/export` | 导出会话为 Markdown（`.omni/export-<时间戳>.md`） |
 | `/trace` | 轨迹面板（右侧栏）：每轮 LLM 请求/工具/消息账本，点击推入详情页 |
 | `/diff` · `/config` | 未提交改动 · 配置路径与来源 |
-| `/mcp` | MCP 管理：列出服务器/工具/资源/提示词，`/mcp reconnect` 改配置后重连，`/mcp add <名> <command|--url>` 运行时添加，`/mcp remove <名>` 移除，`/mcp login <名>` OAuth 登录 |
+| `/mcp` | MCP 管理：列出服务器/工具/资源/提示词，`/mcp reconnect` 重连，`/mcp add <名> <command|--url>` 添加，`/mcp remove <名>` 移除，`/mcp login <名>` OAuth 登录，`/mcp install <id>` Registry 一键装 |
+| `/model fetch` | 拉取 `GET {baseURL}/models` 列出本地未登记的远端模型（Ollama/LM Studio/vLLM/任意 OpenAI 兼容网关） |
+| `/spec <特性>` | 规格三件套：`requirements.md`（EARS 验收条款）/ `design.md` / `tasks.md` 落盘 `.omni/specs/<slug>/`，任务同步会话清单 |
+| `/preset browser` | 一键安装浏览器自动化双雄（Playwright MCP + Chrome DevTools MCP）到全局配置——不自研浏览器栈 |
 | `/doctor`（console）/ `/settings doctor`（TUI） | 环境诊断：Node/bun 版本、API Key、端点连通性、配置/MCP/权限/模型 |
 | `/clear` · `/exit`（别名 `/quit`）· `/help` | 清屏 · 退出（autoMemory + 会话落盘）· 帮助 |
 
@@ -509,6 +533,10 @@ npm run eval:mock             # 评估：离线 mock（确定性，可进 CI）
 - [x] **更多交互命令**：`/compact` 手动压缩上下文 · `/agents` 查看子代理配置 · `/review` 代码审查（typecheck + git diff → LLM）· `/variants` 切换模型思考级别（reasoning_effort）· `/model` 切换/添加模型（config `models` 可配多端点，切换时重建客户端，子代理同步；`/model add <名称> [--base-url] [--api-key]` 运行时添加并持久化到配置文件）· `/status` 会话状态 · `/context` 上下文用量 · `/export` 导出 Markdown · `/config` 查看配置 · `/mcp` 管理 MCP 服务器（reconnect）· `/diff` 查看改动 · `/rename` 会话改名（meta 落盘）· `/resume` 恢复历史会话 · `/redo` 重做撤销 · `/doctor` 环境诊断
 - [x] **Hooks 生命周期自动化**：`UserPromptSubmit` 改写 prompt / `PreToolUse` 硬拦截 + 改写参数 / `PostToolUse` 输出回传（lint）/ `Stop` 要求继续（限一次）/ `Notification` 通知 + `SessionStart` 上下文注入 / `SubagentStart`·`SubagentStop` 子代理 hooks / `PreCompact`——JSON 协议 + matcher 通配 + 配置分层合并（全局+项目）+ stderr 捕获，超时/失败降级放行；enforcement 示例（guard-env / guard-dangerous / guard-git-push）在 `examples/hooks/`
 - [x] **Headless 与 CI 集成（对标 codex exec / claude -p）**：`omni exec "任务"`（stdout 只出结果 / stderr 进度、`--output-format text|json|stream-json`、stdin 两形态、`--max-turns`、`--allowed-tools` 工具过滤、exit code 0/1 管道分支）+ `--output-schema` 结构化校验 + `exec resume <id>` 会话续跑 + `omni mcp-server`（omni_exec / omni_reply）+ CI 工作流模板（`examples/ci/omni-fix-ci.yml`：只读 job 生成补丁 → 独立 job 开 PR，密钥不进生成补丁的 job）
+- [x] **1.0 模型层**：providers / 元数据（limit·modalities·capabilities）/ 命名 variants / 跨端点路由 / `{env:VAR}` / max_tokens / 模型发现
+- [x] **沙箱 2.0**：网络白名单代理 + fail-closed + 凭据 masking
+- [x] **Web 多会话并发** + 后台任务收件箱 + Web 功能全对齐（分叉/导出/检查点/任务按钮接线）
+- [x] **子代理 worktree 隔离**、Hooks 扩展（PermissionRequest 等 + http）、记忆结构化（MEMORY.md+topics+globs）、压缩 2.0、LSP 反馈、MCP annotations/install、预设、规格三件套、遥测、headless 协议冻结 + omni-action
 - [ ] 进阶：SWE-bench 评测
 
 ## 技术栈

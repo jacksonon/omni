@@ -31,6 +31,7 @@ import {
   MEMORY_PREFIX,
   memoryMessage,
 } from './memory.js';
+import { topicsMatchingTask } from './memory-topics.js';
 import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
 import { buildRepoMap } from './repomap.js';
 import type { EventRecorder } from './events.js';
@@ -59,6 +60,10 @@ export interface ContextOptions {
   repoMap?: boolean;
   /** repo map 符号上限（默认 200） */
   repoMapMaxSymbols?: number;
+  /** 模型上下文窗口（token；1.0 P1-4）：已知时按占比触发摘要压缩 */
+  contextLimit?: number;
+  /** 压缩触发占比（1.0 P1-4，默认 0.7）：估算 token > contextLimit × ratio 时触发 */
+  compressRatio?: number;
   /** Hooks 运行器（PreCompact：压缩前 fire-and-forget；attachRuntime 注入） */
   hooks?: HookRunner;
 }
@@ -148,6 +153,55 @@ const SUMMARY_SYSTEM_PROMPT =
   '未完成事项、关键路径/命令。只输出摘要本身，不要任何前缀。';
 
 /**
+ * 估算一段消息序列的 token 数（轻量启发式）：CJK 字符 ≈ 1 token/字，
+ * 其它 ≈ 4 字符/token。用于「按模型上下文窗口占比触发压缩」（不追求精确，
+ * 只要比消息数阈值更早感知膨胀即可——真实 tokenizer 是重依赖，刻意不引入）。
+ */
+export function estimateContextTokens(messages: ChatCompletionMessageParam[]): number {
+  let cjk = 0;
+  let other = 0;
+  const scan = (s: string): void => {
+    for (const ch of s) {
+      if (/[\u3000-\u9fff\uff00-\uffef]/.test(ch)) cjk++;
+      else other++;
+    }
+  };
+  for (const m of messages) {
+    if (typeof m.content === 'string') scan(m.content);
+    else if (Array.isArray(m.content)) scan(JSON.stringify(m.content));
+    if ('tool_calls' in m && Array.isArray((m as { tool_calls?: unknown }).tool_calls)) {
+      scan(JSON.stringify((m as { tool_calls?: unknown }).tool_calls));
+    }
+  }
+  return cjk + Math.ceil(other / 4);
+}
+
+/**
+ * 工具结果清理（1.0 P1-4，opencode clear_tool_uses 等价）：保留最近 keepLast 条
+ * 工具结果原文，更早的折成一行占位（`[工具结果已清理：原 N 字符…]`）。
+ * **不动 assistant 的 tool_calls**（配对完整性约束），只缩短 tool 消息正文——
+ * 早期工具的原始输出对后续推理价值低，但常占掉一半以上上下文。
+ * 返回被清理的条数。
+ */
+export function foldOldToolResults(messages: ChatCompletionMessageParam[], keepLast = 8): number {
+  // 从尾向前收集 tool 消息下标
+  const toolIdx: number[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool') toolIdx.push(i);
+  }
+  let folded = 0;
+  for (let k = keepLast; k < toolIdx.length; k++) {
+    const m = messages[toolIdx[k]!]!;
+    if (typeof m.content === 'string' && !m.content.startsWith('[工具结果已清理')) {
+      const len = m.content.length;
+      messages[toolIdx[k]!] = { ...m, content: `[工具结果已清理：原 ${len} 字符。早期工具输出已被清理以释放上下文；其关键结论已体现在后续对话中，如需原始内容请重新读取。]` };
+      folded++;
+    }
+  }
+  return folded;
+}
+
+/**
  * 长对话摘要压缩：消息数超过 summarizeAt 时，把最旧完整回合压成一条 system 摘要。
  * 就地修改 messages；压缩失败（网络/无 Key）静默返回（不打扰对话）。
  * recorder：轨迹事件记录器（可选）——压缩成功时记录 compact 事件。
@@ -159,8 +213,24 @@ export async function summarizeContext(
   opts: ContextOptions,
   recorder?: EventRecorder
 ): Promise<void> {
+  // 触发条件（1.0 P1-4 压缩 2.0）：消息数阈值（原逻辑）**或** 估算 token 超过
+  // 模型上下文窗口 × 占比（contextLimit 已知时）——两者取先到。
   const threshold = opts.summarizeAt ?? 0;
-  if (threshold <= 0 || messages.length <= threshold) return;
+  const limit = opts.contextLimit;
+  const ratio = opts.compressRatio ?? 0.7;
+  let overRatio = false;
+  if (limit && limit > 0) {
+    overRatio = estimateContextTokens(messages) > limit * ratio;
+  }
+  const overCount = threshold > 0 && messages.length > threshold;
+  if (!overCount && !overRatio) return;
+  // 先做工具结果折叠（clear_tool_uses 等价）：早期工具原文折成占位，
+  // 可能直接把 token 压回阈值以下——折叠后不再超限则跳过 LLM 摘要（省一次往返）
+  foldOldToolResults(messages, 8);
+  if (overRatio && !overCount && limit && estimateContextTokens(messages) <= limit * ratio) {
+    recorder?.compact(0); // 轨迹：记录一次纯折叠压缩
+    return;
+  }
   const split = findSummarizeSplit(messages, opts.summarizeWindow ?? 8);
   if (split < 0) return;
   // 开头连续 system 消息（项目记忆 AGENTS.md / 预载文件等上下文脚手架）**不压缩**：
@@ -176,6 +246,7 @@ export async function summarizeContext(
   if (!summary) return; // 失败静默
   messages.splice(headStart, split - headStart, { role: 'system', content: `[历史对话摘要]\n${summary}` });
   recorder?.compact(split - headStart); // 轨迹：压缩移除 N 条
+  opts.hooks?.postCompact(summary.length); // PostCompact（1.0 P1-1）：fire-and-forget
 }
 
 /** 独立轻量 LLM 调用（流式与主循环一致，兼容各家网关）；失败返回 null */
@@ -266,6 +337,16 @@ export async function prepareContext(
   if (globalFile && !hasGlobal && messages.length > 0) {
     const mem = await loadGlobalMemory();
     if (mem) messages.unshift(globalMemoryMessage(mem));
+    // globs 条件注入（1.0 P1-2，Amp 方案）：任务文本命中主题 frontmatter 的
+    // glob 模式时把该主题全文内联（不用等模型主动 memory_search）
+    const lastUserForTopics = [...messages].reverse().find((m) => m.role === 'user');
+    const taskText0 =
+      lastUserForTopics && typeof lastUserForTopics.content === 'string' ? lastUserForTopics.content : undefined;
+    const matched = await topicsMatchingTask(taskText0);
+    if (matched.length > 0) {
+      const body = matched.map((m) => `### ${m.topic}\n${m.content}`).join('\n\n');
+      messages.unshift({ role: 'system', content: `[全局记忆主题（任务命中自动加载）]\n${body}` });
+    }
   }
   // -1) 技能清单：跨会话共享（SKILL.md 已安装），首轮注入一次——
   //     只列 name+description，模型需要时用 skill 工具按名加载全文（对标 opencode）。

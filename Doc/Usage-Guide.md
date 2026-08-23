@@ -854,3 +854,34 @@ environment, `/diff` for changes.
 | Developer guide / architecture | `AGENTS.md` at the repo root |
 | Mock API | `scripts/mock-server.mjs` (`npm run mock`, port 8787) |
 | Backlog | `TODO.md` |
+
+## 1.0 New Capabilities
+
+> Model layer (providers/metadata/variants), sandbox 2.0, web multi-session concurrency + inbox,
+> subagent worktree isolation, hooks extension, structured memory, compaction 2.0, LSP feedback,
+> MCP annotations/registry, presets, spec trio, telemetry, protocol freeze + omni-action.
+> Full reference: `README.md` · `AGENTS.md` · `Doc/Headless-Protocol.md` · `config.schema.json`.
+
+| Area | What's new | Where |
+|---|---|---|
+| Model config | `providers` group (one baseURL, many models, `{env:VAR}` keys); per-model `limit`/`modalities`/`capabilities`/`apiModel`/`displayName`/`disabled`; named `variants` overlays; `limit.output` drives `max_tokens`; multimodal pre-check | `omni.example.jsonc` · `/model fetch` · `/variants` |
+| Sandbox | `sandboxNetworkAllow` (hostname allowlist via built-in CONNECT proxy; TLS untouched), `sandboxFailClosed`, `sandboxMaskEnv`, policy-file write guard | `sandbox` config |
+| Web | multiple sessions run concurrently (per-session undo/events/abort; global cap `webConcurrency`); background inbox `POST /api/tasks` runs long tasks in their own session; buttons for fork / export / checkpoints (/rewind panel) / tasks; model metadata in dropdowns | `omni web` UI |
+| Subagents | `delegate` `worktree` param (auto `git worktree add`, tools run inside via `ToolContext.cwd`, diff+merge hints, `cleanup`) | prompt the model; docs |
+| Hooks | `PermissionRequest` / `PostCompact` / `PostToolUseFailure`; `http` handler type (POST JSON) | `hooks` config |
+| Memory | global memory = `MEMORY.md` index + `topics/*.md` (+ `globs` conditional injection, TTL archive); legacy `AGENTS.md` read-only | `~/.config/omni/memory/` |
+| Context | compaction triggered by context-window ratio (`limit.context`) + tool-result folding | auto |
+| MCP | tool `annotations.readOnlyHint` pass-through; `/mcp install <id>` registry one-click | `/mcp` |
+| Presets / spec | `omni preset browser`; `/spec <feature>` (requirements-EARS/design/tasks under `.omni/specs/`) | CLI + TUI + Web |
+| Telemetry | opt-in OTLP/HTTP JSON (`telemetry.enabled` + `endpoint`), redacted by default | config |
+| Headless freeze | `schemas/*.v1.json` + `config.schema.json` + `omni-action` + `Doc/Headless-Protocol.md`; exec json adds `tokens`/`idle_turns`/`error_type` | `omni exec --output-format json` |
+| Install | `scripts/install.sh` (curl one-liner, native binary) · `packaging/homebrew/omni.rb` · `scripts/make-winget-manifests.mjs` | scripts/ + packaging/ |
+
+Quick wins worth trying:
+```bash
+omni preset browser                                  # browser automation pair into global config
+omni exec "analyze this" --output-format json       # structured result incl. tokens / error_type
+omni web                                             # then: 后台任务 inbox · 检查点 · 分叉 · 多会话并行
+/spec "login flow"                                   # spec trio under .omni/specs/ (TUI/CLI/Web)
+/model fetch                                         # discover gateway models
+```

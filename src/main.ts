@@ -25,14 +25,14 @@ import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
-import { loadConfig, type ConfigOverrides, type OmniConfig } from './config/index.js';
+import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import type { PermissionTier } from './safety/policy.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
 import { isTrustedWorkspace, addTrustedWorkspace } from './safety/trust.js';
-import { wrapSandboxCommand, type SandboxMode } from './safety/sandbox.js';
+import { wrapSandboxCommand, touchesSandboxPolicy, type SandboxMode, type SandboxOptions } from './safety/sandbox.js';
 import type { Tool } from './tools/types.js';
 import { runExec, runMcpServer } from './exec.js';
 import { runWeb } from './web/index.js';
@@ -47,6 +47,13 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { dim, green, red, yellow } from './ui.js';
 import { VERSION } from './version.js';
+import type { AllowlistProxy } from './safety/netproxy.js';
+
+/** 网络白名单代理实例（attachRuntime 启动；进程退出时关闭） */
+let proxy: AllowlistProxy | null = null;
+process.on('exit', () => {
+  proxy?.close().catch(() => {});
+});
 
 /** 读文件当前内容（write_file diff 审批统计用）；不存在/读失败返回 null */
 function readIfExists(p: string): string | null {
@@ -72,16 +79,31 @@ export interface RunContext {
 /**
  * 把 run_command 工具包进 OS 级沙箱（read-only / workspace-write）：
  * 执行前把命令经 wrapSandboxCommand 包装（sandbox-exec / bwrap），结果附带沙箱提示。
+ * 1.0 P0-4 沙箱 2.0 增强：
+ * · fail-closed——平台无沙箱原语且 config sandboxFailClosed=true 时**拒绝执行**；
+ * · 策略面保护——沙箱内命令试图改 omni 配置/hooks/审计/信任清单 → 拒绝（防自我提权）；
+ * · 网络白名单代理与凭证 masking 由 opts 传入（attachRuntime 启动代理后注入端口）。
  * 非 run_command / off / danger-full-access → 原样返回。
  */
-function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, writePaths?: string[]): Tool {
+function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, sandboxOpts: SandboxOptions & { failClosed?: boolean }): Tool {
   if (tool.name !== 'run_command' || mode === 'off' || mode === 'danger-full-access') return tool;
   const original = tool.execute;
   return {
     ...tool,
     execute: async (args) => {
       const command = String(args.command ?? '');
-      const wrapped = wrapSandboxCommand(mode, process.cwd(), command, { writePaths });
+      // 策略面保护：沙箱内不允许修改 omni 自身的配置/审计/信任清单
+      const policyHit = touchesSandboxPolicy(command);
+      if (policyHit) {
+        return `已拒绝（沙箱保护）：该命令试图访问 omni 策略文件（匹配 ${policyHit}）。` +
+          `如确需操作，请在关闭沙箱（config sandbox=off）或经审批后手动执行。`;
+      }
+      const wrapped = wrapSandboxCommand(mode, process.cwd(), command, sandboxOpts);
+      if (!wrapped.protected && sandboxOpts.failClosed) {
+        return `已拒绝（fail-closed）：当前平台没有可用的沙箱实现（sandbox-exec / bwrap / firejail），` +
+          `且配置了 sandboxFailClosed=true——宁可不执行也不裸奔。` +
+          `安装 bwrap/firejail，或将 sandboxFailClosed 设为 false 以降级放行。`;
+      }
       let result = await original({ ...args, command: wrapped.command });
       if (wrapped.note) {
         const warn = wrapped.protected ? wrapped.note : `⚠️ ${wrapped.note}`;
@@ -198,6 +220,7 @@ export async function attachRuntime(
     requestApproval,
     summarize: formatToolCall,
     dangerousPatterns: cfg.dangerousPatterns,
+    hooks: ctx.runOpts.hooks, // PermissionRequest hook（1.0 P1-1）
     // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批卡片
     //（数据源 = UndoStack 执行前快照——与 write_file 卡片 diff 同源；快照在工具执行前
     // 打，这里 gate 先于 execute 读「最近一次同路径快照」即为当前盘上内容）
@@ -219,34 +242,43 @@ export async function attachRuntime(
   ctx.runOpts.permission = effectiveTier;
   ctx.runOpts.trusted = trusted;
   ctx.runOpts.sandbox = cfg.sandbox;
-  // 可用模型列表（顶层 model + config models 展开；/model 切换用）
+  // 可用模型列表（顶层 model + config models/providers 展开；/model 切换用）
   // 默认模型端点同样优先取 models.<model>（与 prepareRun 的解析一致）
   // 顶层 model 已在列表首位；models 表里同名的条目跳过，避免 /model 面板重复列出
-  // （常见于先 /model add <名> 再 /model <名> 切换——顶层与 models 表各留一份）
+  // （常见于先 /model add <名> 再 /model <名> 切换——顶层与 models 表各留一份）。
+  // disabled 条目不出现在列表（1.0 模型元数据）；元数据字段原样携带供 loop 消费。
   const defModel = cfg.models?.[cfg.model];
+  const expandEndpoint = (name: string, e: ModelEntryConfig | undefined): ModelEndpoint => ({
+    name,
+    provider: e?.provider,
+    baseURL: e?.baseURL ?? cfg.baseURL,
+    apiKey: e?.apiKey ?? cfg.apiKey,
+    userAgent: e?.userAgent ?? cfg.userAgent,
+    headers: e?.headers,
+    reasoningEffortOptions: e?.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
+    reasoningEffort: e?.reasoningEffort ?? cfg.reasoningEffort,
+    variant: e?.variant,
+    variants: e?.variants,
+    apiModel: e?.apiModel,
+    displayName: e?.displayName,
+    limit: e?.limit,
+    modalities: e?.modalities,
+    capabilities: e?.capabilities,
+    disabled: e?.disabled,
+  });
   const modelEndpoints: ModelEndpoint[] = [
-    {
-      name: cfg.model,
-      baseURL: defModel?.baseURL ?? cfg.baseURL,
-      apiKey: defModel?.apiKey ?? cfg.apiKey,
-      userAgent: defModel?.userAgent ?? cfg.userAgent,
-      // per-model variants：端点展开时把模型的思考级别配置（缺省回退全局）"烘焙"进端点——
-      // /model 切换时 applyEndpoint / switchModel 直接从端点取，无需再查 cfg
-      reasoningEffortOptions: defModel?.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
-      reasoningEffort: defModel?.reasoningEffort ?? cfg.reasoningEffort,
-    },
+    expandEndpoint(cfg.model, defModel),
     ...Object.entries(cfg.models ?? {})
       .filter(([name]) => name !== cfg.model)
-      .map(([name, e]) => ({
-        name,
-        baseURL: e.baseURL ?? cfg.baseURL,
-        apiKey: e.apiKey ?? cfg.apiKey,
-        userAgent: e.userAgent ?? cfg.userAgent,
-        reasoningEffortOptions: e.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
-        reasoningEffort: e.reasoningEffort ?? cfg.reasoningEffort,
-      })),
+      .filter(([, e]) => !e.disabled)
+      .map(([name, e]) => expandEndpoint(name, e)),
   ];
   ctx.runOpts.models = modelEndpoints;
+  ctx.runOpts.fallbackApiKey = cfg.apiKey;
+  // 兼容性字段（P2）：自定义网关 reasoning 字段名（loop 组装请求时传给 extractReasoning）
+  if (cfg.compatibility) ctx.runOpts.compatibility = cfg.compatibility;
+  // 当前选中命名 variant（per-model 配置 variant 字段）：/variants <id> 切换的初始值
+  if (defModel?.variant) ctx.runOpts.activeVariant = defModel.variant;
   // fallback 回退链（第七节 P0）：config fallbackModels 按名展开为完整端点
   //（缺省字段回退顶层；不在 models 表的名字忽略——没有端点信息无法回退）
   if (cfg.fallbackModels?.length) {
@@ -279,6 +311,9 @@ export async function attachRuntime(
     hooks: ctx.runOpts.hooks, // PreCompact：长对话压缩前 fire-and-forget
     repoMap: cfg.repoMap !== false,
     repoMapMaxSymbols: cfg.repoMapMaxSymbols,
+    // 压缩 2.0（1.0 P1-4）：按模型上下文窗口占比提前触发（消息数阈值仍生效）
+    contextLimit: cfg.models?.[cfg.model]?.limit?.context,
+    compressRatio: cfg.contextCompressRatio,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+
   // MCP 外部工具（失败只警告不阻塞）
@@ -286,9 +321,37 @@ export async function attachRuntime(
   // 再创建 delegate——子代理共用同一份包装后的工具表，其写入同样被记录
   const undoStack = new UndoStack();
   let tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
-  // OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap / firejail 限制副作用范围）
+  // OS 级沙箱（1.0 P0-4 沙箱 2.0）：cfg.sandbox 非 off 时包装 run_command。
+  // 网络白名单：配置了 sandboxNetworkAllow 时启动内置过滤代理（CONNECT 按 hostname
+  // 白名单放行，不解密 TLS），Seatbelt 把「允许网络」收紧为「仅连代理端口」；
+  // 凭证 masking：默认开启——环境变量名命中 *_KEY/*_TOKEN/*_SECRET/*_PASSWORD 的
+  // 值在沙箱命令里替换为 sentinel（防凭据被 echo 进上下文）。
   if (cfg.sandbox && cfg.sandbox !== 'off' && cfg.sandbox !== 'danger-full-access') {
-    tracked = tracked.map((t) => wrapRunCommandWithSandbox(t, cfg.sandbox, cfg.sandboxWritePaths));
+    let proxyPort: number | undefined;
+    if (cfg.sandboxNetworkAllow?.length) {
+      try {
+        const { startAllowlistProxy } = await import('./safety/netproxy.js');
+        proxy = await startAllowlistProxy(cfg.sandboxNetworkAllow);
+        proxyPort = proxy.port;
+      } catch (err) {
+        console.error(`⚠️ 网络白名单代理启动失败（${err instanceof Error ? err.message : err}）——本次运行保持全禁网。`);
+      }
+    }
+    // masking 名单：显式 sandboxMaskEnv=false 关闭；默认自动收集当前环境里的敏感命名
+    const autoMask =
+      cfg.sandboxMaskEnv !== false &&
+      Object.keys(process.env)
+        .filter((k) => /(KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/i.test(k))
+        .slice(0, 64);
+    tracked = tracked.map((t) =>
+      wrapRunCommandWithSandbox(t, cfg.sandbox, {
+        writePaths: cfg.sandboxWritePaths,
+        networkAllow: proxyPort ? cfg.sandboxNetworkAllow : undefined,
+        proxyPort,
+        maskEnvVars: autoMask === false ? undefined : autoMask,
+        failClosed: cfg.sandboxFailClosed === true,
+      })
+    );
   }
   // skills=false（含未信任目录）时从工具链移除 skill 工具（模型不可见/不可调用）
   if (cfg.skills === false || !trusted) tracked = tracked.filter((t) => t.name !== 'skill');
@@ -470,6 +533,14 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
   if (taskArgs[0] === 'web') {
     await runWeb(taskArgs.slice(1), overrides);
+    return;
+  }
+  // omni preset：能力一键预设（1.0 P1-6）——omni preset browser 装浏览器自动化双雄 MCP
+  if (taskArgs[0] === 'preset') {
+    const { runPreset } = await import('./agent/preset.js');
+    const r = await runPreset(taskArgs[1] ?? '');
+    for (const l of r.lines) console.log(l);
+    process.exitCode = r.ok ? 0 : 1;
     return;
   }
   // omni import：从 Claude Code 迁移配置（CLAUDE.md/skills/agents → omni 格式）

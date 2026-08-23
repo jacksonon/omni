@@ -26,6 +26,8 @@ import type { Safety } from '../safety/index.js';
 import { truncate } from './util.js';
 import type { Tool } from './types.js';
 import type { RunOptions, SubagentEvent } from '../agent/types.js';
+import { existsSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
 
 export interface DelegateToolOptions {
   /** 当前模型运行时引用（与主循环共用）：/model 切换后子代理自动用新模型/端点 */
@@ -99,6 +101,16 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
             '可选：已定义子代理的名字（.agents/subagents/*.md；缺省 = 通用委托）。' +
             '定义子代理有专用模型/权限/工具白名单/技能预载，适合固定角色的专业任务（如 code-reviewer 只读审查）。',
         },
+        worktree: {
+          type: ['boolean', 'string'],
+          description:
+            '可选：git worktree 隔离（1.0 P0-6）。true = 在独立工作树执行（自动建临时分支）；' +
+            '字符串 = 指定新分支名。并行委托写同一仓库时用它防写冲突；结果附改动统计与合并方式。',
+        },
+        cleanup: {
+          type: 'boolean',
+          description: '可选：worktree 完成后是否清理（默认 false 保留——便于检查/合并 diff）。',
+        },
       },
       required: ['task'],
     },
@@ -113,6 +125,31 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
       if (agentName && !def) {
         const avail = (opts.subagents ?? []).map((s) => s.name).join('、');
         return `错误：未找到子代理定义「${agentName}」${avail ? `。可用：${avail}` : '（.agents/subagents/ 下未定义任何子代理）'}`;
+      }
+      // worktree 隔离（1.0 P0-6）：在独立 git 工作树里跑子代理，防并行写冲突。
+      // 实现：git worktree add 到 <repoRoot>/.omni/worktrees/<名>；子代理 cwd 指向它；
+      // 结束后按 cleanup 决定保留/清理，并附改动统计与合并方式。
+      const wantWorktree = args.worktree === true || (typeof args.worktree === 'string' && !!args.worktree.trim());
+      let wtPath: string | null = null;
+      let wtBranch: string | null = null;
+      let wtNote = '';
+      if (wantWorktree) {
+        const { execSync } = await import('node:child_process');
+        const baseCwd = process.cwd();
+        try {
+          const repoRoot = execSync('git rev-parse --show-toplevel', { cwd: baseCwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+          if (!repoRoot) throw new Error('not a git repo');
+          const branchArg = typeof args.worktree === 'string' ? args.worktree.trim() : '';
+          const id0 = nextSubagentId();
+          wtBranch = branchArg || `omni-wt-${id0}-${Date.now().toString(36)}`;
+          wtPath = path.join(repoRoot, '.omni', 'worktrees', `${wtBranch.replace(/[^\w.-]+/g, '-')}`);
+          if (existsSync(wtPath)) throw new Error(`目标工作树已存在：${wtPath}`);
+          mkdirSync(path.dirname(wtPath), { recursive: true });          execSync(`git worktree add ${JSON.stringify(wtPath)} -b ${JSON.stringify(wtBranch)}`, {
+            cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000,
+          });
+        } catch (err) {
+          return `错误：worktree 创建失败——${err instanceof Error ? err.message : err}。可去掉 worktree 参数改为在工作区内委托。`;
+        }
       }
       const runOpts = opts.runOpts;
       const depth = opts.depth ?? 0;
@@ -174,8 +211,32 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
         id,
         parentId,
         depth,
+        cwd: wtPath ?? undefined,
       });
-      return `子代理结果${def ? `（${def.name}）` : ''}：\n${truncate(answer)}`;
+      // worktree 收尾：改动统计 + 保留/清理 + 合并提示
+      if (wtPath) {
+        const { execSync } = await import('node:child_process');
+        let stat = '';
+        try {
+          const st = execSync(`git -C ${JSON.stringify(wtPath)} status --porcelain`, { encoding: 'utf8', timeout: 10_000 });
+          const files = st.split('\n').filter((l) => l.trim());
+          stat = `${files.length} 个文件改动`;
+        } catch {
+          stat = '（无法读取工作树状态）';
+        }
+        const doCleanup = args.cleanup === true;
+        if (doCleanup) {
+          try {
+            execSync(`git worktree remove --force ${JSON.stringify(wtPath)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
+            wtNote = `（worktree 已清理；分支 ${wtBranch} 保留，可 git diff main..${wtBranch} 查看改动）`;
+          } catch {
+            wtNote = `（清理失败——worktree 保留在 ${wtPath}）`;
+          }
+        } else {
+          wtNote = `（worktree 保留：${wtPath} · ${stat} · 分支 ${wtBranch}。合并：git -C "${wtPath}" diff > patch 后 git apply，或 git merge ${wtBranch}）`;
+        }
+      }
+      return `子代理结果${def ? `（${def.name}）` : ''}${wtNote ? ` [worktree:${wtBranch}]` : ''}：\n${truncate(answer)}${wtNote ? `\n\n${wtNote}` : ''}`;
     },
   };
 }

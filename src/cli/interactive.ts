@@ -5,7 +5,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig } from '../config/write.js';
+import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -56,7 +56,7 @@ import {
 } from '../agent/rewind.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
-import { createClient } from '../client.js';
+import { createClient, discoverModels } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
 import { cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
@@ -215,6 +215,24 @@ export async function runInteractive(
         console.log(green(stack.size > 0 ? `${msg}（还有 ${stack.size} 个可撤销，/undo all 全部撤销）` : `${msg}（无更多可撤销）`));
         messages.push({ role: 'system', content: `[已执行 /undo] ${msg}。该文件的写操作已回滚，请勿再基于旧内容操作。` });
       }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/spec' || cmd.startsWith('/spec ')) {
+      // /spec <特性>（1.0 P1-7）：生成规格三件套 .omni/specs/<slug>/（tasks 同步 todoList）
+      const feature = cmd.slice('/spec'.length).trim();
+      if (!feature) { console.log(dim('用法：/spec <功能特性>')); safePrompt(); continue; }
+      const { generateSpec } = await import('../agent/spec.js');
+      const r = await generateSpec(currentClient, currentModel, feature, process.cwd(), runOpts.todoList);
+      console.log(r.ok ? green(r.message) : red(r.message));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/preset' || cmd.startsWith('/preset ')) {
+      // /preset browser（1.0 P1-6）：一键安装浏览器自动化双雄 MCP（写全局配置）
+      const { runPreset } = await import('../agent/preset.js');
+      const r = await runPreset(cmd.slice('/preset'.length).trim());
+      for (const l of r.lines) console.log(l);
       safePrompt();
       continue;
     }
@@ -461,19 +479,40 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
-      // /variants：显示当前思考级别；/variants low|medium|high（或配置的选项）直接切换
+      // /variants：显示当前思考级别/命名变体；<级别> 切字符串级别；<id> 命中当前模型
+      // 的命名 variants 表时切换叠加层（1.0 P0-3，未知报错列可用项）
       const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high'];
+      const ep = (runOpts.models ?? []).find((m) => m.name === currentModel);
+      const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();
       if (!want) {
-        console.log(dim(`当前思考级别：${runOpts.reasoningEffort ?? '（未设置，用模型默认）'}（/variants ${opts.join('|')} 切换）`));
-      } else if (!opts.includes(want)) {
-        console.log(red(`未知思考级别「${want}」——可选：${opts.join(' / ')}`));
+        const cur = runOpts.activeVariant
+          ? `命名变体 ${runOpts.activeVariant}`
+          : (runOpts.reasoningEffort ?? '（未设置，用模型默认）');
+        console.log(dim(`当前：${cur}（级别：${opts.join('|')}${namedIds.length ? ` · 命名：${namedIds.join('|')}` : ''}）`));
+      } else if (!opts.includes(want) && !namedIds.includes(want)) {
+        console.log(red(`未知思考级别「${want}」——可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`));
+      } else if (namedIds.includes(want) && !opts.includes(want)) {
+        runOpts.activeVariant = want;
+        console.log(green(`已切换命名变体 → ${want}`));
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistVariantToConfig(want, cfg, currentModel);
+          console.log(res.ok ? dim(res.message) : yellow(res.message));
+        }
+      } else if (!namedIds.includes(want) && runOpts.activeVariant && !ep?.variants?.[runOpts.activeVariant]?.reasoningEffort) {
+        // 字符串级别 + 当前叠加层无自带 effort → 切级别同时清除命名叠加（避免语义打架）
+        runOpts.reasoningEffort = want;
+        runOpts.activeVariant = undefined;
+        console.log(green(`已切换思考级别 → ${want}（已退出命名变体）`));
+        const cfg = runOpts.cfg;
+        if (cfg) {
+          const res = persistReasoningEffortToConfig(want, cfg, currentModel);
+          console.log(res.ok ? dim(res.message) : yellow(res.message));
+        }
       } else {
         runOpts.reasoningEffort = want;
         console.log(green(`已切换思考级别 → ${want}`));
-        // 持久化：切换后下次启动仍是新思考级别。per-model：当前模型在配置文件 models
-        // 表有专属条目时写 models.<模型>.reasoningEffort（仅该模型生效），否则写顶层全局
-        // （persistReasoningEffortToConfig 内部按 modelName 分流）
         const cfg = runOpts.cfg;
         if (cfg) {
           const res = persistReasoningEffortToConfig(want, cfg, currentModel);
@@ -496,7 +535,27 @@ export async function runInteractive(
       const want = cmd.slice('/model'.length).trim();
       const models = runOpts.models ?? [];
       if (!want) {
-        console.log(dim(`当前模型：${currentModel}（可用：${models.length > 0 ? models.map((m) => m.name).join(' / ') : currentModel}；/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加 · config models 可配多端点）`));
+        console.log(dim(`当前模型：${currentModel}（可用：${models.length > 0 ? models.map((m) => m.name).join(' / ') : currentModel}；/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加 · /model fetch 拉取网关模型列表 · config models/providers 可配多端点）`));
+      } else if (want === 'fetch' || want.startsWith('fetch ')) {
+        // /model fetch [名称]（1.0 P1）：GET {baseURL}/models 自动补全——OpenAI 兼容协议
+        // 通用能力（Ollama/LM Studio/vLLM/各类网关）。列出本地未登记的远端 id。
+        const target = want.slice('fetch'.length).trim();
+        const ep = target ? models.find((m) => m.name === target) : models.find((m) => m.name === currentModel);
+        if (!ep?.baseURL) {
+          console.log(red(`/model fetch${target ? ` ${target}` : ''}：未找到带 baseURL 的端点`));
+        } else {
+          try {
+            const ids = await discoverModels(ep);
+            const known = new Set(models.flatMap((m) => [m.name, m.apiModel ?? '']));
+            const fresh = ids.filter((id) => !known.has(id));
+            console.log(green(`远端共 ${ids.length} 个模型，未在本地列表的 ${fresh.length} 个：`));
+            for (const id of fresh.slice(0, 30)) console.log(`  · ${id}`);
+            if (fresh.length > 30) console.log(dim(`  … 还有 ${fresh.length - 30} 个`));
+            console.log(dim('添加：/model add <名> --base-url <端点> --api-key <key>；或编辑 config providers/models'));
+          } catch (err) {
+            console.log(red(`模型发现失败：${err instanceof Error ? err.message : err}`));
+          }
+        }
       } else if (want.startsWith('add')) {
         // /model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]：
         // 解析 → 运行时注册（缺省字段回退顶层配置）→ 切换 → 持久化到配置文件

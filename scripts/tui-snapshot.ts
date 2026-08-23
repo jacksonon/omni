@@ -1331,8 +1331,8 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 32 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 32、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 34 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 34、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
@@ -1403,7 +1403,7 @@ async function main(): Promise<void> {
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
   // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 26 个」提示行
-  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '开/关思考过程展示', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 26 个'];
+  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '开/关思考过程展示', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 28 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1415,7 +1415,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/fork', '/send', '/memory-apply', '/resume', '/session', '/redo', '/trace', '/help']) {
+  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/spec', '/preset', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/fork', '/send', '/memory-apply', '/resume', '/session', '/redo', '/trace', '/help']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1483,13 +1483,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // items[15..20] = model/status/context/export/config/mcp（32 条命令下标不变，/rewind 追加在 /diff 后）
-  if (!frame19s.includes('↑ 还有 15 个') || !frame19s.includes('↓ 还有 11 个') || frame19s.includes('/review')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见「↑ 还有 15 个」「↓ 还有 11 个」、无 /review）');
-    process.exit(1);
-  }
-  if (!frame19s.includes('/model') || !frame19s.includes('/config') || !frame19s.includes('/mcp')) {
-    console.error('✗ 场景 19 滚动后窗口内容缺失（items[15..20] 应渲染 /model /config /mcp 等）');
+  // 滚动后：出现上下提示行、窗口外命令（/review 等）不渲染、选中项（/export，下标 20）在窗口内
+  if (!frame19s.includes('↑ 还有') || !frame19s.includes('↓ 还有') || frame19s.includes('/review') || !frame19s.includes('/export')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见 ↑/↓ 还有 N 个、无 /review、含选中项 /export）');
     process.exit(1);
   }
   console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/圆角浮层/不挤动内容区）');
@@ -2186,22 +2182,36 @@ async function main(): Promise<void> {
     console.error('✗ 场景 26 appendGlobalMemory 失败');
     process.exit(1);
   }
-  const after26 = fs.readFileSync(globalFile26, 'utf8');
-  // 新条目写入；去重生效：「用户偏好使用中文回复」与已有的「- 用中文回复」近似重复 → 不重复追加
-  if (!after26.includes('用户喜欢简洁的步骤说明') || !after26.includes('## 会话记忆（')) {
-    console.error(`✗ 场景 26 自动写入内容缺失: ${JSON.stringify(after26.slice(-200))}`);
+  // 1.0 P1-2 结构化布局：新写入进 memory/MEMORY.md 索引 + memory/topics/*.md
+  const memTopics26 = await import('../src/agent/memory-topics.js');
+  const topics26 = await memTopics26.listTopics();
+  const joined26 = topics26.map((t) => t.content).join('\n');
+  const index26 = fs.existsSync(memTopics26.memoryIndexFile()) ? fs.readFileSync(memTopics26.memoryIndexFile(), 'utf8') : '';
+  if (!joined26.includes('用户喜欢简洁的步骤说明') || !index26.includes('用户喜欢简洁的步骤说明')) {
+    console.error(`✗ 场景 26 结构化写入内容缺失: topics=${JSON.stringify(topics26.map((t) => t.file))} index=${JSON.stringify(index26.slice(-200))}`);
     process.exit(1);
   }
-  if (after26.includes('用户偏好使用中文回复')) {
-    console.error(`✗ 场景 26 去重未生效（「用户偏好使用中文回复」与「- 用中文回复」重复，不应追加）: ${JSON.stringify(after26.slice(-200))}`);
+  // 去重：旧 AGENTS.md 的「用中文回复」已计入 known，「用户偏好使用中文回复」不重复写入
+  if (joined26.includes('用户偏好使用中文回复')) {
+    console.error('✗ 场景 26 去重未生效（「用户偏好使用中文回复」与遗留「用中文回复」重复，不应追加）');
     process.exit(1);
   }
-  // 防膨胀：写满 60KB 上限 → 追加后只保留最近段落
-  fs.writeFileSync(globalFile26, '手写头部\n\n' + '## 会话记忆（2026-01-01）\n\n' + 'x'.repeat(50 * 1024));
-  await appendGlobalMemory('最新偏好条目');
-  const trimmed26 = fs.readFileSync(globalFile26, 'utf8');
-  if (Buffer.byteLength(trimmed26, 'utf8') > 60 * 1024 + 200 || !trimmed26.includes('最新偏好条目') || !trimmed26.includes('手写头部')) {
-    console.error(`✗ 场景 26 防膨胀裁剪失败（${Buffer.byteLength(trimmed26, 'utf8')} 字节）`);
+  // 遗留 AGENTS.md 保持只读（结构化写入不碰它）；loadGlobalMemory 合并返回 legacy+索引
+  const legacyAfter26 = fs.readFileSync(globalFile26, 'utf8');
+  if (legacyAfter26 !== '# 全局偏好\n- 用中文回复\n') {
+    console.error(`✗ 场景 26 遗留 AGENTS.md 被结构化写入污染: ${JSON.stringify(legacyAfter26)}`);
+    process.exit(1);
+  }
+  const gmemAfter26 = await loadGlobalMemory();
+  if (!gmemAfter26 || !gmemAfter26.content.includes('用户喜欢简洁的步骤说明')) {
+    console.error('✗ 场景 26 loadGlobalMemory 未合并结构化索引');
+    process.exit(1);
+  }
+  // TTL 归档（topics 版）：过期主题标记 archived 并重建索引
+  const ttl26 = await memTopics26.applyTopicsTTL(-1); // 负值 = 全部视为过期
+  const topicsAfterTtl26 = await memTopics26.listTopics();
+  if (ttl26 < 1 || topicsAfterTtl26.some((t) => !t.archived)) {
+    console.error('✗ 场景 26 topics TTL 归档失败');
     process.exit(1);
   }
   // f) /init --global：命令分发带 --global 参数（无 client 时提示，不崩溃）；
@@ -2289,28 +2299,35 @@ async function main(): Promise<void> {
     console.error('✗ 场景 27 重复条目被误判为矛盾替换');
     process.exit(1);
   }
-  // e) appendGlobalMemory 合并语义（临时 XDG）：追加 → 再追加相同 → 全重复返回 false 且不堆积
+  // e) appendGlobalMemory 合并语义（临时 XDG，1.0 P1-2 结构化布局）：
+  //    追加 → 再追加相同 → 全重复返回 false 且不堆积；同主题矛盾写 topics 追加修正条目
   const oldXdg27 = process.env.XDG_CONFIG_HOME;
   const fakeXdg27 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-dedup-'));
   process.env.XDG_CONFIG_HOME = fakeXdg27;
   const ok27a = await appendGlobalMemory27('- 回复语言：中文');
   const ok27b = await appendGlobalMemory27('- 回复语言：中文。'); // 规范化后重复
-  const ok27c = await appendGlobalMemory27('- 回复语言：English'); // 同主题（回复语言）矛盾替换
-  const memFile27 = path.join(fakeXdg27, 'omni', 'AGENTS.md');
-  const final27 = fs.readFileSync(memFile27, 'utf8');
+  const ok27c = await appendGlobalMemory27('- 回复语言：English'); // 同主题（回复语言）追加修正
   if (!ok27a || ok27b !== false || !ok27c) {
     console.error(`✗ 场景 27 appendGlobalMemory 返回语义错误: ${JSON.stringify([ok27a, ok27b, ok27c])}`);
     process.exit(1);
   }
-  // 重复追加不堆积（「回复语言」主题全文只出现一次）；矛盾后「English」原位替换掉「中文」
-  const topicCount27 = final27.split('回复语言').length - 1;
-  if (topicCount27 !== 1 || !final27.includes('回复语言：English') || final27.includes('回复语言：中文')) {
-    console.error(`✗ 场景 27 去重/替换结果错误（主题出现 ${topicCount27} 次）: ${JSON.stringify(final27)}`);
+  const memTopics27 = await import('../src/agent/memory-topics.js');
+  const topics27 = await memTopics27.listTopics();
+  const joined27 = topics27.map((t) => t.content).join('\n');
+  const index27 = fs.existsSync(memTopics27.memoryIndexFile()) ? fs.readFileSync(memTopics27.memoryIndexFile(), 'utf8') : '';
+  // 同主题去重：该主题文件里「中文」只出现一次（追加被拒）
+  if (topics27.length !== 1 || (joined27.match(/回复语言/g) ?? []).length !== 2) {
+    console.error(`✗ 场景 27 去重结果错误（应 1 个主题、共 2 处「回复语言」）: ${JSON.stringify(topics27.map((t) => t.content))}`);
+    process.exit(1);
+  }
+  // 矛盾修正：新值追加进主题文件（旧值保留可追溯——结构化布局是追加语义）
+  if (!joined27.includes('回复语言：English')) {
+    console.error(`✗ 场景 27 矛盾修正未生效（应追加 English）: ${JSON.stringify(joined27)}`);
     process.exit(1);
   }
   process.env.XDG_CONFIG_HOME = oldXdg27;
   fs.rmSync(fakeXdg27, { recursive: true, force: true });
-  console.log('✓ 场景 27 通过：规范化/主题提取/去重/矛盾替换 + appendGlobalMemory 合并（重复 false、原位替换）');
+  console.log('✓ 场景 27 通过：规范化/主题提取/去重/矛盾修正 + appendGlobalMemory 结构化合并（重复 false、修正生效）');
 
   // 场景 28：/plan 计划模式 —— 命令注册 + 只读工具过滤 + 系统提示 + footer 常驻指示
   console.log('=== 场景 28：/plan 计划模式（只读调研）===');

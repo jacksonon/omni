@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/stream-json.v1.json",
+  "title": "omni exec --output-format stream-json 事件行（协议冻结 v1）",
+  "description": "每行一个 JSON（{"t":"ev",...} 轨迹事件序列），末行 {"t":"result", ...} 同 exec-result.v1.json。trace 事件字段见 src/agent/events.ts TrajEvent。",
+  "type": "object",
+  "required": ["t"],
+  "properties": {
+    "t": { "enum": ["ev", "result"] }
+  }
+}

@@ -408,6 +408,12 @@ export interface TuiState {
    * 会话级状态；interactive 每轮同步进 runOpts.reasoningEffort（loop 请求带上）。
    */
   reasoningEffort: string;
+  /**
+   * 当前选中的命名 variant（1.0 P0-3，/variants 面板选「命名叠加层」后记录 id；
+   * interactive 每轮同步进 runOpts.activeVariant——loop 把该 variant 的
+   * body/headers/effort deep-merge 进请求）。null = 未选命名变体。
+   */
+  activeVariant: string | null;
   /** /variants 面板支持的思考级别选项（来自配置 reasoningEffortOptions） */
   reasoningEffortOptions: string[];
   /**
@@ -519,7 +525,8 @@ export function createTuiState(): TuiState {
     inputLines: 1,
     cwd: process.cwd(),
     models: [],
-    sessionTitle: null,
+
+    activeVariant: null,    sessionTitle: null,
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, cached: 0 },

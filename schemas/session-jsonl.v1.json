@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/session-jsonl.v1.json",
+  "title": "omni 会话 JSONL 文件（协议冻结 v1）",
+  "description": "每行一个 JSON：首行 {"t":"meta",...}（会话元数据）· 消息行 {"t":"m","m":{...OpenAI 消息}} · 轨迹行 {"t":"ev","e":{...TrajEvent}}。行结构与字段面冻结；恢复/续写必须按此协议。",
+  "type": "object",
+  "required": ["t"],
+  "properties": { "t": { "enum": ["meta", "m", "ev"] } }
+}

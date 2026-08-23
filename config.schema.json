@@ -1,0 +1,609 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omni.sh/schema/config.schema.json",
+  "title": "Omni 配置",
+  "description": "Omni Agent 配置文件（omni.json / omni.jsonc）的完整 JSON Schema。支持 JSON 与 JSONC（带注释、尾逗号）。分层合并优先级：默认值 → 全局配置(~/.config/omni/omni.json) → 项目配置 → 自定义配置(OMNI_CONFIG/--config) → 环境变量 → CLI 参数。",
+  "type": "object",
+  "properties": {
+    "model": {
+      "type": "string",
+      "description": "默认模型名（默认 gpt-4o-mini）",
+      "default": "gpt-4o-mini"
+    },
+    "baseURL": {
+      "type": "string",
+      "description": "OpenAI 兼容 API 地址（缺省 api.openai.com）"
+    },
+    "apiKey": {
+      "type": "string",
+      "description": "API Key（更推荐环境变量 OMNI_API_KEY；支持 {env:VAR} 引用）"
+    },
+    "userAgent": {
+      "type": "string",
+      "description": "自定义 User-Agent（部分网关 WAF 拦截 SDK 默认 UA）"
+    },
+    "maxSteps": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Agent 最大循环步数（防死循环兜底；默认 50）",
+      "default": 50
+    },
+    "showThinking": {
+      "type": "boolean",
+      "description": "是否展示思考过程（默认 true；关闭仍落盘 .omni/last-thinking.md）",
+      "default": true
+    },
+    "permission": {
+      "enum": [
+        "full",
+        "safe",
+        "ask",
+        "read"
+      ],
+      "description": "安全护栏权限分级（默认 safe）",
+      "default": "safe"
+    },
+    "auditLog": {
+      "type": "boolean",
+      "description": "是否写审计日志（~/.config/omni/audit.log；默认 true）",
+      "default": true
+    },
+    "agentsFile": {
+      "type": "boolean",
+      "description": "是否加载项目记忆 AGENTS.md（嵌套多层级；默认 true）",
+      "default": true
+    },
+    "globalAgentsFile": {
+      "type": "boolean",
+      "description": "是否加载全局记忆（默认 true）",
+      "default": true
+    },
+    "autoMemory": {
+      "type": "boolean",
+      "description": "会话结束时自动把新偏好写入全局记忆（结构化 topics；默认 true）",
+      "default": true
+    },
+    "summarizeAt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "长对话摘要压缩消息数阈值（0 = 关闭；默认 40）",
+      "default": 40
+    },
+    "summarizeWindow": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "压缩保留最近多少条原文（默认 8）",
+      "default": 8
+    },
+    "preloadFiles": {
+      "type": "boolean",
+      "description": "是否预载任务文本中出现的相关文件（默认 true）",
+      "default": true
+    },
+    "preloadMaxFiles": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "最多预载文件数（默认 5）",
+      "default": 5
+    },
+    "preloadMaxBytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "description": "单文件预载字节上限（默认 30KB）",
+      "default": 30720
+    },
+    "allowSubagents": {
+      "type": "boolean",
+      "description": "是否启用子代理（delegate 工具；默认 true）",
+      "default": true
+    },
+    "maxSubagentSteps": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "子代理最大循环步数（默认 10）",
+      "default": 10
+    },
+    "maxSubagentDepth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "子代理最大嵌套深度（默认 5）",
+      "default": 5
+    },
+    "skills": {
+      "type": "boolean",
+      "description": "是否启用技能（SKILL.md）发现与 skill 工具（默认 true）",
+      "default": true
+    },
+    "reasoningEffort": {
+      "type": "string",
+      "description": "当前模型思考级别（reasoning_effort；不配置 = 不带该参数）"
+    },
+    "reasoningEffortOptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "/variants 支持的思考级别选项（默认 low/medium/high）"
+    },
+    "architect": {
+      "type": "string",
+      "description": "/plan 计划模式用的强模型（缺省回退当前模型）"
+    },
+    "editor": {
+      "type": "string",
+      "description": "执行阶段用的轻模型（缺省回退当前模型）"
+    },
+    "statusline": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "rounds",
+          "llm",
+          "speed",
+          "cache",
+          "tokens"
+        ]
+      },
+      "description": "TUI 底部状态行显示的段（默认全段）"
+    },
+    "language": {
+      "enum": [
+        "zh",
+        "en"
+      ],
+      "description": "界面语言（默认 zh）",
+      "default": "zh"
+    },
+    "repoMap": {
+      "type": "boolean",
+      "description": "是否注入代码库结构地图（默认 true）",
+      "default": true
+    },
+    "repoMapMaxSymbols": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 2000,
+      "description": "repo map 符号上限（默认 200）",
+      "default": 200
+    },
+    "webFetchDomains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "web_fetch 工具域名允许列表（空 = 全部允许）"
+    },
+    "dangerousPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "危险命令扩展正则列表（safe+ 档位触发审批）"
+    },
+    "fallbackModels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 3,
+      "description": "fallback 回退链（最多 3 级；可重试失败自动切备用端点重试本轮）"
+    },
+    "autoCommit": {
+      "type": "boolean",
+      "description": "每轮对话结束自动 git commit（Aider 原子提交；默认 false）",
+      "default": false
+    },
+    "sandbox": {
+      "enum": [
+        "off",
+        "read-only",
+        "workspace-write",
+        "danger-full-access"
+      ],
+      "description": "OS 级沙箱档位（默认 off）",
+      "default": "off"
+    },
+    "sandboxWritePaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "workspace-write 沙箱的额外可写白名单（绝对路径）"
+    },
+    "sandboxNetworkAllow": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "沙箱网络白名单（hostname；配置后经内置过滤代理出网）"
+    },
+    "sandboxFailClosed": {
+      "type": "boolean",
+      "description": "沙箱不可用时拒绝执行（fail-closed；默认 false 降级）",
+      "default": false
+    },
+    "sandboxMaskEnv": {
+      "type": "boolean",
+      "description": "沙箱命令环境变量敏感项 masking（默认 true）",
+      "default": true
+    },
+    "webConcurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "description": "Web 多会话并发上限（默认 3）",
+      "default": 3
+    },
+    "diagnoseAfterEdit": {
+      "type": "boolean",
+      "description": "write_file 后自动跑快速检查并回传诊断（默认 false）",
+      "default": false
+    },
+    "contextCompressRatio": {
+      "type": "number",
+      "minimum": 0.3,
+      "maximum": 0.95,
+      "description": "上下文压缩触发占比（默认 0.7）",
+      "default": 0.7
+    },
+    "telemetry": {
+      "type": "object",
+      "description": "OpenTelemetry 导出（默认关闭、opt-in 显式；prompt 默认脱敏）",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "OTLP HTTP 基址（如 http://localhost:4318）"
+        },
+        "serviceName": {
+          "type": "string",
+          "default": "omni"
+        },
+        "redact": {
+          "type": "boolean",
+          "description": "prompt 内容脱敏（默认 true）",
+          "default": true
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "多模型端点（/model 切换）：{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffortOptions?, reasoningEffort?, variant?, variants?, apiModel?, displayName?, limit?, modalities?, capabilities?, disabled? } }；缺省字段回退顶层",
+      "additionalProperties": {
+        "$ref": "#/definitions/modelEntry"
+      }
+    },
+    "providers": {
+      "type": "object",
+      "description": "Provider 分组（一个 baseURL 挂多个模型；加载期展开合并进 models 表，扁平形态向后兼容）",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "baseURL": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "models": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/definitions/providerModelEntry"
+            }
+          }
+        }
+      }
+    },
+    "mcpServers": {
+      "type": "object",
+      "description": "MCP 外部工具：{ 名称: { command, args?, env? } | { url, headers? }；enabledTools?/disabledTools? 白黑名单；defaultToolsApprovalMode? = auto|prompt|writes|approve }",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "url": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "enabledTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disabledTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "defaultToolsApprovalMode": {
+            "enum": [
+              "auto",
+              "prompt",
+              "writes",
+              "approve"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "command"
+            ]
+          },
+          {
+            "required": [
+              "url"
+            ]
+          }
+        ]
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "description": "Hooks 生命周期自动化：{ 事件: [{ matcher?, command?|url?, timeoutMs? }] }；分层合并（全局+项目+自定义逐层累加）",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "matcher": {
+              "type": "string",
+              "description": "工具名匹配（* 或 read_* 通配）"
+            },
+            "command": {
+              "type": "string",
+              "description": "shell 命令（与 url 二选一）"
+            },
+            "url": {
+              "type": "string",
+              "description": "http 端点（与 command 二选一；POST 事件 JSON）"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1000,
+              "description": "超时毫秒（默认 60000）"
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "command"
+              ]
+            },
+            {
+              "required": [
+                "url"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "webWorkspace": {
+      "type": "string",
+      "description": "Web/Electron 上次工作目录（界面切换时持久化）"
+    },
+    "webWorkspaces": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "description": "已知工作区列表"
+    },
+    "profiles": {
+      "type": "object",
+      "description": "配置 profile 档案（--profile <名> / OMNI_PROFILE 覆盖合并）",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "description": "兼容性字段（P2 能力驱动请求构建）：自定义网关私有字段名",
+      "properties": {
+        "reasoningField": {
+          "type": "string",
+          "description": "该网关返回思考内容的字段名（除 reasoning_content/reasoning/thinking 外扩展用）"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "modelEntry": {
+      "type": "object",
+      "properties": {
+        "baseURL": {
+          "type": "string"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "userAgent": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "reasoningEffortOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasoningEffort": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string",
+          "description": "当前选中的命名 variant"
+        },
+        "variants": {
+          "type": "object",
+          "description": "命名 variants 叠加层：{ id: { description?, reasoningEffort?, body?, headers? } }",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "reasoningEffort": {
+                "type": "string"
+              },
+              "body": {
+                "type": "object"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "apiModel": {
+          "type": "string",
+          "description": "发给 API 的真实模型名（目录友好名 ≠ API 名）"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "object",
+          "properties": {
+            "context": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "输入上限（上下文窗口 token）"
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "输出上限（max_tokens）"
+            }
+          }
+        },
+        "modalities": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "text",
+                  "image",
+                  "pdf",
+                  "audio"
+                ]
+              }
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "text",
+                  "image",
+                  "pdf",
+                  "audio"
+                ]
+              }
+            }
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "boolean"
+            },
+            "reasoning": {
+              "type": "boolean"
+            },
+            "temperature": {
+              "type": "boolean"
+            }
+          }
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "不出现在 /model 列表"
+        }
+      }
+    },
+    "providerModelEntry": {
+      "type": "object",
+      "properties": {
+        "reasoningEffortOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasoningEffort": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string"
+        },
+        "variants": {
+          "$ref": "#/definitions/modelEntry/properties/variants"
+        },
+        "apiModel": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/definitions/modelEntry/properties/limit"
+        },
+        "modalities": {
+          "$ref": "#/definitions/modelEntry/properties/modalities"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/modelEntry/properties/capabilities"
+        },
+        "disabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -100,10 +100,22 @@ export interface RunOptions {
   /** 子代理最大循环步数（/agents 展示用；attachRuntime 注入） */
   maxSubagentSteps?: number;
   /**
-   * 可用模型端点列表（顶层 model + config `models`；/model 切换用）。
-   * attachRuntime 从 cfg 展开注入；interactive 按名字找到目标端点重建 client。
+   * 可用模型端点列表（顶层 model + config `models`/`providers` 展开；/model 切换用）。
+   * attachRuntime 从 cfg 展开注入（含 limit/modalities/capabilities 元数据与命名
+   * variants）；interactive 按名字找到目标端点重建 client；loop 据元数据下发
+   * max_tokens / 做多模态前置校验。
    */
-  models?: { name: string; baseURL?: string; apiKey?: string; userAgent?: string; reasoningEffortOptions?: string[]; reasoningEffort?: string }[];
+  models?: import('../client.js').ModelEndpoint[];
+  /**
+   * 当前选中的命名 variant（1.0 P0-3，/variants <id> 切换）：loop 按当前端点的
+   * variants 表把 { reasoningEffort?, body?, headers? } deep-merge 进请求；
+   * 未知 variant 在切换时报错而非静默回落。缺省 = 不叠加。
+   */
+  activeVariant?: string;
+  /** 当前模型的 fallback API Key（跨端点路由建缓存客户端时兜底；attachRuntime 注入） */
+  fallbackApiKey?: string;
+  /** 兼容性字段（P2）：自定义网关 reasoning 字段名（thinking.ts extractReasoning 消费） */
+  compatibility?: { reasoningField?: string };
   /**
    * 当前模型运行时引用（主循环与 delegate 子代理共用）：
    * /model 切换时重建 client 并更新此引用 → 子代理与主循环模型一致。

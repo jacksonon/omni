@@ -1425,3 +1425,24 @@ body.cmd-open::before {
 .msg.assistant .md-body {
   animation: msg-enter .3s var(--ease-out);
 }
+
+
+/* ===== 1.0 新增：侧栏底部行 / 收件箱徽标 / 检查点与任务面板 ===== */
+.sidebar-foot-row { display: flex; gap: 8px; padding: 0 12px; }
+.sidebar-foot-row .settings-button { flex: 1; }
+.inbox-badge { margin-left: auto; background: var(--accent, #3b82f6); color: #fff; border-radius: 8px; font-size: 10px; padding: 1px 6px; }
+.rewind-list, .task-list { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.rewind-row, .task-row { border: 1px solid var(--border, #30302e); border-radius: 10px; padding: 10px 12px; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+.rewind-main, .task-main { flex: 1; min-width: 0; }
+.rewind-msg, .task-prompt { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rewind-meta, .task-meta { color: var(--text-dim, #9b9b97); font-size: 11px; margin-top: 3px; }
+.session-running-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: pulse 1.4s infinite; flex: none; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.pane-sub { color: var(--text-dim, #9b9b97); font-size: 12px; margin-top: -6px; }
+.inbox-add { display: flex; gap: 8px; margin-top: 10px; }
+.inbox-add input { flex: 1; background: var(--bg-input, #1d1d1b); border: 1px solid var(--border, #30302e); border-radius: 10px; padding: 8px 10px; color: inherit; }
+.task-state { font-size: 11px; padding: 2px 8px; border-radius: 8px; }
+.task-state.pending { background: #52525b33; }
+.task-state.running { background: #3b82f633; color: #93c5fd; }
+.task-state.done { background: #22c55e33; color: #86efac; }
+.task-state.error { background: #ef444433; color: #fca5a5; }

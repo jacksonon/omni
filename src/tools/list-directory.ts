@@ -14,8 +14,8 @@ export const listDirectoryTool: Tool = {
       path: { type: 'string', description: '目录路径（相对或绝对，默认当前目录）' },
     },
   },
-  async execute(args) {
-    const dir = resolvePath(String(args.path ?? '.'));
+  async execute(args, ctx) {
+    const dir = resolvePath(String(args.path ?? '.'), ctx?.cwd);
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const rows = entries
       .filter((e) => !['node_modules', '.git'].includes(e.name))
