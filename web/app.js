@@ -20,6 +20,7 @@ const state = {
   sessions: [],         // 会话列表
   status: null,         // 服务器状态
   planMode: false,
+  language: 'zh',       // 界面语言（设置 → 通用 → 语言：zh / en）
   blocks: new Map(),    // blockId -> MessageBlock
   waiters: new Map(),   // interactionId -> { sessionId, type(approval|ask), el }
   inFlight: 0,          // 本轮未完成的请求计数（跑完才印统计行）
@@ -67,9 +68,319 @@ function EventEmitter() {
 }
 const bus = new EventEmitter();
 
+/* ---------------- i18n（设置 → 通用 → 语言：中文 / English） ---------------- */
+const I18N_ZH = {
+  // 侧栏
+  'sidebar.new': '新会话',
+  'sidebar.section': '工作区',
+  'sidebar.search': '搜索会话',
+  'sidebar.addWorkspace': '添加工作区（浏览…）',
+  'sidebar.inbox': '后台任务',
+  'sidebar.settings': '设置',
+  'sidebar.collapse': '收起侧栏',
+  'sidebar.openNav': '打开导航',
+  // header
+  'header.sessionActions': '会话操作（分叉/导出/检查点…）',
+  'header.details': '打开详情',
+  'header.closeDetails': '关闭详情',
+  'header.chatTab': '对话',
+  'header.traceTab': '轨迹',
+  // hero
+  'hero.tagline': '探索未至之境',
+  'hero.preview': '预览版',
+  'hero.workspace': '当前工作区',
+  // composer
+  'composer.attach': '添加上下文',
+  'composer.permission': '权限设置',
+  'composer.plan': '计划',
+  'composer.settings': '运行设置',
+  'composer.model': '切换模型与思考级别',
+  'composer.send': '发送消息',
+  'composer.stop': '停止当前任务',
+  'composer.input': '随心输入',
+  'composer.project': '切换项目',
+  'composer.location': '工作位置',
+  'composer.branch': '切换分支',
+  'composer.newChat': '输入消息开始新对话',
+  'composer.running': '运行中 · Enter 排队 · ⌘/Ctrl+Enter 打断',
+  'composer.runningQueued': '运行中 · ⏳ 排队 {n} 条 · Enter 排队 · ⌘/Ctrl+Enter 打断',
+  'composer.queued': '⏳ 排队中（{n}）',
+  'composer.chooseSession': '选择或新建会话',
+  // 权限
+  'perm.full': '完全访问',
+  'perm.safe': '帮我批准',
+  'perm.ask': '请求批准',
+  'perm.read': '只读',
+  'perm.head': '应如何批准操作？',
+  'perm.more': '了解更多',
+  'perm.askDesc': '编辑外部文件和使用互联网时始终询问',
+  'perm.safeDesc': '仅对检测到的风险操作请求批准',
+  'perm.fullDesc': '可不受限制地访问互联网和你电脑上的任何文件',
+  'perm.fullTitle': '完全访问权限',
+  // 状态
+  'status.ready': '就绪',
+  'status.running': '运行中…',
+  'status.chooseSession': '选择或新建会话',
+  'status.disconnected': '已断开，重连中…',
+  'status.failed': '请求失败',
+  'status.cantConnect': '无法连接服务器',
+  // 审批 / 提问
+  'approval.head': '⚠ 需要审批',
+  'approval.allow': '允许执行',
+  'approval.deny': '拒绝',
+  'approval.allowed': '✓ 已允许',
+  'approval.denied': '✗ 已拒绝',
+  'approval.fromSession': '· 来自会话「{name}」',
+  'ask.head': '❓ 向用户提问',
+  'ask.cancel': '取消',
+  'ask.confirm': '确认',
+  'ask.customPlaceholder': '自定义输入（可选）',
+  'ask.userChoice': '（用户选择：{choices}）',
+  'ask.userCancelled': '（用户取消）',
+  // 思考 / 工具
+  'thinking.running': '思考中',
+  'thinking.done': '思考 · {n} 字符',
+  'tool.running': '执行中',
+  'tool.failed': '失败',
+  'tool.noOutput': '（无输出）',
+  'tool.nchars': '{n} 字符',
+  'task.pending': '排队中',
+  'task.running': '执行中',
+  'task.done': '已完成',
+  'task.error': '失败',
+  // 命令面板 / meta
+  'cmd.title': '命令输出',
+  'cmd.executed': '命令已执行。',
+  'cmd.loading': '执行中…',
+  'cmd.failed': '✗ 命令执行失败：{msg}',
+  'cmd.none': '命令执行完成（无输出）',
+  'send.failed': '✗ 发送失败：{msg}',
+  'session.new': '新会话',
+  'session.title': '会话',
+  'empty.sessions': '暂无会话',
+  // 设置面板（tab 与字段）
+  'settings.general': '通用',
+  'settings.theme': '主题',
+  'settings.model': '模型',
+  'settings.workspace': '工作区',
+  'settings.apikey': '模型配置',
+  'settings.about': '关于',
+  'settings.generalSub': '会话运行的基础行为。',
+  'settings.themeSub': '界面配色方案，选择后立即生效并保存。',
+  'settings.modelSub': '切换对话使用的模型与思考深度。',
+  'settings.workspaceSub': '智能体读写文件、执行命令所用的根目录。',
+  'settings.apikeySub': '配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。',
+  'settings.aboutSub': '',
+  'settings.permission': '权限级别',
+  'settings.permissionDesc': '控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。',
+  'settings.permSafe': 'safe · 危险操作询问',
+  'settings.permFull': 'full · 全量直通',
+  'settings.permAsk': 'ask · 全部询问',
+  'settings.permRead': 'read · 只读',
+  'settings.plan': '计划模式',
+  'settings.planDesc': '只调研并输出实施计划，不直接修改文件。',
+  'settings.lang': '语言',
+  'settings.langDesc': '界面显示语言，保存后立即生效。',
+  'settings.themeName': '界面主题',
+  'settings.themeDesc': '亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。',
+  'settings.themeLight': '亮色',
+  'settings.themeDark': '暗色',
+  'settings.themeSystem': '跟随系统',
+  'settings.modelName': '模型',
+  'settings.modelDesc': '切换对话使用的模型与思考深度。',
+  'settings.cwd': '当前目录',
+  'settings.browse': '切换…',
+  'settings.cfgModel': '配置的模型',
+  'settings.cfgModelDesc': '选择要编辑的模型，切换后下方字段同步为该模型的配置。',
+  'settings.baseURL': '端点（baseURL）',
+  'settings.baseURLDesc': 'OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1。',
+  'settings.apiKey': 'API Key',
+  'settings.apiKeyDesc': '留空表示沿用配置文件中已保存的密钥。',
+  'settings.save': '保存',
+  'settings.saved': '✓ 已保存到配置文件',
+  'settings.variants': '思考级别选项（variants）',
+  'settings.variantsDesc': '逗号分隔，如 low,medium,high；模型只支持这些级别。',
+  'settings.effortCurrent': '当前思考级别',
+  'settings.effortCurrentDesc': '默认使用哪一个级别。',
+  'settings.context': '上下文长度（context）',
+  'settings.contextDesc': '模型的上下文窗口大小（token 数），如 128000。',
+  'settings.version': '版本',
+  'settings.server': '服务地址',
+  'settings.tools': '可用工具',
+  // 模态框
+  'modal.rewindTitle': '会话检查点（/rewind）',
+  'modal.inboxTitle': '后台任务收件箱',
+  'modal.inboxPlaceholder': '长任务描述，空闲容量时自动在独立会话执行…',
+  'modal.enqueue': '入队',
+  'modal.dirTitle': '选择工作目录',
+  'modal.up': '上级',
+  'modal.cancel': '取消',
+  'modal.select': '选择此目录',
+  'modal.close': '关闭',
+};
+const I18N_EN = {
+  'sidebar.new': 'New chat',
+  'sidebar.section': 'Workspaces',
+  'sidebar.search': 'Search sessions',
+  'sidebar.addWorkspace': 'Add workspace',
+  'sidebar.inbox': 'Tasks',
+  'sidebar.settings': 'Settings',
+  'sidebar.collapse': 'Collapse sidebar',
+  'sidebar.openNav': 'Open navigation',
+  'header.sessionActions': 'Session actions (fork/export/checkpoints…)',
+  'header.details': 'Open details',
+  'header.closeDetails': 'Close details',
+  'header.chatTab': 'Chat',
+  'header.traceTab': 'Trajectory',
+  'hero.tagline': 'Explore the unknown',
+  'hero.preview': 'Preview',
+  'hero.workspace': 'Current workspace',
+  'composer.attach': 'Add context',
+  'composer.permission': 'Permissions',
+  'composer.plan': 'Plan',
+  'composer.settings': 'Run settings',
+  'composer.model': 'Switch model & reasoning',
+  'composer.send': 'Send message',
+  'composer.stop': 'Stop current task',
+  'composer.input': 'Type a message',
+  'composer.project': 'Switch project',
+  'composer.location': 'Working location',
+  'composer.branch': 'Switch branch',
+  'composer.newChat': 'Type a message to start a new chat',
+  'composer.running': 'Running · Enter to queue · ⌘/Ctrl+Enter to steer',
+  'composer.runningQueued': 'Running · ⏳ {n} queued · Enter to queue · ⌘/Ctrl+Enter to steer',
+  'composer.queued': '⏳ Queued ({n})',
+  'composer.chooseSession': 'Select or create a session',
+  'perm.full': 'Full access',
+  'perm.safe': 'Auto-approve',
+  'perm.ask': 'Ask to approve',
+  'perm.read': 'Read only',
+  'perm.head': 'How should we approve actions?',
+  'perm.more': 'Learn more',
+  'perm.askDesc': 'Always ask when editing external files and using the internet',
+  'perm.safeDesc': 'Ask only for detected risky actions',
+  'perm.fullDesc': 'Unrestricted access to the internet and any file on your computer',
+  'perm.fullTitle': 'Full access',
+  'status.ready': 'Ready',
+  'status.running': 'Running…',
+  'status.chooseSession': 'Select or create a session',
+  'status.disconnected': 'Disconnected, reconnecting…',
+  'status.failed': 'Request failed',
+  'status.cantConnect': 'Cannot connect to server',
+  'approval.head': '⚠ Approval required',
+  'approval.allow': 'Allow',
+  'approval.deny': 'Deny',
+  'approval.allowed': '✓ Allowed',
+  'approval.denied': '✗ Denied',
+  'approval.fromSession': '· from session "{name}"',
+  'ask.head': '❓ Ask the user',
+  'ask.cancel': 'Cancel',
+  'ask.confirm': 'Confirm',
+  'ask.customPlaceholder': 'Custom input (optional)',
+  'ask.userChoice': '(User chose: {choices})',
+  'ask.userCancelled': '(User cancelled)',
+  'thinking.running': 'Thinking',
+  'thinking.done': 'Thinking · {n} chars',
+  'tool.running': 'Running',
+  'tool.failed': 'Failed',
+  'tool.noOutput': '(no output)',
+  'tool.nchars': '{n} chars',
+  'task.pending': 'Queued',
+  'task.running': 'Running',
+  'task.done': 'Done',
+  'task.error': 'Failed',
+  'cmd.title': 'Command output',
+  'cmd.executed': 'Command executed.',
+  'cmd.loading': 'Running…',
+  'cmd.failed': '✗ Command failed: {msg}',
+  'cmd.none': 'Command executed (no output)',
+  'send.failed': '✗ Send failed: {msg}',
+  'session.new': 'New chat',
+  'session.title': 'Session',
+  'empty.sessions': 'No sessions',
+  'settings.general': 'General',
+  'settings.theme': 'Theme',
+  'settings.model': 'Model',
+  'settings.workspace': 'Workspace',
+  'settings.apikey': 'Model config',
+  'settings.about': 'About',
+  'settings.generalSub': 'Base behavior for session runs.',
+  'settings.themeSub': 'Color scheme. Applies immediately and is saved.',
+  'settings.modelSub': 'Switch the model and reasoning depth.',
+  'settings.workspaceSub': 'Root directory the agent reads/writes files and runs commands in.',
+  'settings.apikeySub': 'Configure endpoint, key, reasoning levels and context length for the selected model — same fields as models in omni.json, saved to the global config file.',
+  'settings.permission': 'Permission level',
+  'settings.permissionDesc': 'Confirmation policy before running commands: safe asks on risky ops, ask asks always, read is read-only.',
+  'settings.permSafe': 'safe · ask on risky',
+  'settings.permFull': 'full · allow all',
+  'settings.permAsk': 'ask · ask always',
+  'settings.permRead': 'read · read-only',
+  'settings.plan': 'Plan mode',
+  'settings.planDesc': 'Research and output a plan only, without modifying files.',
+  'settings.lang': 'Language',
+  'settings.langDesc': 'UI language. Applies immediately.',
+  'settings.themeName': 'UI theme',
+  'settings.themeDesc': 'Light / Dark / System (system follows the OS color scheme).',
+  'settings.themeLight': 'Light',
+  'settings.themeDark': 'Dark',
+  'settings.themeSystem': 'System',
+  'settings.modelName': 'Model',
+  'settings.modelDesc': 'Switch the model and reasoning depth.',
+  'settings.cwd': 'Current directory',
+  'settings.browse': 'Browse…',
+  'settings.cfgModel': 'Model to configure',
+  'settings.cfgModelDesc': 'Select the model to edit; fields below follow its config.',
+  'settings.baseURL': 'Endpoint (baseURL)',
+  'settings.baseURLDesc': 'OpenAI-compatible API base URL, e.g. https://api.deepseek.com/v1.',
+  'settings.apiKey': 'API Key',
+  'settings.apiKeyDesc': 'Leave empty to keep the key already saved in the config file.',
+  'settings.save': 'Save',
+  'settings.saved': '✓ Saved to config file',
+  'settings.variants': 'Reasoning levels (variants)',
+  'settings.variantsDesc': 'Comma-separated, e.g. low,medium,high; the model only supports these.',
+  'settings.effortCurrent': 'Current level',
+  'settings.effortCurrentDesc': 'Which level to use by default.',
+  'settings.context': 'Context length',
+  'settings.contextDesc': 'Model context window size (tokens), e.g. 128000.',
+  'settings.version': 'Version',
+  'settings.server': 'Server',
+  'settings.tools': 'Available tools',
+  'modal.rewindTitle': 'Session checkpoints (/rewind)',
+  'modal.inboxTitle': 'Background tasks',
+  'modal.inboxPlaceholder': 'Describe a long task; it runs in a separate session when capacity is free…',
+  'modal.enqueue': 'Enqueue',
+  'modal.dirTitle': 'Choose workspace',
+  'modal.up': 'Up',
+  'modal.cancel': 'Cancel',
+  'modal.select': 'Select this folder',
+  'modal.close': 'Close',
+};
+function t(key, vars) {
+  const lang = state.language === 'en' ? I18N_EN : I18N_ZH;
+  let s = lang[key] || I18N_ZH[key] || key;
+  if (vars) for (const k of Object.keys(vars)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(vars[k]));
+  return s;
+}
+/** 应用语言：<html lang> + 静态 data-i18n 文案 + 动态文案重渲染（状态/composer/详情等） */
+function applyLanguage(lang) {
+  state.language = lang === 'en' ? 'en' : 'zh';
+  document.documentElement.lang = state.language === 'en' ? 'en' : 'zh-CN';
+  document.querySelectorAll('[data-i18n]').forEach((n) => { n.textContent = t(n.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
+  document.querySelectorAll('[data-i18n-title]').forEach((n) => { n.title = t(n.dataset.i18nTitle); });
+  updateStatusText();
+  updateComposer();
+  updateDetails();
+  renderPermissionPop();
+  renderThemeOptions(state.status?.webTheme || getStoredTheme() || 'system');
+  const lg = $('#set-language');
+  if (lg) lg.value = state.language;
+  return state.language;
+}
+
 function setEmptyState(empty) {
   $('#app').classList.toggle('empty-session', empty);
-  $('#input').placeholder = '随心输入';
+  $('#input').placeholder = t('composer.input');
 }
 
 /* ---------------- Markdown 渲染 ---------------- */
@@ -240,7 +551,7 @@ function thinkingBlock(sessionId) {
   const b = makeBlock('thinking', sessionId);
   const wrap = el('div', 'msg');
   const box = el('div', 'thinking running');
-  const head = el('div', 'th-head', '思考中');
+  const head = el('div', 'th-head', t('thinking.running'));
   const body = el('div', 'th-body');
   body.classList.add('hidden');
   head.addEventListener('click', () => {
@@ -257,7 +568,7 @@ function thinkingBlock(sessionId) {
   b.finish = () => {
     box.classList.remove('running');
     if (!b._chars) { wrap.remove(); return; } // 本轮无实际思考：移除预建空模块，不显示「思考 · 0 字符」
-    head.textContent = `思考 · ${b._chars} 字符`;
+    head.textContent = t('thinking.done', { n: b._chars });
     if (!body.classList.contains('hidden')) scrollBottom();
   };
   return b;
@@ -274,7 +585,7 @@ function toolBlock(sessionId, data) {
   const head = el('div', 'tc-head');
   head.appendChild(el('span', 'tc-cmd', data.name || 'tool'));
   const st = el('span', 'tc-state');
-  st.innerHTML = `<span class="spin">${SPIN[0]}</span>${esc(data.argsPreview || '执行中')}`;
+  st.innerHTML = `<span class="spin">${SPIN[0]}</span>${esc(data.argsPreview || t('tool.running'))}`;
   head.appendChild(st);
   const body = el('div', 'tc-body');
   body.classList.add('hidden');
@@ -299,10 +610,10 @@ function toolBlock(sessionId, data) {
   b.result = (r) => {
     card.classList.remove('running');
     const ok = r.ok;
-    st.textContent = ok ? `${r.chars} 字符` : '失败';
+    st.textContent = ok ? t('tool.nchars', { n: r.chars }) : t('tool.failed');
     // 只显示结果预览前几行（与 TUI 一致）；完整结果已回传模型
     const lines = (r.preview || []).slice(0, 12).join('\n');
-    const out = (r.preview && r.preview.length ? lines : ok ? '（无输出）' : r.error || '（无输出）');
+    const out = (r.preview && r.preview.length ? lines : ok ? t('tool.noOutput') : r.error || t('tool.noOutput'));
     b._output = out;
     b._error = !ok;
     body.innerHTML = '';
@@ -336,9 +647,9 @@ function interactionCard(ev) {
   const card = el('div', `interaction-card ${ev.type}`);
   const head = el('div', 'ic-head');
   const isOther = ev.sessionId && ev.sessionId !== state.session;
-  head.textContent = ev.type === 'approval' ? '⚠ 需要审批' : '❓ 向用户提问';
+  head.textContent = ev.type === 'approval' ? t('approval.head') : t('ask.head');
   if (isOther) {
-    head.appendChild(el('span', 'ic-session', `· 来自会话「${sessionLabel(ev.sessionId)}」`));
+    head.appendChild(el('span', 'ic-session', t('approval.fromSession', { name: sessionLabel(ev.sessionId) })));
   }
   const body = el('div', 'ic-body');
 
@@ -348,8 +659,8 @@ function interactionCard(ev) {
     meta.title = '该操作需要你的确认';
     body.appendChild(meta);
     const acts = el('div', 'ic-actions');
-    const allow = el('button', 'primary', '允许执行');
-    const deny = el('button', 'danger', '拒绝');
+    const allow = el('button', 'primary', t('approval.allow'));
+    const deny = el('button', 'danger', t('approval.deny'));
     allow.addEventListener('click', () => resolveInteraction(b.sid, 'approval', b.id, true));
     deny.addEventListener('click', () => resolveInteraction(b.sid, 'approval', b.id, false));
     acts.appendChild(deny); acts.appendChild(allow);
@@ -375,11 +686,11 @@ function interactionCard(ev) {
     body.appendChild(opts);
     const custom = el('div', 'ask-custom');
     const inp = el('input');
-    inp.placeholder = '自定义输入（可选）';
+    inp.placeholder = t('ask.customPlaceholder');
     custom.appendChild(inp);
     const acts = el('div', 'ic-actions ask-actions');
-    const cancel = el('button', '', '取消');
-    const submit = el('button', 'primary', '确认');
+    const cancel = el('button', '', t('ask.cancel'));
+    const submit = el('button', 'primary', t('ask.confirm'));
     cancel.addEventListener('click', () => resolveInteraction(b.sid, 'ask', b.id, null));
     submit.addEventListener('click', () => {
       const choices = [];
@@ -423,7 +734,7 @@ function renderSessionList() {
   const all = filter ? state.sessions.filter((s) => (s.title || s.id).toLowerCase().includes(filter)) : state.sessions;
   $('#session-count').textContent = String(state.sessions.length);
   if (!all.length) {
-    list.appendChild(el('div', 'empty', '暂无会话'));
+    list.appendChild(el('div', 'empty', t('empty.sessions')));
     return;
   }
 
@@ -495,7 +806,7 @@ function renderSessionList() {
       const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       item.appendChild(el('span', 'session-icon', s.id === state.session ? '●' : '○'));
       const copy = el('div', 'session-copy');
-      copy.appendChild(el('div', 'stitle', s.title || '新会话'));
+      copy.appendChild(el('div', 'stitle', s.title || t('session.new')));
       const meta = el('div', 'smeta');
       meta.appendChild(el('span', '', `${s.messages || 0} 条消息`));
       meta.appendChild(el('span', '', ts));
@@ -658,7 +969,7 @@ function renderTaskList() {
     if (t.error) metaBits.push(t.error);
     main.appendChild(el('div', 'task-meta', metaBits.join(' · ')));
     row.appendChild(main);
-    row.appendChild(el('span', 'task-state ' + t.status, t.status === 'pending' ? '排队中' : t.status === 'running' ? '执行中' : t.status === 'done' ? '已完成' : '失败'));
+    row.appendChild(el('span', 'task-state ' + t.status, t.status === 'pending' ? t('task.pending') : t.status === 'running' ? t('task.running') : t.status === 'done' ? t('task.done') : t('task.error')));
     if (t.sessionId) {
       const open = el('button', '', '打开会话');
       open.type = 'button';
@@ -858,7 +1169,7 @@ function updateComposerContext() {
   const bl = $('#ctx-branch-label');
   if (bl) bl.textContent = br || '—';
   const perm = st.permission || 'safe';
-  const map = { full: '完全访问', safe: '帮我批准', ask: '请求批准', read: '只读' };
+  const map = { full: t('perm.full'), safe: t('perm.safe'), ask: t('perm.ask'), read: t('perm.read') };
   const pl = $('#perm-label');
   if (pl) pl.textContent = map[perm] || perm;
   const pill = $('#btn-permission');
@@ -886,17 +1197,17 @@ function renderPermissionPop() {
   if (!pop) return;
   pop.innerHTML = '';
   const head = el('div', 'pp-head');
-  head.appendChild(el('span', '', '应如何批准操作？'));
-  const more = el('a', '', '了解更多');
+  head.appendChild(el('span', '', t('perm.head')));
+  const more = el('a', '', t('perm.more'));
   more.href = 'javascript:void(0)';
   more.addEventListener('click', (e) => { e.preventDefault(); closeAllComposerPops(); openSettings(); });
   head.appendChild(more);
   pop.appendChild(head);
   const list = el('div', 'pp-list');
   const items = [
-    { v: 'ask', title: '请求批准', desc: '编辑外部文件和使用互联网时始终询问', icon: 'i-shield' },
-    { v: 'safe', title: '帮我批准', desc: '仅对检测到的风险操作请求批准', icon: 'i-shield' },
-    { v: 'full', title: '完全访问权限', desc: '可不受限制地访问互联网和你电脑上的任何文件', icon: 'i-shield' },
+    { v: 'ask', title: t('perm.ask'), desc: t('perm.askDesc'), icon: 'i-shield' },
+    { v: 'safe', title: t('perm.safe'), desc: t('perm.safeDesc'), icon: 'i-shield' },
+    { v: 'full', title: t('perm.fullTitle'), desc: t('perm.fullDesc'), icon: 'i-shield' },
   ];
   items.forEach((it) => {
     const btn = el('button', 'pp-item' + (perm === it.v ? ' active' : ''));
@@ -1295,7 +1606,7 @@ async function newSession() {
   state.session = null;
   clearPendingMessages();
   clearMessages();
-  $('#chat-title').textContent = '新会话';
+  $('#chat-title').textContent = t('session.new');
   renderSessionList();
   renderWelcome();
   updateComposer();
@@ -1323,18 +1634,18 @@ function updateStatusText() {
     n.classList.remove('error');
   });
   if (sessionRunning()) {
-    txt.textContent = '运行中…';
+    txt.textContent = t('status.running');
   } else {
-    txt.textContent = state.session ? '就绪' : '选择或新建会话';
+    txt.textContent = state.session ? t('status.ready') : t('status.chooseSession');
   }
 }
 
 /* ---------------- 主题（设置 → 主题 tab：亮色 / 暗色 / 跟随系统） ---------------- */
 const THEME_KEY = 'omni-web-theme';
 const THEME_OPTIONS = [
-  { v: 'light', label: '亮色' },
-  { v: 'dark', label: '暗色' },
-  { v: 'system', label: '跟随系统' },
+  { v: 'light', key: 'settings.themeLight' },
+  { v: 'dark', key: 'settings.themeDark' },
+  { v: 'system', key: 'settings.themeSystem' },
 ];
 function getStoredTheme() {
   try { return localStorage.getItem(THEME_KEY); } catch { return null; }
@@ -1363,7 +1674,7 @@ function renderThemeOptions(cur) {
   if (!box) return;
   box.innerHTML = '';
   THEME_OPTIONS.forEach((o) => {
-    const b = el('button', 'seg-btn' + (o.v === cur ? ' active' : ''), o.label);
+    const b = el('button', 'seg-btn' + (o.v === cur ? ' active' : ''), t(o.key));
     b.type = 'button';
     b.addEventListener('click', () => {
       if (o.v === cur) return;
@@ -1406,6 +1717,7 @@ function refreshStatus() {
     $('#set-permission').value = s.permission || 'safe';
     renderSettingsModel(s);
     fillModelConfigForm(s);
+    applyLanguage(s.language || 'zh');
     // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
     const theme = applyTheme(s.webTheme || 'system');
     storeTheme(theme);
@@ -1424,16 +1736,16 @@ function updateComposer() {
   // 发送/停止合一：空闲 ↑ 发送；本会话运行中变停止按钮（点击取消当前任务）
   const use = send.querySelector('use');
   if (use) use.setAttribute('href', curRun ? '#i-square' : '#i-arrow-up');
-  send.title = curRun ? '停止当前任务' : '发送消息';
+  send.title = curRun ? t('composer.stop') : t('composer.send');
   send.classList.toggle('cancel', curRun);
   send.classList.remove('paused');
   send.disabled = false; // 运行中也保持可点（= 停止按钮）
   if (curRun) {
     note.textContent = state.messageQueue.length
-      ? `运行中 · ⏳ 排队 ${state.messageQueue.length} 条 · Enter 排队 · ⌘/Ctrl+Enter 打断`
-      : '运行中 · Enter 排队 · ⌘/Ctrl+Enter 打断';
-  } else if (state.messageQueue.length) note.textContent = `⏳ 排队中（${state.messageQueue.length}）`;
-  else if (!state.session) note.textContent = '输入消息开始新对话';
+      ? t('composer.runningQueued', { n: state.messageQueue.length })
+      : t('composer.running');
+  } else if (state.messageQueue.length) note.textContent = t('composer.queued', { n: state.messageQueue.length });
+  else if (!state.session) note.textContent = t('composer.newChat');
   else note.textContent = '';
 }
 
@@ -1540,7 +1852,7 @@ function connectSSE() {
   es.onerror = () => {
     $('#status-dot').classList.add('error');
     $('#sidebar-status-dot').classList.add('error');
-    $('#status-text').textContent = '已断开，重连中…';
+    $('#status-text').textContent = t('status.disconnected');
   };
   es.onopen = () => {
     refreshStatus().then(() => {
@@ -1564,6 +1876,7 @@ bus.on('status', (s) => {
   $('#plan-mode').checked = state.planMode;
   const sp = $('#set-plan');
   if (sp) sp.checked = state.planMode;
+  applyLanguage(s.language || 'zh');
   const theme = applyTheme(s.webTheme || 'system');
   storeTheme(theme);
   renderSessionList(); // 运行中绿点随 status 广播实时刷新
@@ -1574,7 +1887,7 @@ bus.on('status', (s) => {
 
 bus.on('session.created', (ev) => {
   if (!state.sessions.find((s) => s.id === ev.id)) {
-    state.sessions.unshift({ id: ev.id, title: ev.title || '新会话', messages: 0, created: Date.now(), updated: Date.now() });
+    state.sessions.unshift({ id: ev.id, title: ev.title || t('session.new'), messages: 0, created: Date.now(), updated: Date.now() });
     renderSessionList();
   }
 });
@@ -1768,7 +2081,7 @@ bus.on('error', (ev) => {
   metaLine(ev.sessionId, [`✗ ${ev.message}`]);
   $('#status-dot').classList.add('error');
   $('#sidebar-status-dot').classList.add('error');
-  $('#status-text').textContent = '请求失败';
+  $('#status-text').textContent = t('status.failed');
 });
 
 bus.on('approval.request', (ev) => {
@@ -1780,9 +2093,9 @@ bus.on('approval.resolved', (ev) => {
   const w = state.waiters.get(key);
   if (w) removeInteractionCard(w);
   if (ev.sessionId === state.session) {
-    metaLine(ev.sessionId, [ev.allow ? '✓ 已允许' : '✗ 已拒绝']);
+    metaLine(ev.sessionId, [ev.allow ? t('approval.allowed') : t('approval.denied')]);
   } else {
-    metaLine(ev.sessionId, [ev.allow ? `✓ 已允许（会话 ${sessionLabel(ev.sessionId)}）` : `✗ 已拒绝（会话 ${sessionLabel(ev.sessionId)}）`]);
+    metaLine(ev.sessionId, [ev.allow ? `${t('approval.allowed')}（${sessionLabel(ev.sessionId)}）` : `${t('approval.denied')}（${sessionLabel(ev.sessionId)}）`]);
   }
 });
 bus.on('ask.request', (ev) => {
@@ -1794,7 +2107,7 @@ bus.on('ask.resolved', (ev) => {
   const w = state.waiters.get(key);
   if (w) removeInteractionCard(w);
   if (ev.sessionId === state.session) {
-    userBlock(ev.sessionId, ev.choices && ev.choices.length ? `（用户选择：${ev.choices.join('、')}）` : '（用户取消）');
+    userBlock(ev.sessionId, ev.choices && ev.choices.length ? t('ask.userChoice', { choices: ev.choices.join('、') }) : t('ask.userCancelled'));
   }
 });
 
@@ -1823,7 +2136,7 @@ bus.on('session.deleted', (ev) => {
     state.session = null;
     clearPendingMessages();
     clearMessages();
-    $('#chat-title').textContent = '新会话';
+    $('#chat-title').textContent = t('session.new');
     renderWelcome();
     updateComposer();
     updateStatusText();
@@ -2026,7 +2339,7 @@ function openCmdPanel(lines) {
   const body = $('#cmd-panel-body');
   body.innerHTML = '';
   if (lines.length === 0) {
-    body.appendChild(el('div', 'cmd-empty', '命令执行完成（无输出）'));
+    body.appendChild(el('div', 'cmd-empty', t('cmd.none')));
   } else {
     const pre = el('pre', 'cmd-output');
     pre.textContent = lines.join('\n');
@@ -2064,7 +2377,7 @@ async function runSlashCommand(cmd) {
   openCmdPanel([]);
   $('#cmd-panel-body').innerHTML = '';
   const loader = el('div', 'cmd-empty');
-  loader.innerHTML = '<span class="spin">' + SPIN[spinIdx % SPIN.length] + '</span> 执行中…';
+  loader.innerHTML = '<span class="spin">' + SPIN[spinIdx % SPIN.length] + '</span> ' + t('cmd.loading');
   $('#cmd-panel-body').appendChild(loader);
   // 发送到后端执行
   try {
@@ -2076,7 +2389,7 @@ async function runSlashCommand(cmd) {
     if (result.lines && result.lines.length > 0) {
       openCmdPanel(result.lines);
     } else {
-      openCmdPanel(['命令已执行。']);
+      openCmdPanel([t('cmd.executed')]);
     }
     // 某些命令改变了状态/会话列表，刷新
     const statusCmds = ['/plan', '/permission', '/variants', '/model', '/clear', '/thinking', '/mcp reconnect'];
@@ -2093,7 +2406,7 @@ async function runSlashCommand(cmd) {
       if (arg) selectSession(arg).catch(() => {});
     }
   } catch (e) {
-    openCmdPanel(['✗ 命令执行失败：' + e.message]);
+    openCmdPanel([t('cmd.failed', { msg: e.message })]);
   }
 }
 
@@ -2194,7 +2507,7 @@ async function doSend(text) {
       const data = await api('/api/sessions', { method: 'POST' });
       state.session = data.id;
       if (!state.sessions.some((s) => s.id === data.id)) {
-        state.sessions.unshift({ id: data.id, title: '新会话', messages: 0, created: Date.now(), updated: Date.now(), project: state.status?.cwd });
+        state.sessions.unshift({ id: data.id, title: t('session.new'), messages: 0, created: Date.now(), updated: Date.now(), project: state.status?.cwd });
       }
       renderSessionList();
     }
@@ -2208,7 +2521,7 @@ async function doSend(text) {
     });
   } catch (e) {
     state.runningSessions.delete(state.session);
-    if (state.session) metaLine(state.session, [`✗ 发送失败：${e.message}`]);
+    if (state.session) metaLine(state.session, [t('send.failed', { msg: e.message })]);
     updateComposer();
     updateStatusText();
   }
@@ -2472,6 +2785,14 @@ $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.tog
 $('#set-permission').addEventListener('change', (e) => {
   applySettings({ permission: e.target.value }).catch((err) => alert(`设置失败：${err.message}`));
 });
+$('#set-language').addEventListener('change', (e) => {
+  applyLanguage(e.target.value);
+  api('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ language: e.target.value }),
+  }).catch((err) => alert(`语言设置失败：${err.message}`));
+});
 /* ---------------- 模型配置表单（设置 → 模型配置 tab） ---------------- */
 function fillModelConfigForm(s) {
   const sel = $('#cfg-model');
@@ -2613,7 +2934,7 @@ $('#messages').addEventListener('click', (e) => {
   try {
     await refreshStatus();
   } catch (e) {
-    $('#status-text').textContent = '无法连接服务器';
+    $('#status-text').textContent = t('status.cantConnect');
   }
   try { state.tasks = await api('/api/tasks'); updateInboxBadge(); } catch { /* ignore */ }
   try {

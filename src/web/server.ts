@@ -98,6 +98,7 @@ import type { ConfigOverrides, OmniConfig } from '../config/index.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
   parseModelAddArgs,
+  persistLanguageToConfig,
   persistModelDefaultToConfig,
   persistModelToConfig,
   persistReasoningEffortToConfig,
@@ -354,6 +355,7 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     reasoningEffortOptions: runOpts.reasoningEffortOptions ?? undefined,
     activeVariant: runOpts.activeVariant ?? undefined,
     webTheme: runOpts.cfg?.webTheme ?? 'system',
+    language: runOpts.cfg?.language ?? 'zh',
     // 1.0 P0-2 多会话并发：running = 是否存在任一运行；runningSessions = 全部运行中的会话 id
     running: runs.size > 0,
     runningSession: [...runs.keys()][0] ?? null,
@@ -1643,6 +1645,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           // 设置面板「主题」tab：运行时应用（buildStatus 下发）+ 持久化到配置文件
           if (runOpts.cfg) runOpts.cfg.webTheme = body.webTheme;
           persistWebThemeToConfig(body.webTheme, cfg);
+        }
+        if (body.language === 'zh' || body.language === 'en') {
+          // 设置面板「通用 → 语言」：运行时应用 + 持久化（与 CLI 的 /settings 语言一致）
+          if (runOpts.cfg) runOpts.cfg.language = body.language;
+          persistLanguageToConfig(body.language, cfg);
         }
         // 设置面板「模型配置」tab：保存所选模型的端点/密钥/级别/上下文到全局配置 + 运行时应用
         if (body.modelConfig && typeof body.modelConfig === 'object') {

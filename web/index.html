@@ -48,21 +48,21 @@
         <span class="brand-name">omni</span>
         <span id="ver" class="build-revision">local</span>
       </button>
-      <button id="btn-sidebar-toggle" class="icon-button toggle-sidebar" type="button" title="收起侧栏" aria-label="收起侧栏"><svg><use href="#i-panel-left"/></svg></button>
+      <button id="btn-sidebar-toggle" class="icon-button toggle-sidebar" type="button" title="收起侧栏" aria-label="收起侧栏" data-i18n-title="sidebar.collapse"><svg><use href="#i-panel-left"/></svg></button>
     </div>
-    <button id="btn-new" class="new-session" type="button"><svg><use href="#i-plus"/></svg><span class="new-session-label">新会话</span></button>
+    <button id="btn-new" class="new-session" type="button"><svg><use href="#i-plus"/></svg><span class="new-session-label" data-i18n="sidebar.new">新会话</span></button>
     <div class="workspace-region">
       <div class="section-header">
-        <span class="section-label">工作区</span><span id="session-count" class="session-count">0</span>
-        <label class="session-search" title="搜索会话"><svg><use href="#i-search"/></svg><input id="session-search" type="search" placeholder="搜索会话" autocomplete="off"></label>
-        <button id="btn-session-add" class="icon-button" type="button" title="添加工作区（浏览…）" aria-label="添加工作区"><svg><use href="#i-plus"/></svg></button>
+        <span class="section-label" data-i18n="sidebar.section">工作区</span><span id="session-count" class="session-count">0</span>
+        <label class="session-search" title="搜索会话" data-i18n-title="sidebar.search"><svg><use href="#i-search"/></svg><input id="session-search" type="search" placeholder="搜索会话" autocomplete="off" data-i18n-placeholder="sidebar.search"></label>
+        <button id="btn-session-add" class="icon-button" type="button" title="添加工作区（浏览…）" aria-label="添加工作区" data-i18n-title="sidebar.addWorkspace"><svg><use href="#i-plus"/></svg></button>
       </div>
       <div id="session-list" class="session-list"></div>
     </div>
     <div class="sidebar-foot">
       <div class="sidebar-foot-row">
-        <button id="btn-inbox" class="settings-button" type="button" title="后台任务收件箱"><svg><use href="#i-doc"/></svg><span>后台任务</span><span id="inbox-count" class="inbox-badge hidden">0</span></button>
-        <button id="btn-settings" class="settings-button" type="button"><svg><use href="#i-settings"/></svg><span>设置</span></button>
+        <button id="btn-inbox" class="settings-button" type="button" title="后台任务收件箱"><svg><use href="#i-doc"/></svg><span data-i18n="sidebar.inbox">后台任务</span><span id="inbox-count" class="inbox-badge hidden">0</span></button>
+        <button id="btn-settings" class="settings-button" type="button"><svg><use href="#i-settings"/></svg><span data-i18n="sidebar.settings">设置</span></button>
       </div>
       <div class="connection-line"><span class="status-dot" id="sidebar-status-dot"></span><span id="cwd" title=""></span></div>
     </div>
@@ -73,35 +73,35 @@
       <div class="title-row">
         <div class="title-cluster">
           <button id="btn-mobile-sidebar" class="icon-button mobile-only" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
-          <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" title="会话操作（分叉/导出/检查点…）">新会话</button></nav>
-          <span class="header-status"><span class="status-dot" id="status-dot"></span><span id="status-text">就绪</span></span>
+          <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" title="会话操作（分叉/导出/检查点…）" data-i18n-title="header.sessionActions">新会话</button></nav>
+          <span class="header-status"><span class="status-dot" id="status-dot"></span><span id="status-text" data-i18n="status.ready">就绪</span></span>
         </div>
         <div class="header-actions">
-          <button id="btn-details" class="icon-button" type="button" title="打开详情" aria-label="打开详情"><svg><use href="#i-panel-right"/></svg></button>
+          <button id="btn-details" class="icon-button" type="button" title="打开详情" aria-label="打开详情" data-i18n-title="header.details"><svg><use href="#i-panel-right"/></svg></button>
         </div>
       </div>
-      <nav class="view-tabs" aria-label="会话视图"><button class="view-tab active" data-view="chat" type="button">对话</button><button class="view-tab" data-view="trajectory" type="button">轨迹</button></nav>
+      <nav class="view-tabs" aria-label="会话视图"><button class="view-tab active" data-view="chat" type="button" data-i18n="header.chatTab">对话</button><button class="view-tab" data-view="trajectory" type="button" data-i18n="header.traceTab">轨迹</button></nav>
     </header>
 
     <div class="scroll-body">
       <section id="messages" class="messages" aria-live="polite"></section>
       <section id="trajectory-view" class="trajectory-view hidden" aria-label="运行轨迹"></section>
       <footer id="composer-wrap" class="composer-wrap">
-        <div class="hero-heading"><img class="hero-fish" src="/icon.png" alt=""><span>探索未至之境</span><span class="preview-badge">预览版</span></div>
-        <div class="hero-workspace"><svg><use href="#i-folder"/></svg><span id="hero-workspace-name">当前工作区</span><svg><use href="#i-chevron-down"/></svg></div>
+        <div class="hero-heading"><img class="hero-fish" src="/icon.png" alt=""><span data-i18n="hero.tagline">探索未至之境</span><span class="preview-badge" data-i18n="hero.preview">预览版</span></div>
+        <div class="hero-workspace"><svg><use href="#i-folder"/></svg><span id="hero-workspace-name" data-i18n="hero.workspace">当前工作区</span><svg><use href="#i-chevron-down"/></svg></div>
         <div class="hero-glow" aria-hidden="true"></div>
         <div id="interaction-stack"></div>
         <div id="composer-context" class="composer-context">
           <div class="ctx-wrap" id="wrap-project">
-            <button id="ctx-project" class="context-chip" type="button" title="切换项目"><svg><use href="#i-folder"/></svg><span id="ctx-project-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <button id="ctx-project" class="context-chip" type="button" title="切换项目" data-i18n-title="composer.project"><svg><use href="#i-folder"/></svg><span id="ctx-project-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
             <div id="project-pop" class="context-pop hidden"></div>
           </div>
           <div class="ctx-wrap" id="wrap-location">
-            <button id="ctx-location" class="context-chip" type="button" title="工作位置"><svg><use href="#i-laptop"/></svg><span>本地</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <button id="ctx-location" class="context-chip" type="button" title="工作位置" data-i18n-title="composer.location"><svg><use href="#i-laptop"/></svg><span>本地</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
             <div id="location-pop" class="context-pop hidden"></div>
           </div>
           <div class="ctx-wrap" id="wrap-branch">
-            <button id="ctx-branch" class="context-chip" type="button" title="切换分支"><svg><use href="#i-branch"/></svg><span id="ctx-branch-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+            <button id="ctx-branch" class="context-chip" type="button" title="切换分支" data-i18n-title="composer.branch"><svg><use href="#i-branch"/></svg><span id="ctx-branch-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
             <div id="branch-pop" class="context-pop hidden"></div>
           </div>
         </div>
@@ -112,15 +112,15 @@
           <div class="composer-row">
             <div class="composer-tools">
               <div class="attach-wrap">
-                <button id="btn-attach" class="attach-button" type="button" title="添加上下文" aria-label="添加上下文"><svg><use href="#i-plus"/></svg></button>
+                <button id="btn-attach" class="attach-button" type="button" title="添加上下文" aria-label="添加上下文" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
                 <div id="add-menu" class="add-menu hidden"></div>
               </div>
-              <button id="btn-permission" class="perm-pill" type="button" title="权限设置"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
-              <label class="plan-toggle hidden"><input type="checkbox" id="plan-mode"><span>计划</span></label>
-              <button id="btn-composer-settings" class="mode-button hidden" type="button" title="运行设置"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
+              <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
+              <label class="plan-toggle hidden"><input type="checkbox" id="plan-mode"><span data-i18n="composer.plan">计划</span></label>
+              <button id="btn-composer-settings" class="mode-button hidden" type="button" title="运行设置" data-i18n-title="composer.settings"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
             </div>
             <div class="composer-trailing">
-              <button id="composer-model" class="model-pill" type="button" title="切换模型与思考级别"><span id="composer-model-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
+              <button id="composer-model" class="model-pill" type="button" title="切换模型与思考级别" data-i18n-title="composer.model"><span id="composer-model-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
               <div id="model-pop" class="model-pop hidden"></div>
               <button id="btn-send" class="send-button" type="button" title="发送消息"><svg><use href="#i-arrow-up"/></svg></button>
             </div>
@@ -144,8 +144,8 @@
 
 <div id="cmd-panel" class="cmd-panel hidden" role="dialog" aria-label="命令输出">
   <div class="cmd-panel-head">
-    <div class="cmd-panel-title">命令输出</div>
-    <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <div class="cmd-panel-title" data-i18n="cmd.title">命令输出</div>
+    <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button>
   </div>
   <div class="cmd-panel-body" id="cmd-panel-body"></div>
 </div>
@@ -153,7 +153,7 @@
 
 <div id="rewind-modal" class="modal hidden" role="dialog" aria-label="会话检查点">
   <div class="modal-card">
-    <div class="modal-head"><h2>会话检查点（/rewind）</h2><button class="icon-button" id="btn-close-rewind" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h2 data-i18n="modal.rewindTitle">会话检查点（/rewind）</h2><button class="icon-button" id="btn-close-rewind" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
     <p class="pane-sub">每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。</p>
     <div id="rewind-list" class="rewind-list"></div>
   </div>
@@ -161,118 +161,125 @@
 
 <div id="inbox-modal" class="modal hidden" role="dialog" aria-label="后台任务">
   <div class="modal-card">
-    <div class="modal-head"><h2>后台任务收件箱</h2><button class="icon-button" id="btn-close-inbox" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
-    <div class="inbox-add"><input id="task-input" type="text" placeholder="长任务描述，空闲容量时自动在独立会话执行…"><button id="btn-task-add" class="primary">入队</button></div>
+    <div class="modal-head"><h2 data-i18n="modal.inboxTitle">后台任务收件箱</h2><button class="icon-button" id="btn-close-inbox" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <div class="inbox-add"><input id="task-input" type="text" placeholder="长任务描述，空闲容量时自动在独立会话执行…" data-i18n-placeholder="modal.inboxPlaceholder"><button id="btn-task-add" class="primary" data-i18n="modal.enqueue">入队</button></div>
     <div id="task-list" class="task-list"></div>
   </div>
 </div>
 
 <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
   <div class="modal-card settings-card">
-    <div class="modal-head"><h2 id="settings-title">设置</h2><button class="icon-button" id="btn-close-settings" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h2 id="settings-title" data-i18n="sidebar.settings">设置</h2><button class="icon-button" id="btn-close-settings" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分类">
-        <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span>通用</span></button>
-        <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span>主题</span></button>
-        <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span>模型</span></button>
-        <button class="settings-nav-item" type="button" data-pane="workspace"><svg><use href="#i-folder"/></svg><span>工作区</span></button>
-        <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span>模型配置</span></button>
-        <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
+        <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span data-i18n="settings.general">通用</span></button>
+        <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
+        <button class="settings-nav-item" type="button" data-pane="model"><svg><use href="#i-cpu"/></svg><span data-i18n="settings.model">模型</span></button>
+        <button class="settings-nav-item" type="button" data-pane="workspace"><svg><use href="#i-folder"/></svg><span data-i18n="settings.workspace">工作区</span></button>
+        <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
+        <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
       <div class="settings-content">
         <section class="settings-pane active" data-pane="general">
-          <h3 class="settings-pane-title">通用</h3>
-          <p class="settings-pane-sub">会话运行的基础行为。</p>
+          <h3 class="settings-pane-title" data-i18n="settings.general">通用</h3>
+          <p class="settings-pane-sub" data-i18n="settings.generalSub">会话运行的基础行为。</p>
           <div class="settings-group">
             <div class="setting-row">
-              <div class="setting-info"><h4>权限级别</h4><p>控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。</p></div>
-              <select id="set-permission" class="setting-control"><option value="safe">safe · 危险操作询问</option><option value="full">full · 全量直通</option><option value="ask">ask · 全部询问</option><option value="read">read · 只读</option></select>
+              <div class="setting-info"><h4 data-i18n="settings.permission">权限级别</h4><p data-i18n="settings.permissionDesc">控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。</p></div>
+              <select id="set-permission" class="setting-control"><option value="safe" data-i18n="settings.permSafe">safe · 危险操作询问</option><option value="full" data-i18n="settings.permFull">full · 全量直通</option><option value="ask" data-i18n="settings.permAsk">ask · 全部询问</option><option value="read" data-i18n="settings.permRead">read · 只读</option></select>
             </div>
             <div class="setting-row">
-              <div class="setting-info"><h4>计划模式</h4><p>只调研并输出实施计划，不直接修改文件。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.plan">计划模式</h4><p data-i18n="settings.planDesc">只调研并输出实施计划，不直接修改文件。</p></div>
               <input type="checkbox" id="set-plan" class="toggle-switch" aria-label="计划模式">
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4 data-i18n="settings.lang">语言</h4><p data-i18n="settings.langDesc">界面显示语言，保存后立即生效。</p></div>
+              <select id="set-language" class="setting-control">
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
             </div>
           </div>
         </section>
 
         <section class="settings-pane" data-pane="theme">
-          <h3 class="settings-pane-title">主题</h3>
-          <p class="settings-pane-sub">界面配色方案，选择后立即生效并保存。</p>
+          <h3 class="settings-pane-title" data-i18n="settings.theme">主题</h3>
+          <p class="settings-pane-sub" data-i18n="settings.themeSub">界面配色方案，选择后立即生效并保存。</p>
           <div class="settings-group">
             <div class="setting-row col">
-              <div class="setting-info"><h4>界面主题</h4><p>亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.themeName">界面主题</h4><p data-i18n="settings.themeDesc">亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。</p></div>
               <div id="theme-options" class="seg-group"></div>
             </div>
           </div>
         </section>
 
         <section class="settings-pane" data-pane="model">
-          <h3 class="settings-pane-title">模型</h3>
-          <p class="settings-pane-sub">切换对话使用的模型与思考深度。</p>
+          <h3 class="settings-pane-title" data-i18n="settings.model">模型</h3>
+          <p class="settings-pane-sub" data-i18n="settings.modelSub">切换对话使用的模型与思考深度。</p>
           <div class="settings-group">
             <div class="setting-row">
-              <div class="setting-info"><h4>模型</h4><p id="set-model-desc"></p></div>
+              <div class="setting-info"><h4 data-i18n="settings.modelName">模型</h4><p id="set-model-desc"></p></div>
               <select id="set-model" class="setting-control"></select>
             </div>
             <div class="setting-row col">
-              <div class="setting-info"><h4>思考级别</h4><p>越高推理越深、响应越慢；可选项由模型配置决定。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.variants">思考级别</h4><p>越高推理越深、响应越慢；可选项由模型配置决定。</p></div>
               <div id="set-efforts" class="seg-group"></div>
             </div>
           </div>
         </section>
 
         <section class="settings-pane" data-pane="workspace">
-          <h3 class="settings-pane-title">工作区</h3>
-          <p class="settings-pane-sub">智能体读写文件、执行命令所用的根目录。</p>
+          <h3 class="settings-pane-title" data-i18n="settings.workspace">工作区</h3>
+          <p class="settings-pane-sub" data-i18n="settings.workspaceSub">智能体读写文件、执行命令所用的根目录。</p>
           <div class="settings-group">
             <div class="setting-row">
-              <div class="setting-info"><h4>当前目录</h4><p><code id="ws-cwd"></code></p></div>
-              <button id="btn-browse-workspace" class="secondary-button" type="button">切换…</button>
+              <div class="setting-info"><h4 data-i18n="settings.cwd">当前目录</h4><p><code id="ws-cwd"></code></p></div>
+              <button id="btn-browse-workspace" class="secondary-button" type="button" data-i18n="settings.browse">切换…</button>
             </div>
           </div>
         </section>
 
         <section class="settings-pane" data-pane="apikey">
-          <h3 class="settings-pane-title">模型配置</h3>
-          <p class="settings-pane-sub">配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。</p>
+          <h3 class="settings-pane-title" data-i18n="settings.apikey">模型配置</h3>
+          <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。</p>
           <div class="settings-group">
             <div class="setting-row">
-              <div class="setting-info"><h4>配置的模型</h4><p>选择要编辑的模型，切换后下方字段同步为该模型的配置。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.cfgModel">配置的模型</h4><p data-i18n="settings.cfgModelDesc">选择要编辑的模型，切换后下方字段同步为该模型的配置。</p></div>
               <select id="cfg-model" class="setting-control"></select>
             </div>
             <div class="setting-row col">
-              <div class="setting-info"><h4>端点（baseURL）</h4><p>OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.baseURL">端点（baseURL）</h4><p data-i18n="settings.baseURLDesc">OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
               <input type="text" id="cfg-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
             </div>
             <div class="setting-row col">
-              <div class="setting-info"><h4>API Key</h4><p>留空表示沿用配置文件中已保存的密钥。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.apiKey">API Key</h4><p data-i18n="settings.apiKeyDesc">留空表示沿用配置文件中已保存的密钥。</p></div>
               <div class="apikey-row">
                 <input type="password" id="set-apikey" placeholder="sk-…" autocomplete="off">
-                <button id="btn-save-model" class="primary-button" type="button">保存</button>
+                <button id="btn-save-model" class="primary-button" type="button" data-i18n="settings.save">保存</button>
               </div>
-              <p id="model-save-note" class="save-note hidden">✓ 已保存到配置文件</p>
+              <p id="model-save-note" class="save-note hidden" data-i18n="settings.saved">✓ 已保存到配置文件</p>
             </div>
             <div class="setting-row col">
-              <div class="setting-info"><h4>思考级别选项（variants）</h4><p>逗号分隔，如 <code>low,medium,high</code>；模型只支持这些级别。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.variants">思考级别选项（variants）</h4><p data-i18n="settings.variantsDesc">逗号分隔，如 <code>low,medium,high</code>；模型只支持这些级别。</p></div>
               <input type="text" id="cfg-efforts" class="cfg-text" placeholder="low,medium,high" autocomplete="off" spellcheck="false">
             </div>
             <div class="setting-row">
-              <div class="setting-info"><h4>当前思考级别</h4><p>默认使用哪一个级别。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.effortCurrent">当前思考级别</h4><p data-i18n="settings.effortCurrentDesc">默认使用哪一个级别。</p></div>
               <select id="cfg-effort-current" class="setting-control"></select>
             </div>
             <div class="setting-row">
-              <div class="setting-info"><h4>上下文长度（context）</h4><p>模型的上下文窗口大小（token 数），如 <code>128000</code>。</p></div>
+              <div class="setting-info"><h4 data-i18n="settings.context">上下文长度（context）</h4><p data-i18n="settings.contextDesc">模型的上下文窗口大小（token 数），如 <code>128000</code>。</p></div>
               <input type="number" id="cfg-context" class="setting-control" style="width:160px" placeholder="128000" min="0" step="1000">
             </div>
           </div>
         </section>
 
         <section class="settings-pane" data-pane="about">
-          <h3 class="settings-pane-title">关于</h3>
+          <h3 class="settings-pane-title" data-i18n="settings.about">关于</h3>
           <div class="settings-group">
-            <div class="setting-row"><div class="setting-info"><h4>版本</h4></div><code id="about-version" class="mono-value"></code></div>
-            <div class="setting-row"><div class="setting-info"><h4>服务地址</h4></div><code id="about-server" class="mono-value"></code></div>
-            <div class="setting-row"><div class="setting-info"><h4>可用工具</h4><p id="about-tools" class="tools-list"></p></div></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.version">版本</h4></div><code id="about-version" class="mono-value"></code></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.server">服务地址</h4></div><code id="about-server" class="mono-value"></code></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.tools">可用工具</h4><p id="about-tools" class="tools-list"></p></div></div>
           </div>
         </section>
       </div>
@@ -281,15 +288,15 @@
 </div>
 <div id="dirpicker-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dirpicker-title">
   <div class="modal-card">
-    <div class="modal-head"><h2 id="dirpicker-title">选择工作目录</h2><button class="icon-button" id="btn-close-dirpicker" type="button" title="关闭" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h2 id="dirpicker-title" data-i18n="modal.dirTitle">选择工作目录</h2><button class="icon-button" id="btn-close-dirpicker" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       <div class="dirpicker-path"><code id="dirpicker-current"></code></div>
       <div class="dir-list" id="dirpicker-list"></div>
       <div class="dirpicker-actions">
-        <button class="secondary-button" id="btn-dir-up" type="button">上级</button>
+        <button class="secondary-button" id="btn-dir-up" type="button" data-i18n="modal.up">上级</button>
         <span class="dirpicker-spacer"></span>
-        <button class="secondary-button" id="btn-dir-cancel" type="button">取消</button>
-        <button class="primary-button" id="btn-dir-select" type="button">选择此目录</button>
+        <button class="secondary-button" id="btn-dir-cancel" type="button" data-i18n="modal.cancel">取消</button>
+        <button class="primary-button" id="btn-dir-select" type="button" data-i18n="modal.select">选择此目录</button>
       </div>
     </div>
   </div>
