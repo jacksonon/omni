@@ -25,11 +25,9 @@ const state = {
   waiters: new Map(),   // interactionId -> { sessionId, type(approval|ask), el }
   inFlight: 0,          // 本轮未完成的请求计数（跑完才印统计行）
   turnTokens: { prompt: 0, completion: 0, cached: 0 },
-  detailsOpen: false,
   sessionFilter: '',
   trace: [],
   view: 'chat',
-  selectedTool: null,
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
@@ -592,10 +590,6 @@ function toolBlock(sessionId, data) {
   head.addEventListener('click', () => {
     document.querySelectorAll('.tool-card.selected').forEach((node) => node.classList.remove('selected'));
     card.classList.add('selected');
-    state.selectedTool = b;
-    state.detailsOpen = true;
-    $('#app').classList.add('details-open');
-    updateDetails();
     if (!card.classList.contains('running')) body.classList.toggle('hidden');
     scrollBottom();
   });
@@ -619,7 +613,6 @@ function toolBlock(sessionId, data) {
     body.innerHTML = '';
     body.appendChild(el('div', 'tc-output', out));
     body.classList.add('hidden');
-    if (state.selectedTool === b) updateDetails();
   };
   return b;
 }
@@ -1125,7 +1118,6 @@ function clearMessages() {
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
   state.inFlight = 0;
   state.trace = [];
-  state.selectedTool = null;
   updateDetails();
 }
 
@@ -1142,20 +1134,9 @@ function renderWelcome() {
 
 function updateDetails() {
   const st = state.status || {};
-  // 模型名 + 思考级别（未设置级别只显示模型名）；写进 label span，保留 chevron svg
   const eff = st.reasoningEffort;
   $('#composer-model-label').textContent = st.model ? (eff ? `${st.model} · ${eff}` : st.model) : '—';
   $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
-  const selected = state.selectedTool;
-  $('#details-title').textContent = selected?._data?.name || '详情';
-  $('#details-empty').classList.toggle('hidden', !!selected);
-  $('#details-input-section').classList.toggle('hidden', !selected);
-  $('#details-output-section').classList.toggle('hidden', !selected);
-  if (selected) {
-    $('#details-input').textContent = selected._input || '（无输入）';
-    $('#details-output').textContent = selected._output || '运行中…';
-    $('#details-output').classList.toggle('error', !!selected._error);
-  }
   updatePermissionPill();
 }
 
@@ -2270,10 +2251,6 @@ document.addEventListener('keydown', (e) => {
     else if (cmdPalette && !cmdPalette.classList.contains('hidden')) cmdPalette.classList.add('hidden');
     else if (mentionPop && !mentionPop.classList.contains('hidden')) mentionPop.classList.add('hidden');
     else if ($('#app').classList.contains('sidebar-open')) $('#app').classList.remove('sidebar-open');
-    else if (state.detailsOpen) {
-      state.detailsOpen = false;
-      $('#app').classList.remove('details-open');
-    }
   }
 });
 
@@ -2524,15 +2501,6 @@ $('#session-search').addEventListener('input', (e) => {
   renderSessionList();
 });
 document.querySelectorAll('.view-tab').forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
-$('#btn-details').addEventListener('click', () => {
-  state.detailsOpen = !state.detailsOpen;
-  $('#app').classList.toggle('details-open', state.detailsOpen);
-  updateDetails();
-});
-$('#btn-close-details').addEventListener('click', () => {
-  state.detailsOpen = false;
-  $('#app').classList.remove('details-open');
-});
 $('#btn-sidebar-toggle').addEventListener('click', () => {
   $('#app').classList.toggle('sidebar-collapsed');
 });
