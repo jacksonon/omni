@@ -225,11 +225,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .settings-button svg { width: 16px; height: 16px; color: var(--text-secondary); }
 .status-dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-caption); }
 .status-dot.ready { background: var(--green); }
-.status-dot.running { background: var(--blue); animation: pulse 1.3s ease-in-out infinite; }
 .status-dot.error { background: var(--red); }
-/* 顶部标题右侧连接状态点（绿=已连接 / 红=断开；hover 显示工作区路径） */
+/* 左侧栏版本号右侧连接状态点（绿=已连接 / 红=断开；hover 显示工作区路径） */
 .top-status-dot { width: 8px; height: 8px; margin-left: 1px; cursor: default; }
-@keyframes pulse { 50% { opacity: .35; } }
 
 /* Sidebar rail. */
 .sidebar-collapsed .sidebar { padding: 18px 10px 6px; }
@@ -256,8 +254,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .crumb { max-width: min(520px, 50vw); padding: 4px 8px; overflow: hidden; border: 0; border-radius: 12px; background: transparent; font-size: 14px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
 .current-crumb { color: var(--text); font-weight: 500; }
-.header-status { display: inline-flex; align-items: center; gap: 6px; color: var(--text-caption); font-size: 12px; }
-.header-status .status-dot { width: 6px; height: 6px; }
 .header-actions { display: flex; align-items: center; gap: 8px; margin-left: 20px; }
 .model-button { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 500; cursor: pointer; }
 .model-button:hover { background: var(--surface-hover); }
@@ -628,7 +624,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .conversation-shell { width: 100%; min-width: 0; }
   .mobile-only { display: inline-grid; }
   .conversation-header { padding: 10px 12px 0; }
-  .header-status { display: none; }
   .header-actions { margin-left: 8px; }
   .model-button { max-width: 132px; }
   .messages { padding-inline: 16px; }
@@ -906,16 +901,6 @@ body.cmd-open::before {
 }
 .dir-item:hover {
   padding-left: 16px;
-}
-
-/* ---- 连接状态点呼吸动画增强 ---- */
-.status-dot.running {
-  animation: pulse 1.3s ease-in-out infinite;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 50%, transparent);
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .35; box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 0%, transparent); }
 }
 
 /* ---- 代码块滚动条美化 ---- */
@@ -1363,15 +1348,6 @@ body.cmd-open::before {
   from { opacity: 0; transform: translateX(8px); }
 }
 
-/* ---- 状态点：ChatGPT 风格呼吸光环 ---- */
-.status-dot.running {
-  animation: dot-breathe 1.5s ease-in-out infinite;
-}
-@keyframes dot-breathe {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 40%, transparent); }
-  50% { opacity: .5; box-shadow: 0 0 0 5px color-mix(in srgb, var(--blue) 0%, transparent); }
-}
-
 /* ---- 空态 hero 光晕呼吸 ---- */
 .empty-session .hero-glow {
   animation: glow-breathe 4s ease-in-out infinite;
@@ -1472,5 +1448,4 @@ body.cmd-open::before {
 .rewind-main { flex: 1; min-width: 0; }
 .rewind-msg { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rewind-meta { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 .pane-sub { color: var(--text-dim); font-size: 12px; margin-top: -6px; }

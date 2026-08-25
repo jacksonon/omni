@@ -121,13 +121,6 @@ const I18N_ZH = {
   'perm.safeDesc': '仅对检测到的风险操作请求批准',
   'perm.fullDesc': '可不受限制地访问互联网和你电脑上的任何文件',
   'perm.fullTitle': '完全访问权限',
-  // 状态
-  'status.ready': '就绪',
-  'status.running': '运行中…',
-  'status.chooseSession': '选择或新建会话',
-  'status.disconnected': '已断开，重连中…',
-  'status.failed': '请求失败',
-  'status.cantConnect': '无法连接服务器',
   // 审批 / 提问
   'approval.head': '⚠ 需要审批',
   'approval.allow': '允许执行',
@@ -270,12 +263,6 @@ const I18N_EN = {
   'perm.safeDesc': 'Ask only for detected risky actions',
   'perm.fullDesc': 'Unrestricted access to the internet and any file on your computer',
   'perm.fullTitle': 'Full access',
-  'status.ready': 'Ready',
-  'status.running': 'Running…',
-  'status.chooseSession': 'Select or create a session',
-  'status.disconnected': 'Disconnected, reconnecting…',
-  'status.failed': 'Request failed',
-  'status.cantConnect': 'Cannot connect to server',
   'approval.head': '⚠ Approval required',
   'approval.allow': 'Allow',
   'approval.deny': 'Deny',
@@ -1469,22 +1456,11 @@ function anyRunning() {
   return state.runningSessions.size > 0;
 }
 function updateStatusText() {
-  const dot = $('#status-dot');
-  const txt = $('#status-text');
-  const hasRunning = anyRunning();
-  dot.classList.toggle('running', hasRunning);
-  dot.classList.toggle('ready', !hasRunning && !!state.status);
-  dot.classList.remove('error');
-  // 顶部连接点：只表达「已连接=绿 / 断开=红」（运行态由 header 状态点表达）
+  // 对话页标题右侧状态提示已移除——连接状态统一由左侧栏版本号右侧的 top-status-dot 表达
   const topDot = $('#top-status-dot');
   if (topDot) {
     topDot.classList.toggle('ready', !!state.status);
     topDot.classList.remove('error');
-  }
-  if (sessionRunning()) {
-    txt.textContent = t('status.running');
-  } else {
-    txt.textContent = state.session ? t('status.ready') : t('status.chooseSession');
   }
 }
 
@@ -1817,10 +1793,8 @@ function connectSSE() {
     'workspace.changed', 'session.deleted',
   ].forEach(on);
   es.onerror = () => {
-    $('#status-dot').classList.add('error');
     const topDot = $('#top-status-dot');
     if (topDot) topDot.classList.add('error');
-    $('#status-text').textContent = t('status.disconnected');
   };
   es.onopen = () => {
     refreshStatus().then(() => {
@@ -2073,10 +2047,8 @@ bus.on('hook.output', (ev) => {
 bus.on('error', (ev) => {
   if (ev.sessionId !== state.session) return;
   metaLine(ev.sessionId, [`✗ ${ev.model ? `[${ev.model}] ` : ''}${ev.message}`]);
-  $('#status-dot').classList.add('error');
   const topDot = $('#top-status-dot');
   if (topDot) topDot.classList.add('error');
-  $('#status-text').textContent = t('status.failed');
   // 错误已知即停（不等 run.end）：立即收尾 thinking/回答块 + 复位发送按钮与 placeholder，
   // 避免「错误已显示但 spinner/圆环还在转」的中间态（慢持久化时 error 与 run.end 有间隙）
   state.runningSessions.delete(ev.sessionId);
@@ -3131,7 +3103,7 @@ $('#messages').addEventListener('click', (e) => {
   try {
     await refreshStatus();
   } catch (e) {
-    $('#status-text').textContent = t('status.cantConnect');
+    // 连接失败：左侧栏 top-status-dot 由 SSE onerror 标红，此处静默
   }
   try {
     state.sessions = await api('/api/sessions');
