@@ -122,22 +122,47 @@
   // "architect": "gpt-5",
   // "editor": "gpt-5-mini",
 
-  // 多模型端点（/model 命令切换）：不同模型可配不同 baseURL/apiKey/userAgent；
-  // 缺省字段回退到顶层对应字段；顶层 model 总是可用（默认模型）
+  // 多模型端点（/model 命令切换）：两种写法等价，加载期都会合并成扁平 models 表——
+  //   A) providers 分组（推荐，1.0）：一个网关挂多个模型，baseURL/apiKey 只写一次
+  //      providers."<网关名>".{ baseURL, apiKey, userAgent?, headers?, models: { 模型名: { … } } }
+  //      ——模型条目缺省字段回退网关、再回退顶层；模型名带 / 或与扁平 models 同名时改挂
+  //      "<网关>/<模型>"，apiModel 缺省 = 模型名。
+  //   B) 扁平 models：{ 模型名: { baseURL?, apiKey?, userAgent?, headers?, … } }，缺省字段回退顶层；
+  //      顶层 model 总是可用（默认模型）。两者同时存在时扁平 models 会被 providers 展开替换。
   // 也可以在交互模式用 /model add <名称> [--base-url] [--api-key] [--user-agent] 运行时添加并持久化
   // （自动写入配置文件 models 字段；带注释的 JSONC 文件不自动改，需手动添加）
   // **per-model variants**：每个模型可配自己的思考级别——reasoningEffortOptions（该模型
   // /variants 面板支持的选项）与 reasoningEffort（该模型的当前思考级别），两者缺省回退顶层
   // 同名字段（只配端点的模型自动继承全局）；/model 切换到该模型时自动带出，/variants 切换
   // 会持久化到 models."<模型名>".reasoningEffort（仅该模型生效，其他模型不受影响）
-  // 示例（智谱 + Moonshot 两个端点，glm 专属级别 low/high）:
+  // **命名 variants（1.0）**：模型条目可加 variants 表——{ id: { description?, reasoningEffort?,
+  //   body?, headers? } }，每个 id 是**请求叠加层**（与请求体 deep-merge）；当前选中项记在
+  //   variant 字段；/variants 面板列出思考级别 + 命名 variants，选中命名项即叠加生效并持久化
+  //   models."<模型名>".variant。apiModel = 发给 API 的真实模型名（目录友好名 ≠ API 名，/model
+  //   按别名也能切换）；displayName = 面板显示名；limit/modalities/capabilities = 元数据。
+  // 示例（一个网关挂两个模型，mimo 带专属级别 + 命名 variants + apiModel 别名）:
+  // "providers": {
+  //   "opencode": {
+  //     "baseURL": "https://opencode.ai/zen/go/v1",
+  //     "apiKey": "{env:ZEN_KEY}",
+  //     "models": {
+  //       "mimo-v2.5": {
+  //         "reasoningEffortOptions": ["low", "medium", "high", "xhigh"],
+  //         "reasoningEffort": "high",
+  //         "variants": {
+  //           "fast": { "description": "低思考快速", "reasoningEffort": "low" },
+  //           "deep": { "description": "深度推理", "reasoningEffort": "xhigh", "body": { "temperature": 0.2 } }
+  //         },
+  //         "variant": "deep"
+  //       },
+  //       "muse-spark-1.2-contributor": { "reasoningEffort": "xhigh" }
+  //     }
+  //   }
+  // }
+  // 扁平等价写法（向后兼容；含专属级别）:
   // "models": {
-  //   "glm-4-flash": {
-  //     "baseURL": "https://open.bigmodel.cn/api/paas/v4",
-  //     "apiKey": "sk-glm",
-  //     "reasoningEffortOptions": ["low", "high"],
-  //     "reasoningEffort": "high"
-  //   },
+  //   "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm",
+  //     "reasoningEffortOptions": ["low", "high"], "reasoningEffort": "high" },
   //   "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1", "apiKey": "sk-moonshot" }
   // }
 

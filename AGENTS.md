@@ -98,6 +98,10 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "models": {                         // 多模型端点（/model 切换）：{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffortOptions?, reasoningEffort? } }，缺省字段回退顶层；
                                       //   per-model variants：reasoningEffortOptions = 该模型 /variants 面板支持的思考级别选项、reasoningEffort = 当前级别——缺省回退顶层同名字段；
                                       //   /model 切换到该模型自动带出（面板/请求同步），/variants 切换持久化到 models."<名>".reasoningEffort（仅该模型生效）
+                                      //   命名 variants（1.0）：variants = { id: { description?, reasoningEffort?, body?, headers? } } 请求叠加层，variant = 当前选中 id；/variants 面板同时列出思考级别和命名 variants
+                                      //   apiModel = 发给 API 的真实模型名（目录友好名 ≠ API 名），displayName = 面板显示名，limit/modalities/capabilities = 元数据
+                                      //   providers 分组（1.0，推荐）：一个网关挂多模型，baseURL/apiKey 只写一次——加载期合并进扁平 models 表（向后兼容）
+                                      //   "providers": { "bigmodel": { "baseURL": "…", "apiKey": "…", "models": { "glm-4-flash": { … } } } }
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" }
   },
   "mcpServers": {                         // MCP 外部工具（可选）：{ 名称: { command, args?, env? } | { url, headers? }；enabledTools?/disabledTools? 白黑名单；defaultToolsApprovalMode? = auto|prompt|writes|approve }
