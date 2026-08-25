@@ -2015,13 +2015,16 @@ bus.on('run.end', async (ev) => {
   state.inFlight = 0;
   refreshSessions().then(updateDetails);
 
-  // 消费 steer（优先）→ queue → 下一轮自动发送
-  const next = state.steerText || (state.messageQueue.length ? state.messageQueue.shift() : null);
+  // 消费 steer（优先）→ queue → 下一轮自动发送；仅「成功完成」的轮次自动续发——
+  // 出错/取消/超步数后不自动消费队列（避免同一 500 连环触发），留待用户手动重试
+  const canAuto = ev.reason === 'completed';
+  const next = canAuto ? (state.steerText || (state.messageQueue.length ? state.messageQueue.shift() : null)) : null;
   if (next) {
     state.steerText = null;
     renderQueueList();
     doSend(next);
   } else {
+    if (canAuto && state.steerText) state.steerText = null; // 成功完成：steer 已插入本轮，清槽
     renderQueueList();
     updateComposer();
     updateStatusText();
@@ -2058,11 +2061,20 @@ bus.on('hook.output', (ev) => {
 
 bus.on('error', (ev) => {
   if (ev.sessionId !== state.session) return;
-  metaLine(ev.sessionId, [`✗ ${ev.message}`]);
+  metaLine(ev.sessionId, [`✗ ${ev.model ? `[${ev.model}] ` : ''}${ev.message}`]);
   $('#status-dot').classList.add('error');
   const topDot = $('#top-status-dot');
   if (topDot) topDot.classList.add('error');
   $('#status-text').textContent = t('status.failed');
+  // 错误已知即停（不等 run.end）：立即收尾 thinking/回答块 + 复位发送按钮与 placeholder，
+  // 避免「错误已显示但 spinner/圆环还在转」的中间态（慢持久化时 error 与 run.end 有间隙）
+  state.runningSessions.delete(ev.sessionId);
+  state._localRunning.delete(ev.sessionId);
+  if (currentThinking) { currentThinking.finish(); currentThinking = null; }
+  if (currentAssistant) { currentAssistant.stopCursor(); currentAssistant = null; }
+  currentTools.clear();
+  stopRunRing();
+  updateComposer();
 });
 
 bus.on('approval.request', (ev) => {

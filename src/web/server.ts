@@ -482,7 +482,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       ro.abortSignal = newController.signal;
     };
 
-    const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true);
+    const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, runOpts.modelRuntime?.model);
     currentOutput = output;
 
     // 广播运行状态（客户端据此按会话显示取消按钮 / 其它会话可继续发送）

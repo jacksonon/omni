@@ -53,6 +53,8 @@ export class WebOutput implements Output {
     private readonly pending: PendingRegistry,
     /** /thinking 可见性门控：返回 false 时 start/write 不广播事件（不展示思考流） */
     private readonly isThinkingVisible: () => boolean = () => true,
+    /** 当前模型名（错误事件附带，便于定位是哪个端点失败） */
+    private readonly model?: string,
   ) {
     this.thinking = this.makeThinking();
   }
@@ -138,6 +140,7 @@ export class WebOutput implements Output {
   onRequestFailed(err: unknown): void {
     this.announce('error', {
       message: err instanceof Error ? err.message : String(err),
+      ...(this.model ? { model: this.model } : {}),
     });
   }
 

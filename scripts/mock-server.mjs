@@ -29,6 +29,8 @@ let curDangerous = MOCK_DANGEROUS;
 let curAsk = MOCK_ASK;
 let curMultiread = MOCK_MULTIREAD;
 let curSubagent = MOCK_SUBAGENT;
+// curStatus500：所有 chat 请求返回 500（复现「对话中 500 错误是否停止」）
+let curStatus500 = process.env.MOCK_500 === '1';
 // curSlow：第一轮工具调用 chunk 前延迟 2s（web 服务取消运行 e2e 用——让 run 停在流中可被 abort）
 let curSlow = process.env.MOCK_SLOW_TOOL === '1';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,6 +70,7 @@ const server = http.createServer((req, res) => {
         if (typeof cfg.multiread === 'boolean') curMultiread = cfg.multiread;
         if (typeof cfg.subagent === 'boolean') curSubagent = cfg.subagent;
         if (typeof cfg.slow === 'boolean') curSlow = cfg.slow;
+        if (typeof cfg.status500 === 'boolean') curStatus500 = cfg.status500;
       } catch {
         /* ignore malformed config */
       }
@@ -81,6 +84,12 @@ const server = http.createServer((req, res) => {
   const isChat = req.url?.endsWith('/chat/completions') ?? false;
   if (req.method !== 'POST' || !isChat) {
     res.writeHead(404).end();
+    return;
+  }
+  // MOCK_500=1 / /__mock/config {status500:true}：chat 请求直接返回 500（复现错误处理）
+  if (curStatus500) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'mock 500 测试（server_error）', type: 'server_error' } }));
     return;
   }
 
