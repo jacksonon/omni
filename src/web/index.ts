@@ -100,7 +100,18 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
     }
   }
 
-  const ctx = prepareRun(overrides);
+  // prepareRun：无 API Key 时降级启动（allowMissingKey 占位）——桌面应用首次安装
+  // 没有任何配置，若这里抛错整个后端起不来，用户永远到不了设置面板填 Key。
+  // 占位 Key 只在真正发请求时才失败（聊天里会看到鉴权错误），填好 Key 即恢复。
+  let ctx: ReturnType<typeof prepareRun>;
+  let missingKey = false;
+  try {
+    ctx = prepareRun(overrides);
+  } catch (err) {
+    if (!(err instanceof Error && err.message.startsWith('未找到 API Key'))) throw err;
+    ctx = prepareRun(overrides, { allowMissingKey: true });
+    missingKey = true;
+  }
   // attachRuntime：安全护栏 + 动态工具链 + 上下文选项；审批/提问经 routingOutput
   // 路由到当前运行会话的 WebOutput；hook 输出/子代理事件转发到 SSE
   // 工作区信任：web 不弹审批（SSE 时序依赖浏览器连接），直接按信任清单判定——未信任只读
@@ -108,6 +119,12 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
   await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output, { trust: trusted });
   if (!trusted) {
     console.log(`  ⚠️ 当前工作目录未受信任——以只读模式运行（/mcp 等写操作被拒绝；信任目录：omni 交互模式 / CLI 首次进入时批准）`);
+  }
+  if (missingKey) {
+    // 注意措辞：Ollama / LM Studio 等本地网关不校验 Key（占位 Key 直接可用），
+    // 不能吓唬用户「会失败」——只有云端网关才真的需要填
+    console.log(`  ⚠️ 未配置 API Key：云端网关请在页面「设置」→「模型配置」填写后对话；`);
+    console.log(`     Ollama / LM Studio 等本地服务无需 Key，可直接使用。`);
   }
 
   const server = await startWebService({ ctx, host: parsed.host, port: parsed.port, overrides });

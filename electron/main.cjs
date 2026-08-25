@@ -28,10 +28,57 @@ const WEB_PORT = process.env.OMNI_WEB_PORT ? Number(process.env.OMNI_WEB_PORT) :
 let mainWindow = null;
 let serverProc = null;
 let serverPort = null; // 当前后端端口（菜单选目录走 REST 切换用）
-// 从 Finder/Dock 启动时 process.cwd() 是 "/"——会话会被记到根目录且 AGENTS.md/
-// 配置发现全部失效，此时回退到用户主目录
-let workspace = process.env.OMNI_WEB_WORKSPACE
-  || (process.cwd() === '/' ? require('os').homedir() : process.cwd());
+// 后端子进程输出环形缓冲：Windows GUI 应用看不到任何 console 输出，启动失败的
+// 真实原因（缺 API Key / 端口占用 / bundle 崩溃堆栈…）全在这里——错误弹窗附上
+// 最近几行，同时落盘 userData/backend-latest.log 供用户反馈排查
+const OUT_TAIL = [];
+const OUT_TAIL_MAX = 80;
+let logFile = null;
+// 从 Finder/Dock/开始菜单启动时 process.cwd() 可能是 "/"（macOS）或 System32/盘符根
+// （Windows）——会话会被记到根目录且 AGENTS.md/配置发现全部失效，此时回退到用户主目录
+function saneWorkspace() {
+  const home = require('os').homedir();
+  if (process.env.OMNI_WEB_WORKSPACE) return process.env.OMNI_WEB_WORKSPACE;
+  const cwd = process.cwd();
+  const bad = cwd === '/'
+    || /^[a-zA-Z]:\\?$/.test(cwd)
+    || /^[/\\]windows([/\\].*)?$/i.test(cwd);
+  return bad ? home : cwd;
+}
+let workspace = saneWorkspace();
+
+function recordOutput(stream, d) {
+  const s = String(d);
+  for (const line of s.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    OUT_TAIL.push(line.length > 300 ? line.slice(0, 300) + '…' : line);
+  }
+  while (OUT_TAIL.length > OUT_TAIL_MAX) OUT_TAIL.shift();
+  process.stdout.write(`[omni-web:${stream}] ${s}`);
+  if (logFile) {
+    try { fs.appendFileSync(logFile, s); } catch { /* 日志失败不影响主流程 */ }
+  }
+}
+
+/** 最近输出摘要（错误弹窗用）：最多 12 行、每行 ≤160 列 */
+function outTailSummary() {
+  if (OUT_TAIL.length === 0) return '';
+  const lines = OUT_TAIL.slice(-12).map((l) => (l.length > 160 ? l.slice(0, 160) + '…' : l));
+  return `\n\n—— 后端最近输出 ——\n${lines.join('\n')}`;
+}
+
+function initLogFile() {
+  OUT_TAIL.length = 0; // 重启（切换工作目录）时重置缓冲，尾巴只反映本次启动
+  try {
+    logFile = path.join(app.getPath('userData'), 'backend-latest.log');
+    fs.writeFileSync(
+      logFile,
+      `=== omni backend ${new Date().toISOString()} · port=${serverPort} · cwd=${workspace} ===\n`
+    );
+  } catch {
+    logFile = null; // userData 不可写时静默降级
+  }
+}
 
 /* ---------- 工具 ---------- */
 /** 原生文件夹选择对话框（菜单与页面 preload 共用），返回绝对路径或 null */
@@ -77,23 +124,39 @@ async function pickAndSwitchWorkspace() {
   await restartWithWorkspace(dir);
 }
 
-/** 轮询 /api/status 直到服务就绪（或超时） */
-function waitForServer(port, timeoutMs = 20000) {
-  return new Promise((resolve, reject) => {
-    const t0 = Date.now();
+/**
+ * 轮询 /api/status 直到服务就绪。
+ * 与旧版的区别：不等满超时才报错——后端进程提前退出（缺 API Key、bundle 崩溃、
+ * spawn 失败…）立即失败并在错误里附最近输出；超时同样附输出。Windows GUI 应用
+ * 看不到 console，这是用户能看到真实失败原因的唯一通道。
+ */
+function waitForServer(port, timeoutMs, exitPromise, errorPromise) {
+  const t0 = Date.now();
+  const poll = new Promise((resolve, reject) => {
+    let settled = false;
     const tick = () => {
-      const req = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 400 }, (res) => {
+      if (settled) return;
+      if (Date.now() - t0 > timeoutMs) {
+        settled = true;
+        reject(new Error(`后端服务启动超时（${Math.round(timeoutMs / 1000)}s）${outTailSummary()}`));
+        return;
+      }
+      const req = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1000 }, (res) => {
         res.resume();
-        resolve(true);
+        if (!settled) { settled = true; resolve(true); }
       });
-      req.on('timeout', () => req.destroy().destroy());
-      req.on('error', () => {
-        if (Date.now() - t0 > timeoutMs) reject(new Error('后端服务启动超时'));
-        else setTimeout(tick, 250);
-      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => { if (!settled) setTimeout(tick, 250); });
     };
     tick();
   });
+  const exited = exitPromise.then(({ code, sig }) => {
+    throw new Error(`后端进程提前退出（code=${code}${sig ? ` · signal=${sig}` : ''}）${outTailSummary()}`);
+  });
+  const failed = errorPromise.then((err) => {
+    throw new Error(`无法启动后端进程：${err.message}${outTailSummary()}`);
+  });
+  return Promise.race([poll, exited, failed]);
 }
 
 async function findFreePort(from) {
@@ -109,8 +172,11 @@ async function findFreePort(from) {
   throw new Error('找不到空闲端口');
 }
 
+const SERVER_TIMEOUT_MS = 30_000; // 冷启动预算（AV 首扫 / npx 冷下载都比 mac 慢，20s 偏紧）
+
 async function startServer(port) {
   if (serverProc) return;
+  initLogFile();
   // 统一用 Electron 自带的 Node（ELECTRON_RUN_AS_NODE=1）执行后端入口：
   //  dev   → tsx 跑源码（tsx CLI 顶层会再 spawn 系统 node + 加载器，EOF 场景不需要)
   //  pack  → 直接跑 dist/omni.cjs 打包产物（包内自带 Electron 的 Node 运行时）
@@ -127,14 +193,29 @@ async function startServer(port) {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', OMNI_WEB_DIR: path.join(ROOT, 'web') },
   });
-  serverProc.stdout.on('data', (d) => process.stdout.write(`[omni-web:out] ${d}`));
-  serverProc.stderr.on('data', (d) => process.stdout.write(`[omni-web:err] ${d}`));
-  serverProc.on('error', (err) => console.error('[omni-web] spawn error:', err));
-  serverProc.on('exit', (code, sig) => {
-    console.error(`[omni-web] server exited code=${code} sig=${sig}`);
-    serverProc = null;
+  serverProc.stdout.on('data', (d) => recordOutput('out', d));
+  serverProc.stderr.on('data', (d) => recordOutput('err', d));
+  // spawn 失败（ENOENT/EACCES）与提前退出都要立即暴露——否则轮询干等满超时，
+  // Windows 用户只能看到笼统的「启动超时」而不知道真实原因
+  const exitPromise = new Promise((resolve) => {
+    serverProc.once('exit', (code, sig) => {
+      console.error(`[omni-web] server exited code=${code} sig=${sig}`);
+      serverProc = null;
+      resolve({ code, sig });
+    });
   });
-  await waitForServer(port);
+  const errorPromise = new Promise((resolve) => {
+    serverProc.once('error', (err) => {
+      console.error('[omni-web] spawn error:', err);
+      resolve(err);
+    });
+  });
+  try {
+    await waitForServer(port, SERVER_TIMEOUT_MS, exitPromise, errorPromise);
+  } catch (err) {
+    stopServer(); // 清理半死进程（若还活着）
+    throw err;
+  }
 }
 
 function stopServer() {
@@ -231,7 +312,10 @@ if (!gotLock) {
     try {
       await createWindow();
     } catch (err) {
-      dialog.showErrorBox('omni 启动失败', String(err && err.message || err));
+      const msg = String((err && err.message) || err);
+      // 附日志位置：弹窗里放不下的完整输出在 backend-latest.log（Windows 反馈排障的唯一现场）
+      const logHint = logFile ? `\n\n完整日志：${logFile}` : '';
+      dialog.showErrorBox('omni 启动失败', msg + logHint);
       app.quit();
       return;
     }

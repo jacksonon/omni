@@ -118,14 +118,25 @@ function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, sandboxOpts: S
  * 解析配置并构建客户端（console 入口与 TUI 入口共用，避免重复逻辑）。
  *
  * 抛错而非 process.exit：让入口层决定如何清理（TUI 需先退出全屏再报错）。
+ *
+ * opts.allowMissingKey（web/Electron 专用）：没有 API Key 时用占位 Key 构建
+ * 客户端而不是抛错——桌面应用首次安装没有任何配置，若启动即崩，用户永远到不了
+ * 设置面板填 Key（死循环）。占位客户端只在真正发请求时才报 401，届时设置里
+ * 填入真实 Key 后 /api/settings 会按新 Key 重建客户端。
  */
-export function prepareRun(overrides: ConfigOverrides): RunContext {
+export function prepareRun(
+  overrides: ConfigOverrides,
+  opts: { allowMissingKey?: boolean } = {}
+): RunContext {
   const cfg = loadConfig(overrides);
   // 默认模型（cfg.model）的端点配置：顶层缺省字段回退到 models.<model>（每模型独立
   // 密钥/端点/UA 是合法用法——用户把密钥放在 models 里而不写顶层 apiKey 时，
   // 不应报「未找到 API Key」闪退，从默认模型的端点配置解析即可）
   const defModel = cfg.models?.[cfg.model];
-  const apiKey = defModel?.apiKey ?? cfg.apiKey;
+  let apiKey = defModel?.apiKey ?? cfg.apiKey;
+  if (!apiKey && opts.allowMissingKey) {
+    apiKey = 'missing-api-key'; // 占位：OpenAI SDK 构造时要求非空；发请求时才会 401
+  }
   if (!apiKey) {
     throw new Error(
       `未找到 API Key。设置方式：

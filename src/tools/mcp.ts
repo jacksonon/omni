@@ -73,13 +73,15 @@ interface InitResult {
 
 /** 传输层抽象：stdio 与 streamable HTTP 统一为 request/notify */
 interface McpTransport {
-  request(method: string, params: Record<string, unknown>): Promise<unknown>;
+  request(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   notify(method: string, params: Record<string, unknown>): void;
   close(): void;
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
 const REQUEST_TIMEOUT = 30_000;
+/** 启动握手（initialize）预算：发现阶段不能拖垮整个进程启动（Electron 壳 30s 就判超时） */
+const CONNECT_TIMEOUT = 15_000;
 
 // ── stdio 传输 ──────────────────────────────────────────────
 
@@ -89,6 +91,8 @@ class StdioTransport implements McpTransport {
   private seq = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private closed = false;
+  /** spawn 失败（Windows 上 spawn npx/cmd 类命令必现：异步 ENOENT）——置位后请求立即失败，不再等满超时 */
+  private spawnError: Error | null = null;
 
   constructor(private cfg: McpServerConfig) {}
 
@@ -98,8 +102,11 @@ class StdioTransport implements McpTransport {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
-    child.on('error', () => {
-      /* 启动失败由 request 超时/错误路径兜底 */
+    child.on('error', (err) => {
+      // 不能只吞掉：否则 initialize 等在途请求会干等 REQUEST_TIMEOUT（拖垮整个启动）
+      this.spawnError = err;
+      for (const [, p] of this.pending) p.reject(new Error(`MCP 进程启动失败：${err.message}`));
+      this.pending.clear();
     });
     child.stderr.on('data', (d: Buffer) => {
       if (process.env.OMNI_DEBUG) console.error(`[MCP:${this.cfg.command}] ${d.toString().trimEnd()}`);
@@ -124,10 +131,12 @@ class StdioTransport implements McpTransport {
     else p.resolve(msg.result);
   }
 
-  request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  request(method: string, params: Record<string, unknown>, timeoutMs: number = REQUEST_TIMEOUT): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      if (this.closed || !this.child?.stdin.writable) {
-        reject(new Error(`MCP 传输已关闭：${method}`));
+      if (this.closed || !this.child?.stdin.writable || this.spawnError) {
+        reject(new Error(this.spawnError
+          ? `MCP 进程启动失败：${this.spawnError.message}`
+          : `MCP 传输已关闭：${method}`));
         return;
       }
       const id = ++this.seq;
@@ -137,7 +146,7 @@ class StdioTransport implements McpTransport {
           this.pending.delete(id);
           reject(new Error(`MCP 请求超时：${method}`));
         }
-      }, REQUEST_TIMEOUT);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
@@ -226,7 +235,7 @@ class HttpTransport implements McpTransport {
     return h;
   }
 
-  async request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  async request(method: string, params: Record<string, unknown>, timeoutMs: number = CONNECT_TIMEOUT): Promise<unknown> {
     if (this.closed) throw new Error(`MCP 传输已关闭：${method}`);
     const id = ++this.seq;
     const body = { jsonrpc: '2.0', id, method, params };
@@ -238,6 +247,7 @@ class HttpTransport implements McpTransport {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new Error(`MCP HTTP 请求失败：${err instanceof Error ? err.message : String(err)}`);
@@ -393,7 +403,7 @@ export class McpClient {
     return !this.cfg.command && !!this.cfg.url;
   }
 
-  /** 启动连接 + initialize 握手 */
+  /** 启动连接 + initialize 握手（CONNECT_TIMEOUT 预算——发现阶段不能拖垮进程启动） */
   async start(): Promise<void> {
     const transport = this.cfg.command
       ? new StdioTransport(this.cfg)
@@ -404,7 +414,7 @@ export class McpClient {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { resources: {}, prompts: {} },
       clientInfo: { name: 'omni', version: '0.1.0' },
-    })) as InitResult | undefined;
+    }, CONNECT_TIMEOUT)) as InitResult | undefined;
     this.initResult = res ?? null;
     transport.notify('notifications/initialized', {});
     // HTTP 服务器通知流（第八节 P2）：GET SSE 长连接接收服务器主动推送
@@ -573,15 +583,14 @@ export function mcpToolName(serverName: string, toolName: string): string {
 export async function discoverMcpServers(
   servers?: Record<string, McpServerConfig>
 ): Promise<McpServerHandle[]> {
-  if (!servers || Object.keys(servers).length === 0) return [];
-  const out: McpServerHandle[] = [];
-  const clients: McpClient[] = [];
-  for (const [name, cfg] of Object.entries(servers)) {
-    let client: McpClient;
+  const entries = Object.entries(servers ?? {});
+  if (entries.length === 0) return [];
+  // 并行发现：单个 server 失败/慢只影响自己（≤CONNECT_TIMEOUT），不再串行累加
+  // 拖垮整个进程启动（Windows 上 npx 类命令必失败，串行两个 preset = 60s > 壳层超时）
+  const settled = await Promise.all(entries.map(async ([name, cfg]): Promise<McpServerHandle | null> => {
     try {
-      client = new McpClient(cfg, name);
+      const client = new McpClient(cfg, name);
       await client.start();
-      clients.push(client);
       const defs = await client.listTools();
       const tools: Tool[] = defs.map((def) => {
         const toolName = mcpToolName(name, def.name);
@@ -603,20 +612,23 @@ export async function discoverMcpServers(
       // 资源/提示词：尽力获取（失败返回空，不阻塞）
       const resources = await client.listResources();
       const prompts = await client.listPrompts();
-      out.push({
+      return {
         name,
         client,
         tools,
         resources,
         prompts,
         instructions: client.instructions,
-      });
+      };
     } catch (err) {
       console.error(
         `⚠️ MCP 服务器「${name}」启动失败：${err instanceof Error ? err.message : err}（已跳过该服务器）`
       );
+      return null;
     }
-  }
+  }));
+  const out = settled.filter((h): h is McpServerHandle => h !== null);
+  const clients = out.map((h) => h.client);
   activeClients.push(...clients);
   if (clients.length > 0 && !exitHandlerRegistered) {
     exitHandlerRegistered = true;
