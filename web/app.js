@@ -1714,7 +1714,7 @@ function updateComposerStatus() {
   const order = Array.isArray(state.statusline) ? state.statusline : STATUS_DEFAULT;
   const s = state.session ? state.sessionStats.get(state.session) : null;
   const u = state.session ? state.sessionUsage.get(state.session) : null;
-  if (!s || !order.length) {
+  if (!s || !u || !order.length) {
     el.textContent = '';
     el.classList.add('hidden');
     return;
@@ -2485,13 +2485,19 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     const anyPopOpen = ['#permission-pop', '#add-menu', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
-    if (!$('#rewind-modal').classList.contains('hidden')) $('#rewind-modal').classList.add('hidden');
-    if (!$('#dirpicker-modal').classList.contains('hidden')) closeDirPicker();
-    else if (!$('#settings-modal').classList.contains('hidden')) closeSettings();
-    else if (!$('#cmd-panel').classList.contains('hidden')) closeCmdPanel();
-    else if (cmdPalette && !cmdPalette.classList.contains('hidden')) cmdPalette.classList.add('hidden');
-    else if (mentionPop && !mentionPop.classList.contains('hidden')) mentionPop.classList.add('hidden');
-    else if ($('#app').classList.contains('sidebar-open')) $('#app').classList.remove('sidebar-open');
+    let escConsumed = false;
+    if (!$('#rewind-modal').classList.contains('hidden')) { $('#rewind-modal').classList.add('hidden'); escConsumed = true; }
+    if (!$('#dirpicker-modal').classList.contains('hidden')) { closeDirPicker(); escConsumed = true; }
+    else if (!$('#settings-modal').classList.contains('hidden')) { closeSettings(); escConsumed = true; }
+    else if (!$('#cmd-panel').classList.contains('hidden')) { closeCmdPanel(); escConsumed = true; }
+    else if (cmdPalette && !cmdPalette.classList.contains('hidden')) { cmdPalette.classList.add('hidden'); escConsumed = true; }
+    else if (mentionPop && !mentionPop.classList.contains('hidden')) { mentionPop.classList.add('hidden'); escConsumed = true; }
+    else if ($('#app').classList.contains('sidebar-open')) { $('#app').classList.remove('sidebar-open'); escConsumed = true; }
+    // 无任何浮层/面板打开且当前会话运行中 → Esc 停止回复（对标 TUI 的 Esc 取消）
+    if (!escConsumed && sessionRunning()) {
+      e.preventDefault();
+      cancelCurrentRun();
+    }
   }
 });
 
@@ -2754,7 +2760,14 @@ function steerMessage(text) {
 function cancelCurrentRun() {
   if (state.session) {
     api(`/api/sessions/${state.session}/cancel`, { method: 'POST' }).catch(() => {});
+    state.runningSessions.delete(state.session);
     state._localRunning.delete(state.session);
+    // 立即停止当前 thinking/回答 的 spinner 与计时（不等 run.end——服务器 abort 处理有延迟，
+    // 否则 interval 驱动的 spinner 继续转、实时耗时继续走）
+    if (currentThinking) { currentThinking.finish(); currentThinking = null; }
+    if (currentAssistant) { currentAssistant.paint(); currentAssistant.stopCursor(); currentAssistant = null; }
+    currentTools.clear();
+    stopRunRing();
     // 乐观清理：停止后不再自动消费待发送队列
     state.messageQueue = [];
     state.steerText = null;
