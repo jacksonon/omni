@@ -8,6 +8,7 @@
  * · 域名允许列表可配（config webFetchDomains；缺省 = 全部）
  */
 import type { Tool } from './types.js';
+import { truncateUtf8ByBytes } from './util.js';
 
 /** WebFetch 单次抓取字节上限 */
 export const WEB_FETCH_MAX = 30 * 1024;
@@ -60,9 +61,7 @@ async function fetchUrl(url: string): Promise<string> {
   const raw = await resp.text();
   const text = htmlToText(raw);
   if (Buffer.byteLength(text, 'utf8') <= WEB_FETCH_MAX) return text;
-  let cut = text.length;
-  while (cut > 0 && Buffer.byteLength(text.slice(0, cut), 'utf8') > WEB_FETCH_MAX) cut--;
-  return `${text.slice(0, cut)}\n\n…[内容过长已截断]`;
+  return `${truncateUtf8ByBytes(text, WEB_FETCH_MAX)}\n\n…[内容过长已截断]`;
 }
 
 /** 创建 WebFetch 工具（域名允许列表可配） */

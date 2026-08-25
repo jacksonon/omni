@@ -1,10 +1,9 @@
 /**
- * 1.0 探针：Web 多会话并发（P0-2）+ 后台任务收件箱（P1-8）
+ * 1.0 探针：Web 多会话并发（P0-2）
  * 复用 probe-web 的 mock+web 双进程骨架，验证：
  *   A. 并发发送两个会话都成功（旧全局单运行会 409）；status.runningSessions 含两者
  *   B. 每会话并发上限：同一会话第二条消息 409
  *   C. 会话级 /undo 隔离：A 会话 undo 不影响 B（undoStack 独立克隆）
- *   D. 收件箱：POST /api/tasks 入队 → worker 建独立会话执行 → task.updated done → 会话可打开
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -166,31 +165,6 @@ async function main(): Promise<void> {
     check('B1 同会话第二条消息 409', dup.status === 409, JSON.stringify(dup.json));
     await req(`/api/sessions/${sa}/cancel`, { method: 'POST' });
     await waitFor(async () => !((await req('/api/status')).json.runningSessions ?? []).includes(sa), 30000);
-
-    /* D. 收件箱任务 */
-    const task = (
-      await req('/api/tasks', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt: '后台任务冒烟验证' }),
-      })
-    ).json;
-    check('D1 任务入队 201 且 pending/running', task.id && ['pending', 'running'].includes(task.status));
-    let doneTask: any = null;
-    for (let i = 0; i < 200; i++) {
-      const tasks = (await req('/api/tasks')).json as any[];
-      doneTask = tasks.find((t) => t.id === task.id);
-      if (doneTask?.status === 'done') break;
-      await sleep(250);
-    }
-    check('D2 任务执行完成（done）且绑定会话', doneTask?.status === 'done' && !!doneTask.sessionId, JSON.stringify(doneTask));
-    if (doneTask?.status !== 'done') {
-      console.error('[web] --- log tail ---\n' + ((web as any).__log?.() ?? '').slice(-3000));
-    }
-    if (doneTask?.sessionId) {
-      const msgs = (await req(`/api/sessions/${doneTask.sessionId}/messages`)).json;
-      check('D3 任务会话含用户消息与回答', Array.isArray(msgs.messages) && msgs.messages.length >= 2);
-    }
   } finally {
     mock.kill('SIGKILL');
     web.kill('SIGKILL');

@@ -35,7 +35,6 @@
   <symbol id="i-bug" viewBox="0 0 24 24"><path d="M8 9h8M8 12h8M8 15h8"/><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
   <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></symbol>
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/></symbol>
-  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M10 13H8m8 4H8m8-8H8"/></symbol>
   <symbol id="i-warp" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l2 2 6-6"/></symbol>
   <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.2 0-1.1.9-2 2-2h1.5A5 5 0 0 0 22 11.5C22 6.3 17.5 2 12 2Z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/><circle cx="17.5" cy="15" r="1"/></symbol>
 </svg>
@@ -47,6 +46,7 @@
         <img class="brand-fish" src="/icon.png" alt="omni">
         <span class="brand-name">omni</span>
         <span id="ver" class="build-revision">local</span>
+        <span id="top-status-dot" class="status-dot top-status-dot ready" title=""></span>
       </button>
       <button id="btn-sidebar-toggle" class="icon-button toggle-sidebar" type="button" title="收起侧栏" aria-label="收起侧栏" data-i18n-title="sidebar.collapse"><svg><use href="#i-panel-left"/></svg></button>
     </div>
@@ -61,10 +61,8 @@
     </div>
     <div class="sidebar-foot">
       <div class="sidebar-foot-row">
-        <button id="btn-inbox" class="settings-button" type="button" title="后台任务收件箱"><svg><use href="#i-doc"/></svg><span data-i18n="sidebar.inbox">后台任务</span><span id="inbox-count" class="inbox-badge hidden">0</span></button>
         <button id="btn-settings" class="settings-button" type="button"><svg><use href="#i-settings"/></svg><span data-i18n="sidebar.settings">设置</span></button>
       </div>
-      <div class="connection-line"><span class="status-dot" id="sidebar-status-dot"></span><span id="cwd" title=""></span></div>
     </div>
   </aside>
 
@@ -84,10 +82,11 @@
     <div class="scroll-body">
       <section id="messages" class="messages" aria-live="polite"></section>
       <footer id="composer-wrap" class="composer-wrap">
-        <div class="hero-heading"><img class="hero-fish" src="/icon.png" alt=""><span data-i18n="hero.tagline">探索未至之境</span><span class="preview-badge" data-i18n="hero.preview">预览版</span></div>
+        <div class="hero-heading"><img class="hero-fish" src="/icon.png" alt=""><span data-i18n="hero.tagline">omni</span><span class="preview-badge" data-i18n="hero.preview">预览版</span></div>
         <div class="hero-workspace"><svg><use href="#i-folder"/></svg><span id="hero-workspace-name" data-i18n="hero.workspace">当前工作区</span><svg><use href="#i-chevron-down"/></svg></div>
         <div class="hero-glow" aria-hidden="true"></div>
         <div id="interaction-stack"></div>
+        <div id="queue-list" class="queue-list hidden"></div>
         <div class="composer-card" id="composer-card">
           <div id="cmd-palette" class="cmd-palette hidden"></div>
           <div id="mention-pop" class="mention-pop hidden"></div>
@@ -105,12 +104,13 @@
             <div class="composer-trailing">
               <button id="composer-model" class="model-pill" type="button" title="切换模型与思考级别" data-i18n-title="composer.model"><span id="composer-model-label">—</span><svg class="chev"><use href="#i-chevron-down"/></svg></button>
               <div id="model-pop" class="model-pop hidden"></div>
-              <button id="btn-send" class="send-button" type="button" title="发送消息"><svg><use href="#i-arrow-up"/></svg></button>
+              <button id="btn-send" class="send-button" type="button" title="发送消息"><span id="send-ring" class="send-ring hidden"></span><svg><use href="#i-arrow-up"/></svg></button>
             </div>
           </div>
           <div id="permission-pop" class="permission-pop hidden"></div>
         </div>
         <div id="composer-note" class="composer-note">选择或新建会话</div>
+        <div id="composer-status" class="composer-status hidden"></div>
       </footer>
     </div>
   </main>
@@ -135,14 +135,6 @@
   </div>
 </div>
 
-<div id="inbox-modal" class="modal hidden" role="dialog" aria-label="后台任务">
-  <div class="modal-card">
-    <div class="modal-head"><h2 data-i18n="modal.inboxTitle">后台任务收件箱</h2><button class="icon-button" id="btn-close-inbox" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
-    <div class="inbox-add"><input id="task-input" type="text" placeholder="长任务描述，空闲容量时自动在独立会话执行…" data-i18n-placeholder="modal.inboxPlaceholder"><button id="btn-task-add" class="primary" data-i18n="modal.enqueue">入队</button></div>
-    <div id="task-list" class="task-list"></div>
-  </div>
-</div>
-
 <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
   <div class="modal-card settings-card">
     <div class="modal-head"><h2 id="settings-title" data-i18n="sidebar.settings">设置</h2><button class="icon-button" id="btn-close-settings" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
@@ -150,6 +142,7 @@
       <nav class="settings-nav" aria-label="设置分类">
         <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span data-i18n="settings.general">通用</span></button>
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
+        <button class="settings-nav-item" type="button" data-pane="statusbar"><svg><use href="#i-laptop"/></svg><span data-i18n="settings.statusbar">状态栏</span></button>
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
@@ -173,6 +166,10 @@
                 <option value="en">English</option>
               </select>
             </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4 data-i18n="settings.concurrency">并行会话上限</h4><p data-i18n="settings.concurrencyDesc">允许同时运行的会话数量（1-16），超过上限时新消息排队等待。</p></div>
+              <input type="number" id="set-concurrency" class="setting-control" style="width:100px" min="1" max="16" step="1">
+            </div>
           </div>
         </section>
 
@@ -184,6 +181,14 @@
               <div class="setting-info"><h4 data-i18n="settings.themeName">界面主题</h4><p data-i18n="settings.themeDesc">亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。</p></div>
               <div id="theme-options" class="seg-group"></div>
             </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="statusbar">
+          <h3 class="settings-pane-title" data-i18n="settings.statusbar">状态栏</h3>
+          <p class="settings-pane-sub" data-i18n="settings.statusbarSub">选择显示在输入区域下方的统计字段（同 CLI/TUI 底部统计行）。</p>
+          <div class="settings-group">
+            <div id="statusbar-list"></div>
           </div>
         </section>
 

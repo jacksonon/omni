@@ -10,6 +10,7 @@ import { readFile, stat } from 'node:fs/promises';
 import type { Tool } from './types.js';
 import { findAgentsFiles, globalMemoryPath, MEMORY_MAX_BYTES } from '../agent/memory.js';
 import { existsSync } from 'node:fs';
+import { truncateUtf8ByBytes } from './util.js';
 
 /** 读取记忆文件完整内容（截断到 MEMORY_MAX_BYTES） */
 async function readMemoryRaw(file: string): Promise<string | null> {
@@ -18,9 +19,7 @@ async function readMemoryRaw(file: string): Promise<string | null> {
     if (!st.isFile()) return null;
     const raw = await readFile(file, 'utf8');
     if (Buffer.byteLength(raw, 'utf8') <= MEMORY_MAX_BYTES) return raw;
-    let cut = raw.length;
-    while (cut > 0 && Buffer.byteLength(raw.slice(0, cut), 'utf8') > MEMORY_MAX_BYTES) cut--;
-    return `${raw.slice(0, cut)}\n\n…[记忆文件过长已截断；需要完整内容请用 read_file 定向读取]`;
+    return `${truncateUtf8ByBytes(raw, MEMORY_MAX_BYTES)}\n\n…[记忆文件过长已截断；需要完整内容请用 read_file 定向读取]`;
   } catch {
     return null;
   }

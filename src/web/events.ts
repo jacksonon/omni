@@ -30,8 +30,6 @@
  *   clear            —— 清空当前会话视图（{ sessionId }）
  *   workspace.changed—— 工作目录已切换（{ cwd }）
  *   session.deleted  —— 会话已删除（1.0 P0-2，{ sessionId }）
- *   task.added       —— 后台任务入队（1.0 P1-8，{ task: InboxTask }）
- *   task.updated     —— 后台任务状态变化（1.0 P1-8，{ task: InboxTask }）
  */
 export type WebEventName =
   | 'ready'
@@ -61,9 +59,7 @@ export type WebEventName =
   | 'title'
   | 'clear'
   | 'workspace.changed'
-  | 'session.deleted'
-  | 'task.added'
-  | 'task.updated';
+  | 'session.deleted';
 
 /** 广播函数：把（事件名, 数据）发给所有已连接客户端 */
 export type WebBroadcast = (type: WebEventName, data: Record<string, unknown>) => void;

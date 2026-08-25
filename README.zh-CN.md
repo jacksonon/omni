@@ -34,7 +34,7 @@
 - **可替换后端**：`OMNI_BASE_URL` 兼容所有 OpenAI 协议服务（OpenAI / DeepSeek / 智谱 / Moonshot / Grok 等）
 - **1.0 模型层（P0-3）**：`providers` 分组（一个网关挂多个模型）· 每模型元数据（`limit` 上下文/输出 · `modalities` 输入/输出类型 · `capabilities` tools/reasoning/temperature）· 命名 `variants` 请求叠加层（body/headers/effort 深度合并）· architect/editor 跨端点路由 · `{env:VAR}` 密钥引用（密钥不进配置文件）· `max_tokens ≤ limit.output` · 多模态前置校验 · `/model fetch` 网关模型发现
 - **沙箱 2.0（P0-4）**：网络白名单（内置过滤代理按 hostname 放行、TLS 不解密；Seatbelt 收紧为仅连代理端口）· `sandboxFailClosed`（无沙箱原语时拒绝执行）· 沙箱命令内凭据 masking · 策略文件写保护
-- **Web 多会话并发（P0-2）**：多个会话同时运行——per-session runOpts 克隆（原型链共享运行时）+ 独立 undo/events/abort + 全局并发上限 + 每会话单运行；**后台任务收件箱**（`POST /api/tasks`，长任务在独立会话跑、实时状态）
+- **Web 多会话并发（P0-2）**：多个会话同时运行——per-session runOpts 克隆（原型链共享运行时）+ 独立 undo/events/abort + 全局并发上限 + 每会话单运行（长任务直接在独立会话里跑即可）
 - **子代理 worktree 隔离（P0-6）**：`delegate` 新增 `worktree`（自动 `git worktree add` 临时分支；工具经 `ToolContext.cwd` 在工作树内执行；结果附改动统计与合并提示，`cleanup` 可选）
 - **Hooks 扩展（P1-1）**：`PermissionRequest`（审批 UI 前 approve/deny 短路）· `PostCompact` · `PostToolUseFailure`（失败诊断回传自修复）· `http` handler 类型（POST 事件 JSON）
 - **记忆结构化（P1-2）**：全局记忆升级为 `MEMORY.md` 索引 + `topics/*.md`（渐进披露）+ Amp 式 `globs` 条件注入 + 主题 TTL 归档——遗留 AGENTS.md 仍只读加载
@@ -139,7 +139,10 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "sandboxWritePaths": [],                   // workspace-write 额外可写白名单（绝对路径）
   "providers": {                              // 1.0：一个网关挂多个模型——加载期合并进 models（扁平形态向后兼容）
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
-                  "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
+      "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 },
+                   "variants": { "fast": { "reasoningEffort": "low" },
+                                 "deep": { "reasoningEffort": "high", "body": { "temperature": 0.2 } } },
+                   "variant": "deep", "apiModel": "glm-4.7-flash" } } }
   },
   "diagnoseAfterEdit": false,                // write_file 后跑快速检查并回传诊断（LSP 反馈闭环）
   "telemetry": { "enabled": false, "endpoint": "http://localhost:4318" }, // opt-in OTLP/HTTP JSON（默认脱敏）
@@ -160,7 +163,7 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "reasoningEffortOptions": ["low", "medium", "high"], // /variants 支持的思考级别选项（可自定义）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
-  "models": {                           // 多模型端点（/model 切换/添加）：不同模型可配不同 baseURL/apiKey/userAgent；缺省字段回退顶层；/model add 可运行时添加并持久化
+  "models": {                           // 多模型端点（/model 切换/添加）：缺省字段回退顶层；per-model 思考级别（reasoningEffortOptions/reasoningEffort）+ 命名 variants（variants 表 + variant 字段 + apiModel 别名）；/model add 可运行时添加并持久化
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
   },

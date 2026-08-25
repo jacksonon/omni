@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { RunOptions } from './types.js';
 import type { Tool } from '../tools/types.js';
+import { truncateUtf8ByBytes } from '../tools/util.js';
 
 /** 技能清单 system 消息前缀（同内容重复判断 / 会话落盘过滤用） */
 export const SKILL_PREFIX = '[已发现技能';
@@ -190,9 +191,7 @@ export async function loadSkillContent(
   try {
     const raw = await readFile(s.path, 'utf8');
     if (Buffer.byteLength(raw, 'utf8') <= SKILL_MAX_BYTES) return raw;
-    let cut = raw.length;
-    while (cut > 0 && Buffer.byteLength(raw.slice(0, cut), 'utf8') > SKILL_MAX_BYTES) cut--;
-    return `${raw.slice(0, cut)}\n\n…[技能内容过长已截断；需要完整内容请用 read_file 定向读取]`;
+    return `${truncateUtf8ByBytes(raw, SKILL_MAX_BYTES)}\n\n…[技能内容过长已截断；需要完整内容请用 read_file 定向读取]`;
   } catch {
     return null;
   }

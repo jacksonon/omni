@@ -222,6 +222,25 @@ export function persistWebThemeToConfig(theme: 'light' | 'dark' | 'system', _cfg
   return { ok: true, file, message: `已保存主题配置 → ${file}（重启后同样生效）` };
 }
 
+export function persistWebConcurrencyToConfig(val: number, _cfg: OmniConfig): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try { obj = JSON.parse(text) as Record<string, unknown>; }
+      catch { return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动添加 "webConcurrency": ${val}` }; }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常，未自动修改——请手动添加 "webConcurrency": ${val}` };
+  }
+  obj.webConcurrency = val;
+  try { writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`); }
+  catch (err) { return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` }; }
+  return { ok: true, file, message: `已保存并行会话上限 → ${file}` };
+}
+
 export interface ModelConfigPatch {
   modelName: string;
   baseURL?: string;

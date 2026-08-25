@@ -211,11 +211,21 @@ omni -h / -v                      # help / version
   "baseURL": "https://api.deepseek.com/v1", // OpenAI-compatible API URL (env var also works)
   "apiKey": "sk-xxx",                  // prefer env var OMNI_API_KEY (keeps keys out of config files)
   "userAgent": "Mozilla/5.0 …",        // custom UA (some gateway WAFs block the SDK default UA)
+  "providers": {                        // 1.0: one gateway, many models — merged into `models` at load (flat form still works)
+    "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
+      "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
+  },
+  // Flat `models`: missing fields fall back to top level; replaced by providers expansion if both exist
   "models": {                          // multi-model endpoints (/model switch): missing fields fall back to top level
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" }
   },
+  // Per-model reasoning level (each model can have its own, falls back to top level):
   "reasoningEffort": "medium",         // reasoning level (reasoning_effort; unset = omit the param, use model default)
   "reasoningEffortOptions": ["low", "medium", "high"], // levels supported by /variants (customizable)
+  // Named variants (1.0): { id: { description?, reasoningEffort?, body?, headers? } }
+  // each id is a request overlay (deep-merged into the request body); the current pick is stored
+  // in the `variant` field; the /variants panel lists both reasoning levels and named variants;
+  // `apiModel` = real model name sent to the API
 
   // ── Runtime & context ──
   "maxSteps": 50,                      // max agent loop steps (infinite-loop safeguard; typical tasks finish in <15)
@@ -857,7 +867,7 @@ environment, `/diff` for changes.
 
 ## 1.0 New Capabilities
 
-> Model layer (providers/metadata/variants), sandbox 2.0, web multi-session concurrency + inbox,
+> Model layer (providers/metadata/variants), sandbox 2.0, web multi-session concurrency,
 > subagent worktree isolation, hooks extension, structured memory, compaction 2.0, LSP feedback,
 > MCP annotations/registry, presets, spec trio, telemetry, protocol freeze + omni-action.
 > Full reference: `README.md` · `AGENTS.md` · `Doc/Headless-Protocol.md` · `config.schema.json`.
@@ -866,7 +876,7 @@ environment, `/diff` for changes.
 |---|---|---|
 | Model config | `providers` group (one baseURL, many models, `{env:VAR}` keys); per-model `limit`/`modalities`/`capabilities`/`apiModel`/`displayName`/`disabled`; named `variants` overlays; `limit.output` drives `max_tokens`; multimodal pre-check | `omni.example.jsonc` · `/model fetch` · `/variants` |
 | Sandbox | `sandboxNetworkAllow` (hostname allowlist via built-in CONNECT proxy; TLS untouched), `sandboxFailClosed`, `sandboxMaskEnv`, policy-file write guard | `sandbox` config |
-| Web | multiple sessions run concurrently (per-session undo/events/abort; global cap `webConcurrency`); background inbox `POST /api/tasks` runs long tasks in their own session; buttons for fork / export / checkpoints (/rewind panel) / tasks; model metadata in dropdowns | `omni web` UI |
+| Web | multiple sessions run concurrently (per-session undo/events/abort; global cap `webConcurrency`); buttons for fork / export / checkpoints (/rewind panel); model metadata in dropdowns | `omni web` UI |
 | Subagents | `delegate` `worktree` param (auto `git worktree add`, tools run inside via `ToolContext.cwd`, diff+merge hints, `cleanup`) | prompt the model; docs |
 | Hooks | `PermissionRequest` / `PostCompact` / `PostToolUseFailure`; `http` handler type (POST JSON) | `hooks` config |
 | Memory | global memory = `MEMORY.md` index + `topics/*.md` (+ `globs` conditional injection, TTL archive); legacy `AGENTS.md` read-only | `~/.config/omni/memory/` |
@@ -881,7 +891,7 @@ Quick wins worth trying:
 ```bash
 omni preset browser                                  # browser automation pair into global config
 omni exec "analyze this" --output-format json       # structured result incl. tokens / error_type
-omni web                                             # then: 后台任务 inbox · 检查点 · 分叉 · 多会话并行
+omni web                                             # then: 检查点 · 分叉 · 多会话并行
 /spec "login flow"                                   # spec trio under .omni/specs/ (TUI/CLI/Web)
 /model fetch                                         # discover gateway models
 ```

@@ -18,7 +18,7 @@
  */
 import http from 'node:http';
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -102,9 +102,11 @@ import {
   persistModelDefaultToConfig,
   persistModelToConfig,
   persistReasoningEffortToConfig,
+  persistStatuslineToConfig,
   persistVariantToConfig,
   persistWebWorkspaceToConfig,
   persistWebThemeToConfig,
+  persistWebConcurrencyToConfig,
   persistModelConfigToGlobal,
   removeWebWorkspaceFromConfig,
 } from '../config/write.js';
@@ -116,6 +118,7 @@ import { VERSION } from '../version.js';
 import { WEB_ASSETS } from './assets.js';
 import type { WebBroadcast } from './events.js';
 import { type PendingApproval, type PendingAsk, WebOutput } from './output.js';
+import { STATUSLINE_DEFAULT } from '../tui/layout.js';
 
 /* ---------------- 静态资源 ---------------- */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -238,16 +241,6 @@ const runs = new Map<string, RunningRun>();
 function anyRunning(): boolean {
   return runs.size > 0;
 }
-/** 后台任务收件箱（1.0 P1-8）：{ id, prompt, status, sessionId?, error? } */
-interface InboxTask {
-  id: string;
-  prompt: string;
-  status: 'pending' | 'running' | 'done' | 'error';
-  sessionId?: string;
-  error?: string;
-  created: number;
-}
-const inboxTasks: InboxTask[] = [];
 
 /** /send 排队（第六节 P2 轻量多会话协调）：容量空闲时逐条执行（FIFO） */
 const queuedSends: { targetId: string; text: string }[] = [];
@@ -356,6 +349,8 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     activeVariant: runOpts.activeVariant ?? undefined,
     webTheme: runOpts.cfg?.webTheme ?? 'system',
     language: runOpts.cfg?.language ?? 'zh',
+    // 输入区下方状态行段（设置 → 状态栏配置；同 CLI/TUI footer stats）
+    statusline: Array.isArray(runOpts.cfg?.statusline) ? runOpts.cfg!.statusline : STATUSLINE_DEFAULT,
     // 1.0 P0-2 多会话并发：running = 是否存在任一运行；runningSessions = 全部运行中的会话 id
     running: runs.size > 0,
     runningSession: [...runs.keys()][0] ?? null,
@@ -440,74 +435,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         // 失败静默（排队任务不打断主流程）
       }
     }
-    // 收件箱任务同样在空闲容量里消化
-    void drainInbox();
   };
-
-  /* ---------------- 后台任务收件箱（1.0 P1-8）---------------- */
-  const inboxFile = path.join(process.cwd(), '.omni', 'inbox.jsonl');
-  function persistInbox(): void {
-    try {
-      existsSync(path.dirname(inboxFile)) || mkdirSync(path.dirname(inboxFile), { recursive: true });
-      writeFileSync(inboxFile, inboxTasks.map((t) => JSON.stringify(t)).join('\n') + '\n', 'utf8');
-    } catch {
-      // 尽力而为
-    }
-  }
-  function loadInbox(): void {
-    try {
-      if (!existsSync(inboxFile)) return;
-      for (const line of readFileSync(inboxFile, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const t = JSON.parse(line) as InboxTask;
-          if (t && t.id && t.prompt) {
-            // 启动时 running/pending 恢复为 pending（进程重启丢上下文）
-            inboxTasks.push({ ...t, status: t.status === 'done' || t.status === 'error' ? t.status : 'pending' });
-          }
-        } catch {
-          // 损坏行跳过
-        }
-      }
-    } catch {
-      // 忽略
-    }
-  }
-
-  /** 收件箱 worker：空闲容量里逐个执行 pending 任务——每个任务建独立会话跑一轮 */
-  async function drainInbox(): Promise<void> {
-    let changed = false;
-    // 已完成的标记（运行结束 = 不在 runs 里）
-    for (const t of inboxTasks) {
-      if (t.status === 'running' && t.sessionId && !runs.has(t.sessionId)) {
-        t.status = 'done';
-        broadcast('task.updated', { task: { ...t } });
-        changed = true;
-      }
-    }
-    const max = Math.max(1, cfg.webConcurrency ?? 3);
-    while (inboxTasks.some((x) => x.status === 'pending')) {
-      if (runs.size >= max) break;
-      const t = inboxTasks.find((x) => x.status === 'pending')!;
-      try {
-        const ws = await createWebSession();
-        ws.title = `后台任务：${t.prompt.replace(/\s+/g, ' ').slice(0, 24)}`;
-        t.sessionId = ws.id;
-        t.status = 'running';
-        broadcast('session.created', { id: ws.id, title: ws.title });
-        broadcast('task.updated', { task: { ...t } });
-        changed = true;
-        const r = await sendMessage(ws.id, t.prompt);
-        if (r.error) throw new Error(r.error);
-      } catch (err) {
-        t.status = 'error';
-        t.error = err instanceof Error ? err.message : String(err);
-        broadcast('task.updated', { task: { ...t } });
-        changed = true;
-      }
-    }
-    if (changed) persistInbox();
-  }
 
   const broadcast: WebBroadcast = (type, data) => {
     for (const l of listeners) {
@@ -698,12 +626,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/thinking') {
-      // /thinking：**展示开关**（非折叠）——false = WebOutput 停止广播 thinking 事件
-      // （前端不再渲染思考块；reasoning 仍捕获落盘），true = 恢复实时流式展示。
-      // runOpts.showThinking 是运行时单一事实源（初始值来自配置 showThinking）。
-      const next = !(runOpts.showThinking ?? true);
-      runOpts.showThinking = next;
-      add(next ? '已开启思考过程展示（思考流实时显示）。' : '已关闭思考过程展示（不再流式显示；完整思考仍落盘 .omni/last-thinking.md）。');
+      // /thinking：前端切换展开/收起（纯 UI 行为），后端不改变事件广播。
+      add('请在输入框中使用 /thinking 展开或收起全部思考过程。');
       return { lines };
     }
 
@@ -1651,6 +1575,20 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           if (runOpts.cfg) runOpts.cfg.language = body.language;
           persistLanguageToConfig(body.language, cfg);
         }
+        if (typeof body.webConcurrency === 'number' && Number.isFinite(body.webConcurrency) && body.webConcurrency >= 1 && body.webConcurrency <= 16) {
+          const val = Math.floor(body.webConcurrency);
+          if (runOpts.cfg) runOpts.cfg.webConcurrency = val;
+          cfg.webConcurrency = val;
+          persistWebConcurrencyToConfig(val, cfg);
+        }
+        // 设置面板「状态栏」tab：哪些统计段显示在输入区下方（勾选开关 → statusline 数组）
+        if (Array.isArray(body.statusline)) {
+          const known = new Set(STATUSLINE_DEFAULT);
+          const next = (body.statusline as unknown[]).map(String).filter((x) => known.has(x));
+          if (runOpts.cfg) runOpts.cfg.statusline = next;
+          cfg.statusline = next;
+          persistStatuslineToConfig(next, cfg);
+        }
         // 设置面板「模型配置」tab：保存所选模型的端点/密钥/级别/上下文到全局配置 + 运行时应用
         if (body.modelConfig && typeof body.modelConfig === 'object') {
           const mc = body.modelConfig as Record<string, unknown>;
@@ -1899,43 +1837,6 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         return;
       }
 
-      /* ---------------- 后台任务收件箱（1.0 P1-8）---------------- */
-      if (p === '/api/tasks' && req.method === 'GET') {
-        json(res, 200, [...inboxTasks].sort((a, b) => b.created - a.created));
-        return;
-      }
-      if (p === '/api/tasks' && req.method === 'POST') {
-        const body = await readBody(req);
-        const promptText = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-        if (!promptText) {
-          json(res, 400, { error: '缺少 prompt' });
-          return;
-        }
-        const task: InboxTask = { id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, prompt: promptText, status: 'pending', created: Date.now() };
-        inboxTasks.push(task);
-        broadcast('task.added', { task: { ...task } });
-        persistInbox();
-        void drainInbox();
-        json(res, 201, task);
-        return;
-      }
-      const taskIdMatch = p.match(/^\/api\/tasks\/([\w-]+)$/);
-      if (taskIdMatch && req.method === 'DELETE') {
-        const idx = inboxTasks.findIndex((t) => t.id === taskIdMatch[1]);
-        if (idx < 0) {
-          json(res, 404, { error: '任务不存在' });
-          return;
-        }
-        if (inboxTasks[idx]!.status === 'running') {
-          json(res, 409, { error: '任务运行中，请到其会话里取消' });
-          return;
-        }
-        const [removed] = inboxTasks.splice(idx, 1);
-        persistInbox();
-        json(res, 200, { ok: true, removed: removed!.id });
-        return;
-      }
-
       /* ---------------- 检查点 / fork / 导出（按钮对齐 REST 面）---------------- */
       const cpMatch = sid ? p.match(new RegExp(`^/api/sessions/${sid}/checkpoints$`)) : null;
       if (cpMatch && req.method === 'GET') {
@@ -2123,9 +2024,6 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       json(res, code, { error: err instanceof Error ? err.message : String(err) });
     }
   });
-
-  // 启动时载入收件箱任务（1.0 P1-8）：running/pending 重启后回 pending 由 worker 重新执行
-  loadInbox();
 
   // 启动时清理历史空会话（仅 meta 行、0 条消息）：「新会话」懒创建上线前的
   // 遗留 + 各种中断残留——否则会话列表被空会话淹没。清理失败不阻塞启动。

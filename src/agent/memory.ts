@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { truncateUtf8ByBytes } from '../tools/util.js';
 
 /** 记忆文件名（业界约定） */
 export const AGENTS_FILE = 'AGENTS.md';/** 覆盖层文件名：同目录内存在时**替代** AGENTS.md（Codex 方案，个人/工具链分支用） */
@@ -102,11 +103,10 @@ async function readMemoryFile(file: string): Promise<{ path: string; content: st
     if (!st.isFile()) return null;
     const raw = await readFile(file, 'utf8');
     if (Buffer.byteLength(raw, 'utf8') <= MEMORY_MAX_BYTES) return { path: file, content: raw };
-    let cut = raw.length;
-    while (cut > 0 && Buffer.byteLength(raw.slice(0, cut), 'utf8') > MEMORY_MAX_BYTES) cut--;
+    // 二分查找截断（原线性递减在大文件上 12s 级卡顿——见 util.truncateUtf8ByBytes）
     return {
       path: file,
-      content: `${raw.slice(0, cut)}\n\n…[记忆文件过长已截断；需要完整内容请用 read_file 定向读取]`,
+      content: `${truncateUtf8ByBytes(raw, MEMORY_MAX_BYTES)}\n\n…[记忆文件过长已截断；需要完整内容请用 read_file 定向读取]`,
     };
   } catch {
     return null;

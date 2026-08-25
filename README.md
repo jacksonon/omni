@@ -34,7 +34,7 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **Swappable backends**: `OMNI_BASE_URL` is compatible with any OpenAI-protocol service (OpenAI / DeepSeek / Zhipu / Moonshot / Grok etc.)
 - **1.0 model layer (P0-3)**: `providers` groups (one baseURL, many models) · per-model metadata (`limit` context/output · `modalities` input/output types · `capabilities` tools/reasoning/temperature) · named `variants` request overlays (deep-merge body/headers/effort) · cross-endpoint architect/editor routing · `{env:VAR}` key references (no keys in config files) · `max_tokens ≤ limit.output` · multimodal pre-check · `/model fetch` gateway model discovery
 - **Sandbox 2.0 (P0-4)**: network allowlist via a built-in filtering proxy (CONNECT by hostname, TLS untouched; Seatbelt tightened to only the proxy port) · `sandboxFailClosed` (deny-run when no sandbox primitive) · credential masking in sandboxed commands · policy-file write guard
-- **Multi-session concurrency (P0-2)**: the web backend runs several sessions at once — per-session runOpts clones (prototype chain over the shared runtime), independent undo stacks / events / abort signals, a global concurrency cap + per-session single-run, and a background **inbox** for long tasks (`POST /api/tasks`), each task running in its own session with live status
+- **Multi-session concurrency (P0-2)**: the web backend runs several sessions at once — per-session runOpts clones (prototype chain over the shared runtime), independent undo stacks / events / abort signals, a global concurrency cap + per-session single-run (long tasks simply run in their own session)
 - **Subagent worktree isolation (P0-6)**: `delegate` gains `worktree` (auto `git worktree add` on a temp branch; tools run inside it via a threaded `ToolContext.cwd`; result reports changed files + merge instructions, `cleanup` optional)
 - **Hooks extended (P1-1)**: `PermissionRequest` (approve/deny before the approval UI) · `PostCompact` · `PostToolUseFailure` (diagnostics fed back for self-fixing) · `http` handler type (POST event JSON) alongside `command`
 - **Structured memory (P1-2)**: global memory upgraded to `MEMORY.md` index + `topics/*.md` (progressive disclosure), Amp-style `globs` conditional injection, topic TTL archival — legacy `AGENTS.md` still loaded read-only
@@ -154,7 +154,10 @@ Config fields (see `omni.example.jsonc` for a full example):
   "sandboxWritePaths": [],                   // extra writable paths for workspace-write (absolute)
   "providers": {                              // 1.0: one gateway, many models — merged into `models` at load (flat form still works)
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
-                  "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
+      "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 },
+                   "variants": { "fast": { "reasoningEffort": "low" },
+                                 "deep": { "reasoningEffort": "high", "body": { "temperature": 0.2 } } },
+                   "variant": "deep", "apiModel": "glm-4.7-flash" } } }
   },
   "diagnoseAfterEdit": false,                // run quick typecheck/lint after write_file, feed diagnostics back
   "telemetry": { "enabled": false, "endpoint": "http://localhost:4318" }, // opt-in OTLP/HTTP JSON (redacted by default)
@@ -175,7 +178,7 @@ Config fields (see `omni.example.jsonc` for a full example):
   "reasoningEffortOptions": ["low", "medium", "high"], // options supported by /variants (customizable)
   "architect": "gpt-5",                  // model routing: /plan uses a strong model (falls back to current)
   "editor": "gpt-5-mini",                // model routing: execution uses a light model (falls back to current)
-  "models": {                           // multi-model endpoints (/model switch/add): per-model baseURL/apiKey/userAgent; missing fields fall back to top level; /model add adds at runtime and persists
+  "models": {                           // multi-model endpoints (/model switch/add): missing fields fall back to top level; per-model reasoning level (reasoningEffortOptions/reasoningEffort) + named variants (variants table + variant field + apiModel alias); /model add adds at runtime and persists
     "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
     "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
   },
@@ -556,7 +559,7 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 - [x] **Headless & CI integration (modeled on codex exec / claude -p)**: `omni exec "<task>"` (stdout result-only / stderr progress, `--output-format text|json|stream-json`, stdin two forms, `--max-turns`, `--allowed-tools` filtering, exit code 0/1 pipeline branching) + `--output-schema` structured validation + `exec resume <id>` session continuation + `omni mcp-server` (omni_exec / omni_reply) + CI workflow template (`examples/ci/omni-fix-ci.yml`: read-only job generates the patch → separate job opens the PR, keys never enter the patch-generating job)
 - [x] **1.0 model layer**: providers / metadata (limit·modalities·capabilities) / named variants / cross-endpoint routing / `{env:VAR}` / max_tokens / model discovery
 - [x] **Sandbox 2.0**: network allowlist proxy + fail-closed + credential masking
-- [x] **Web multi-session concurrency** + background inbox tasks + full web parity (buttons wired: fork/export/checkpoints/tasks)
+- [x] **Web multi-session concurrency** + full web parity (buttons wired: fork/export/checkpoints)
 - [x] **Subagent worktree isolation**, hooks extension (PermissionRequest etc. + http handler), structured memory (MEMORY.md+topics+globs), compaction 2.0, LSP feedback, MCP annotations/registry, presets, spec trio, telemetry, headless protocol freeze + omni-action
 - [ ] Advanced: SWE-bench eval
 

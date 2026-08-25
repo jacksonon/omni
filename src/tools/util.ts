@@ -25,3 +25,19 @@ export function truncate(s: string): string {
   if (s.length <= TOOL_OUTPUT_LIMIT) return s;
   return s.slice(0, TOOL_OUTPUT_LIMIT) + `\n…（已截断，共 ${s.length} 字符。需要更多请用 read_file 等工具定向获取）`;
 }
+
+/**
+ * 按 UTF-8 字节上限截断字符串（不切多字节字符中间）。
+ * 二分查找 O(log n)——原线性递减在 300KB+ 文本上要跑 20 万次 slice 迭代（实测 12s 级卡顿）。
+ * 返回截断到 limit 字节内的前缀；未超限原样返回。
+ */
+export function truncateUtf8ByBytes(s: string, limitBytes: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= limitBytes) return s;
+  let lo = 0, hi = s.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (Buffer.byteLength(s.slice(0, mid), 'utf8') > limitBytes) hi = mid - 1;
+    else lo = mid;
+  }
+  return s.slice(0, lo);
+}

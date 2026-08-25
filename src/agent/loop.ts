@@ -23,7 +23,7 @@ import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
-import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
+import { buildAssistantMessage, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
 
 /** 消息里是否含图片输入（多模态前置校验用：content 为分段数组且带 image 类型） */
@@ -338,9 +338,11 @@ export async function runAgent(
     //（/model、/permission 运行时切换即时生效）
     const systemPrompt =
       buildSystemPrompt(model, process.cwd(), opts.permission) + sessionNote + (opts.systemNote ?? '');
+    // 剥离非标准字段（reasoning——已持久化供 web 刷新恢复 thinking，但不能发给 API）
+    const apiMessages = stripNonStandardFields(messages);
     const requestMessages: ChatCompletionMessageParam[] = [
       { role: 'system', content: planMode ? systemPrompt + PLAN_MODE_NOTE : systemPrompt },
-      ...messages,
+      ...apiMessages,
     ];
 
     // 1.0 跨端点路由：每步重算基础路由（/model、/plan 运行时切换即时生效）；
@@ -582,8 +584,8 @@ export async function runAgent(
       output.onThinkingSaved(reasoning.length, saved);
     }
 
-    // 组装 assistant 消息并追加进历史
-    const assistantMsg = buildAssistantMessage(content, toolCalls);
+    // 组装 assistant 消息并追加进历史（reasoning 一并持久化——web 刷新后恢复 thinking）
+    const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning);
     messages.push(assistantMsg);
 
     // 轨迹：assistant 消息（正文 + 用量 + LLM 墙钟/首 token 延迟）
