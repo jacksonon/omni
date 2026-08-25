@@ -31,6 +31,11 @@ let curMultiread = MOCK_MULTIREAD;
 let curSubagent = MOCK_SUBAGENT;
 // curStatus500：所有 chat 请求返回 500（复现「对话中 500 错误是否停止」）
 let curStatus500 = process.env.MOCK_500 === '1';
+// curInterleave：单次响应内 reasoning → content → reasoning → content 交错
+//（模拟部分 LLM 一次回答里多个 thinking 段落穿插正文，验证多 thinking 块展示）
+let curInterleave = process.env.MOCK_INTERLEAVE === '1';
+// curThreeStep：三步推理（每步 reasoning + 工具/回答），验证多 thinking 块展示
+let curThreeStep = process.env.MOCK_THREE_STEP === '1';
 // curSlow：第一轮工具调用 chunk 前延迟 2s（web 服务取消运行 e2e 用——让 run 停在流中可被 abort）
 let curSlow = process.env.MOCK_SLOW_TOOL === '1';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -71,6 +76,8 @@ const server = http.createServer((req, res) => {
         if (typeof cfg.subagent === 'boolean') curSubagent = cfg.subagent;
         if (typeof cfg.slow === 'boolean') curSlow = cfg.slow;
         if (typeof cfg.status500 === 'boolean') curStatus500 = cfg.status500;
+        if (typeof cfg.interleave === 'boolean') curInterleave = cfg.interleave;
+        if (typeof cfg.threeStep === 'boolean') curThreeStep = cfg.threeStep;
       } catch {
         /* ignore malformed config */
       }
@@ -504,6 +511,77 @@ const server = http.createServer((req, res) => {
         res.write(`data: {"error": ${JSON.stringify(String(e))}}\n\n`);
         res.end();
       });
+      return;
+    }
+
+    if (curThreeStep) {
+      // 三步：step1 reasoning→工具 / step2 reasoning→工具 / step3 reasoning→回答
+      //（按已有工具结果数分步：0→工具，1→工具，2→回答）
+      const toolCount = messages.filter((m) => m.role === 'tool').length;
+      const toolTurn = toolCount < 2 && !curStatus500;
+      sendChunk({
+        id: 'mock-t1',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: `第${toolCount + 1}步思考。` }, finish_reason: null }],
+      });
+      if (toolTurn) {
+        sendChunk({
+          id: 'mock-t2',
+          object: 'chat.completion.chunk',
+          created: Date.now(),
+          model: 'mock',
+          choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_3', type: 'function', function: { name: 'run_command', arguments: '{"command":"echo 3step"}' } }] }, finish_reason: null }],
+        });
+      } else {
+        sendChunk({
+          id: 'mock-t3',
+          object: 'chat.completion.chunk',
+          created: Date.now(),
+          model: 'mock',
+          choices: [{ index: 0, delta: { role: 'assistant', content: FINAL_ANSWER + '（三步完成）' }, finish_reason: null }],
+        });
+      }
+      sendChunk(usageChunk('mock-t-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (curInterleave) {
+      // 单次响应内交错：thinking → 正文 → thinking → 正文（模拟一次回答多个 thinking 段落）
+      sendChunk({
+        id: 'mock-i0',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: '第一段思考：分析需求。' }, finish_reason: null }],
+      });
+      sendChunk({
+        id: 'mock-i1',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', content: '第一段正文。' }, finish_reason: null }],
+      });
+      sendChunk({
+        id: 'mock-i2',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: '第二段思考：考虑备选方案。' }, finish_reason: null }],
+      });
+      sendChunk({
+        id: 'mock-i3',
+        object: 'chat.completion.chunk',
+        created: Date.now(),
+        model: 'mock',
+        choices: [{ index: 0, delta: { role: 'assistant', content: FINAL_ANSWER }, finish_reason: null }],
+      });
+      sendChunk(usageChunk('mock-i-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
       return;
     }
 

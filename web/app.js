@@ -617,6 +617,7 @@ function thinkingBlock(sessionId) {
   b._body = body;
   b._head = head;
   b._box = box;
+  b._claimed = false; // SSE 是否已认领（doSend 预建空块 false；收到 start/chunk 后 true）
   b._startTime = Date.now();
   b._durMs = 0;
   box.dataset.startTime = String(b._startTime);
@@ -1886,15 +1887,25 @@ bus.on('user.message', (ev) => {
 let currentThinking = null;
 bus.on('thinking.start', (ev) => {
   if (ev.sessionId !== state.session) return;
-  // 已有乐观预建的 thinking（doSend 创建，位置已正确 user -> thinking），复用而非重建
-  // 避免 finish 掉空模块再新建导致的闪烁与位置跳变
-  if (currentThinking) return;
+  if (currentThinking) {
+    // doSend 预建的空块（尚未被 SSE 认领）→ 直接复用（位置已正确 user -> thinking，避免闪烁）；
+    // 已是真实思考块（已认领/有内容）→ 新一轮 thinking 开始：收尾旧块、新建块——
+    // 一次 LLM 回答可能含多个 thinking 段落（多步/交错/end 丢失），每个段落独立成块
+    if (!currentThinking._claimed) { currentThinking._claimed = true; return; }
+    currentThinking.finish();
+    currentThinking = null;
+  }
   currentThinking = thinkingBlock(ev.sessionId);
+  currentThinking._claimed = true;
 });
 bus.on('thinking.chunk', (ev) => {
   if (ev.sessionId !== state.session) return;
   noteTokenChunk(ev.text.length);
-  if (!currentThinking) currentThinking = thinkingBlock(ev.sessionId);
+  if (!currentThinking || !currentThinking._claimed) {
+    if (currentThinking) currentThinking.finish(); // 预建空块（未认领）→ 移除，新建真实块
+    currentThinking = thinkingBlock(ev.sessionId);
+    currentThinking._claimed = true;
+  }
   currentThinking._chars += ev.text.length;
   currentThinking._body.textContent += ev.text;
   scrollBottom();
