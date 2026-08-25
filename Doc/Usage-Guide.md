@@ -188,6 +188,8 @@ defaults → global config → project config → custom config → environment 
 | Environment | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | overrides config files |
 | CLI args | `-m, --model <name>` | highest precedence |
 
+> **Windows paths**: `~` above means `%USERPROFILE%`, so the global config actually lives at `C:\Users\<you>\.config\omni\omni.json` — the conventional `%APPDATA%` is **not** used; if the `XDG_CONFIG_HOME` env var is set it becomes `%XDG_CONFIG_HOME%\omni\omni.json`. Sessions, memory, audit log and other global data live under the same `.config\omni\` directory.
+
 ### 4.2 CLI arguments
 
 ```bash

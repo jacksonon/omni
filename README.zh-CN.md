@@ -119,6 +119,8 @@ export OMNI_MODEL=deepseek-chat                     # 可选
 | 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | 覆盖配置文件 |
 | CLI 参数 | `-m, --model <名称>` | 最高优先级 |
 
+> **Windows 路径**：上表的 `~` 即 `%USERPROFILE%`，全局配置实际位于 `C:\Users\<用户名>\.config\omni\omni.json`——**不使用** Windows 惯例的 `%APPDATA%`；若设置了 `XDG_CONFIG_HOME` 环境变量则为 `%XDG_CONFIG_HOME%\omni\omni.json`。会话、记忆、审计日志等全局数据同在 `.config\omni\` 目录下。
+
 常用环境变量：`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体；`OMNI_SHOW_THINKING=0` 关闭终端思考显示（仍落盘）。
 
 配置字段（示例见 `omni.example.jsonc`）：
