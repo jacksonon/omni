@@ -250,6 +250,7 @@ omni -h / -v                      # help / version
   // ── TUI ──
   "language": "zh",                    // TUI language: zh (default) / en (switch & persist via /settings)
   "statusline": ["speed", "cache", "tokens", "context"], // bottom status-line segments (/settings statusline)
+  "statuslineAlign": "center",              // status-line alignment: left / center (default) / right (press a in the panel)
 
   // ── External tools ──
   "mcpServers": {                      // MCP external tools: { name: { command, args?, env? } }
@@ -355,7 +356,9 @@ while something is running, the loading animation and `esc` hint sit at the **fa
 (cancel the current turn); below the block is the configurable status/stats line
 (`/settings statusline` toggling and ordering): `first token/rate · cache hit ·
 in/out tokens · context` (context = prompt tokens of the latest LLM request — shows
-`used/limit` when the model config declares a context limit).
+`used/limit` when the model config declares a context limit). Press **`a`** inside the
+panel to cycle the stats line **horizontal alignment** (left / center / right; Enter
+saves and persists to `statuslineAlign`).
 
 ### `/` command suggestions
 

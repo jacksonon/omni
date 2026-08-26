@@ -1038,7 +1038,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'settings',
-    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · Enter 保存生效；/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
+    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · a 对齐 · Enter 保存生效；/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
     descriptionEn: 'Settings (/settings statusline · /settings language · /settings theme · /settings tokens · /settings doctor)',
     run: async (ctx) => {
       // /settings：列出可用设置项（面板选择后打开对应设置编辑器）；
@@ -1918,7 +1918,7 @@ export function openLanguageMenu(state: TuiState): void {
 /**
  * 打开状态行编辑器面板（/settings statusline）：
  * 列出全部段（按当前显示顺序），勾选态来自 state.statusline；
- * 空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消（见 handleSettingsPanelKey）。
+ * 空格 勾选/取消 · ←/→ 排序 · `a` 切换对齐（左/中/右）· Enter 保存生效 · Esc 取消（见 handleSettingsPanelKey）。
  */
 export function openStatuslinePanel(state: TuiState): void {
   const order = state.statusline && state.statusline.length > 0 ? state.statusline : STATUSLINE_DEFAULT;
@@ -1930,10 +1930,11 @@ export function openStatuslinePanel(state: TuiState): void {
       enabled: order.includes(sg.id),
     })),
     selected: 0,
+    align: state.statuslineAlign, // 工作副本：Enter 保存后写入 state.statuslineAlign 并持久化
   };
   state.status = en
-    ? 'Status line: Space toggle · ←/→ reorder · Enter save · Esc cancel'
-    : '状态行：空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消';
+    ? 'Status line: Space toggle · ←/→ reorder · a align · Enter save · Esc cancel'
+    : '状态行：空格 勾选/取消 · ←/→ 排序 · a 对齐 · Enter 保存生效 · Esc 取消';
 }
 
 /** 交换数组中两个下标（状态行排序用） */
@@ -1945,7 +1946,8 @@ function swapItems<T>(arr: T[], a: number, b: number): void {
 
 /**
  * 处理状态行面板键盘输入（interactive.ts 在全局 keypress 里调用；返回是否消费了按键）。
- * ↑/↓：移动高亮 · 空格：勾选/取消 · ←/→：排序（移动选中项）· Enter：保存生效 · Esc：取消。
+ * ↑/↓：移动高亮 · 空格：勾选/取消 · ←/→：排序（移动选中项）· `a`：循环切换对齐
+ * （left → center → right）· Enter：保存生效 · Esc：取消。
  */
 export function handleSettingsPanelKey(key: TuiKey, state: TuiState): boolean {
   const panel = state.settingsPanel;
@@ -1961,6 +1963,10 @@ export function handleSettingsPanelKey(key: TuiKey, state: TuiState): boolean {
       return true;
     case 'space':
       if (items[sel]) items[sel]!.enabled = !items[sel]!.enabled;
+      return true;
+    case 'a':
+      // 对齐循环：left → center → right → left（面板底部行即时高亮）
+      panel.align = panel.align === 'left' ? 'center' : panel.align === 'center' ? 'right' : 'left';
       return true;
     case 'left':
       // ←：选中项左移一位（与前面一项交换顺序）
@@ -1992,7 +1998,8 @@ export function handleSettingsPanelKey(key: TuiKey, state: TuiState): boolean {
 
 /**
  * 保存状态行（Enter）：按当前勾选与顺序应用到 state.statusline（footer 统计行
- * 立即按新配置重绘——让配置生效），并记录待持久化意图（interactive 每轮写入配置文件）。
+ * 立即按新配置重绘）、对齐方式应用到 state.statuslineAlign（footer 位置即时变化），
+ * 并记录待持久化意图（interactive 每轮写入配置文件）。
  * **只生效不弹提示面板**（用户要求「做完设置不需要 pop 显示」）。
  */
 export function saveStatusline(state: TuiState): void {
@@ -2000,6 +2007,8 @@ export function saveStatusline(state: TuiState): void {
   if (!panel) return;
   state.statusline = panel.items.filter((it) => it.enabled).map((it) => it.id);
   state.statuslineSave = [...state.statusline]; // 待落盘意图（interactive 消费）
+  state.statuslineAlign = panel.align; // 对齐即时生效（render.ts infoRow 位置）
+  state.statuslineAlignSave = panel.align; // 待落盘意图（随 statusline 一起持久化）
   state.settingsPanel = null;
   state.status = '';
 }

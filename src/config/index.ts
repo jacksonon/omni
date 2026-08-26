@@ -112,11 +112,16 @@ export interface OmniConfig {
   editor?: string;
   /**
    * TUI 底部状态行（输入区域下方的对话信息）显示哪些段、按什么顺序：
-   * 段 id 数组，如 ['rounds','llm','speed','cache','tokens']；空数组 = 不显示状态行。
+   * 段 id 数组，如 ['speed','cache','tokens','context']；空数组 = 不显示状态行。
    * /settings statusline 可视化配置（空格勾选、←/→ 排序、Enter 保存生效并持久化）。
-   * 合法 id：rounds（轮次/步数）· llm（LLM/工具耗时）· speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）。
+   * 合法 id：speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）· context（上下文）。
    */
   statusline: string[];
+  /**
+   * TUI 底部状态行**对齐方式**：left / center（默认）/ right。
+   * /settings statusline 面板 `a` 键循环切换，Enter 保存生效并持久化。
+   */
+  statuslineAlign?: 'left' | 'center' | 'right';
   /**
    * TUI 界面语言：'zh' 中文（默认） / 'en' 英文。
    * /settings 语言面板切换并持久化；界面 chrome（菜单/状态栏/footer/待发送/审批卡等）
@@ -333,6 +338,7 @@ const DEFAULTS = {
   maxSubagentSteps: 10,
   maxSubagentDepth: 5,
   statusline: ['speed', 'cache', 'tokens', 'context'],
+  statuslineAlign: 'center' as 'left' | 'center' | 'right',
   language: 'zh' as 'zh' | 'en',
   webTheme: 'system' as 'light' | 'dark' | 'system',
   sandbox: 'off' as SandboxMode,
@@ -606,6 +612,10 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
       .filter((x): x is string => typeof x === 'string')
       .filter((x) => ['speed', 'cache', 'tokens', 'context'].includes(x));
     cfg.statusline = arr;
+  }
+  // 状态行对齐方式：只认 left/center/right，其余回退默认居中
+  if (data.statuslineAlign === 'left' || data.statuslineAlign === 'right' || data.statuslineAlign === 'center') {
+    cfg.statuslineAlign = data.statuslineAlign;
   }
   // 界面语言：只认 zh/en，其余回退默认中文
   if (data.language === 'zh' || data.language === 'en') cfg.language = data.language;

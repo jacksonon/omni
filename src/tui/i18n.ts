@@ -46,7 +46,11 @@ const ZH: Record<string, string> = {
   'trace.scrollDown': '↓ 还有 {n} 行',
   'approval.hint': '[y] 批准    [n] 拒绝（Enter/Esc 同）',
   'settings.title': '设置：状态行',
-  'settings.hint': '空格 勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消',
+  'settings.hint': '空格 勾选/取消 · ←/→ 排序 · a 对齐 · Enter 保存生效 · Esc 取消',
+  'statusline.align': '对齐',
+  'statusline.align.left': '左侧',
+  'statusline.align.center': '居中',
+  'statusline.align.right': '右侧',
 
   // 输入区 / footer（render.ts）
   'input.placeholder': '输入消息，Enter 发送；Shift+Enter 换行',
@@ -136,7 +140,11 @@ const EN: Record<string, string> = {
   'trace.scrollDown': '↓ {n} more',
   'approval.hint': '[y] Approve    [n] Reject (Enter/Esc same)',
   'settings.title': 'Settings: Status line',
-  'settings.hint': 'Space · ←/→ move · Enter · Esc cancel',
+  'settings.hint': 'Space · ←/→ move · a align · Enter · Esc cancel',
+  'statusline.align': 'Align',
+  'statusline.align.left': 'Left',
+  'statusline.align.center': 'Center',
+  'statusline.align.right': 'Right',
 
   'input.placeholder': 'Type a message, Enter to send; Shift+Enter for newline',
   'footer.model': '{mode} · {model}{provider}',

@@ -134,6 +134,11 @@
       },
       "description": "TUI 底部状态行显示的段（默认全段：speed/cache/tokens/context）"
     },
+    "statuslineAlign": {
+      "enum": ["left", "center", "right"],
+      "default": "center",
+      "description": "TUI 底部状态行水平对齐（/settings statusline 面板 a 键切换；默认居中）"
+    },
     "language": {
       "enum": [
         "zh",

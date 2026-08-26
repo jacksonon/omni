@@ -598,15 +598,17 @@ export async function runTuiInteractive(
       }
     };
     for (;;) {
-      // /settings statusline 保存意图：应用已即时生效（state.statusline 更新，footer 统计行
-      // 立即按新配置重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）；
-      // 成功静默（用户要求「做完设置不需要 pop 显示」），失败才弹警告面板
+      // /settings statusline 保存意图：应用已即时生效（state.statusline/statuslineAlign 更新，
+      // footer 统计行与对齐位置立即按新配置重绘）——这里把配置**持久化**到配置文件
+      // （下次会话同样生效）；成功静默（用户要求「做完设置不需要 pop 显示」），失败才弹警告面板
       if (state.statuslineSave) {
         const order = state.statuslineSave;
+        const align = state.statuslineAlignSave;
         state.statuslineSave = null;
+        state.statuslineAlignSave = null;
         const cfg = runOpts.cfg;
         if (cfg) {
-          const res = persistStatuslineToConfig(order, cfg);
+          const res = persistStatuslineToConfig(order, cfg, align ?? undefined);
           if (!res.ok) {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings statusline');
           }

@@ -93,6 +93,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "skills": true,                          // 启用技能（SKILL.md）发现与 skill 工具（默认 true）
   "reasoningEffort": "medium",             // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
   "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 支持的思考级别选项（可自定义支持哪些）
+  "statuslineAlign": "center",             // 状态行水平对齐：left / center（默认）/ right（/settings statusline 面板 a 键切换）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
   "providers": {                      // 多模型端点（/model 切换）——**端点/密钥的唯一格式**（旧版扁平 models 表与顶层 baseURL/apiKey/userAgent 解析已移除）：
@@ -251,7 +252,7 @@ for step in 1..maxSteps:
 
 - **命令式渲染**：直接用 `@opentui/core` 的 renderable 构建渲染树，状态变更后显式 `renderer.loop()` 重绘——放弃 `@opentui/solid`（JSX 转换时序坑：入口文件先于 preload 转换，信号失效无法重绘）；
 - **细胞池复用**（非全量重建）：池只增不减，行内容原位更新，防原生 TextBuffer 耗尽（早期每帧 remove+new ~1365 次重绘后崩）；`state.ts` 是纯可变对象，不是 signal；
-- **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行/loading/统计行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别`（模式前缀 + provider 组名 + 级别按强度着色），**运行中 loading+esc 在模型行最左端**；内容行预算 = 高度 - 10 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
+- **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行/loading/统计行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别`（模式前缀 + provider 组名 + 级别按强度着色），**运行中 loading+esc 在模型行最左端**；统计行水平位置可配（`statuslineAlign`：左/中/右，/settings statusline 面板 `a` 键切换）；内容行预算 = 高度 - 10 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
 - **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送列表（steer 插最前、可排序/编辑/删除）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
 - **浮层体系**：`/` 命令联想与 `@` 提及文件选择（圆角方框、窗口滚动、鼠标点击）、命令面板（alert 居中）、命令输出面板、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
 - **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 diff 左右对比（write_file）与多读合并（read_file）；

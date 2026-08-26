@@ -281,9 +281,10 @@ export function approvalPanelRows(
 }
 
 /**
- * 状态行设置面板（/settings statusline）：圆角方框 + 勾选列表（✓/☐）+ 排序操作提示。
+ * 状态行设置面板（/settings statusline）：圆角方框 + 勾选列表（✓/☐）+ 对齐行 + 操作提示。
  * 与菜单面板（menuPanelRows）同款边框结构，渲染在菜单浮层（menuOverlay）里——
- * 独立于会话流。高亮项 › 青色加粗；勾选 ✓ / 未勾选 ☐；←/→ 调整顺序。
+ * 独立于会话流。高亮项 › 青色加粗；勾选 ✓ / 未勾选 ☐；←/→ 调整顺序；
+ * 对齐行显示当前对齐（`a` 键循环切换，当前值青色加粗）。
  */
 export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number, lang: TuiLang = 'zh'): Row[] {
   const inner = cardInnerWidth(contentWidth);
@@ -297,6 +298,23 @@ export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number, 
       style: i === panel.selected ? { fg: 'cyan', bold: true } : {},
     });
   }
+  // 对齐行：`对齐： 左侧 / 居中 / 右侧`（当前值青色加粗；`a` 键循环切换）
+  const alignPrefix = t(lang, 'statusline.align');
+  const options: { label: string; value: 'left' | 'center' | 'right' }[] = [
+    { label: t(lang, 'statusline.align.left'), value: 'left' },
+    { label: t(lang, 'statusline.align.center'), value: 'center' },
+    { label: t(lang, 'statusline.align.right'), value: 'right' },
+  ];
+  const chunks: { text: string; fg?: string; bold?: boolean; dim?: boolean }[] = [{ text: `${alignPrefix}: `, dim: true }];
+  options.forEach((o, i) => {
+    if (i > 0) chunks.push({ text: ' / ' });
+    const active = o.value === panel.align;
+    chunks.push({ text: o.label, fg: active ? 'cyan' : undefined, bold: active, dim: !active });
+  });
+  // 行尾补空格到内容宽（与其它行同宽，面板底边整齐）
+  const used = chunks.reduce((a, c) => a + visualWidth(c.text), 0);
+  if (used < inner) chunks.push({ text: ' '.repeat(inner - used) });
+  rows.push({ text: '', style: {}, chunks });
   rows.push({
     text: cardContentLine(t(lang, 'settings.hint'), inner),
     style: { dim: true },

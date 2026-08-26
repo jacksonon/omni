@@ -154,15 +154,21 @@ export function persistModelToConfig(
 }
 
 /**
- * 把状态行段顺序写入配置文件的 statusline 字段（/settings statusline Enter 保存持久化）。
- * 应用已即时生效（state.statusline 更新），这里只落盘供下次会话加载。
+ * 把状态行段顺序 + 对齐方式写入配置文件的 statusline / statuslineAlign 字段
+ * （/settings statusline Enter 保存持久化）。应用已即时生效（state.statusline /
+ * state.statuslineAlign 更新），这里只落盘供下次会话加载。
  */
-export function persistStatuslineToConfig(order: string[], cfg: OmniConfig): PersistModelResult {
+export function persistStatuslineToConfig(
+  order: string[],
+  cfg: OmniConfig,
+  align?: 'left' | 'center' | 'right'
+): PersistModelResult {
   const res = loadConfigObject(cfg);
   if (!res.ok) {
     return { ok: false, file: null, message: `${res.message}（statusline 字段手动添加：${JSON.stringify(order)}）` };
   }
   res.obj.statusline = order;
+  if (align) res.obj.statuslineAlign = align; // 对齐方式随段配置一起落盘
   try {
     writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
   } catch (err) {

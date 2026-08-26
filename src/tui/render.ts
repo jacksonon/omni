@@ -535,7 +535,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
   root.add(bottomBlock);
-  // token 统计行：在灰色块下方（不在灰色背景里），**水平居中**（用户要求；路径已移除）。
+  // token 统计行：在灰色块下方（不在灰色背景里），**水平位置可配**（用户要求：
+  // 新增 居中/右侧/左侧 对齐选项）——justifyContent 由 repaintTree 按
+  // state.statuslineAlign 每帧刷新（/settings statusline 面板 a 键 + Enter 保存生效）。
   // marginTop:1 与输入区域（灰色块）之间留 1 行间距（用户要求）
   const infoRow = new BoxRenderable(ctx, { flexDirection: 'row', justifyContent: 'center', marginTop: 1 });
   footerTokens = new TextRenderable(ctx, {
@@ -899,9 +901,15 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
   if (tree.footerTokens) {
-    // footer 统计行（用户要求的格式）：轮次/步数/LLM 与工具耗时/首 token/速率/缓存命中/输入输出；
-    // 超宽时按段从右截断（fitFooterStats）。**居中显示在输入区域下方**
+    // footer 统计行（用户要求的格式）：首 token/速率 · 缓存命中 · 输入输出 · 上下文；
+    // 超宽时按段从右截断（fitFooterStats）。**水平位置可配**（居中/右侧/左侧，
+    // /settings statusline 面板 a 键 + Enter 保存：statuslineAlign 即时生效）
     // hero 模式下 infoRow 整体隐藏（见 hero 块），这里只负责正常模式的内容
+    if (tree.infoRow) {
+      // 统计行容器对齐：left = 靠左 / center = 居中 / right = 靠右（每帧重取即时生效）
+      tree.infoRow.justifyContent =
+        state.statuslineAlign === 'left' ? 'flex-start' : state.statuslineAlign === 'right' ? 'flex-end' : 'center';
+    }
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2);
     tree.footerTokens.content = fitFooterStats(buildFooterStats(state), inner);
   }

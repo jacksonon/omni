@@ -86,6 +86,10 @@ async function run(): Promise<void> {
   const state = createTuiState();
   // 底部状态行（输入区域下方）段配置来自 statusline 配置字段（/settings statusline 可改并持久化）
   if (Array.isArray(cfg.statusline)) state.statusline = cfg.statusline;
+  // 状态行对齐方式（/settings statusline 面板 a 键可改并持久化；应用层已校验 left/center/right）
+  if (cfg.statuslineAlign === 'left' || cfg.statuslineAlign === 'right' || cfg.statuslineAlign === 'center') {
+    state.statuslineAlign = cfg.statuslineAlign;
+  }
   // 界面语言（/settings 语言面板可改并持久化；应用层已校验 zh/en）
   state.language = cfg.language === 'en' ? 'en' : 'zh';
   // 思考过程展示（/thinking 可运行时开关；初始值来自 showThinking 配置）

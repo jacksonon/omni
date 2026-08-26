@@ -4081,6 +4081,7 @@ async function main(): Promise<void> {
   console.log('=== 场景 39：/settings statusline（状态行配置）===');
   const cmd39 = await import('../src/tui/commands.js');
   const layout39 = await import('../src/tui/layout.js');
+  const sprRows39 = (await import('../src/tui/rows.js')).settingsPanelRows;
   const { persistStatuslineToConfig } = await import('../src/config/write.js');
   // a) /settings 已注册 + 联想可发现（settings 出现在联想列表）
   const settingsCmd = cmd39.findCommand('settings');
@@ -4093,6 +4094,11 @@ async function main(): Promise<void> {
   cmd39.openStatuslinePanel(s39);
   if (!s39.settingsPanel || s39.settingsPanel.items.length !== 4 || !s39.settingsPanel.items.every((it) => it.enabled)) {
     console.error(`✗ 场景 39 状态行面板初始化错误: ${JSON.stringify(s39.settingsPanel)}`);
+    process.exit(1);
+  }
+  // b0) 对齐：默认 center（跟随 state.statuslineAlign）
+  if (s39.settingsPanel.align !== 'center' || s39.statuslineAlign !== 'center') {
+    console.error(`✗ 场景 39 对齐默认值错误: panel=${s39.settingsPanel.align} state=${s39.statuslineAlign}`);
     process.exit(1);
   }
   // 自定义 statusline（去掉 cache/context）→ 面板勾选态反映它（items 按段定义顺序列出，顺序由 ←/→ 编辑）
@@ -4133,16 +4139,38 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 39 → 排序错误: ${JSON.stringify(orderAfterRight)}`);
     process.exit(1);
   }
+  // `a` 循环切换对齐：center → right → left（面板工作副本，未保存不落 state）
+  cmd39.handleSettingsPanelKey(key39('a'), s39);
+  if (s39.settingsPanel!.align !== 'right') {
+    console.error(`✗ 场景 39 a 键对齐切换错误（应 center→right）: ${s39.settingsPanel!.align}`);
+    process.exit(1);
+  }
+  cmd39.handleSettingsPanelKey(key39('a'), s39);
+  if (s39.settingsPanel!.align !== 'left') {
+    console.error(`✗ 场景 39 a 键对齐切换错误（应 right→left）: ${s39.settingsPanel!.align}`);
+    process.exit(1);
+  }
+  // 未保存：state.statuslineAlign 不变
+  if (s39.statuslineAlign !== 'center') {
+    console.error(`✗ 场景 39 未保存时对齐不应应用到 state: ${s39.statuslineAlign}`);
+    process.exit(1);
+  }
   // Esc 取消：关闭面板、不改变 state.statusline、不落盘意图
   cmd39.handleSettingsPanelKey(key39('escape'), s39);
   if (s39.settingsPanel !== null || s39.statuslineSave !== null || JSON.stringify(s39.statusline) !== JSON.stringify(['tokens', 'speed'])) {
     console.error('✗ 场景 39 Esc 取消应关闭面板且不改配置');
     process.exit(1);
   }
-  // d) Enter 保存生效：state.statusline 按「启用 + 当前顺序」更新，statuslineSave 记录待落盘
+  if (s39.statuslineAlign !== 'center' || s39.statuslineAlignSave !== null) {
+    console.error('✗ 场景 39 Esc 取消后对齐不应改变');
+    process.exit(1);
+  }
+  // d) Enter 保存生效：state.statusline 按「启用 + 当前顺序」更新，statuslineSave 记录待落盘；
+  //    对齐（`a` 切到 right）随保存应用 + 记录 statuslineAlignSave
   s39.statusline = ['speed', 'cache', 'tokens', 'context']; // 恢复默认全段
   cmd39.openStatuslinePanel(s39); // items = [speed✓ cache✓ tokens✓ context✓]（STATUSLINE_SEGMENTS 顺序），selected=0
   cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=1 → cache
+  cmd39.handleSettingsPanelKey(key39('a'), s39); // align: center → right
   cmd39.handleSettingsPanelKey(key39('space'), s39); // 取消 cache
   cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=2 → tokens
   cmd39.handleSettingsPanelKey(key39('right'), s39); // tokens 与 context 交换 → [speed cache context tokens]，selected=3(tokens)
@@ -4156,6 +4184,11 @@ async function main(): Promise<void> {
   // （context 仍启用——排序不改变勾选态；←/→ 只移动顺序）
   if (JSON.stringify(saved39) !== JSON.stringify(['speed', 'context', 'tokens'])) {
     console.error(`✗ 场景 39 保存结果错误（应 speed/context/tokens）: ${JSON.stringify(saved39)}`);
+    process.exit(1);
+  }
+  // 对齐随保存生效：state.statuslineAlign = right  + statuslineAlignSave = right（待落盘）
+  if (s39.statuslineAlign !== 'right' || s39.statuslineAlignSave !== 'right') {
+    console.error(`✗ 场景 39 对齐未随保存生效: align=${s39.statuslineAlign} save=${s39.statuslineAlignSave}`);
     process.exit(1);
   }
   // buildFooterStats 按新配置拼行（去掉 cache；context 移到 tokens 前）
@@ -4187,7 +4220,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 39 空 statusline 应返回空串（不显示状态行）');
     process.exit(1);
   }
-  // e) 渲染：状态行面板经菜单浮层渲染（✓/☐ 勾选 + 标题 + 操作提示）；
+  // e) 渲染：状态行面板经菜单浮层渲染（✓/☐ 勾选 + 对齐行 + 标题 + 操作提示）；
   //    用高视口（30 行）避免面板与底部灰色块重叠把行字符交错（渲染在菜单浮层上）
   const s39r = createTuiState();
   s39r.version = '0.1.0';
@@ -4202,25 +4235,70 @@ async function main(): Promise<void> {
     !frame39.includes('✓ 上下文') ||
     !frame39.includes('☐ 缓存命中') ||
     !frame39.includes('☐ 输入/输出') ||
-    !frame39.includes('空格 勾选/取消')
+    !frame39.includes('空格 勾选/取消') ||
+    !frame39.includes('对齐:') // 对齐行（当前值居中高亮）
   ) {
-    console.error('✗ 场景 39 状态行面板渲染错误（缺标题/勾选项/提示行）');
+    console.error('✗ 场景 39 状态行面板渲染错误（缺标题/勾选项/对齐行/提示行）');
     console.log(frame39);
     process.exit(1);
   }
-  // f) persistStatuslineToConfig：写入配置文件 statusline 字段（纯 JSON 自动改写；JSONC 跳过）
+  // 对齐行高亮当前值：默认 center → 「对齐: 左侧 / 居中 / 右侧」中 居中 为青色加粗；
+  // 按 a 切到 right → 右侧 高亮（chunks fg 断言）
+  const rows39p = sprRows39!(s39r.settingsPanel!, 44, 'zh');
+  const alignRow39 = rows39p.find((r) => r.chunks?.some((c) => c.text.includes('对齐')));
+  if (!alignRow39) {
+    console.error('✗ 场景 39 面板对齐行缺失');
+    process.exit(1);
+  }
+  const centerChunk = alignRow39.chunks!.find((c) => c.text === '居中');
+  if (!centerChunk || centerChunk.fg !== 'cyan' || !centerChunk.bold) {
+    console.error(`✗ 场景 39 居中未高亮: ${JSON.stringify(alignRow39.chunks)}`);
+    process.exit(1);
+  }
+  s39r.settingsPanel!.align = 'right';
+  const rows39p2 = sprRows39!(s39r.settingsPanel!, 44, 'zh');
+  const alignRow39b = rows39p2.find((r) => r.chunks?.some((c) => c.text.includes('对齐')));
+  const rightChunk = alignRow39b!.chunks!.find((c) => c.text === '右侧');
+  if (!rightChunk || rightChunk.fg !== 'cyan' || !rightChunk.bold) {
+    console.error(`✗ 场景 39 切 right 后右侧未高亮: ${JSON.stringify(alignRow39b!.chunks)}`);
+    process.exit(1);
+  }
+  // e2) 对齐即时生效：footer 统计行位置随 statuslineAlign 变化（左/中/右列偏移）
+  const t39a = await createTestRenderer({ width: 64, height: 20 });
+  const tree39a = mountTree(t39a.renderer, s39r, { withInput: true });
+  await t39a.renderOnce();
+  const statsLineCol39 = async (st: typeof s39r): Promise<number> => {
+    repaintTree(t39a.renderer, tree39a, st, { withInput: true });
+    await t39a.renderOnce(); // 测试渲染器需要显式重绘一帧（repaintTree 只更新树值）
+    return t39a.captureCharFrame().split('\n').find((l) => l.includes('首 token 平均'))!.indexOf('首 token');
+  };
+  const colCenter39 = await statsLineCol39({ ...s39r });
+  s39r.statuslineAlign = 'right';
+  const colRight39 = await statsLineCol39(s39r);
+  s39r.statuslineAlign = 'left';
+  const colLeft39 = await statsLineCol39(s39r);
+  if (!(colLeft39 < colCenter39 && colCenter39 < colRight39)) {
+    console.error(`✗ 场景 39 对齐未生效: left=${colLeft39} center=${colCenter39} right=${colRight39}`);
+    process.exit(1);
+  }
+  s39r.statuslineAlign = 'center'; // 还原
+  // f) persistStatuslineToConfig：写入配置文件 statusline + statuslineAlign 字段（纯 JSON 自动改写；JSONC 跳过）
   const dir39 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-snap39-'));
   const file39 = path.join(dir39, 'omni.json');
   fs.writeFileSync(file39, JSON.stringify({ model: 'mock' }));
   const cfg39 = { sources: [file39] } as never;
-  const res39 = persistStatuslineToConfig(['tokens', 'cache'], cfg39);
+  const res39 = persistStatuslineToConfig(['tokens', 'cache'], cfg39, 'right');
   if (!res39.ok || !res39.file) {
     console.error(`✗ 场景 39 状态行持久化失败: ${JSON.stringify(res39)}`);
     process.exit(1);
   }
   const written39 = JSON.parse(fs.readFileSync(file39, 'utf8'));
-  if (JSON.stringify(written39.statusline) !== JSON.stringify(['tokens', 'cache']) || written39.model !== 'mock') {
-    console.error(`✗ 场景 39 配置文件 statusline 字段错误: ${JSON.stringify(written39)}`);
+  if (
+    JSON.stringify(written39.statusline) !== JSON.stringify(['tokens', 'cache']) ||
+    written39.statuslineAlign !== 'right' ||
+    written39.model !== 'mock'
+  ) {
+    console.error(`✗ 场景 39 配置文件 statusline/statuslineAlign 字段错误: ${JSON.stringify(written39)}`);
     process.exit(1);
   }
   // JSONC（带注释）→ 不自动改写，返回提示

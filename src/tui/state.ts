@@ -159,15 +159,17 @@ export interface TuiAsk {
 }
 
 /**
- * 状态行设置面板（/settings statusline）：多选 + 排序编辑。
+ * 状态行设置面板（/settings statusline）：多选 + 排序编辑 + 对齐方式。
  * 不同于单选面板（TuiMenu）——每项可勾选/取消（空格）、可排序（←/→）、
- * Enter 保存并生效、Esc 取消。渲染复用菜单浮层（menuOverlay）。
+ * `a` 循环切换对齐（左/中/右）、Enter 保存并生效、Esc 取消。渲染复用菜单浮层（menuOverlay）。
  */
 export interface StatuslinePanel {
   /** 全部段（顺序即当前显示顺序）；enabled=false 的段不显示 */
   items: { id: string; label: string; enabled: boolean }[];
   /** 高亮项下标（↑/↓ 移动；空格勾选/取消；←/→ 排序） */
   selected: number;
+  /** 对齐方式（工作副本；Enter 保存后写入 state.statuslineAlign 并持久化） */
+  align: 'left' | 'center' | 'right';
 }
 
 /**
@@ -376,10 +378,21 @@ export interface TuiState {
    */
   statusline: string[];
   /**
+   * 状态行**对齐方式**（输入区域下方统计行的水平位置）：left/center/right。
+   * 来自配置 statuslineAlign（tui-entry 初始化，默认 center）；/settings statusline
+   * 面板 `a` 键循环切换，Enter 保存立即生效（render.ts infoRow justifyContent）。
+   */
+  statuslineAlign: 'left' | 'center' | 'right';
+  /**
    * 待持久化的状态行段顺序（/settings statusline Enter 保存时写入，interactive 每轮
    * 消费并写入配置文件——应用已即时生效，这里只负责落盘；与 sessionPick 同模式）。
    */
   statuslineSave: string[] | null;
+  /**
+   * 待持久化的状态行对齐方式（/settings statusline Enter 保存时写入，interactive 每轮
+   * 消费并随 statusline 一起写入配置文件；与 statuslineSave 同模式）。
+   */
+  statuslineAlignSave: 'left' | 'center' | 'right' | null;
   /**
    * 界面语言（/settings 语言面板切换；来自配置 language，tui-entry 初始化）。
    * 切换后界面 chrome 即时按新语言重绘（rows/render/output/commands 全部经 t()/tf()）。
@@ -568,7 +581,9 @@ export function createTuiState(): TuiState {
     menu: null,
     settingsPanel: null,
     statusline: ['speed', 'cache', 'tokens', 'context'],
+    statuslineAlign: 'center',
     statuslineSave: null,
+    statuslineAlignSave: null,
     language: 'zh',
     languageSave: null,
     modelSave: null,
