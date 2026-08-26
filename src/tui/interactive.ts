@@ -193,6 +193,12 @@ export async function runTuiInteractive(
     events: runOpts.events,
     hooks: runOpts.hooks,
   };
+  // hero 横幅动画定时器（150ms 一帧）：未开始对话（lines.length === 0）时 rainbow
+  // 彩虹色沿横幅流动。定时器常驻交互全程，非 hero 时只推进 hue 不触发重绘（不浪费）。
+  const bannerAnimTimer = setInterval(() => {
+    state.bannerHue = (state.bannerHue + 4) % 360;
+    if (state.lines.length === 0) void session.paint().catch(() => {});
+  }, 150);
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
     // 让输入框先插入字符、repaintTree 再读到最新文本。合并 pending：连发按键只挂一个定时器。
@@ -1006,6 +1012,7 @@ export async function runTuiInteractive(
       input.focus();
     }
   } finally {
+    clearInterval(bannerAnimTimer); // 退出交互：停掉横幅动画定时器（setInterval 会拖住进程退出）
     unsubKey();
   }
 }

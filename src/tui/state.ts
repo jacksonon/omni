@@ -273,6 +273,11 @@ export interface TuiState {
   /** spinner 帧索引（-1 = 不显示） */
   spinnerIndex: number;
   /**
+   * hero 横幅动画帧偏移（0-360，逐帧 +4 循环）：未开始对话时 rainbow 彩虹色随帧
+   * 旋转（每行按行号错相 → 竖向流动渐变）。由 interactive 的动画定时器推进。
+   */
+  bannerHue: number;
+  /**
    * 统计行左侧 loading（会话进行中一直转；Esc 取消/会话结束消失）：
    * loading = 是否显示；loadingIndex = 当前帧（-1 = 隐藏）。由 TuiOutput
    * 的 startLoading/stopLoading 维护（独立于状态栏 spinner——流式期间
@@ -525,6 +530,7 @@ export function createTuiState(): TuiState {
     scrollIntent: null,
     shortcutPrefix: false,
     spinnerIndex: -1,
+    bannerHue: 0,
     loading: false,
     loadingIndex: -1,
     generating: false,

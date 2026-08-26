@@ -97,6 +97,33 @@ export {
 } from './rows.js';
 export { themeColor, themeFor, isLightTheme, type TuiTheme } from './theme.js';
 
+/**
+ * hero 横幅：figlet Standard 字体的「Omni」ASCII 大字（纯 ASCII，判宽与 OpenTUI
+ * 渲染一致——不用含 █/╗ 等块字符的字体，避免个别终端按全角渲染导致错位）。
+ * 每行 26 列等宽（可整体居中）；渲染时按行号错相彩虹色（bannerHue 驱动）。
+ */
+const OMNI_BANNER = [
+  '   ___                  _ ',
+  '  / _ \\ _ __ ___  _ __ (_)',
+  ' | | | | \'_ ` _ \\| \'_ \\| |',
+  ' | |_| | | | | | | | | | |',
+  '  \\___/|_| |_| |_|_| |_|_|',
+];
+
+/** HSL → CSS hex（彩虹动画用）：h∈[0,360)、s/l∈[0,1]，返回 `#rrggbb` */
+export function hslToHex(h: number, s: number, l: number): string {
+  const f = (n: number): number => {
+    const k = (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  const to = (v: number): string =>
+    Math.round(v * 255)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
+}
+
 export interface TuiSession {
   /** 立即重绘一帧（状态变更后调用） */
   paint(): Promise<void>;
@@ -131,6 +158,12 @@ export interface TuiTree {
   root: BoxRenderable;
   cells: TextRenderable[];
   status: TextRenderable;
+  /** Omni 标题（hero 模式——未开始对话时居中显示在输入区上方；正常模式隐藏） */
+  omniTitle: BoxRenderable | null;
+  /** 横幅文字行（OMNI_BANNER 每行一个 TextRenderable；彩虹色单独设 fg，alignSelf 居中） */
+  omniCells: TextRenderable[];
+  /** 底部固定块（ask + 待发送区 + 灰色块）：hero 模式去 marginTop:auto 让根 justifyContent 居中 */
+  bottomBlock: BoxRenderable | null;
   /** 灰色块（输入行 + 模型行，交互模式非 null；单次任务模式为 null） */
   footerBox: BoxRenderable | null;
   /** 灰色块左侧蓝色细线（▍，与对话流用户消息同款）：紧贴左缘、竖跨整个灰色背景（含上下边框行） */
@@ -346,6 +379,28 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   });
   root.add(status);
 
+  // Omni 标题（hero 模式——未开始对话时居中显示在输入区上方）：5 行 ASCII 大字横幅，
+  // 每行独立 TextRenderable（彩虹色单独设 fg，alignSelf:center 在根列布局中水平居中）；
+  // 正常模式隐藏不占布局。颜色由 repaintTree 按 bannerHue 逐帧刷新（彩虹流动动画）。
+  const omniTitle = new BoxRenderable(ctx, {
+    flexDirection: 'column',
+    alignSelf: 'stretch',
+    marginBottom: 1,
+    visible: false,
+  });
+  const omniCells: TextRenderable[] = [];
+  for (const l of OMNI_BANNER) {
+    const cell = new TextRenderable(ctx, {
+      content: l,
+      wrapMode: 'none',
+      alignSelf: 'center',
+      attributes: createTextAttributes({ bold: true }),
+    });
+    omniTitle.add(cell);
+    omniCells.push(cell);
+  }
+  root.add(omniTitle);
+
   // 命令联想（输入 / 时）与 @ 提及文件选择共用这个浮层：**独立浮层**——绝对定位 +
   // 整体背景 + 圆角边框（rounded），悬停在输入框（灰色块）上方，不占内容流、
   // 不挤动对话（用户要求独立界面、非当前对话流）。非模态：不拦截输入，用户可继续
@@ -496,6 +551,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     root,
     cells: [],
     status,
+    omniTitle,
+    omniCells,
+    bottomBlock,
     footerBox,
     blueLine,
     input,
@@ -648,6 +706,51 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 3);
     state.inputLines = Math.min(5, Math.max(1, estimateInputLines(tree.input.plainText, inner)));
   }
+
+  // —— hero 模式（未开始对话，state.lines 为空）——
+  // 底部输入区 + 其下的统计行**垂直居中**（不再是钉在视口底部），输入区上方显示
+  // 5 行 ASCII 大字「Omni」横幅（彩虹色流动动画，bannerHue 驱动）。
+  // 实现：根 justifyContent 改为 center、底部固定块去掉 marginTop:auto
+  // （否则 auto 边距吸收全部自由空间、justifyContent 失效），横幅显示、状态栏隐藏
+  // （「模型 X · 就绪」在居中 hero 布局下是冗余的——模型已在灰块内模型行展示）。
+  // 菜单/设置/命令面板/ask 打开时退出 hero（浮层定位与快照断言都按底部钉住布局）；
+  // 首条消息进入（lines 非空）后逐帧自动恢复到底部钉住布局。
+  const hero =
+    !!opts?.withInput &&
+    state.lines.length === 0 &&
+    !state.menu &&
+    !state.settingsPanel &&
+    !state.cmdPanel &&
+    !state.ask;
+  let heroOffset = 0; // hero 模式下灰色块相对「底部钉住」位置上移的行数（浮层/命中区按此换算）
+  if (hero && tree.omniTitle && tree.bottomBlock) {
+    // 居中组（自上而下）：横幅(OMNI_BANNER 5 行) + 横幅下间距(1) + 底部固定块[灰色块
+    // inputLines+4 + 待发送区 pendingRows + ask 面板] + 统计行间距(1) + 统计行(1)。
+    const inputLines = Math.max(1, state.inputLines);
+    const askRows = state.ask ? state.ask.options.length + 4 : 0;
+    const groupH = OMNI_BANNER.length + 1 + pendingRows + askRows + (inputLines + 4) + 1 + 1;
+    const groupTop = Math.max(1, Math.floor(((height ?? 24) - groupH) / 2));
+    // 灰色块顶 = 组顶 + 横幅(5) + 横幅间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
+    const grayTopCentered = groupTop + OMNI_BANNER.length + 1;
+    const grayTopBottom = (height ?? 24) - 7 - pendingRows - inputLines;
+    heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
+    tree.root.justifyContent = 'center';
+    tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
+    tree.omniTitle.visible = true;
+    // 彩虹流动：每行按行号错相（竖向渐变），bannerHue 逐帧旋转 → 颜色沿横幅流动。
+    // 亮色主题压暗（浅底上高亮色对比不足）；深色主题提亮。
+    const isLight = isLightTheme(theme);
+    for (let i = 0; i < tree.omniCells.length; i++) {
+      const hue = (state.bannerHue + i * 28) % 360;
+      tree.omniCells[i]!.fg = parseColor(hslToHex(hue, 0.8, isLight ? 0.4 : 0.62));
+    }
+    (tree.status as { visible?: boolean }).visible = false; // hero 下隐藏「就绪」状态栏
+    footerTop -= heroOffset; // 浮层/菜单/命令面板/ask 全部按居中后的灰块顶钳制
+  } else {
+    if (tree.omniTitle) tree.omniTitle.visible = false;
+    if (tree.bottomBlock) tree.bottomBlock.marginTop = 'auto';
+    tree.root.justifyContent = 'flex-start';
+  }
   // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 1 + 模型）
   // = inputLines + 4 行；显式 height 钉到 inputLines + 4，marginTop/Bottom -1 使
   // **margin-box = inputLines + 2 与内容列同高（不撑大灰层）**，渲染起点上移 1 行
@@ -668,7 +771,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
     // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+4，含圆角边框) - 统计行间距(1)）
-    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
+    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）；hero 居中模式再减 heroOffset
     if (!state.menu && !state.settingsPanel && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -805,10 +908,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.footerEsc) {
     tree.footerEsc.content = state.loading ? 'esc' : '';
   }
-  // 视口过小时隐藏状态栏，优先保证底部完整可见
-  //（交互模式需 11 行：灰色块 5（圆角边框 2 + 输入 1 + 间距 1 + 模型 1）+ 统计行 2（间距 1 + 行 1）+ 状态栏 2（间距 1 + 行 1）+ 内边距 2；
-  //  单任务模式仅需 4 行——状态栏 2 + 内边距 2）
-  tree.status.visible = opts?.withInput ? height >= 11 : height >= 4;
+  // 状态栏可见性：hero 模式（未开始对话）隐藏「就绪」状态，让居中 hero 布局干净；
+  // 正常交互模式需 11 行（灰色块 + 统计行 + 状态栏 + 内边距），不足时隐藏状态栏；
+  // 单任务模式仅需 4 行——状态栏 2 + 内边距 2）
+  tree.status.visible = hero ? false : opts?.withInput ? height >= 11 : height >= 4;
   tree.status.content = state.status;
 
   // 联想/提及列表内容（/ 命令联想：› /theme 描述；@ 提及：📁/📄 + 路径）。
@@ -826,8 +929,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const visible = !!picker && picker.items.length > 0;
     tree.suggestBox.visible = visible;
     if (visible && picker) {
-      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 统计行间距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows)
-      const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
+      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 统计行间距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows)；hero 居中模式再减 heroOffset
+      const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset;
       // 紧凑下拉：内部行（含提示行）≤ 8（小视口按剩余空间收缩）——面板不铺满整个内容区，
       // 而是悬停在输入框上方的一小片下拉（用户反馈菜单铺满全屏不像“输入框上方的菜单”）
       const interiorBudget = Math.max(3, Math.min(8, footerTop - 3));
@@ -995,8 +1098,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
 
-  // 轨迹面板（/trace 右侧栏）：绝对定位右缘浮层——top=1、宽 TRACE_W、底边 ≤
-  // footerTop - 5（不遮输入区；footerTop 在输入框高度刷新后已是最终值）。
+  // 轨迹面板（/trace 右侧栏）：绝对定位右缘浮层（top=1），逐行往下渲染，
+  // 底边不超出视口太多（灰块在左下角，右侧面板无需避让它——灰块不遮面板行）。
+  // 预算 = 视口高 - 8（留若干行给底部灰块 + 统计行 + 内边距）。hero 居中模式下
+  // footerTop 较小（灰块上移），但面板高度不受影响——用全视口而非 footerTop 计算。
   // 展开时对话流宽度收缩在 computeRows（读 state.traceOpen）——内容右移重新折行，
   // 面板不盖内容。行级命中：内部行 i → 事件坐标 y = top + 1 + i（border 1 行）；
   // rowMap 记录 行 → traceRows 绝对下标（-1 = 标题/提示行，-2 = 详情页返回行）。
@@ -1005,10 +1110,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.traceBox) {
     const tOpen = state.traceOpen;
     tree.traceBox.visible = tOpen;
-    if (tOpen && footerTop > 7) {
+    if (tOpen && (height ?? 24) > 9) {
       tree.traceBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
       tree.traceBox.borderColor = parseColor(theme.suggestBorder);
-      const maxRows = Math.max(3, footerTop - 5);
+      const maxRows = Math.max(3, (height ?? 24) - 7);
       // 详情页（点击轨迹行推入）：返回行 + 行标题 + 完整内容（折行不截断）；
       // 内容超预算时窗口滚动（复用 traceScroll，底部对齐 + 顶部提示）
       const detail = state.traceDetail;
@@ -1120,7 +1225,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 标题行在底部块顶，消息行从 +1 开始：消息 i 在 y = wrapperTop + 1 + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
-    const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
+    // hero 居中模式下底部块随根居中上移 heroOffset，命中区同步换算
+    const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
   }
   // ask_user 提问面板（输入区上方）：**竖向勾选列表**——❓ 问题（单选/多选）+ 每行
@@ -1168,8 +1274,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         applyRowToCell(cell, aRows[i], theme);
       }
-      // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数
-      const aBottom = (height ?? 24) - 6 - state.inputLines - pendingRows;
+      // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数（hero 居中再减 heroOffset）
+      const aBottom = (height ?? 24) - 6 - state.inputLines - pendingRows - heroOffset;
       const aTop = aBottom - aRows.length;
       // 行 y → 类型：1 起选项行（面板内下标 1+i）、自定义行（下标 1+options.length）、
       // 确认行（下标 2+options.length）
