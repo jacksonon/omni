@@ -107,12 +107,7 @@ const ZH: Record<string, string> = {
   'settings.doctor': '环境诊断（Node/Bun/API/配置）',
   'menu.language.title': '语言',
   'menu.language.status': '语言：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
-  'confirm.theme': '已切换主题 → {label}',
-  'confirm.permission': '已切换安全权限 → {label}',
-  'confirm.variants': '已切换思考级别 → {label}',
-  'confirm.model': '已切换模型 → {label}',
   'confirm.session': '已选择会话 → {label}（加载中…）',
-  'confirm.language': '已切换语言 → {label}（界面即时切换，配置已保存）',
 };
 
 const EN: Record<string, string> = {
@@ -199,12 +194,7 @@ const EN: Record<string, string> = {
   'settings.doctor': 'Environment diagnostics (Node/Bun/API/config)',
   'menu.language.title': 'Language',
   'menu.language.status': 'Language: ↑/↓ or number · Enter confirm · Esc cancel',
-  'confirm.theme': 'Theme switched → {label}',
-  'confirm.permission': 'Security switched → {label}',
-  'confirm.variants': 'Thinking level switched → {label}',
-  'confirm.model': 'Model switched → {label}',
   'confirm.session': 'Session selected → {label} (loading…)',
-  'confirm.language': 'Language switched → {label} (applied now, config saved)',
 };
 
 /** 取字符串（en 缺失回退 zh，再缺失回退 key——新 key 忘配不炸） */

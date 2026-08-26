@@ -392,6 +392,9 @@ Esc to close, mouse click to insert.
 - `/settings theme`: light / dark / follow system (defaults to auto-detecting the terminal
   background);
 - `/settings language`: 中文 / English, switches instantly and persists.
+- All TUI settings (theme / permission / model / thinking level / language / status line) **take
+  effect immediately with no confirmation popup**; the command panel is only used for query
+  outputs (/status /context /session /undo etc.).
 
 ---
 

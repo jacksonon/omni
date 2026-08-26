@@ -2782,8 +2782,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 31 数字键确认未生效（permission 应=read、面板应关闭）: ${JSON.stringify(s31.menu)}`);
     process.exit(1);
   }
-  if (!s31.cmdPanel || !s31.cmdPanel.lines.some((l) => String(l).includes('已切换安全权限 → 低'))) {
-    console.error(`✗ 场景 31 确认后 meta 提示缺失: ${JSON.stringify(s31.cmdPanel)}`);
+  if (s31.cmdPanel !== null) {
+    console.error(`✗ 场景 31 权限切换不应弹提示面板（只生效即可）: ${JSON.stringify(s31.cmdPanel)}`);
     process.exit(1);
   }
   if (s31.lines.some((l) => l.text.includes('已切换安全权限'))) {
@@ -2991,8 +2991,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 33 /variants Enter 确认未生效（应=high）: ${JSON.stringify(s33.menu)}`);
     process.exit(1);
   }
-  if (!s33.cmdPanel || !s33.cmdPanel.lines.some((l) => String(l).includes('已切换思考级别 → high'))) {
-    console.error(`✗ 场景 33 /variants 确认后 meta 提示缺失: ${JSON.stringify(s33.cmdPanel)}`);
+  if (s33.cmdPanel !== null) {
+    console.error(`✗ 场景 33 /variants 切换不应弹提示面板（只生效即可）: ${JSON.stringify(s33.cmdPanel)}`);
     process.exit(1);
   }
   if (s33.lines.some((l) => l.text.includes('已切换思考级别'))) {
@@ -3227,8 +3227,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 /model Enter 确认未生效（应=moonshot-v1-8k）: ${JSON.stringify(s34.menu)}`);
     process.exit(1);
   }
-  if (!s34.cmdPanel || !s34.cmdPanel.lines.some((l) => String(l).includes('已切换模型 → moonshot-v1-8k'))) {
-    console.error(`✗ 场景 34 /model 确认后 meta 提示缺失: ${JSON.stringify(s34.cmdPanel)}`);
+  if (s34.cmdPanel !== null) {
+    console.error(`✗ 场景 34 /model 切换不应弹提示面板（只生效即可）: ${JSON.stringify(s34.cmdPanel)}`);
     process.exit(1);
   }
   if (s34.lines.some((l) => l.text.includes('已切换模型'))) {
@@ -3371,8 +3371,8 @@ async function main(): Promise<void> {
     { state: s34d, args: 'glm-4-flash', onSwitchModel: (n: string) => { switched34 = n; return null; } } as never,
     '/model glm-4-flash'
   );
-  if (switched34 !== 'glm-4-flash' || !(s34d.cmdPanel?.lines ?? []).some((l) => String(l).includes('已切换模型 → glm-4-flash'))) {
-    console.error(`✗ 场景 34 TUI /model <名称> 切换分发未生效: switched=${switched34} panel=${JSON.stringify(s34d.cmdPanel?.lines)}`);
+  if (switched34 !== 'glm-4-flash' || s34d.cmdPanel !== null) {
+    console.error(`✗ 场景 34 TUI /model <名称> 切换分发未生效（且不应弹提示面板）: switched=${switched34} panel=${JSON.stringify(s34d.cmdPanel?.lines)}`);
     process.exit(1);
   }
   if (s34d.modelSave !== 'glm-4-flash') {
@@ -4739,14 +4739,14 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 语言面板错误: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
-  // d) 数字 2 确认 → 切到英文 + languageSave + confirm 消息（面板）；再切回中文
+  // d) 数字 2 确认 → 切到英文 + languageSave（只生效不弹提示面板）；再切回中文
   handleMenuKey43(key('2'), s43);
   if (s43.language !== 'en' || s43.languageSave !== 'en' || s43.menu !== null) {
     console.error(`✗ 场景 43 语言切换未生效: ${JSON.stringify({ language: s43.language, languageSave: s43.languageSave, menu: s43.menu })}`);
     process.exit(1);
   }
-  if (!s43.cmdPanel?.lines.some((l) => l.includes('已切换语言 → English'))) {
-    console.error('✗ 场景 43 缺 confirm 消息（面板）');
+  if (s43.cmdPanel !== null) {
+    console.error(`✗ 场景 43 语言切换不应弹提示面板（只生效即可）: ${JSON.stringify(s43.cmdPanel)}`);
     process.exit(1);
   }
   openLanguageMenu(s43);
@@ -4987,7 +4987,7 @@ async function main(): Promise<void> {
   }
   // o) 鼠标点选确认后的提示面板自动收起（用户反馈「切换完语言，提示始终显示不消失」——
   //    键盘确认由 interactive 菜单分支调度 autoClose，鼠标点选路径此前漏调度）：
-  //    鼠标点 English → 确认提示进面板 → 短暂停留后自动收起
+  //    鼠标点 English → 切换生效（只生效不弹提示面板——用户要求）
   openLanguageMenu(s43); // 当前 zh：高亮 0（中文）
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
@@ -4999,15 +4999,10 @@ async function main(): Promise<void> {
     64,
     noopPaint,
     { paint: async () => {} },
-    30, // 快速版 delayMs：等 60ms 断言自动收起
+    30, // 快速版 delayMs
   );
-  if (s43.language !== 'en' || s43.cmdPanel === null) {
-    console.error(`✗ 场景 43 鼠标点 English 未切换+未弹提示面板: ${JSON.stringify({ language: s43.language, cmdPanel: s43.cmdPanel })}`);
-    process.exit(1);
-  }
-  await new Promise((r) => setTimeout(r, 60));
-  if (s43.cmdPanel !== null) {
-    console.error('✗ 场景 43 鼠标确认后的提示面板未自动收起');
+  if (s43.language !== 'en' || s43.cmdPanel !== null) {
+    console.error(`✗ 场景 43 鼠标点 English 未切换或弹了提示面板: ${JSON.stringify({ language: s43.language, cmdPanel: s43.cmdPanel })}`);
     process.exit(1);
   }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');

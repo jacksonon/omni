@@ -599,48 +599,45 @@ export async function runTuiInteractive(
     };
     for (;;) {
       // /settings statusline 保存意图：应用已即时生效（state.statusline 更新，footer 统计行
-      // 立即按新配置重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）
+      // 立即按新配置重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）；
+      // 成功静默（用户要求「做完设置不需要 pop 显示」），失败才弹警告面板
       if (state.statuslineSave) {
         const order = state.statuslineSave;
         state.statuslineSave = null;
         const cfg = runOpts.cfg;
         if (cfg) {
           const res = persistStatuslineToConfig(order, cfg);
-          if (res.ok) {
-            pushCmdLine(state, { kind: 'meta', text: res.message }, '/settings statusline');
-          } else {
+          if (!res.ok) {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings statusline');
           }
           await session.paint();
         }
       }
       // /settings 语言保存意图：界面已即时生效（state.language 更新，全部界面 chrome
-      // 按新语言重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）
+      // 按新语言重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）；
+      // 成功静默，失败才弹警告面板
       if (state.languageSave) {
         const lang = state.languageSave;
         state.languageSave = null;
         const cfg = runOpts.cfg;
         if (cfg) {
           const res = persistLanguageToConfig(lang, cfg);
-          if (res.ok) {
-            pushCmdLine(state, { kind: 'meta', text: res.message }, '/settings language');
-          } else {
+          if (!res.ok) {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings language');
           }
           await session.paint();
         }
       }
       // /model 默认模型保存意图：切换已即时生效（interactive syncModel 重建 client +
-      // 更新 modelRuntime）——这里把配置**持久化**（顶层 model 字段，下次启动默认使用）
+      // 更新 modelRuntime）——这里把配置**持久化**（顶层 model 字段，下次启动默认使用）；
+      // 成功静默，失败才弹警告面板
       if (state.modelSave) {
         const m = state.modelSave;
         state.modelSave = null;
         const cfg = runOpts.cfg;
         if (cfg) {
           const res = persistModelDefaultToConfig(m, cfg);
-          if (res.ok) {
-            pushCmdLine(state, { kind: 'meta', text: res.message }, '/model');
-          } else {
+          if (!res.ok) {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/model');
           }
           await session.paint();
@@ -649,7 +646,8 @@ export async function runTuiInteractive(
       // /variants 思考级别保存意图：切换已即时生效（interactive 每轮同步进
       // runOpts.reasoningEffort）——这里把配置**持久化**。per-model：当前模型在配置
       // 文件 models 表有专属条目时写 models.<模型>.reasoningEffort（仅该模型生效），
-      // 否则写顶层全局默认（persistReasoningEffortToConfig 内部按 modelName 分流）
+      // 否则写顶层全局默认（persistReasoningEffortToConfig 内部按 modelName 分流）；
+      // 成功静默，失败才弹警告面板
       if (state.variantsSave) {
         const raw = state.variantsSave;
         state.variantsSave = null;
@@ -660,7 +658,7 @@ export async function runTuiInteractive(
           runOpts.activeVariant = id;
           if (cfg) {
             const res = persistVariantToConfig(id, cfg, currentModel);
-            pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message }, '/variants');
+            if (!res.ok) pushCmdLine(state, { kind: 'warn', text: res.message }, '/variants');
             await session.paint();
           }
         } else {
@@ -669,7 +667,7 @@ export async function runTuiInteractive(
           state.activeVariant = null;
           if (cfg) {
             const res = persistReasoningEffortToConfig(v, cfg, currentModel);
-            pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message }, '/variants');
+            if (!res.ok) pushCmdLine(state, { kind: 'warn', text: res.message }, '/variants');
             await session.paint();
           }
         }

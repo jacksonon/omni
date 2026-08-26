@@ -1153,18 +1153,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       // /model <名称>：直接切换（不同模型可配不同端点，见 config models）。
       // 持久化：切换成功 → 记录待落盘意图（interactive 每轮写入配置文件顶层 model
-      // 字段——用户要求切换后下次启动默认就是新模型）
+      // 字段——用户要求切换后下次启动默认就是新模型）；只生效不弹提示面板（用户要求）
       const err = ctx.onSwitchModel?.(args);
       if (err) pushCmdLine(ctx.state, { kind: 'warn', text: err });
       else {
         ctx.state.modelSave = args;
-        // per-model variants 提示：该模型配置了专属思考级别时随切换带出
-        const ep = (ctx.runOpts?.models ?? []).find((m) => m.name === args);
-        const effort = ep?.reasoningEffort;
-        pushCmdLine(ctx.state, {
-          kind: 'meta',
-          text: `已切换模型 → ${args}${effort ? `（思考级别 ${effort}）` : ''}`,
-        });
       }
     },
   },
@@ -2000,7 +1993,7 @@ export function handleSettingsPanelKey(key: TuiKey, state: TuiState): boolean {
 /**
  * 保存状态行（Enter）：按当前勾选与顺序应用到 state.statusline（footer 统计行
  * 立即按新配置重绘——让配置生效），并记录待持久化意图（interactive 每轮写入配置文件）。
- * 提示进命令面板（执行型：稍后自动收起）。
+ * **只生效不弹提示面板**（用户要求「做完设置不需要 pop 显示」）。
  */
 export function saveStatusline(state: TuiState): void {
   const panel = state.settingsPanel;
@@ -2009,17 +2002,6 @@ export function saveStatusline(state: TuiState): void {
   state.statuslineSave = [...state.statusline]; // 待落盘意图（interactive 消费）
   state.settingsPanel = null;
   state.status = '';
-  const en = state.language === 'en';
-  if (state.statusline.length === 0) {
-    pushCmdLine(state, { kind: 'meta', text: en ? 'Status line saved (all segments off → hidden)' : '已保存状态行（全部段已取消 → 底部不显示统计信息）' }, '/settings statusline');
-  } else {
-    const labels = state.statusline
-      .map((id) => STATUSLINE_SEGMENTS.find((sg) => sg.id === id))
-      .filter((sg): sg is StatuslineSegment => !!sg)
-      .map((sg) => (en ? sg.labelEn : sg.label))
-      .join(' · ');
-    pushCmdLine(state, { kind: 'meta', text: en ? `Status line saved (${state.statusline.length} items): ${labels}` : `已保存状态行（${state.statusline.length} 项）：${labels}` }, '/settings statusline');
-  }
 }
 
 /** 取消状态行编辑：关闭面板，不改变任何配置 */
@@ -2034,41 +2016,36 @@ export function confirmMenu(state: TuiState): void {
   if (!menu) return;
   const opt = menu.options[menu.selectedIndex];
   if (!opt || opt.group) return; // 组头行不可选中
-  const label = opt.label;
   const lang = state.language;
+  const label = opt.label; // 会话恢复等保留确认面板的菜单项用
   if (menu.id === 'theme') {
+    // 切换主题：只生效不弹提示面板（用户要求「做完设置不需要 pop 显示」）
     state.themeMode = opt.value as TuiThemeMode;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.theme', { label }) }, '/settings theme');
   } else if (menu.id === 'permission') {
     // 切换权限档位：interactive 每轮把 state.permission 同步进 runOpts.permission
-    // 并 setTier 到共用闸门（子代理同步）；meta 提示当前档位语义
+    // 并 setTier 到共用闸门（子代理同步）；只生效不弹提示面板
     state.permission = opt.value as PermissionTier;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.permission', { label }) }, '/permission');
   } else if (menu.id === 'variants') {
     // 切换思考级别 / 命名 variant（1.0 P0-3）：interactive 每轮消费 variantsSave——
     // `variant:<id>` 写 models."<模型>".variant 并同步 runOpts.activeVariant；
     // 普通级别同步 runOpts.reasoningEffort（loop 请求带 reasoning_effort）并清除命名叠加。
+    // 只生效不弹提示面板（用户要求）
     if (opt.value.startsWith('variant:')) {
       const id = opt.value.slice('variant:'.length);
       state.activeVariant = id;
-      pushCmdLine(state, { kind: 'meta', text: `已切换命名变体 → ${id}` }, '/variants');
     } else {
       state.activeVariant = null;
       state.reasoningEffort = opt.value;
     }
     state.variantsSave = opt.value;
-    if (!opt.value.startsWith('variant:')) {
-      pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.variants', { label }) }, '/variants');
-    }
   } else if (menu.id === 'model') {
     // 切换模型：交给 interactive 的 switchModel 回调（重建 client + 更新 modelRuntime）。
     // confirmMenu 是纯 state 操作拿不到回调——这里只记录意图，interactive 每轮
     // 对比 state.model 与运行时模型，变了才真正切换（见 interactive.ts syncModel）。
     // 持久化：记录待落盘意图（interactive 每轮写入配置文件顶层 model 字段——
-    // 用户要求切换后下次启动默认就是新模型）
+    // 用户要求切换后下次启动默认就是新模型）；只生效不弹提示面板
     state.model = opt.value;
     state.modelSave = opt.value;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.model', { label }) }, '/model');
   } else if (menu.id === 'session') {
     // 恢复会话：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
     // （state.sessionPick = 会话 id），interactive 每轮异步加载并恢复（见 interactive.ts）。
@@ -2102,11 +2079,11 @@ export function confirmMenu(state: TuiState): void {
     return;
   } else if (menu.id === 'language') {
     // 切换界面语言：立即生效（state.language 驱动全部界面 chrome 重绘），
-    // 记录待持久化意图（interactive 每轮写入配置文件 language 字段）
+    // 记录待持久化意图（interactive 每轮写入配置文件 language 字段）；
+    // 只生效不弹提示面板（用户要求）
     const next = opt.value === 'zh' || opt.value === 'en' ? opt.value : 'zh';
     state.language = next;
     state.languageSave = next;
-    pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.language', { label }) }, '/settings language');
     state.menu = null;
     state.status = '';
     return;
