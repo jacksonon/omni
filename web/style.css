@@ -600,7 +600,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .provider-nav-item .pni-icon { flex: none; font-size: 14px; width: 18px; text-align: center; }
 .provider-nav-item .pni-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .provider-nav-item .pni-count { flex: none; color: var(--text-caption); font-size: 11px; }
-.pm-add-row { display: flex; gap: 8px; flex: 1; align-items: flex-start; }
+.pm-add-row { display: flex; gap: 8px; align-items: center; }
 .provider-models { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .pm-item { border: 1px solid var(--line-1); border-radius: 12px; background: var(--surface); transition: border-color .12s var(--ease); }
 .pm-item:hover { border-color: var(--line-2); }
