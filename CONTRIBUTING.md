@@ -27,7 +27,7 @@ npm run dev -- "show me the structure of this directory"
 - 中文注释 + 英文命名（变量/函数/类型用英文，解释用中文）
 - **保持 MVP 简洁**：能不加抽象就不加；新功能先写直白代码，出现明显重复再考虑提炼
 - **修改工具时**：必须同步更新 `tools.ts` 中的 JSON Schema 与 `description`
-- **架构或命令有变化时**：同步更新 `AGENTS.md` 并在「演进日志」追加一行
+- **架构或命令有变化时**：同步更新 `AGENTS.md` 并在 `Doc/evolution-log.md` 追加一行
 
 ## 提交规范
 

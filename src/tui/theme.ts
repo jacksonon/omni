@@ -29,6 +29,12 @@ export interface TuiTheme {
   footerText: string;
   /** footer 路径/token 行文字色 */
   footerDim: string;
+  /**
+   * 思考级别（reasoningEffort）文字色：**强度递进色阶**——low 绿 → medium 琥珀 →
+   * high 橙 → xhigh 红 → max 紫（级别越高越“热”），未知/自定义级别回退 footerDim。
+   * 深色主题用 400 档（深灰底上明亮清晰）、亮色主题用 600 档（浅底上对比足够）。
+   */
+  effortColors: Record<string, string>;
   /** 输入框文字色 */
   inputText: string;
   /** 输入框占位符色 */
@@ -90,6 +96,14 @@ const DARK_THEME: TuiTheme = {
   cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——淡红底上浅色字不可读
   diffAdd: '#15803d', // diff 新增（green-700）：淡绿/淡黄/淡红底上都可读，两主题统一
   diffRem: '#b91c1c', // diff 删除（red-700）：淡绿/淡黄/淡红底上都可读，两主题统一
+  // 思考级别颜色（深色主题，400 档）：绿→琥珀→橙→红→紫 强度递进
+  effortColors: {
+    low: '#4ade80', // green-400
+    medium: '#fbbf24', // amber-400
+    high: '#fb923c', // orange-400
+    xhigh: '#f87171', // red-400
+    max: '#c084fc', // purple-400
+  },
 };
 
 const LIGHT_THEME: TuiTheme = {
@@ -115,6 +129,14 @@ const LIGHT_THEME: TuiTheme = {
   cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——与暗色一致
   diffAdd: '#15803d', // diff 新增（green-700）——两主题统一
   diffRem: '#b91c1c', // diff 删除（red-700）——两主题统一
+  // 思考级别颜色（亮色主题，600 档）：绿→琥珀→橙→红→紫 强度递进（浅底上对比足够）
+  effortColors: {
+    low: '#16a34a', // green-600
+    medium: '#d97706', // amber-600
+    high: '#ea580c', // orange-600
+    xhigh: '#dc2626', // red-600
+    max: '#9333ea', // purple-600
+  },
 };
 
 /** 判断主题是否为亮色（用于 dim 行显式取深色文字等分支） */
@@ -148,4 +170,13 @@ export function themeColor(color: string | undefined, theme: TuiTheme): string |
 export function themeFor(state: TuiState): TuiTheme {
   const mode = state.themeMode === 'system' ? state.detectedTheme : state.themeMode;
   return mode === 'light' ? LIGHT_THEME : DARK_THEME;
+}
+
+/**
+ * 思考级别 → 文字色：命中 effortColors 用级别色，未知/自定义级别回退 footerDim。
+ * 级别切换（/variants）或主题切换时 repaintTree 每帧重取，即时生效。
+ */
+export function effortColor(effort: string | undefined, theme: TuiTheme): string {
+  if (!effort) return theme.footerDim;
+  return theme.effortColors[effort] ?? theme.footerDim;
 }

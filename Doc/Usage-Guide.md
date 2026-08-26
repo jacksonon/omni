@@ -157,7 +157,7 @@ With a real TTY + bun (or the TUI package), starting without a task enters the f
 │  (final answer…)                             │
 │  ────────────────────────────────────────   │
 │  ▍ Type a message…                           │
-│  model mock-model · thinking medium   ⠙ esc  │
+│  mock-model · medium                  ⠙ esc  │
 │  7 turns · 41 steps| LLM 10m58s · tools 7s| …│
 └─────────────────────────────────────────────┘
 ```
@@ -348,7 +348,8 @@ next startup keeps your choice.
 | Auto-grow input | multi-line input grows 1–5 rows automatically; beyond 5 rows it scrolls internally |
 | Submit while running | ordinary messages go to the "⏳ pending (N)" list, sent when the turn ends; steer messages get priority |
 
-Inside the gray block the model line sits on the left (`model X · thinking medium`) with the loading
+Inside the gray block the model line sits on the left (`model name · reasoning level`; the level is
+color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple) with the loading
 animation and the `esc` hint on the right; below the block is the configurable status/stats line
 (`/settings statusline` toggling and ordering).
 
@@ -860,7 +861,7 @@ environment, `/diff` for changes.
 | CI workflow template | `examples/ci/omni-fix-ci.yml` + `examples/ci/README.md` |
 | Developer guide / architecture | `AGENTS.md` at the repo root |
 | Mock API | `scripts/mock-server.mjs` (`npm run mock`, port 8787) |
-| Backlog | `TODO.md` |
+| Backlog | `Doc/TODO.md` |
 
 ## 1.0 New Capabilities
 

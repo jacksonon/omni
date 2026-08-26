@@ -1,21 +1,24 @@
 # Omni
 
 > 终端 AI 编程助手（Agent 工程）。单 Agent 循环 + 工具 + 安全护栏 + 上下文管理 + 记忆/会话/技能 + 全屏 TUI + 本地 Web/Electron。零框架依赖（裸 OpenAI SDK）。
-> 定位 Beta（功能完备）。本文件是给 AI 读者（LLM）的文档索引。
+> 定位 1.0（Beta 功能完备 + 行业标配补齐）。本文件是给 AI 读者（LLM）的文档索引。
 
 ## 文档索引
 - [README.md](README.md) — 项目总览 / 快速开始 / 配置 / 命令参考 / 架构
 - [README.zh-CN.md](README.zh-CN.md) — 中文总览
-- [AGENTS.md](AGENTS.md) — 开发指南（架构/命令/演进日志/协作规范；AI 协作必读）
+- [AGENTS.md](AGENTS.md) — 开发指南（精简版；架构/命令/协作规范；AI 协作必读）
+- [Doc/evolution-log.md](Doc/evolution-log.md) — 全部迭代记录（第一次 ~ 第一百七十三次）
+- [Doc/tui-architecture.md](Doc/tui-architecture.md) — TUI 渲染实现细节（修改 TUI 前必读）
+- [Doc/roadmap.md](Doc/roadmap.md) — 路线图全量条目
+- [Doc/release-guide.md](Doc/release-guide.md) — 构建与发布完整流程（CI/npm/关键坑）
+- [Doc/TODO.md](Doc/TODO.md) — 可做事项 backlog
+- [Doc/TODO-1.0.md](Doc/TODO-1.0.md) — 1.0 版本规划
 - [Doc/Usage-Guide.md](Doc/Usage-Guide.md) — 用户手册（英文）
 - [Doc/使用指导.md](Doc/使用指导.md) — 用户手册（中文）
 - [Doc/Headless-Protocol.md](Doc/Headless-Protocol.md) — headless/协议冻结说明
-- [Doc/Architecture.md](Doc/Architecture.md) — 架构说明（规划中）
-- [TODO.md](TODO.md) — 可做事项 backlog
-- [TODO-1.0.md](TODO-1.0.md) — 1.0 版本规划
 - [config.schema.json](config.schema.json) — 配置 JSON Schema
 - [schemas/](schemas/) — 协议冻结 Schema（exec-result / stream-json / session-jsonl / mcp-server / hook）
-- [research-terminal-agents-2026.md](Doc/research-terminal-agents-2026.md) — 全市场 Agent Harness 调研原始报告
+- [Doc/research-terminal-agents-2026.md](Doc/research-terminal-agents-2026.md) — 全市场 Agent Harness 调研原始报告
 
 ## 关键入口
 - 配置：`omni.json` / `omni.jsonc`（JSONC 带注释）；`omni.example.jsonc` 为完整示例

@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }
   // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
   // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
-  const checks1 = ['你是谁？', '📁 .', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', '模型 mock', '0 轮 · 0 步'];
+  const checks1 = ['你是谁？', '📁 .', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '0 轮 · 0 步'];
   // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
@@ -371,7 +371,7 @@ async function main(): Promise<void> {
   const s7 = createTuiState();
   fill(s7, 40);
   s7.scrollTop = 0; // 回滚到最早的内容
-  const r7 = await render(s7, 21); // 思考头行 +1 行后 21 行才容得下 📁 .（scrollTop=0 窗 cap-1）
+  const r7 = await render(s7, 22); // 思考头行 +1 行、输入/模型间距 +1 行后 22 行才容得下 📁 .（scrollTop=0 窗 cap-1）
   console.log('=== 场景 7：上滚回看历史（scrollTop=0）===');
   console.log(r7.frame);
   const checks7 = ['你是谁？', '📁 .', '已上滚'];
@@ -635,7 +635,7 @@ async function main(): Promise<void> {
   const r13 = await render(s13);
   console.log('=== 场景 13：footer 统计行（窄屏段级截断）===');
   console.log(r13.frame);
-  const checks13 = ['模型 grok-4.5', '0 轮 · 0 步', 'LLM 0s · 工具调用 0.0s', '…'];
+  const checks13 = ['grok-4.5', '0 轮 · 0 步', 'LLM 0s · 工具调用 0.0s', '…'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
     console.error(`✗ 场景 13 footer 缺少: ${missing13.join(', ')}`);
@@ -809,7 +809,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame16 = t16.captureCharFrame();
-  if (!frame16.includes('你好') || !frame16.includes('输入消息，Enter 发送') || !frame16.includes('模型 mock')) {
+  if (!frame16.includes('你好') || !frame16.includes('输入消息，Enter 发送') || !frame16.includes('mock')) {
     console.error('✗ 场景 16 亮色主题渲染帧缺内容');
     process.exit(1);
   }
@@ -903,8 +903,9 @@ async function main(): Promise<void> {
   }
   // b) 发送按钮已移除（TUI 无点击交互，Esc 取消 + Enter 排队 + Cmd/Ctrl+Enter steer 替代）；
   //    模型行保留：模型 + 思考强度（未设置不显示）
-  if (!tree15.footerModel || !JSON.stringify(tree15.footerModel.content).includes('模型 mock')) {
-    console.error('✗ 场景 15 模型行缺失');
+  // 模型行只显示模型名 + 思考级别（用户要求去掉「模型/思考」字样：`mock · medium`）
+  if (!tree15.footerModel || !JSON.stringify(tree15.footerModel.content).includes('mock') || JSON.stringify(tree15.footerModel.content).includes('模型')) {
+    console.error('✗ 场景 15 模型行缺失（应只显示模型名，无「模型」字样）');
     process.exit(1);
   }
   if (!tree15.footerEffort || JSON.stringify(tree15.footerEffort.content).includes('思考')) {
@@ -914,10 +915,35 @@ async function main(): Promise<void> {
   s15.reasoningEffort = 'medium';
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  if (!JSON.stringify(tree15.footerEffort?.content).includes('思考 medium')) {
-    console.error(`✗ 场景 15 思考强度未显示: ${JSON.stringify(tree15.footerEffort?.content)}`);
+  if (
+    !JSON.stringify(tree15.footerEffort?.content).includes('· medium') ||
+    JSON.stringify(tree15.footerEffort?.content).includes('思考')
+  ) {
+    console.error(`✗ 场景 15 思考级别未显示（应 '· medium'，无「思考」字样）: ${JSON.stringify(tree15.footerEffort?.content)}`);
     process.exit(1);
   }
+  // 思考级别按级别着色（强度递进色阶，深色主题）：medium → amber-400 [251,191,36]；
+  // 切 high → orange-400 [251,146,60]；未知/自定义级别回退 footerDim [156,163,175]
+  const effortFg15 = (): number[] => toInts15(tree15.footerEffort?.fg);
+  if (JSON.stringify(effortFg15()) !== JSON.stringify([251, 191, 36])) {
+    console.error(`✗ 场景 15 思考级别 medium 颜色错误: ${JSON.stringify(effortFg15())}（应 amber-400 [251,191,36]）`);
+    process.exit(1);
+  }
+  s15.reasoningEffort = 'high';
+  repaintTree(t15.renderer, tree15, s15, { withInput: true });
+  await t15.renderOnce();
+  if (JSON.stringify(effortFg15()) !== JSON.stringify([251, 146, 60])) {
+    console.error(`✗ 场景 15 思考级别 high 颜色错误: ${JSON.stringify(effortFg15())}（应 orange-400 [251,146,60]）`);
+    process.exit(1);
+  }
+  s15.reasoningEffort = 'custom-level';
+  repaintTree(t15.renderer, tree15, s15, { withInput: true });
+  await t15.renderOnce();
+  if (JSON.stringify(effortFg15()) !== JSON.stringify([156, 163, 175])) {
+    console.error(`✗ 场景 15 未知思考级别颜色回退错误: ${JSON.stringify(effortFg15())}（应 footerDim [156,163,175]）`);
+    process.exit(1);
+  }
+  s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
   // b2) 输入区域右侧 loading（与模型行同一行）：未运行隐藏；运行中转圈（帧随
   //     loadingIndex 换）；Esc/会话结束（loading=false）清空消失
   if (!tree15.footerLoading) {
@@ -939,7 +965,7 @@ async function main(): Promise<void> {
   await t15.renderOnce();
   const frame15load = t15.captureCharFrame();
   const frameLines15 = frame15load.split('\n');
-  const modelRow15 = frameLines15.findIndex((l) => l.includes('模型 mock'));
+  const modelRow15 = frameLines15.findIndex((l) => l.includes('mock'));
   const loadChar15 = SPINNER_FRAMES[2];
   const loadRow15 = frameLines15.findIndex((l) => l.includes(loadChar15));
   if (loadingText15(tree15.footerLoading) !== loadChar15) {
@@ -951,7 +977,7 @@ async function main(): Promise<void> {
     console.log(frame15load);
     process.exit(1);
   }
-  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) < frameLines15[loadRow15]!.indexOf('模型')) {
+  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) < frameLines15[loadRow15]!.indexOf('mock')) {
     console.error('✗ 场景 15 loading 应位于模型行文字右侧（灰色块右缘）');
     process.exit(1);
   }
@@ -982,7 +1008,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const escFrame15 = t15.captureCharFrame();
-  const escModelRow15 = escFrame15.split('\n').findIndex((l) => l.includes('模型 mock'));
+  const escModelRow15 = escFrame15.split('\n').findIndex((l) => l.includes('mock'));
   const escLine15 = escFrame15.split('\n')[escModelRow15];
   if (!escLine15 || !escLine15.includes('esc')) {
     console.error('✗ 场景 15 运行中模型行应含 esc 提示');
@@ -1036,8 +1062,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // d) 左侧蓝色细线（与对话流用户消息同款 ▍）：紧贴灰块左缘、**竖跨整个灰色背景
-  //    含上下圆角边框行**——单行输入 = 边框 1 + 输入 1 + 模型 1 + 边框 1 = 4 行；
-  //    增高到 3 行输入后 = 6 行（输入区域高度调低：无间距行）
+  //    含上下圆角边框行**——单行输入 = 边框 1 + 输入 1 + 间距 1 + 模型 1 + 边框 1 = 5 行；
+  //    增高到 3 行输入后 = 7 行（输入区域高度低，输入与模型行之间留 1 行间距）
   if (!tree15.blueLine) {
     console.error('✗ 场景 15 输入区域蓝色细线未创建');
     process.exit(1);
@@ -1048,8 +1074,8 @@ async function main(): Promise<void> {
     const chunks = (c as { chunks?: { text: string }[] })?.chunks;
     return (chunks ?? []).map((ch) => ch.text).join('');
   };
-  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍') {
-    console.error(`✗ 场景 15 单行输入时细线高度错误: ${JSON.stringify(barText15(tree15.blueLine))}（应 4 行 ▍）`);
+  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍') {
+    console.error(`✗ 场景 15 单行输入时细线高度错误: ${JSON.stringify(barText15(tree15.blueLine))}（应 5 行 ▍）`);
     process.exit(1);
   }
   // 帧内灰色块**全部行（含上下边框行）**左侧都以 ▍ 开头——细线真实渲染在
@@ -1075,12 +1101,12 @@ async function main(): Promise<void> {
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
   const frame15b = t15.captureCharFrame();
-  if (!frame15b.includes('第一行') || !frame15b.includes('第三行') || !frame15b.includes('模型 mock')) {
+  if (!frame15b.includes('第一行') || !frame15b.includes('第三行') || !frame15b.includes('mock')) {
     console.error('✗ 场景 15 输入增高后渲染缺失（输入/模型行）');
     process.exit(1);
   }
-  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍\n▍') {
-    console.error(`✗ 场景 15 输入增高后细线高度未同步: ${JSON.stringify(barText15(tree15.blueLine))}（应 6 行 ▍）`);
+  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍\n▍\n▍') {
+    console.error(`✗ 场景 15 输入增高后细线高度未同步: ${JSON.stringify(barText15(tree15.blueLine))}（应 7 行 ▍）`);
     process.exit(1);
   }
   const lines15b = frame15b.split('\n');
@@ -1466,7 +1492,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // e2) 独立浮层：绝对定位悬停在输入框（灰色块）上方，不占内容流
-  //     （0-based 屏幕行：底部块顶 = 20 - 7 - (inputLines+4) = 12，浮层底应在其上方）
+  //     （0-based 屏幕行：底部块顶 = 20 - 8 - (inputLines+5) = 11，浮层底应在其上方）
   if (!tree19.suggestRect) {
     console.error('✗ 场景 19 联想浮层未记录 suggestRect（应可鼠标点击）');
     process.exit(1);
@@ -1477,7 +1503,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 19 联想浮层定位错误: top=${top19} left=${left19}（应 left=2、top≥1）`);
     process.exit(1);
   }
-  const footerTop19 = 20 - 7 - s19.inputLines; // 底部块顶部（0-based；圆角边框 +2 行、统计行间距 1、无排队区）
+  const footerTop19 = 20 - 8 - s19.inputLines; // 底部块顶部（0-based；圆角边框 +2 行、输入/模型间距 1、统计行间距 1、无排队区）
   if (tree19.suggestRect.bottom >= footerTop19) {
     console.error(`✗ 场景 19 联想浮层未浮在输入框上方: ${JSON.stringify(tree19.suggestRect)}（底部块顶=${footerTop19}）`);
     process.exit(1);
@@ -2428,7 +2454,7 @@ async function main(): Promise<void> {
   s28b.planMode = true;
   pushLine(s28b, { kind: 'user', text: '你好' });
   const r28 = await render(s28b);
-  if (!r28.frame.includes('模型 mock · 计划模式')) {
+  if (!r28.frame.includes('mock · 计划模式')) {
     console.error('✗ 场景 28 footer 未显示计划模式指示');
     process.exit(1);
   }
@@ -3922,8 +3948,8 @@ async function main(): Promise<void> {
   const t37h = await createTestRenderer({ width: 64, height: 20 });
   const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
   await repaintTree(t37h.renderer, tree37h, s37h, 64, 20);
-  // 灰色块高度调低后 footerTop 上移 1 行 → 菜单窗口多容纳 1 个选项（11..16）
-  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, 16, -1, -1, -1])) {
+  // 输入/模型间距 +1 行后 footerTop 下移 1 行 → 菜单窗口少容纳 1 个选项（11..15）
+  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
     console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
     process.exit(1);
   }
@@ -3938,14 +3964,14 @@ async function main(): Promise<void> {
   //     「会话 15/9/3」等窗口外标签不得泄漏进帧
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
-  // 灰块变矮后窗口多 1 行（选项 11..16 = 会话 8..3）→ 下方提示「↓ 还有 3 个」
-  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 3 个', '╰']) {
+  // 间距 +1 行后窗口少 1 行（选项 11..15 = 会话 8..4）→ 下方提示「↓ 还有 4 个」
+  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 4 个', '╰']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
-  // 窗口扩到 6 行后「会话 3」已进窗口（11..16），窗口外改为 2/9/15
+  // 窗口 5 行（11..15），窗口外为 2/9/15
   for (const outside of ['会话 9 ·', '会话 2 ·', '会话 15 ·']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
@@ -4802,8 +4828,8 @@ async function main(): Promise<void> {
   const tree43 = mountTree(t43.renderer, s43r, { withInput: true });
   await t43.renderOnce();
   const frame43 = t43.captureCharFrame();
-  if (!frame43.includes('Model mock')) {
-    console.error('✗ 场景 43 英文 footer 模型行缺失: ' + frame43.split('\n').filter((l) => l.includes('Model')).join('|'));
+  if (!frame43.includes('mock') || frame43.includes('Model') || frame43.includes('Thinking')) {
+    console.error('✗ 场景 43 英文 footer 模型行缺失（应只显示模型名+级别，无 Model/Thinking 字样）: ' + frame43.split('\n').filter((l) => l.includes('mock')).join('|'));
     process.exit(1);
   }
   if (!frame43.includes('Type a message')) {
@@ -5349,21 +5375,21 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 高亮行 › 前缀缺失:\n${frame45}`);
       process.exit(1);
     }
-    // askRects：面板底 = 24-5-1 = 18；行数 = 1+3+1+1+1 = 7 → 顶 11。
-    // 选项 i 在 y = 11+1+i（12/13/14）、自定义 15、确认 16
-    const rOpt = tree45.askRects.get(13);
+    // askRects：面板底 = 24-6-1 = 17；行数 = 1+3+1+1+1 = 7 → 顶 10。
+    // 选项 i 在 y = 10+1+i（11/12/13）、自定义 14、确认 15
+    const rOpt = tree45.askRects.get(12);
     if (!rOpt || rOpt.kind !== 'opt' || rOpt.idx !== 1) {
-      console.error(`✗ 场景 45 askRects 选项行映射错误: y13 → ${JSON.stringify(rOpt)}: ${JSON.stringify([...tree45.askRects])}`);
+      console.error(`✗ 场景 45 askRects 选项行映射错误: y12 → ${JSON.stringify(rOpt)}: ${JSON.stringify([...tree45.askRects])}`);
       process.exit(1);
     }
-    const rCus = tree45.askRects.get(15);
+    const rCus = tree45.askRects.get(14);
     if (!rCus || rCus.kind !== 'custom') {
-      console.error(`✗ 场景 45 askRects 自定义行映射错误: y15 → ${JSON.stringify(rCus)}`);
+      console.error(`✗ 场景 45 askRects 自定义行映射错误: y14 → ${JSON.stringify(rCus)}`);
       process.exit(1);
     }
-    const rCfm = tree45.askRects.get(16);
+    const rCfm = tree45.askRects.get(15);
     if (!rCfm || rCfm.kind !== 'confirm') {
-      console.error(`✗ 场景 45 askRects 确认行映射错误: y16 → ${JSON.stringify(rCfm)}`);
+      console.error(`✗ 场景 45 askRects 确认行映射错误: y15 → ${JSON.stringify(rCfm)}`);
       process.exit(1);
     }
     // 内容区预算收缩：ask 打开时 cap 减 options+4 行（❓ 1 + 选项 3 + 自定义 1 + 确认 1 + 提示 1）

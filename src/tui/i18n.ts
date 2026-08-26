@@ -6,7 +6,7 @@
  *   · `tf(lang, key, vars)` 取字符串并做 `{var}` 插值；
  *   · 命令面板的具体输出（/status 列表、/session 列表等命令结果内容）暂保持中文，
  *     只本地化界面 chrome（菜单/状态栏/footer/待发送/联想/审批卡/help/tokens 模块等）——
- *     见 AGENTS.md 演进日志第一百一十五次。
+ *     见 Doc/evolution-log.md 第一百一十五次。
  */
 
 /** 支持的界面语言 */
@@ -52,9 +52,9 @@ const ZH: Record<string, string> = {
 
   // 输入区 / footer（render.ts）
   'input.placeholder': '输入消息，Enter 发送；Shift+Enter 换行',
-  'footer.model': '模型 {model}',
+  'footer.model': '{model}',
   'footer.planMode': ' · 计划模式',
-  'footer.effort': ' · 思考 {effort}',
+  'footer.effort': ' · {effort}',
   'pending.title': '⏳ 待发送（{q}{s}）',
   'pending.steer': ' · ⚡ {s} 打断',
   'pending.more': '  · 还有 {n} 条…',
@@ -147,9 +147,9 @@ const EN: Record<string, string> = {
   'settings.hint': 'Space · ←/→ move · Enter · Esc cancel',
 
   'input.placeholder': 'Type a message, Enter to send; Shift+Enter for newline',
-  'footer.model': 'Model {model}',
+  'footer.model': '{model}',
   'footer.planMode': ' · Plan mode',
-  'footer.effort': ' · Thinking {effort}',
+  'footer.effort': ' · {effort}',
   'pending.title': '⏳ Pending ({q}{s})',
   'pending.steer': ' · ⚡ {s} steer',
   'pending.more': '  · {n} more…',

@@ -21,15 +21,15 @@
  *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
- *   ▍ 模型 grok-4.5 · 思考 medium  │ 模型+思考强度（淡；左对齐）
+ *   ▍ grok-4.5 · medium            │ 模型+思考级别（级别按强度着色；左对齐）
  *   ╰──────────────────────────────╯
  *         8 轮 · 65 步| LLM 20m32s · 工具调用 8.6s| …  ← 统计行（灰块下方，居中）
  *
  * 灰色块（输入框 + 模型行，淡灰色背景，四边 16px 圆角）与对话流区分；
  * 左侧**蓝色细线（▍，与对话流用户消息同款）**贴左缘、**竖跨整个灰色背景**（含上下
- * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 模型 1 = inputLines+3，
- * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0
- * 且输入框与模型行之间无间距，灰块 = 圆角边框 2 + 输入 inputLines + 模型 1 = inputLines+3）。
+ * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4，
+ * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0，
+ * 输入框与模型行之间留 1 行间距，灰块 = 圆角边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4）。
  * 模型行（**左对齐**——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
  *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
@@ -64,7 +64,7 @@ import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
 import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
-import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
+import { effortColor, isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { visualWidth } from './width.js';
 import {
@@ -138,7 +138,7 @@ export interface TuiTree {
   input: TextareaRenderable | null;
   /** 模型行 / 思考强度 / 统计行（repaintTree 每次刷新内容） */
   footerModel: TextRenderable | null;
-  /** 思考强度（`· 思考 medium`，淡色；未设置思考级别时为空） */
+  /** 思考级别（`· medium`，按级别强度着色 effortColor；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
   footerTokens: TextRenderable | null;
   /** loading（模型行内、模型文本右面；会话进行中转，Esc/会话结束消失） */
@@ -233,8 +233,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
 
     // 左侧蓝色细线（▍ 3/8 块，与对话流用户消息左侧同款）：**紧贴灰块左缘**、竖跨整块。
     // marginLeft:-1 把细线拉到圆角边框列上（边框线同色不可见，细线盖住边框格 →
-    // 与用户消息的 ▍ 一样贴块左缘；探针实测负 margin 生效）。高度（inputLines + 3 =
-    // 圆角边框 2 + 输入 + 模型行）由 repaintTree 每次重绘按最新 inputLines
+    // 与用户消息的 ▍ 一样贴块左缘；探针实测负 margin 生效）。高度（inputLines + 4 =
+    // 圆角边框 2 + 输入 + 间距 1 + 模型行）由 repaintTree 每次重绘按最新 inputLines
     // 同步；marginTop/Bottom -1 使 margin-box 与内容列同高不撑大灰块，同时渲染起点
     // 上移 1 行盖住顶边框、向下溢到底边框——**竖跨整个灰色背景**（用户要求）。
     // bg 与灰块同色，折行/增高时连续
@@ -244,9 +244,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerBox.add(blueLine);
 
     // 内容列：paddingX 1 让输入文字与圆角边框保持 1 列间距（细线让 1 列）；
-    // **paddingY 0 + 无 gap**（用户要求输入区域高度调低：灰块从 inputLines+6 降为
-    // inputLines+4，再降为 inputLines+3——去掉上下 padding 与输入框/模型行之间的
-    // 1 行间距，内容紧凑，圆角边框已提供上下视觉边界）
+    // **paddingY 0 + gap 1**（用户要求输入区域高度低：灰块 = 圆角边框 2 + 输入 inputLines
+    // + 间距 1 + 模型 1 = inputLines+4；gap 1 让输入文字与模型行之间留 1 行间距——
+    // 用户反馈「输入文字和模型那一行太近了」）
     const contentCol = new BoxRenderable(ctx, {
       flexDirection: 'column',
       flexGrow: 1,
@@ -293,8 +293,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     contentCol.add(input);
 
     // 模型行（输入框下方，灰色块内，**左对齐**——用户要求从右侧移到左侧显示）：
-    // 模型 + 思考强度（淡色）+ **loading/esc 跟在左侧现有文本右面**（用户要求——
-    // 不再钉在灰块右缘，紧跟 `模型 X · 思考 medium` 之后）。发送/取消按钮已移除
+    // 模型名 + 思考级别（只显示 `模型名 · 级别`，无「模型/思考」字样——用户要求；
+    // 级别按强度着色）+ **loading/esc 跟在左侧现有文本右面**（用户要求——
+    // 不再钉在灰块右缘，紧跟模型文本之后）。发送/取消按钮已移除
     //（TUI 无点击交互，改用 Esc 取消命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
@@ -623,7 +624,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.input.backgroundColor = theme.inputBg;
   }
   if (tree.footerModel) tree.footerModel.fg = parseColor(theme.footerText);
-  if (tree.footerEffort) tree.footerEffort.fg = parseColor(theme.footerDim);
+  // 思考级别按级别取色（强度递进色阶：low 绿→medium 琥珀→high 橙→xhigh 红→max 紫），
+  // 未知/自定义级别回退 footerDim；/variants 切换或主题切换时每帧重取即时生效
+  if (tree.footerEffort) tree.footerEffort.fg = parseColor(effortColor(state.reasoningEffort, theme));
   if (tree.footerTokens) tree.footerTokens.fg = parseColor(theme.footerDim);
   // 待发送消息区（输入框上方小视图）行数预算：标题 1 + 最多 4 条消息 + 超出时「还有 N 条」1 行。
   // 由 computeRows / footerTop（联想浮层）共用——预算同步收缩，灰色块永远完整可见。
@@ -632,7 +635,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const pendingRows = pendingCount > 0 ? 1 + pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
   // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）。联想/菜单/命令面板浮层共用：
   // 浮层底边钳制在此行上方——永不遮住输入区。inputLines 刷新后（下方 if 块内）重新赋值。
-  let footerTop = (height ?? 24) - 6 - pendingRows - 1;
+  let footerTop = (height ?? 24) - 7 - pendingRows - 1;
   // 状态栏：dark 保持 dim 白字（原样）；light 去掉 dim 属性 + 显式深灰文字
   //（浅底上 dim 白字看不见，dim+深灰又会半亮发浅）
   (tree.status as { attributes?: number }).attributes = createTextAttributes(isLightTheme(theme) ? {} : { dim: true });
@@ -645,14 +648,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 3);
     state.inputLines = Math.min(5, Math.max(1, estimateInputLines(tree.input.plainText, inner)));
   }
-  // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 模型）
-  // = inputLines + 3 行；显式 height 钉到 inputLines + 3，marginTop/Bottom -1 使
-  // **margin-box = inputLines + 1 与内容列同高（不撑大灰层）**，渲染起点上移 1 行
+  // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 1 + 模型）
+  // = inputLines + 4 行；显式 height 钉到 inputLines + 4，marginTop/Bottom -1 使
+  // **margin-box = inputLines + 2 与内容列同高（不撑大灰层）**，渲染起点上移 1 行
   // 盖住顶边框行、向下溢到底边框行——**竖跨整个灰色背景含上下圆角边框行**（用户要求）。
   // 颜色按主题（fg 蓝 / bg 与灰块同色）
   if (tree.blueLine) {
-    tree.blueLine.height = Math.max(1, state.inputLines) + 3;
-    tree.blueLine.content = Array(Math.max(1, state.inputLines) + 3).fill(ACCENT_BAR).join('\n');
+    tree.blueLine.height = Math.max(1, state.inputLines) + 4;
+    tree.blueLine.content = Array(Math.max(1, state.inputLines) + 4).fill(ACCENT_BAR).join('\n');
     tree.blueLine.fg = parseColor(theme.accentBlue);
     tree.blueLine.bg = parseColor(theme.footerBg);
   }
@@ -664,8 +667,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.input && opts?.withInput) {
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
-    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块（圆角边框 2 行））
-    footerTop = (height ?? 24) - 6 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
+    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+4，含圆角边框) - 统计行间距(1)）
+    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
     if (!state.menu && !state.settingsPanel && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -803,9 +806,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.footerEsc.content = state.loading ? 'esc' : '';
   }
   // 视口过小时隐藏状态栏，优先保证底部完整可见
-  //（交互模式需 12 行：灰色块 5（圆角边框 2 + 输入 1 + 间距 1 + 模型 1）+ 统计行 2（间距 1 + 行 1）+ 状态栏 2（间距 1 + 行 1）+ 内边距 2；
+  //（交互模式需 11 行：灰色块 5（圆角边框 2 + 输入 1 + 间距 1 + 模型 1）+ 统计行 2（间距 1 + 行 1）+ 状态栏 2（间距 1 + 行 1）+ 内边距 2；
   //  单任务模式仅需 4 行——状态栏 2 + 内边距 2）
-  tree.status.visible = opts?.withInput ? height >= 10 : height >= 4;
+  tree.status.visible = opts?.withInput ? height >= 11 : height >= 4;
   tree.status.content = state.status;
 
   // 联想/提及列表内容（/ 命令联想：› /theme 描述；@ 提及：📁/📄 + 路径）。
@@ -823,8 +826,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const visible = !!picker && picker.items.length > 0;
     tree.suggestBox.visible = visible;
     if (visible && picker) {
-      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 灰色块(inputLines+3，含圆角边框) - 待发送区(pendingRows)
-      const footerTop = (height ?? 24) - 6 - pendingRows - state.inputLines;
+      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 统计行间距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows)
+      const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
       // 紧凑下拉：内部行（含提示行）≤ 8（小视口按剩余空间收缩）——面板不铺满整个内容区，
       // 而是悬停在输入框上方的一小片下拉（用户反馈菜单铺满全屏不像“输入框上方的菜单”）
       const interiorBudget = Math.max(3, Math.min(8, footerTop - 3));
@@ -1113,11 +1116,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   // 待发送消息行的点击区域：底部固定块（待发送区 + 灰色块）被 marginTop:auto 钉在视口
   // 底部，位置是**确定**的（与内容长度/滚动无关）——底部块顶 = 视口 - 根底内边距(1)
-  // - 统计行间距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+3)。
+  // - 统计行间距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+4)。
   // 标题行在底部块顶，消息行从 +1 开始：消息 i 在 y = wrapperTop + 1 + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
-    const wrapperTop = (height ?? 24) - 6 - pendingRows - state.inputLines;
+    const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
   }
   // ask_user 提问面板（输入区上方）：**竖向勾选列表**——❓ 问题（单选/多选）+ 每行
@@ -1166,7 +1169,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         applyRowToCell(cell, aRows[i], theme);
       }
       // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数
-      const aBottom = (height ?? 24) - 5 - state.inputLines - pendingRows;
+      const aBottom = (height ?? 24) - 6 - state.inputLines - pendingRows;
       const aTop = aBottom - aRows.length;
       // 行 y → 类型：1 起选项行（面板内下标 1+i）、自定义行（下标 1+options.length）、
       // 确认行（下标 2+options.length）

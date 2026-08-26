@@ -7,7 +7,7 @@
 > Gemini CLI（现 Antigravity CLI）/ Qwen Code / Cursor / Aider / Cline / Roo Code / Kilo Code /
 > Goose / OpenHands / GitHub Copilot CLI。
 > 优先级：P0 = 高价值低成本（短期可做），P1 = 高价值中成本，P2 = 低优先/重投入。
-> 完成一项 → 同步更新 AGENTS.md 路线图与演进日志。
+> 完成一项 → 同步更新 AGENTS.md 路线图摘要与 `Doc/evolution-log.md`。
 > ✅ = 已完成基线（当前能力，不再重复做）。
 
 ## 一、生命周期自动化（Hooks）✅ 基线：9 事件 + JSON 协议 + matcher + 配置分层合并 + stderr 捕获 + 超时/失败降级放行（第一百三十二/三十三次）

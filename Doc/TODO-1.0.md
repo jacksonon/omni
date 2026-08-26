@@ -101,7 +101,7 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 ## 四、1.0 版本 TODO
 
 > 优先级：**P0 = 1.0 的定义项（不完成不叫 1.0）**；P1 = 竞争力增强；P2 = 远期/按需。
-> 完成一项 → 同步更新 AGENTS.md 路线图与演进日志（沿用 TODO.md 惯例）。
+> 完成一项 → 同步更新 AGENTS.md 路线图摘要与 `Doc/evolution-log.md`（沿用 `Doc/TODO.md` 惯例）。
 
 ### 4.1 P0 —— 定义项
 
@@ -183,7 +183,7 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
    环境变量级一键禁用；NO_COLOR 等环境约定尊重并在文档声明收集范围。
 6. **质量信号公开**：发布 eval 报告（mock 回归 + 一组真实任务集完成率 + token 成本）
    + 快照/探针测试规模，作为「稳定」主张佐证。
-7. **治理可持续**：多维护者培养 + 路线图透明（TODO.md/TODO-1.0.md 公开演进），
+7. **治理可持续**：多维护者培养 + 路线图透明（`Doc/TODO.md` / `Doc/TODO-1.0.md` 公开演进），
    避免 Plandex 式单点风险。
 
 ---
