@@ -679,6 +679,7 @@ async function main(): Promise<void> {
   // 用户示例格式验证（示例值：7 轮 · 41 步| LLM 6m35s · 工具调用 7s| 首 token 平均 6.5s · 112 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok）
   const s13c = createTuiState();
   s13c.model = 'mock';
+  pushLine(s13c, { kind: 'user', text: '你好' }); // 有会话内容 → 非 hero 模式（hero 隐藏统计行）
   s13c.tokens = { prompt: 3_000_000, completion: 44_200, total: 3_044_200, cached: 2_910_000 };
   s13c.stats = { turns: 7, steps: 41, llmMs: 394_642, toolsMs: 7_000, firstTokenSum: 45_500, firstTokenCount: 7, genMs: 349_142, cached: 2_910_000 };
   const t13c = await createTestRenderer({ width: 120, height: 20 });
@@ -5658,6 +5659,57 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 46 通过：Ctrl+X 前缀快捷键（绑定表/matchShortcutKey 三态/前缀状态机/帮助提示）');
+
+  // 场景 47：hero 初始界面——未开始对话时空会话显示 ASCII 大字「Omni」横幅 + 输入区
+  // 垂直居中 + 统计行隐藏；首条消息进入后恢复底部钉住布局 + 统计行显示。
+  console.log('=== 场景 47：hero 初始界面（ASCII 横幅 + 居中输入区 + 隐藏统计行）===');
+  {
+    // a) 空状态渲染：横幅可见、统计行隐藏、状态栏隐藏
+    const s47 = createTuiState();
+    s47.model = 'mock';
+    s47.status = '模型 mock · 就绪';
+    const t47 = await createTestRenderer({ width: 64, height: 20 });
+    const tree47 = mountTree(t47.renderer, s47, { withInput: true });
+    await t47.renderOnce();
+    const frame47 = t47.captureCharFrame();
+    // 横幅 ASCII 首行（figlet Standard「Omni」）
+    if (!frame47.includes('_ __ ___') || !tree47.omniTitle || !tree47.omniTitle.visible) {
+      console.error(`✗ 场景 47 hero 横幅未显示:\n${frame47}`);
+      process.exit(1);
+    }
+    // 统计行隐藏（灰色块下方的 0 轮 · 0 步不渲染）
+    if (frame47.includes('0 轮 · 0 步')) {
+      console.error(`✗ 场景 47 hero 下统计行不应显示:\n${frame47}`);
+      process.exit(1);
+    }
+    // 状态栏隐藏（就绪文案不渲染——模型已在灰块模型行）
+    if (frame47.includes('就绪')) {
+      console.error(`✗ 场景 47 hero 下状态栏不应显示:\n${frame47}`);
+      process.exit(1);
+    }
+    // 输入区垂直居中：灰色块首行 y 应明显高于底部（20 行视口下 < 16）
+    const grayTopY47 = frame47.split('\n').findIndex((l) => l.includes('输入消息'));
+    if (grayTopY47 < 0 || grayTopY47 >= 16) {
+      console.error(`✗ 场景 47 hero 输入区未居中（首行 y=${grayTopY47}）:\n${frame47}`);
+      process.exit(1);
+    }
+    // 彩虹色已应用（每行 fg 是转出的 hex 色，非默认色）
+    const firstFg47 = (tree47.omniCells[0] as unknown as { fg?: unknown }).fg;
+    if (!firstFg47) {
+      console.error('✗ 场景 47 横幅未设置彩虹色');
+      process.exit(1);
+    }
+    // b) 首条消息进入 → 退出 hero：横幅隐藏、统计行恢复、状态栏恢复
+    pushLine(s47, { kind: 'user', text: '你好' });
+    repaintTree(t47.renderer, tree47, s47, { withInput: true });
+    await t47.renderOnce();
+    const frame47b = t47.captureCharFrame();
+    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('0 轮 · 0 步')) {
+      console.error(`✗ 场景 47 首条消息后未退出 hero:\n${frame47b}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 47 通过：hero 初始界面（ASCII 横幅 + 居中输入区 + 隐藏统计行）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

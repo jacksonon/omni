@@ -219,7 +219,7 @@ src/
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单；运行时被 createSkillTool 替换以支持子代理执行）
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
-scripts/tui-snapshot.ts # TUI 快照验证（46 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问）
+scripts/tui-snapshot.ts # TUI 快照验证（47 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
 scripts/probe-tmp/probe-exec.ts # Headless 探针：parseExecArgs/schema 校验单元 + runHeadless 全链路 e2e（text/json/stream-json、
                                  #   max-turns/allowed-tools/stdin 两形态/exec resume/schema 通过·不符）+ MCP server 握手
 scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
@@ -256,7 +256,7 @@ for step in 1..maxSteps:
 - **浮层体系**：`/` 命令联想与 `@` 提及文件选择（圆角方框、窗口滚动、鼠标点击）、命令面板（alert 居中）、命令输出面板、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
 - **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 diff 左右对比（write_file）与多读合并（read_file）；
 - **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
-- **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 46 场景，与 CLI 共用同一渲染路径。
+- **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 47 场景，与 CLI 共用同一渲染路径。
 ### 工具列表（src/tools/）
 
 静态注册表 6 个基础工具；`ask_user`（向用户提问）、`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。

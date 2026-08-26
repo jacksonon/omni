@@ -166,6 +166,8 @@ export interface TuiTree {
   bottomBlock: BoxRenderable | null;
   /** 灰色块（输入行 + 模型行，交互模式非 null；单次任务模式为 null） */
   footerBox: BoxRenderable | null;
+  /** 统计行容器（灰色块下方，居中；hero 模式隐藏——未开始对话不显示」0 轮 · 0 步」空统计） */
+  infoRow: BoxRenderable | null;
   /** 灰色块左侧蓝色细线（▍，与对话流用户消息同款）：紧贴左缘、竖跨整个灰色背景（含上下边框行） */
   blueLine: TextRenderable | null;
   input: TextareaRenderable | null;
@@ -555,6 +557,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     omniCells,
     bottomBlock,
     footerBox,
+    infoRow,
     blueLine,
     input,
     footerModel,
@@ -725,10 +728,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   let heroOffset = 0; // hero 模式下灰色块相对「底部钉住」位置上移的行数（浮层/命中区按此换算）
   if (hero && tree.omniTitle && tree.bottomBlock) {
     // 居中组（自上而下）：横幅(OMNI_BANNER 5 行) + 横幅下间距(1) + 底部固定块[灰色块
-    // inputLines+4 + 待发送区 pendingRows + ask 面板] + 统计行间距(1) + 统计行(1)。
+    // inputLines+4 + 待发送区 pendingRows + ask 面板]。**统计行在 hero 下隐藏**
+    // （未开始对话无统计可看——0 轮 · 0 步 对用户无意义，居中布局更干净）。
     const inputLines = Math.max(1, state.inputLines);
     const askRows = state.ask ? state.ask.options.length + 4 : 0;
-    const groupH = OMNI_BANNER.length + 1 + pendingRows + askRows + (inputLines + 4) + 1 + 1;
+    const groupH = OMNI_BANNER.length + 1 + pendingRows + askRows + (inputLines + 4);
     const groupTop = Math.max(1, Math.floor(((height ?? 24) - groupH) / 2));
     // 灰色块顶 = 组顶 + 横幅(5) + 横幅间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
     const grayTopCentered = groupTop + OMNI_BANNER.length + 1;
@@ -736,6 +740,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
+    if (tree.infoRow) tree.infoRow.visible = false; // hero：隐藏统计行（含其 1 行上间距）
     tree.omniTitle.visible = true;
     // 彩虹流动：每行按行号错相（竖向渐变），bannerHue 逐帧旋转 → 颜色沿横幅流动。
     // 亮色主题压暗（浅底上高亮色对比不足）；深色主题提亮。
@@ -749,6 +754,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   } else {
     if (tree.omniTitle) tree.omniTitle.visible = false;
     if (tree.bottomBlock) tree.bottomBlock.marginTop = 'auto';
+    if (tree.infoRow) tree.infoRow.visible = true; // 退出 hero：恢复统计行
     tree.root.justifyContent = 'flex-start';
   }
   // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 1 + 模型）
@@ -896,6 +902,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.footerTokens) {
     // footer 统计行（用户要求的格式）：轮次/步数/LLM 与工具耗时/首 token/速率/缓存命中/输入输出；
     // 超宽时按段从右截断（fitFooterStats）。**居中显示在输入区域下方**
+    // hero 模式下 infoRow 整体隐藏（见 hero 块），这里只负责正常模式的内容
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2);
     tree.footerTokens.content = fitFooterStats(buildFooterStats(state), inner);
   }
