@@ -526,7 +526,7 @@ export async function runInteractive(
       // /settings：TUI 专属设置（底部状态行 statusline 的可视化配置面板只在 TUI 有——
       // CLI 模式无该界面）。配置文件 statusline 字段对所有模式生效（TUI 渲染时读取）。
       console.log(dim('/settings 是 TUI（全屏）模式命令：/settings statusline 用面板配置底部状态行（空格勾选 · ←/→ 排序 · Enter 保存生效）· /settings language 切换界面语言 · /settings theme 切换主题 · /settings tokens 显示/隐藏当次 token 统计 · /settings doctor 环境诊断。'));
-      console.log(dim('CLI 模式可直接编辑配置文件 statusline 字段（段：rounds/llm/speed/cache/tokens，空数组 = 不显示），TUI 渲染时读取。'));
+      console.log(dim('CLI 模式可直接编辑配置文件 statusline 字段（段：speed/cache/tokens/context，空数组 = 不显示），TUI 渲染时读取。'));
       safePrompt();
       continue;
     }

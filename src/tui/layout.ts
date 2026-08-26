@@ -26,10 +26,10 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
-/** 紧凑数值：`3M` / `44.2K` / `123`（token 统计用） */
+/** 紧凑数值：`3M` / `44.2K` / `123`（token 统计用；整千/整百万去掉小数点后 .0） */
 export function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
   return String(Math.round(n));
 }
 
@@ -42,31 +42,20 @@ export function formatToolDur(ms: number): string {
  * 状态行段（footer 统计行的可配置单元）：id 是配置/持久化键（/settings statusline
  * 按 id 勾选与排序），label/labelEn 是面板显示名（中/英），build/buildEn 生成该段
  * 文本（不含 `| ` 分隔；按界面语言 state.language 选择——/settings 语言切换即时生效）。
+ * x = 上下文信息：lastPrompt = 最近一次 LLM 请求的 prompt token（来自流末 chunk 的
+ * usage ——「LLM 消息内」拿到的当前上下文大小）；contextLimit = 当前模型 context 上限
+ * （config limit.context；未知为 0）。
  */
 export interface StatuslineSegment {
   id: string;
   label: string;
   labelEn: string;
-  build(s: SessionStats, t: TokenUsage): string;
-  buildEn(s: SessionStats, t: TokenUsage): string;
+  build(s: SessionStats, t: TokenUsage, x: { lastPrompt: number; contextLimit: number }): string;
+  buildEn(s: SessionStats, t: TokenUsage, x: { lastPrompt: number; contextLimit: number }): string;
 }
 
 /** 全部可用状态行段（顺序 = 默认显示顺序） */
 export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
-  {
-    id: 'rounds',
-    label: '轮次/步数',
-    labelEn: 'Rounds/Steps',
-    build: (s) => `${s.turns} 轮 · ${s.steps} 步`,
-    buildEn: (s) => `${s.turns} turns · ${s.steps} steps`,
-  },
-  {
-    id: 'llm',
-    label: 'LLM/工具耗时',
-    labelEn: 'LLM/Tools',
-    build: (s) => `LLM ${formatDuration(s.llmMs)} · 工具调用 ${formatToolDur(s.toolsMs)}`,
-    buildEn: (s) => `LLM ${formatDuration(s.llmMs)} · Tools ${formatToolDur(s.toolsMs)}`,
-  },
   {
     id: 'speed',
     label: '首token/速率',
@@ -100,6 +89,17 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
     build: (_s, t) => `输入 ${formatCompact(t.prompt)} tok · 输出 ${formatCompact(t.completion)} tok`,
     buildEn: (_s, t) => `In ${formatCompact(t.prompt)} tok · Out ${formatCompact(t.completion)} tok`,
   },
+  {
+    id: 'context',
+    label: '上下文',
+    labelEn: 'Context',
+    // 当前上下文大小 = 最近一次 LLM 请求的 prompt token（usage.prompt，来自 LLM 响应）；
+    // 模型配置了 context 上限（limit.context）时附 `/{上限}`（如 45K/128K）
+    build: (_s, _t, x) =>
+      `上下文 ${formatCompact(x.lastPrompt || 0)}${x.contextLimit > 0 ? `/${formatCompact(x.contextLimit)}` : ''}`,
+    buildEn: (_s, _t, x) =>
+      `Context ${formatCompact(x.lastPrompt || 0)}${x.contextLimit > 0 ? `/${formatCompact(x.contextLimit)}` : ''}`,
+  },
 ];
 
 /** 默认状态行段顺序（未配置 / 非法时回退） */
@@ -115,14 +115,16 @@ export const STATUSLINE_DEFAULT: string[] = STATUSLINE_SEGMENTS.map((sg) => sg.i
 export function buildFooterStats(state: TuiState): string {
   const order = state.statusline ?? STATUSLINE_DEFAULT;
   const en = state.language === 'en';
+  // 上下文信息传给 context 段：最近一次 LLM 请求的 prompt（当前上下文）+ 模型 context 上限
+  const x = { lastPrompt: state.lastPromptTokens, contextLimit: state.contextLimit };
   const segs = order
     .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
     .filter((x): x is StatuslineSegment => !!x)
-    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens) : sg.build(state.stats, state.tokens)));
+    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x) : sg.build(state.stats, state.tokens, x)));
   return segs.join('| ');
 }
 
-/** 统计行按可用宽度段级截断：优先保留左侧（轮次/步数/LLM 段），超宽丢弃右侧段并加 … */
+/** 统计行按可用宽度段级截断：优先保留左侧（首 token/缓存段），超宽丢弃右侧段并加 … */
 export function fitFooterStats(text: string, width: number): string {
   if (width < 4 || visualWidth(text) <= width) return text;
   const segs = text.split('| ');

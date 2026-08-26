@@ -35,7 +35,7 @@ const state = {
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   _localRunning: new Set(), // 本地刚启动的会话（doSend 设置，status 覆盖前保持；run.end 清除）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
-  statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'], // 输入区下方状态行段（设置 → 状态栏；同 TUI footer stats）
+  statusline: ['speed', 'cache', 'tokens', 'context'], // 输入区下方状态行段（设置 → 状态栏；同 TUI footer stats）
   sessionStats: new Map(),  // sessionId -> { turns, steps, llmMs, toolsMs, firstTokenSum, firstTokenCount, cached }
   sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
@@ -245,11 +245,10 @@ const I18N_ZH = {
   'settings.themeDesc': '亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。',
   'settings.statusbar': '状态栏',
   'settings.statusbarSub': '选择显示在输入区域下方的统计字段（同 CLI/TUI 底部统计行）。',
-  'statusbar.rounds': '轮次 / 步数',
-  'statusbar.llm': 'LLM / 工具耗时',
   'statusbar.speed': '首 token / 速率',
   'statusbar.cache': '缓存命中',
   'statusbar.tokens': '输入 / 输出 token',
+  'statusbar.context': '上下文',
   'settings.themeLight': '亮色',
   'settings.themeDark': '暗色',
   'settings.themeSystem': '跟随系统',
@@ -505,11 +504,10 @@ const I18N_EN = {
   'settings.themeDesc': 'Light / Dark / System (system follows the OS color scheme).',
   'settings.statusbar': 'Status bar',
   'settings.statusbarSub': 'Choose which stats appear below the input area (same as the CLI/TUI footer stats).',
-  'statusbar.rounds': 'Rounds / Steps',
-  'statusbar.llm': 'LLM / Tools time',
   'statusbar.speed': 'First token / Rate',
   'statusbar.cache': 'Cache hit',
   'statusbar.tokens': 'In / Out tokens',
+  'statusbar.context': 'Context',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
   'settings.themeSystem': 'System',
@@ -1985,18 +1983,8 @@ function noteTokenChunk(len) {
 /* ---- 输入区下方状态行（token 统计，同 CLI/TUI footer stats）----
  * 段位（rounds/llm/speed/cache/tokens）由设置 → 状态栏开关控制，顺序固定为
  * 定义顺序；每会话独立累计（sessionStats/sessionUsage Map，SSE 事件驱动）。 */
-const STATUS_DEFAULT = ['rounds', 'llm', 'speed', 'cache', 'tokens'];
+const STATUS_DEFAULT = ['speed', 'cache', 'tokens', 'context'];
 const STATUS_SEGMENTS = [
-  {
-    id: 'rounds', labelKey: 'statusbar.rounds',
-    build: (s) => `${s.turns} 轮 · ${s.steps} 步`,
-    buildEn: (s) => `${s.turns} turns · ${s.steps} steps`,
-  },
-  {
-    id: 'llm', labelKey: 'statusbar.llm',
-    build: (s) => `LLM ${fmtDur(s.llmMs)} · 工具调用 ${fmtToolDur(s.toolsMs)}`,
-    buildEn: (s) => `LLM ${fmtDur(s.llmMs)} · Tools ${fmtToolDur(s.toolsMs)}`,
-  },
   {
     id: 'speed', labelKey: 'statusbar.speed',
     build: (s, u) => {
@@ -2023,7 +2011,20 @@ const STATUS_SEGMENTS = [
     build: (_s, u) => `输入 ${fmtCompact(u.prompt)} tok · 输出 ${fmtCompact(u.completion)} tok`,
     buildEn: (_s, u) => `In ${fmtCompact(u.prompt)} tok · Out ${fmtCompact(u.completion)} tok`,
   },
+  {
+    id: 'context', labelKey: 'statusbar.context',
+    // 当前上下文 = 最近一次 LLM 请求的 prompt token（usage 事件覆盖）；模型配置 limit.context 时附 /上限
+    build: (_s, u) => `上下文 ${fmtCompact(u.lastPrompt)}${contextLimit() ? `/${fmtCompact(contextLimit())}` : ''}`,
+    buildEn: (_s, u) => `Context ${fmtCompact(u.lastPrompt)}${contextLimit() ? `/${fmtCompact(contextLimit())}` : ''}`,
+  },
 ];
+/** 当前模型 context 上限（config limit.context；未知返回 0）——footer context 段 `已用/上限` 用 */
+function contextLimit() {
+  const st = state.status;
+  if (!st || !Array.isArray(st.models)) return 0;
+  const cur = st.models.find((m) => m.name === st.model);
+  return (cur && cur.limit && cur.limit.context) || 0;
+}
 function fmtDur(ms) {
   const s = Math.round(ms / 1000);
   if (s >= 60) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
@@ -2043,7 +2044,7 @@ function statsOf(sid) {
 }
 function usageOf(sid) {
   if (!state.sessionUsage.has(sid)) {
-    state.sessionUsage.set(sid, { prompt: 0, completion: 0, total: 0, cached: 0 });
+    state.sessionUsage.set(sid, { prompt: 0, completion: 0, total: 0, cached: 0, lastPrompt: 0 });
   }
   return state.sessionUsage.get(sid);
 }
@@ -2350,6 +2351,7 @@ bus.on('usage', (ev) => {
   u.completion += ev.completion || 0;
   u.total += ev.total || 0;
   u.cached += ev.cached || 0;
+  u.lastPrompt = ev.prompt || 0; // 当前上下文 = 最近一次请求的 prompt token（footer context 段）
   updateComposerStatus();
 });
 

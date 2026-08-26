@@ -332,7 +332,7 @@ const DEFAULTS = {
   allowSubagents: true,
   maxSubagentSteps: 10,
   maxSubagentDepth: 5,
-  statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
+  statusline: ['speed', 'cache', 'tokens', 'context'],
   language: 'zh' as 'zh' | 'en',
   webTheme: 'system' as 'light' | 'dark' | 'system',
   sandbox: 'off' as SandboxMode,
@@ -604,7 +604,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (Array.isArray(data.statusline)) {
     const arr = (data.statusline as unknown[])
       .filter((x): x is string => typeof x === 'string')
-      .filter((x) => ['rounds', 'llm', 'speed', 'cache', 'tokens'].includes(x));
+      .filter((x) => ['speed', 'cache', 'tokens', 'context'].includes(x));
     cfg.statusline = arr;
   }
   // 界面语言：只认 zh/en，其余回退默认中文

@@ -343,10 +343,18 @@ export interface TuiState {
   /** 会话累计 token 用量（footer 右下角显示，来自每次响应的 usage） */
   tokens: TokenUsage;
   /**
-   * 会话运行统计（footer 统计行：轮次/步数/LLM 与工具耗时/首 token/速率/缓存命中）。
-   * 由 TuiOutput 按事件累加（onTurnStart/onLlmLap/onToolsLap/onToolStep/onUsage）。
+   * 会话运行统计（footer 统计行：首 token/速率/缓存命中/输入输出）。
+   * 由 TuiOutput 按事件累加（onLlmLap/onToolsLap/onUsage）。
    */
   stats: SessionStats;
+  /**
+   * 最近一次 LLM 请求的 prompt token（= 当前上下文大小；onUsage 每次覆盖——
+   * 「从 LLM 消息内拿到」：流末 chunk 的 usage.prompt）。footer context 段显示。
+   */
+  lastPromptTokens: number;
+  /** 当前模型 context 上限（config `limit.context`；interactive 按端点解析，未知为 0）。
+   *  footer context 段在已知时显示 `上下文 {used}/{limit}`。 */
+  contextLimit: number;
   /**
    * 终端主题设置（system/light/dark，/theme 可切换）：
    * system 时按 detectedTheme（终端实测）取色。
@@ -363,7 +371,7 @@ export interface TuiState {
   settingsPanel: StatuslinePanel | null;
   /**
    * 底部状态行（输入区域下方的对话信息）显示哪些段、什么顺序：段 id 数组
-   * （rounds/llm/speed/cache/tokens）。来自配置 statusline（tui-entry 初始化）；
+   * （speed/cache/tokens/context）。来自配置 statusline（tui-entry 初始化）；
    * /settings statusline 保存后立即生效（buildFooterStats 按它拼行）。空数组 = 不显示。
    */
   statusline: string[];
@@ -551,11 +559,15 @@ export function createTuiState(): TuiState {
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
+    // 最近一次 LLM 请求的 prompt token（= 当前上下文大小，onUsage 每次覆盖）+
+    // 当前模型 context 上限（config limit.context；interactive 按端点解析）
+    lastPromptTokens: 0,
+    contextLimit: 0,
     themeMode: 'system',
     detectedTheme: 'dark',
     menu: null,
     settingsPanel: null,
-    statusline: ['rounds', 'llm', 'speed', 'cache', 'tokens'],
+    statusline: ['speed', 'cache', 'tokens', 'context'],
     statuslineSave: null,
     language: 'zh',
     languageSave: null,

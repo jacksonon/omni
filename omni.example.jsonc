@@ -153,8 +153,8 @@
 
   // ── TUI 底部状态行（输入区域下方的对话信息）──────────────
   // 显示哪些段、什么顺序；/settings statusline 可视化配置（空格勾选、←/→ 排序、Enter 保存生效并写回此字段）
-  // 合法段：rounds（轮次/步数）· llm（LLM/工具耗时）· speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）；空数组 = 不显示
-  "statusline": ["rounds", "llm", "speed", "cache", "tokens"],
+  // 合法段：speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）· context（上下文=最近一次 LLM 请求的 prompt token，模型配 context 上限时显示 已用/上限）；空数组 = 不显示
+  "statusline": ["speed", "cache", "tokens", "context"],
 
   // ── 子代理 ───────────────────────────────────────────────
   // delegate 工具：把独立子任务委托给子代理（隔离上下文；默认 true）

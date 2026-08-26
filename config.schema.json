@@ -126,14 +126,13 @@
       "type": "array",
       "items": {
         "enum": [
-          "rounds",
-          "llm",
           "speed",
           "cache",
-          "tokens"
+          "tokens",
+          "context"
         ]
       },
-      "description": "TUI 底部状态行显示的段（默认全段）"
+      "description": "TUI 底部状态行显示的段（默认全段：speed/cache/tokens/context）"
     },
     "language": {
       "enum": [

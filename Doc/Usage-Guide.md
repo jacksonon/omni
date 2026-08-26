@@ -158,7 +158,7 @@ With a real TTY + bun (or the TUI package), starting without a task enters the f
 │  ────────────────────────────────────────   │
 │  ▍ Type a message…                           │
 │  ⠙ esc Build · mock-model demo · medium      │
-│  7 turns · 41 steps| LLM 10m58s · tools 7s| …│
+│  First token avg 6.5s · 112 tok/s| Cache 97%|…│
 └─────────────────────────────────────────────┘
 ```
 
@@ -249,7 +249,7 @@ omni -h / -v                      # help / version
 
   // ── TUI ──
   "language": "zh",                    // TUI language: zh (default) / en (switch & persist via /settings)
-  "statusline": ["rounds", "llm", "speed", "cache", "tokens"], // bottom status-line segments (/settings statusline)
+  "statusline": ["speed", "cache", "tokens", "context"], // bottom status-line segments (/settings statusline)
 
   // ── External tools ──
   "mcpServers": {                      // MCP external tools: { name: { command, args?, env? } }
@@ -353,7 +353,9 @@ mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider 
 color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple);
 while something is running, the loading animation and `esc` hint sit at the **far left** of that line
 (cancel the current turn); below the block is the configurable status/stats line
-(`/settings statusline` toggling and ordering).
+(`/settings statusline` toggling and ordering): `first token/rate · cache hit ·
+in/out tokens · context` (context = prompt tokens of the latest LLM request — shows
+`used/limit` when the model config declares a context limit).
 
 ### `/` command suggestions
 

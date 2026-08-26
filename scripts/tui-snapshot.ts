@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }
   // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
   // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
-  const checks1 = ['你是谁？', '📁 .', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '0 轮 · 0 步'];
+  const checks1 = ['你是谁？', '📁 .', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '缓存命中 0%'];
   // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
@@ -635,15 +635,16 @@ async function main(): Promise<void> {
   const r13 = await render(s13);
   console.log('=== 场景 13：footer 统计行（窄屏段级截断）===');
   console.log(r13.frame);
-  const checks13 = ['grok-4.5', '0 轮 · 0 步', 'LLM 0s · 工具调用 0.0s', '…'];
+  const checks13 = ['grok-4.5', '首 token 平均', '缓存命中 0%', '…'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
     console.error(`✗ 场景 13 footer 缺少: ${missing13.join(', ')}`);
     process.exit(1);
   }
-  // 窄屏段级截断：第三段（首 token/速率）起被省略，只保留左侧段 + … 标记
-  if (r13.frame.includes('首 token 平均')) {
-    console.error('✗ 场景 13 窄屏未截断统计行（应省略首 token/速率段）');
+  // 窄屏段级截断：段顺序 speed→cache→tokens→context，从**右侧**段丢弃（保留左侧 + … 标记）；
+  // 64 列下前三段超预算 → 输入/输出 与 上下文 段被省略
+  if (r13.frame.includes('输入 1.2K tok') || r13.frame.includes('上下文')) {
+    console.error('✗ 场景 13 窄屏未从右侧截断统计行（应省略输入/输出与上下文段）');
     process.exit(1);
   }
   // 统计事件累计：TuiOutput 各事件（onTurnStart/onToolStep/onLlmLap/onToolsLap/onUsage）累加进 state
@@ -669,25 +670,28 @@ async function main(): Promise<void> {
   out13.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
   await out13.flush();
   const frame13 = t13b.captureCharFrame();
-  // 期望：1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok
-  //（tok/s = 输出 350 / 生成耗时 0.5s——排除首 token 等待，非 llmMs 全墙钟）
-  const expect13 = '1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok';
+  // 期望：首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok| 上下文 300
+  //（tok/s = 输出 350 / 生成耗时 0.5s——排除首 token 等待，非 llmMs 全墙钟；
+  //  上下文 = 最后一次请求的 prompt token = 300）
+  const expect13 = '首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok| 上下文 300';
   if (!frame13.includes(expect13)) {
     console.error(`✗ 场景 13 统计累计不符\n期望: ${expect13}\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
     process.exit(1);
   }
-  // 用户示例格式验证（示例值：7 轮 · 41 步| LLM 6m35s · 工具调用 7s| 首 token 平均 6.5s · 112 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok）
+  // 用户示例格式验证（示例值：首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok| 上下文 45K/128K）
   const s13c = createTuiState();
   s13c.model = 'mock';
   pushLine(s13c, { kind: 'user', text: '你好' }); // 有会话内容 → 非 hero 模式（hero 隐藏统计行）
   s13c.tokens = { prompt: 3_000_000, completion: 44_200, total: 3_044_200, cached: 2_910_000 };
   s13c.stats = { turns: 7, steps: 41, llmMs: 394_642, toolsMs: 7_000, firstTokenSum: 45_500, firstTokenCount: 7, genMs: 349_142, cached: 2_910_000 };
+  s13c.lastPromptTokens = 45_000; // 当前上下文（最近一次请求 prompt）
+  s13c.contextLimit = 128_000; // 模型 context 上限 → `上下文 45K/128K`
   const t13c = await createTestRenderer({ width: 120, height: 20 });
   const tree13c = mountTree(t13c.renderer, s13c, { withInput: true });
   await t13c.renderOnce();
   const frame13c = t13c.captureCharFrame();
   // 用户示例格式验证（示例值；tok/s = 输出 44.2K / 生成耗时 349.1s ≈ 127）
-  const expect13c = '7 轮 · 41 步| LLM 6m35s · 工具调用 7.0s| 首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok';
+  const expect13c = '首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok| 上下文 45K/128K';
   if (!frame13c.includes(expect13c)) {
     console.error(`✗ 场景 13 示例格式不符\n期望: ${expect13c}\n实际帧:\n${frame13c}`);
     process.exit(1);
@@ -1599,7 +1603,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 20 渲染帧不应包含会话标题（已改为窗口标题）');
     process.exit(1);
   }
-  if (!r20.frame.includes('0 轮 · 0 步')) {
+  if (!r20.frame.includes('首 token 平均')) {
     console.error('✗ 场景 20 footer 统计行缺失');
     process.exit(1);
   }
@@ -4087,80 +4091,86 @@ async function main(): Promise<void> {
   // b) openStatuslinePanel：面板列出全部段，勾选态来自当前 state.statusline（默认全勾）
   const s39 = createTuiState();
   cmd39.openStatuslinePanel(s39);
-  if (!s39.settingsPanel || s39.settingsPanel.items.length !== 5 || !s39.settingsPanel.items.every((it) => it.enabled)) {
+  if (!s39.settingsPanel || s39.settingsPanel.items.length !== 4 || !s39.settingsPanel.items.every((it) => it.enabled)) {
     console.error(`✗ 场景 39 状态行面板初始化错误: ${JSON.stringify(s39.settingsPanel)}`);
     process.exit(1);
   }
-  // 自定义 statusline（去掉 cache）→ 面板勾选态反映它（items 按段定义顺序列出，顺序由 ←/→ 编辑）
-  s39.statusline = ['tokens', 'rounds', 'llm', 'speed'];
+  // 自定义 statusline（去掉 cache/context）→ 面板勾选态反映它（items 按段定义顺序列出，顺序由 ←/→ 编辑）
+  s39.statusline = ['tokens', 'speed'];
   cmd39.openStatuslinePanel(s39);
   const byId39 = Object.fromEntries(s39.settingsPanel!.items.map((it) => [it.id, it.enabled]));
-  if (byId39.cache !== false || byId39.tokens !== true || byId39.rounds !== true || s39.settingsPanel!.items[0]!.id !== 'rounds') {
+  if (byId39.cache !== false || byId39.context !== false || byId39.tokens !== true || s39.settingsPanel!.items[0]!.id !== 'speed') {
     console.error(`✗ 场景 39 面板未反映自定义 statusline: ${JSON.stringify(s39.settingsPanel)}`);
     process.exit(1);
   }
   // c) 键盘操作：↑/↓ 移动高亮 · 空格勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消
   const key39 = (name: string) => ({ name, sequence: '', preventDefault: () => {}, stopPropagation: () => {} } as never);
-  // 当前 statusline=['tokens','rounds','llm','speed']（cache 未勾选）；面板 items 按
-  // STATUSLINE_SEGMENTS 顺序 = [rounds✓, llm✓, speed✓, cache☐, tokens✓]，selected=0
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 1=llm
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 2=speed
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 3=cache
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 4=tokens
+  // 当前 statusline=['tokens','speed']（cache/context 未勾选）；面板 items 按
+  // STATUSLINE_SEGMENTS 顺序 = [speed✓, cache☐, tokens✓, context☐]，selected=0
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // 1=cache
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // 2=tokens
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // 3=context
+  cmd39.handleSettingsPanelKey(key39('space'), s39); // 空格取消勾选 context（本来就 ☐，无变化）
+  cmd39.handleSettingsPanelKey(key39('up'), s39); // 2=tokens
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // 3=context（回原位）
+  cmd39.handleSettingsPanelKey(key39('up'), s39); // 2=tokens
   cmd39.handleSettingsPanelKey(key39('space'), s39); // 空格取消勾选 tokens
   if (s39.settingsPanel!.items.find((it) => it.id === 'tokens')!.enabled) {
     console.error('✗ 场景 39 空格未取消勾选');
     process.exit(1);
   }
-  // ← 把 tokens 左移一位 → [rounds, llm, speed, tokens, cache]，selected=3(tokens)
+  // ← 把 tokens 左移一位（selected 跟随）→ [speed, tokens, cache, context]，selected=1(tokens)
   cmd39.handleSettingsPanelKey(key39('left'), s39);
   const orderAfterLeft = s39.settingsPanel!.items.map((it) => it.id);
-  if (orderAfterLeft[3] !== 'tokens' || orderAfterLeft[4] !== 'cache') {
+  if (orderAfterLeft[1] !== 'tokens' || orderAfterLeft[2] !== 'cache') {
     console.error(`✗ 场景 39 ← 排序错误: ${JSON.stringify(orderAfterLeft)}`);
     process.exit(1);
   }
-  // → 移回 → [rounds, llm, speed, cache, tokens]，selected=4(tokens)
+  // → 移回 → [speed, cache, tokens, context]，selected=2(tokens)
   cmd39.handleSettingsPanelKey(key39('right'), s39);
   const orderAfterRight = s39.settingsPanel!.items.map((it) => it.id);
-  if (orderAfterRight[4] !== 'tokens') {
+  if (orderAfterRight[2] !== 'tokens') {
     console.error(`✗ 场景 39 → 排序错误: ${JSON.stringify(orderAfterRight)}`);
     process.exit(1);
   }
   // Esc 取消：关闭面板、不改变 state.statusline、不落盘意图
   cmd39.handleSettingsPanelKey(key39('escape'), s39);
-  if (s39.settingsPanel !== null || s39.statuslineSave !== null || JSON.stringify(s39.statusline) !== JSON.stringify(['tokens', 'rounds', 'llm', 'speed'])) {
+  if (s39.settingsPanel !== null || s39.statuslineSave !== null || JSON.stringify(s39.statusline) !== JSON.stringify(['tokens', 'speed'])) {
     console.error('✗ 场景 39 Esc 取消应关闭面板且不改配置');
     process.exit(1);
   }
   // d) Enter 保存生效：state.statusline 按「启用 + 当前顺序」更新，statuslineSave 记录待落盘
-  s39.statusline = ['rounds', 'llm', 'speed', 'cache', 'tokens']; // 恢复默认全段
-  cmd39.openStatuslinePanel(s39); // items = [rounds✓ llm✓ speed✓ cache✓ tokens✓]（STATUSLINE_SEGMENTS 顺序），selected=0
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=1 → llm
-  cmd39.handleSettingsPanelKey(key39('space'), s39); // 取消 llm
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=2 → speed
-  cmd39.handleSettingsPanelKey(key39('right'), s39); // speed 与 cache 交换 → [rounds llm cache speed tokens]，selected=3(cache)
+  s39.statusline = ['speed', 'cache', 'tokens', 'context']; // 恢复默认全段
+  cmd39.openStatuslinePanel(s39); // items = [speed✓ cache✓ tokens✓ context✓]（STATUSLINE_SEGMENTS 顺序），selected=0
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=1 → cache
+  cmd39.handleSettingsPanelKey(key39('space'), s39); // 取消 cache
+  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=2 → tokens
+  cmd39.handleSettingsPanelKey(key39('right'), s39); // tokens 与 context 交换 → [speed cache context tokens]，selected=3(tokens)
   cmd39.handleSettingsPanelKey(key39('return'), s39);
   const saved39 = s39.statusline;
   if (s39.settingsPanel !== null || !s39.statuslineSave || JSON.stringify(s39.statuslineSave) !== JSON.stringify(saved39)) {
     console.error(`✗ 场景 39 Enter 保存后状态错误: panel=${JSON.stringify(s39.settingsPanel)} save=${JSON.stringify(s39.statuslineSave)}`);
     process.exit(1);
   }
-  // 期望：llm 被取消（空格）；speed 与 cache 交换后启用项顺序 = rounds cache speed tokens
-  // （cache 仍启用——排序不改变勾选态；←/→ 只移动顺序）
-  if (JSON.stringify(saved39) !== JSON.stringify(['rounds', 'cache', 'speed', 'tokens'])) {
-    console.error(`✗ 场景 39 保存结果错误（应 rounds/cache/speed/tokens）: ${JSON.stringify(saved39)}`);
+  // 期望：cache 被取消（空格）；tokens 与 context 交换后启用项顺序 = speed context tokens
+  // （context 仍启用——排序不改变勾选态；←/→ 只移动顺序）
+  if (JSON.stringify(saved39) !== JSON.stringify(['speed', 'context', 'tokens'])) {
+    console.error(`✗ 场景 39 保存结果错误（应 speed/context/tokens）: ${JSON.stringify(saved39)}`);
     process.exit(1);
   }
-  // buildFooterStats 按新配置拼行（去掉 llm；cache 移到 speed 前）
+  // buildFooterStats 按新配置拼行（去掉 cache；context 移到 tokens 前）
   s39.stats = { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 };
   s39.tokens = { prompt: 10000, completion: 73700, total: 83700 };
+  s39.lastPromptTokens = 4200; // 当前上下文（context 段）
+  s39.contextLimit = 128000; // 模型 context 上限 → `上下文 4.2K/128K`
   const statsLine39 = layout39.buildFooterStats(s39);
   if (
-    !statsLine39.includes('7 轮 · 41 步') ||
-    !statsLine39.includes('缓存命中 97%') ||
     !statsLine39.includes('首 token 平均 6.5s · 115 tok/s') ||
-    !statsLine39.includes('输入 10.0K tok · 输出 73.7K tok') ||
-    statsLine39.includes('LLM')
+    !statsLine39.includes('上下文 4.2K/128K') ||
+    !statsLine39.includes('输入 10K tok · 输出 73.7K tok') ||
+    statsLine39.includes('缓存命中') ||
+    statsLine39.includes('LLM') ||
+    statsLine39.includes('轮 ·')
   ) {
     console.error(`✗ 场景 39 buildFooterStats 未按新配置拼行: ${JSON.stringify(statsLine39)}`);
     process.exit(1);
@@ -4182,15 +4192,14 @@ async function main(): Promise<void> {
   const s39r = createTuiState();
   s39r.version = '0.1.0';
   s39r.model = 'mock';
-  s39r.statusline = ['rounds', 'llm']; // cache/tokens/speed 未勾选 → ☐
+  s39r.statusline = ['speed', 'context']; // cache/tokens 未勾选 → ☐
   cmd39.openStatuslinePanel(s39r);
   const r39 = await render(s39r, 30);
   const frame39 = r39.frame;
   if (
     !frame39.includes('设置：状态行') ||
-    !frame39.includes('› ✓ 轮次/步数') ||
-    !frame39.includes('✓ LLM/工具耗时') ||
-    !frame39.includes('☐ 首token/速率') ||
+    !frame39.includes('› ✓ 首token/速率') ||
+    !frame39.includes('✓ 上下文') ||
     !frame39.includes('☐ 缓存命中') ||
     !frame39.includes('☐ 输入/输出') ||
     !frame39.includes('空格 勾选/取消')
@@ -4619,7 +4628,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 42 展开后明细行数错误（应 1 汇总 + 3 明细 = 4 行）: ${JSON.stringify(detail42)}`);
     process.exit(1);
   }
-  for (const want of ['- LLM 请求：输入 1.3K · 输出 350 · 缓存 1.0K', '- LLM 请求：输入 300 · 输出 150 · 缓存 30', '- LLM 请求：输入 200 · 输出 100 · 缓存 50']) {
+  for (const want of ['- LLM 请求：输入 1.3K · 输出 350 · 缓存 1K', '- LLM 请求：输入 300 · 输出 150 · 缓存 30', '- LLM 请求：输入 200 · 输出 100 · 缓存 50']) {
     if (!frame42b.includes(want)) {
       console.error(`✗ 场景 42 展开明细缺失: ${want}`);
       process.exit(1);
@@ -4706,15 +4715,15 @@ async function main(): Promise<void> {
   const s43f = createTuiState();
   s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 0, cached: 900 };
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
-  s43f.statusline = ['rounds', 'llm'];
+  s43f.statusline = ['speed', 'cache'];
   const zhLine43 = buildFooterStats(s43f);
-  if (!zhLine43.includes('1 轮 · 2 步') || !zhLine43.includes('工具调用')) {
+  if (!zhLine43.includes('首 token 平均 0.5s') || !zhLine43.includes('缓存命中 30%')) {
     console.error(`✗ 场景 43 中文统计行错误: ${zhLine43}`);
     process.exit(1);
   }
   s43f.language = 'en';
   const enLine43 = buildFooterStats(s43f);
-  if (!enLine43.includes('1 turns · 2 steps') || !enLine43.includes('Tools') || zhLine43 === enLine43) {
+  if (!enLine43.includes('First token avg 0.5s') || !enLine43.includes('Cache hit 30%') || zhLine43 === enLine43) {
     console.error(`✗ 场景 43 英文统计行错误: ${enLine43}`);
     process.exit(1);
   }
@@ -4911,7 +4920,7 @@ async function main(): Promise<void> {
   }
   // 点「状态行」（top+1）→ 设置菜单关闭 + settingsPanel 打开
   handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43d + 1 }, tree43, s43, 64, noopPaint);
-  if (s43.menu !== null || s43.settingsPanel === null || s43.settingsPanel.items.length !== 5) {
+  if (s43.menu !== null || s43.settingsPanel === null || s43.settingsPanel.items.length !== 4) {
     console.error(`✗ 场景 43 点状态行未打开状态行编辑器: ${JSON.stringify({ menu: s43.menu, items: s43.settingsPanel?.items.length })}`);
     process.exit(1);
   }
@@ -5681,8 +5690,8 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 47 hero 横幅未显示:\n${frame47}`);
       process.exit(1);
     }
-    // 统计行隐藏（灰色块下方的 0 轮 · 0 步不渲染）
-    if (frame47.includes('0 轮 · 0 步')) {
+    // 统计行隐藏（灰色块下方的统计段不渲染）
+    if (frame47.includes('首 token 平均') || frame47.includes('缓存命中')) {
       console.error(`✗ 场景 47 hero 下统计行不应显示:\n${frame47}`);
       process.exit(1);
     }
@@ -5708,7 +5717,7 @@ async function main(): Promise<void> {
     repaintTree(t47.renderer, tree47, s47, { withInput: true });
     await t47.renderOnce();
     const frame47b = t47.captureCharFrame();
-    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('0 轮 · 0 步')) {
+    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('首 token 平均')) {
       console.error(`✗ 场景 47 首条消息后未退出 hero:\n${frame47b}`);
       process.exit(1);
     }

@@ -20,16 +20,14 @@ export const TUI_LANG_LABELS: Record<TuiLang, string> = { zh: '中文', en: 'Eng
 
 const ZH: Record<string, string> = {
   // footer 统计行段（layout.ts STATUSLINE_SEGMENTS：label 面板显示名 / build 段文本）
-  'statusline.rounds.label': '轮次/步数',
-  'statusline.rounds': '{turns} 轮 · {steps} 步',
-  'statusline.llm.label': 'LLM/工具耗时',
-  'statusline.llm': 'LLM {llm} · 工具调用 {tools}',
   'statusline.speed.label': '首token/速率',
   'statusline.speed': '首 token 平均 {avg}s · {rate} tok/s',
   'statusline.cache.label': '缓存命中',
   'statusline.cache': '缓存命中 {pct}%',
   'statusline.tokens.label': '输入/输出',
   'statusline.tokens': '输入 {in} tok · 输出 {out} tok',
+  'statusline.context.label': '上下文',
+  'statusline.context': '上下文 {used}{limit}',
 
   // 内容区（rows.ts）
   'tokens.summary': '⚡ {n} 次 LLM 请求 · 输入 {in} · 输出 {out} · 缓存 {cached}',
@@ -118,16 +116,14 @@ const ZH: Record<string, string> = {
 };
 
 const EN: Record<string, string> = {
-  'statusline.rounds.label': 'Rounds/Steps',
-  'statusline.rounds': '{turns} turns · {steps} steps',
-  'statusline.llm.label': 'LLM/Tools',
-  'statusline.llm': 'LLM {llm} · Tools {tools}',
   'statusline.speed.label': 'First token/Rate',
   'statusline.speed': 'First token avg {avg}s · {rate} tok/s',
   'statusline.cache.label': 'Cache hit',
   'statusline.cache': 'Cache hit {pct}%',
   'statusline.tokens.label': 'In/Out',
   'statusline.tokens': 'In {in} tok · Out {out} tok',
+  'statusline.context.label': 'Context',
+  'statusline.context': 'Context {used}{limit}',
 
   'tokens.summary': '⚡ {n} LLM requests · In {in} · Out {out} · Cached {cached}',
   'tokens.item': '  - LLM request: In {in} · Out {out} · Cached {cached}',

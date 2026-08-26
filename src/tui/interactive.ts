@@ -537,6 +537,8 @@ export async function runTuiInteractive(
     state.model = runOpts.modelRuntime?.model ?? model;
     // 当前模型所属 provider 组（footer 模型行显示 `模型名 组名`；不在分组内为空）
     state.provider = (runOpts.models ?? []).find((m) => m.name === state.model)?.provider ?? '';
+    // 当前模型 context 上限（footer context 段显示 `上下文 已用/上限`；未知为 0）
+    state.contextLimit = (runOpts.models ?? []).find((m) => m.name === state.model)?.limit?.context ?? 0;
     // 当前模型运行时（可变）：/model 切换时重建 client 并更新共享引用（子代理同步）
     let currentClient: OpenAI = client;
     let currentModel = state.model;
@@ -547,6 +549,7 @@ export async function runTuiInteractive(
       currentModel = endpoint.name;
       state.model = endpoint.name;
       state.provider = endpoint.provider ?? ''; // footer 模型行显示所属 provider 组
+      state.contextLimit = endpoint.limit?.context ?? 0; // footer context 段上限（未知 0）
       if (runOpts.modelRuntime) {
         runOpts.modelRuntime.client = currentClient;
         runOpts.modelRuntime.model = endpoint.name;
