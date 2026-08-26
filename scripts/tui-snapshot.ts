@@ -949,8 +949,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
-  // b2) 模型行最左侧 loading（用户要求「有对话信息时最左侧显示 loading + esc」）：
-  //    未运行隐藏；运行中转圈（帧随 loadingIndex 换）；Esc/会话结束（loading=false）清空消失
+  // b2) 输入区域外部、统计行最左侧 loading（用户要求「加载按钮和 esc 显示在输入区域
+  //    外部、左下侧、和 statusLine 一行」）：未运行隐藏；运行中转圈（帧随 loadingIndex 换）；
+  //    Esc/会话结束（loading=false）清空消失
   if (!tree15.footerLoading) {
     console.error('✗ 场景 15 loading 节点未创建');
     process.exit(1);
@@ -971,19 +972,22 @@ async function main(): Promise<void> {
   const frame15load = t15.captureCharFrame();
   const frameLines15 = frame15load.split('\n');
   const modelRow15 = frameLines15.findIndex((l) => l.includes('mock'));
+  const statsRow15 = frameLines15.findIndex((l) => l.includes('首 token'));
   const loadChar15 = SPINNER_FRAMES[2];
   const loadRow15 = frameLines15.findIndex((l) => l.includes(loadChar15));
   if (loadingText15(tree15.footerLoading) !== loadChar15) {
     console.error(`✗ 场景 15 loading 帧内容错误: ${JSON.stringify(loadingText15(tree15.footerLoading))}（应 ${loadChar15}）`);
     process.exit(1);
   }
-  if (loadRow15 !== modelRow15) {
-    console.error(`✗ 场景 15 loading 应与模型行同一行（model=${modelRow15} load=${loadRow15}）`);
+  // loading 应在**统计行**（灰色块下方那行），不在模型行内——输入区域外部、左下侧
+  if (loadRow15 !== statsRow15 || statsRow15 <= modelRow15) {
+    console.error(`✗ 场景 15 loading 应位于统计行最左侧（输入区域外部；model=${modelRow15} stats=${statsRow15} load=${loadRow15}）`);
     console.log(frame15load);
     process.exit(1);
   }
-  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) >= frameLines15[loadRow15]!.indexOf('mock')) {
-    console.error('✗ 场景 15 loading 应位于模型行最左侧（灰色块左缘，模型文本之前）');
+  // loading 应位于该行最左（列 < 统计文本列）
+  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) >= frameLines15[loadRow15]!.indexOf('首 token')) {
+    console.error('✗ 场景 15 loading 应位于统计行最左侧（统计文本之前）');
     process.exit(1);
   }
   s15.loading = false;
@@ -1013,10 +1017,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const escFrame15 = t15.captureCharFrame();
-  const escModelRow15 = escFrame15.split('\n').findIndex((l) => l.includes('mock'));
-  const escLine15 = escFrame15.split('\n')[escModelRow15];
-  if (!escLine15 || !escLine15.includes('esc')) {
-    console.error('✗ 场景 15 运行中模型行应含 esc 提示');
+  const escStatsRow15 = escFrame15.split('\n').findIndex((l) => l.includes('首 token'));
+  const escLine15 = escFrame15.split('\n')[escStatsRow15];
+  if (!escLine15 || !escLine15.includes('esc') || !escLine15.includes(SPINNER_FRAMES[2])) {
+    console.error('✗ 场景 15 运行中统计行应含 loading + esc 提示（输入区域外部、左下侧）');
     process.exit(1);
   }
   // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）

@@ -21,9 +21,9 @@
  *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
- *   ▍ ⠙ esc Build · grok-4.5 demo · medium │ 模型行（loading+esc 最左；模式/模型/组/级别）
+ *   ▍ Build · grok-4.5 demo · medium │ 模型行（模式/模型/组/级别；无 loading——已移出）
  *   ╰──────────────────────────────╯
- *         8 轮 · 65 步| LLM 20m32s · 工具调用 8.6s| …  ← 统计行（灰块下方，居中）
+ *   ⠹ esc 首 token 平均 6.5s · 112 tok/s| … ← 统计行（loading/esc 左下侧 + 统计内容，对齐可配）
  *
  * 灰色块（输入框 + 模型行，淡灰色背景，四边 16px 圆角）与对话流区分；
  * 左侧**蓝色细线（▍，与对话流用户消息同款）**贴左缘、**竖跨整个灰色背景**（含上下
@@ -168,6 +168,8 @@ export interface TuiTree {
   footerBox: BoxRenderable | null;
   /** 统计行容器（灰色块下方，居中；hero 模式隐藏——未开始对话不显示」0 轮 · 0 步」空统计） */
   infoRow: BoxRenderable | null;
+  /** 统计文本容器（infoRow 内、loading/esc 之后占据剩余宽度：statuslineAlign 左/中/右对齐） */
+  statsWrap: BoxRenderable | null;
   /** 灰色块左侧蓝色细线（▍，与对话流用户消息同款）：紧贴左缘、竖跨整个灰色背景（含上下边框行） */
   blueLine: TextRenderable | null;
   input: TextareaRenderable | null;
@@ -243,6 +245,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerModel: TextRenderable | null = null;
   let footerEffort: TextRenderable | null = null;
   let footerTokens: TextRenderable | null = null;
+  let statsWrap: BoxRenderable | null = null;
   let footerLoading: TextRenderable | null = null;
   let footerEsc: TextRenderable | null = null;
   let queueBox: BoxRenderable | null = null;
@@ -327,33 +330,16 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     });
     contentCol.add(input);
 
-    // 模型行（输入框下方，灰色块内，**左对齐**）：**loading + esc 提示在最左侧**
-    // （用户要求「有对话信息时，在最左侧显示 loading + esc 提示」——原来在思考级别
-    // 右侧），随后是模式 + 模型 + provider + 思考级别：`Build/Plan · 模型名 组 · 级别`
-    //（模式前缀：/plan 计划模式显示 Plan，普通 Build；级别按强度着色）。
-    // 发送/取消按钮已移除（TUI 无点击交互，改用 Esc 取消命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
+    // 模型行（输入框下方，灰色块内，**左对齐**）：模式 + 模型 + provider + 思考级别
+    // `Build/Plan · 模型名 组 · 级别`（模式前缀：/plan 计划模式显示 Plan，普通 Build；
+    // 级别按强度着色）。**loading + esc 已移出灰色块**——用户要求「显示在输入区域外部、
+    // 左下侧、和 statusLine 一行」（见下方 infoRow：统计行最左侧）。
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
       justifyContent: 'flex-start',
       alignItems: 'center',
       gap: 1,
     });
-    // loading（会话进行中转圈 state.loading + loadingIndex；Esc/会话结束消失）——
-    // **最左侧**（用户要求）：对话进行中在模型行最左端显示，紧贴灰块左缘的蓝色细线之后
-    footerLoading = new TextRenderable(ctx, {
-      content: '',
-      wrapMode: 'none',
-    });
-    footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
-    // loading 右侧「esc」取消提示（淡色小字；跟随 loading 显示/隐藏）
-    footerEsc = new TextRenderable(ctx, {
-      content: '',
-      wrapMode: 'none',
-      attributes: createTextAttributes({ dim: true }),
-    });
-    footerEsc.fg = parseColor(theme.footerDim);
-    modelRow.add(footerLoading);
-    modelRow.add(footerEsc);
     // 模型文本（模式 + 模型名 + provider 组名）：`Build · mock demo`
     footerModel = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerModel.fg = parseColor(theme.footerText);
@@ -535,18 +521,45 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
   root.add(bottomBlock);
-  // token 统计行：在灰色块下方（不在灰色背景里），**水平位置可配**（用户要求：
-  // 新增 居中/右侧/左侧 对齐选项）——justifyContent 由 repaintTree 按
-  // state.statuslineAlign 每帧刷新（/settings statusline 面板 a 键 + Enter 保存生效）。
+  // 统计行（灰色块下方，不在灰色背景里）：**loading + esc 提示在行首（左下侧）**，
+  // 统计内容随后——用户要求「加载按钮和 esc 显示在输入区域外部、左下侧、和 statusLine
+  // 一行」。行结构：`⠹ esc`（运行中可见）+ 统计文本（水平位置可配：statuslineAlign
+  // 左/中/右，statsWrap justifyContent 由 repaintTree 每帧刷新）。
   // marginTop:1 与输入区域（灰色块）之间留 1 行间距（用户要求）
-  const infoRow = new BoxRenderable(ctx, { flexDirection: 'row', justifyContent: 'center', marginTop: 1 });
-  footerTokens = new TextRenderable(ctx, {
-    content: '',
-    wrapMode: 'none',
-    attributes: createTextAttributes({ dim: true }),
+  const infoRow = new BoxRenderable(ctx, {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    gap: 1,
+    marginTop: 1,
   });
-  footerTokens.fg = parseColor(theme.footerDim);
-  infoRow.add(footerTokens);
+  if (opts?.withInput) {
+    // loading（会话进行中转圈 state.loading + loadingIndex；Esc/会话结束消失）——
+    // 输入区域外部、统计行最左侧（用户要求）
+    footerLoading = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
+    // loading 右侧「esc」取消提示（淡色小字；跟随 loading 显示/隐藏）
+    footerEsc = new TextRenderable(ctx, {
+      content: '',
+      wrapMode: 'none',
+      attributes: createTextAttributes({ dim: true }),
+    });
+    footerEsc.fg = parseColor(theme.footerDim);
+    infoRow.add(footerLoading);
+    infoRow.add(footerEsc);
+    // 统计文本容器：占据 loading/esc 之后的剩余宽度，justifyContent 按 statuslineAlign
+    //（左/中/右）每帧刷新——对齐只作用于统计内容本身，loading/esc 恒在行首
+    const statsWrapBox = new BoxRenderable(ctx, { flexDirection: 'row', flexGrow: 1, justifyContent: 'center' });
+    statsWrap = statsWrapBox;
+    footerTokens = new TextRenderable(ctx, {
+      content: '',
+      wrapMode: 'none',
+      attributes: createTextAttributes({ dim: true }),
+    });
+    footerTokens.fg = parseColor(theme.footerDim);
+    statsWrap.add(footerTokens);
+    infoRow.add(statsWrap);
+  }
   if (opts?.withInput) root.add(infoRow);
 
   const tree: TuiTree = {
@@ -558,6 +571,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     bottomBlock,
     footerBox,
     infoRow,
+    statsWrap,
     blueLine,
     input,
     footerModel,
@@ -902,15 +916,17 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   if (tree.footerTokens) {
     // footer 统计行（用户要求的格式）：首 token/速率 · 缓存命中 · 输入输出 · 上下文；
-    // 超宽时按段从右截断（fitFooterStats）。**水平位置可配**（居中/右侧/左侧，
-    // /settings statusline 面板 a 键 + Enter 保存：statuslineAlign 即时生效）
+    // 超宽时按段从右截断（fitFooterStats）。**与 loading/esc 共用一行**——loading/esc
+    // 固定在行首（输入区域外部、左下侧），统计内容在剩余宽度内按 statuslineAlign
+    // 左/中/右对齐（/settings statusline 面板 a 键 + Enter 保存：statuslineAlign 即时生效）。
     // hero 模式下 infoRow 整体隐藏（见 hero 块），这里只负责正常模式的内容
-    if (tree.infoRow) {
-      // 统计行容器对齐：left = 靠左 / center = 居中 / right = 靠右（每帧重取即时生效）
-      tree.infoRow.justifyContent =
+    if (tree.statsWrap) {
+      tree.statsWrap.justifyContent =
         state.statuslineAlign === 'left' ? 'flex-start' : state.statuslineAlign === 'right' ? 'flex-end' : 'center';
     }
-    const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2);
+    // 统计文本可用宽度：视口 - 根内边距(2) - 行首 loading/esc 占用（运行时 ≈1+1+3+1=6 列）
+    const loadingW = state.loading && tree.footerLoading && tree.footerLoading.content ? 7 : 0;
+    const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2 - loadingW);
     tree.footerTokens.content = fitFooterStats(buildFooterStats(state), inner);
   }
   // loading（模型行内、模型文本右面）：会话进行中显示旋转帧，

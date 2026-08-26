@@ -157,8 +157,8 @@ With a real TTY + bun (or the TUI package), starting without a task enters the f
 │  (final answer…)                             │
 │  ────────────────────────────────────────   │
 │  ▍ Type a message…                           │
-│  ⠙ esc Build · mock-model demo · medium      │
-│  First token avg 6.5s · 112 tok/s| Cache 97%|…│
+│  Build · mock-model demo · medium            │
+│  ⠙ esc First token avg 6.5s · 112 tok/s| Ca… │
 └─────────────────────────────────────────────┘
 ```
 
@@ -352,8 +352,9 @@ next startup keeps your choice.
 Inside the gray block the model line sits on the left (`Build/Plan · model name provider · reasoning level` —
 mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider group, and the level
 color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple);
-while something is running, the loading animation and `esc` hint sit at the **far left** of that line
-(cancel the current turn); below the block is the configurable status/stats line
+while something is running, the loading animation and `esc` hint sit **outside the gray block**,
+at the far left of the stats line below (left-lower corner, same row as the status line —
+press Esc to cancel the current turn); below the block is the configurable status/stats line
 (`/settings statusline` toggling and ordering): `first token/rate · cache hit ·
 in/out tokens · context` (context = prompt tokens of the latest LLM request — shows
 `used/limit` when the model config declares a context limit). Press **`a`** inside the
