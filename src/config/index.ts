@@ -81,7 +81,8 @@ export interface OmniConfig {
       apiKey?: string;
       userAgent?: string;
       headers?: Record<string, string>;
-      models?: Record<string, Omit<ModelEntryConfig, 'baseURL' | 'apiKey' | 'userAgent' | 'headers'>>;
+      /** 组内模型：允许模型级 baseURL/apiKey 覆盖（继承/覆盖开关，D8）——缺省继承 provider */
+      models?: Record<string, Omit<ModelEntryConfig, 'userAgent' | 'headers'>>;
     }
   >;
   /** 最多预载文件数（默认 5） */
@@ -521,6 +522,8 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
             continue;
           }
           pmodels[mid] = {
+            ...(typeof e.baseURL === 'string' && e.baseURL.trim() ? { baseURL: e.baseURL.trim() } : {}),
+            ...(typeof e.apiKey === 'string' && e.apiKey.trim() ? { apiKey: e.apiKey.trim() } : {}),
             ...(Array.isArray(e.reasoningEffortOptions)
               ? {
                   reasoningEffortOptions: (e.reasoningEffortOptions as unknown[]).filter(

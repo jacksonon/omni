@@ -14,7 +14,7 @@
  *   answer.chunk     —— 最终回答增量（{ sessionId, text }）
  *   answer.end       —— 最终回答结束
  *   turn.step        —— 本轮第 N 步（{ sessionId, step, maxSteps }）
- *   lap              —— LLM 请求墙钟 / 首 token（{ sessionId, llmMs, firstTokenMs }）
+ *   lap              —— LLM 请求墙钟 / 首 token / 生成耗时（{ sessionId, llmMs, firstTokenMs, genMs }）
  *   toolsLap         —— 该轮工具执行墙钟（{ sessionId, toolsMs }）
  *   usage            —— token 用量（{ sessionId, prompt, completion, total, cached }）
  *   subagent         —— 子代理进度事件（{ sessionId, ev: SubagentEvent }）

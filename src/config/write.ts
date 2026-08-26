@@ -293,6 +293,249 @@ export function persistModelConfigToGlobal(patch: ModelConfigPatch, _cfg: OmniCo
   return { ok: true, file, message: `已保存模型配置 → ${file}` };
 }
 
+/* ---------------- Providers 分组持久化（设置 → 模型配置：一个端点配置多个模型） ----------------
+ * 全部写**全局配置**（~/.config/omni/omni.json，XDG-aware，机器级偏好跨项目生效）。
+ * 沿用「纯 JSON 才自动改、JSONC 拒绝」模式（与 persistModelConfigToGlobal 一致）。 */
+
+export interface ProviderConfigPatch {
+  provider: string;
+  baseURL?: string;
+  apiKey?: string;
+  userAgent?: string;
+}
+
+export interface ProviderModelPatch {
+  provider: string;
+  modelName: string;
+  apiModel?: string;
+  displayName?: string;
+  reasoningEffortOptions?: string[];
+  reasoningEffort?: string;
+  contextLimit?: number;
+  variants?: unknown;
+  /** 覆盖 provider 级端点（D8 继承/覆盖开关）；缺省 = 继承（移除模型级覆盖字段） */
+  overrideBaseURL?: string;
+  overrideApiKey?: string;
+}
+
+/** 读取全局配置为可改写的纯 JSON 对象（JSONC 拒绝自动改——程序化改写会破坏注释） */
+function loadGlobalConfigObject(
+  file: string,
+  fieldDesc: string
+): { ok: true; obj: Record<string, unknown> } | { ok: false; file: null; message: string } {
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动配置${fieldDesc}` };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常，未自动修改——请手动配置${fieldDesc}` };
+  }
+  return { ok: true, obj };
+}
+
+/** 写回全局配置 JSON（自动建目录），返回统一结果 */
+function persistGlobalJson(file: string, obj: Record<string, unknown>, fieldDesc: string): PersistModelResult {
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}（可手动配置${fieldDesc}）` };
+  }
+  return { ok: true, file, message: `已保存 → ${file}（重启后同样生效）` };
+}
+
+function providersOf(obj: Record<string, unknown>): Record<string, Record<string, unknown>> {
+  return obj.providers && typeof obj.providers === 'object' && !Array.isArray(obj.providers)
+    ? (obj.providers as Record<string, Record<string, unknown>>)
+    : {};
+}
+
+/**
+ * 新建/更新 provider（provider 级共享 baseURL/apiKey/userAgent）。
+ * 合并已有字段：缺省字段保留旧值；provider 名即 key（改名 = 删除后重建）。
+ */
+export function persistProviderConfigToGlobal(patch: ProviderConfigPatch, _cfg: OmniConfig): PersistModelResult {
+  const provider = patch.provider.trim();
+  if (!provider) return { ok: false, file: null, message: '缺少 provider 名称' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ` providers.${provider}`);
+  if (!load.ok) return load;
+  const providers = providersOf(load.obj);
+  const cur = (providers[provider] && typeof providers[provider] === 'object' && !Array.isArray(providers[provider])
+    ? { ...(providers[provider] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  if (patch.baseURL !== undefined) cur.baseURL = patch.baseURL;
+  if (patch.apiKey !== undefined) cur.apiKey = patch.apiKey;
+  if (patch.userAgent !== undefined) cur.userAgent = patch.userAgent;
+  providers[provider] = cur;
+  load.obj.providers = providers;
+  return persistGlobalJson(file, load.obj, ` providers.${provider}`);
+}
+
+/**
+ * 新增/更新组内模型。模型级字段（apiModel/displayName/级别/上下文/variants）合并写入；
+ * overrideBaseURL/overrideApiKey 提供 = 覆盖 provider 级端点，缺省 = 继承（移除覆盖字段）。
+ */
+export function persistProviderModelToGlobal(patch: ProviderModelPatch, _cfg: OmniConfig): PersistModelResult {
+  const provider = patch.provider.trim();
+  const modelName = patch.modelName.trim();
+  if (!provider) return { ok: false, file: null, message: '缺少 provider 名称' };
+  if (!modelName) return { ok: false, file: null, message: '缺少模型名' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ` providers.${provider}.models`);
+  if (!load.ok) return load;
+  const providers = providersOf(load.obj);
+  const p = (providers[provider] && typeof providers[provider] === 'object' && !Array.isArray(providers[provider])
+    ? { ...(providers[provider] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  const models = (p.models && typeof p.models === 'object' && !Array.isArray(p.models)
+    ? (p.models as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  const entry = (models[modelName] && typeof models[modelName] === 'object' && !Array.isArray(models[modelName])
+    ? { ...(models[modelName] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  if (patch.apiModel !== undefined) entry.apiModel = patch.apiModel;
+  if (patch.displayName !== undefined) entry.displayName = patch.displayName;
+  if (patch.reasoningEffortOptions !== undefined) entry.reasoningEffortOptions = patch.reasoningEffortOptions;
+  if (patch.reasoningEffort !== undefined) entry.reasoningEffort = patch.reasoningEffort;
+  if (patch.variants !== undefined) entry.variants = patch.variants;
+  if (patch.contextLimit !== undefined) {
+    const limit = entry.limit && typeof entry.limit === 'object' && !Array.isArray(entry.limit)
+      ? { ...(entry.limit as Record<string, unknown>) }
+      : {};
+    limit.context = patch.contextLimit;
+    entry.limit = limit;
+  }
+  if (patch.overrideBaseURL !== undefined) entry.baseURL = patch.overrideBaseURL;
+  else delete entry.baseURL; // 继承：移除模型级覆盖
+  if (patch.overrideApiKey !== undefined) entry.apiKey = patch.overrideApiKey;
+  else delete entry.apiKey;
+  models[modelName] = entry;
+  p.models = models;
+  providers[provider] = p;
+  load.obj.providers = providers;
+  return persistGlobalJson(file, load.obj, ` providers.${provider}.models.${modelName}`);
+}
+
+/** 删除整个 provider（组内模型一并移除） */
+export function removeProviderFromGlobal(provider: string, _cfg: OmniConfig): PersistModelResult {
+  const name = provider.trim();
+  if (!name) return { ok: false, file: null, message: '缺少 provider 名称' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ' providers 字段');
+  if (!load.ok) return load;
+  const providers = providersOf(load.obj);
+  if (!(name in providers)) return { ok: false, file: null, message: `配置里没有 provider「${name}」` };
+  const next = { ...providers };
+  delete next[name];
+  if (Object.keys(next).length > 0) load.obj.providers = next;
+  else delete load.obj.providers;
+  return persistGlobalJson(file, load.obj, ' providers 字段');
+}
+
+/** 删除组内单个模型（删空后保留空 provider 壳，UI 提示是否继续删 provider） */
+export function removeProviderModelFromGlobal(provider: string, modelName: string, _cfg: OmniConfig): PersistModelResult {
+  const pname = provider.trim();
+  const mid = modelName.trim();
+  if (!pname || !mid) return { ok: false, file: null, message: '缺少 provider 或模型名' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ' providers 字段');
+  if (!load.ok) return load;
+  const providers = providersOf(load.obj);
+  const p = providers[pname];
+  if (!p || typeof p !== 'object') return { ok: false, file: null, message: `配置里没有 provider「${pname}」` };
+  const models = (p.models && typeof p.models === 'object' && !Array.isArray(p.models)
+    ? { ...(p.models as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  if (!(mid in models)) return { ok: false, file: null, message: `provider「${pname}」里没有模型「${mid}」` };
+  delete models[mid];
+  if (Object.keys(models).length > 0) p.models = models;
+  else delete p.models;
+  providers[pname] = p;
+  load.obj.providers = providers;
+  return persistGlobalJson(file, load.obj, ' providers 字段');
+}
+
+/**
+ * 扁平模型迁入 provider（D3：UI 检测到扁平条目与 provider 同端点时，用户确认后触发）。
+ * 仅当扁平条目 baseURL/apiKey 与目标 provider 一致（或 provider 缺端点）时才执行，防止误迁移；
+ * 组内模型条目 = 扁平条目去掉 baseURL/apiKey（端点归 provider 级），随后删除扁平条目。
+ */
+export function migrateFlatModelToGlobal(
+  opts: { modelName: string; provider: string },
+  _cfg: OmniConfig
+): PersistModelResult {
+  const { modelName, provider } = opts;
+  const mid = modelName.trim();
+  const pname = provider.trim();
+  if (!mid || !pname) return { ok: false, file: null, message: '缺少模型名或 provider' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ' models / providers 字段');
+  if (!load.ok) return load;
+  const obj = load.obj;
+  const models = (obj.models && typeof obj.models === 'object' && !Array.isArray(obj.models)
+    ? (obj.models as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  const flat = models[mid];
+  if (!flat || typeof flat !== 'object' || Array.isArray(flat)) {
+    return { ok: false, file: null, message: `全局配置里没有扁平模型「${mid}」` };
+  }
+  const flatE = flat as Record<string, unknown>;
+  const providers = providersOf(obj);
+  const p = (providers[pname] && typeof providers[pname] === 'object' && !Array.isArray(providers[pname])
+    ? { ...(providers[pname] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  const flatURL = typeof flatE.baseURL === 'string' ? flatE.baseURL : undefined;
+  const flatKey = typeof flatE.apiKey === 'string' ? flatE.apiKey : undefined;
+  const pURL = typeof p.baseURL === 'string' ? p.baseURL : undefined;
+  const pKey = typeof p.apiKey === 'string' ? p.apiKey : undefined;
+  if ((flatURL && pURL && flatURL !== pURL) || (flatKey && pKey && flatKey !== pKey)) {
+    return {
+      ok: false,
+      file: null,
+      message: `「${mid}」的端点与 provider「${pname}」不一致，未迁移——可先修改 provider 端点再迁移`,
+    };
+  }
+  // provider 缺端点时以扁平条目为准（迁移前先对齐，保证合并后端点一致）
+  if (flatURL && !pURL) p.baseURL = flatURL;
+  if (flatKey && !pKey) p.apiKey = flatKey;
+  // 组内模型条目 = 扁平条目去掉端点字段（baseURL/apiKey/userAgent/headers 归 provider 级）
+  const { baseURL: _b, apiKey: _k, userAgent: _ua, headers: _hd, ...rest } = flatE;
+  const pmodels = (p.models && typeof p.models === 'object' && !Array.isArray(p.models)
+    ? (p.models as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  pmodels[mid] = rest;
+  p.models = pmodels;
+  providers[pname] = p;
+  obj.providers = providers;
+  const nextModels = { ...models };
+  delete nextModels[mid];
+  if (Object.keys(nextModels).length > 0) obj.models = nextModels;
+  else delete obj.models;
+  return persistGlobalJson(file, obj, ` providers.${pname}.models.${mid}`);
+}
+
+/**
+ * 把默认模型名写入**全局配置**顶层 model 字段（Web 设置面板「设为默认」——面板只写全局，
+ * 不依赖 loadConfigObject 的层叠目标，避免无配置文件时落到 cwd）。
+ */
+export function persistModelDefaultToGlobal(model: string): PersistModelResult {
+  const name = model.trim();
+  if (!name) return { ok: false, file: null, message: '缺少模型名' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ' model 字段');
+  if (!load.ok) return load;
+  load.obj.model = name;
+  return persistGlobalJson(file, load.obj, ' model 字段');
+}
+
 /**
  * 把默认模型名写入配置文件顶层 model 字段（/model <名称> 切换 / 面板确认持久化）。
  * 运行时已即时生效（interactive 重建 client + 更新 modelRuntime），这里只落盘供下次会话加载。

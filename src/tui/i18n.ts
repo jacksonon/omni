@@ -59,6 +59,7 @@ const ZH: Record<string, string> = {
   'pending.steer': ' · ⚡ {s} 打断',
   'pending.more': '  · 还有 {n} 条…',
   'suggest.hint': '  {arrow} 还有 {n} 个（↑/↓ 滚动）',
+  'shortcut.hint': 'Ctrl-X 快捷键：t 主题 · p 权限 · m 模型 · v 思考级别 · s 设置 · l 计划 · h 思考 · u 撤销 · r 重做 · c 清空 · ? 帮助（Esc 取消）',
 
   // 状态栏 / 帮助（output.ts）
   'status.ready': '模型 {model} · 就绪',
@@ -74,6 +75,7 @@ const ZH: Record<string, string> = {
   'ask.hint': '↑↓ 选择 · 空格 勾选 · 输入自定义后 Enter 提交 · Esc 取消',
   'help.title': '帮助',
   'help.intro': '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。',
+  'help.shortcuts': '快捷键：Ctrl+X 前缀——t 主题 · p 权限 · m 模型 · v 思考级别 · s 设置 · l 计划模式 · h 思考显示 · u 撤销 · r 重做 · c 清空 · ? 帮助（再按 Esc 取消）',
   'help.commands': '/settings 设置（状态行 / 语言 / 主题 / token 统计 / 诊断） · /permission 安全权限（低/中/高/全量） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /rewind 会话检查点（回滚工作区到历史回合） · /init [--global] 生成项目/全局记忆 · /agents 子代理配置 · /orchestrate 并行编排（fan-out+汇总+对抗审查） · /goal 目标机制（自动推导验收标准并循环直至达标） · /exit 退出 · /clear 清空上下文 · /help 显示帮助',
   'help.scroll': '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部',
   'help.more': '完整命令参考：omni --help（控制台）',
@@ -94,6 +96,7 @@ const ZH: Record<string, string> = {
   'menu.variants.status': '思考级别：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
   'menu.model.title': '模型',
   'menu.model.status': '模型：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
+  'menu.model.ungrouped': '未分组',
   'menu.session.title': '会话',
   'menu.session.status': '会话：↑/↓ 或数字选择 · Enter 确认 · Esc 取消',
   'menu.settings.title': '设置',
@@ -151,6 +154,7 @@ const EN: Record<string, string> = {
   'pending.steer': ' · ⚡ {s} steer',
   'pending.more': '  · {n} more…',
   'suggest.hint': '  {arrow} {n} more (↑/↓ scroll)',
+  'shortcut.hint': 'Ctrl-X: t theme · p permission · m model · v level · s settings · l plan · h thinking · u undo · r redo · c clear · ? help (Esc cancel)',
 
   'status.ready': 'Model {model} · Ready',
   'status.requestFailed': 'Request failed',
@@ -165,6 +169,7 @@ const EN: Record<string, string> = {
   'ask.hint': '↑↓ select · space toggle · type custom + Enter submit · Esc cancel',
   'help.title': 'Help',
   'help.intro': 'Type a message to chat, Enter to send; Shift+Enter for newline (needs terminal modifier support; auto-grows for multi-line).',
+  'help.shortcuts': 'Shortcuts: Ctrl+X prefix — t theme · p permission · m model · v thinking level · s settings · l plan mode · h thinking display · u undo · r redo · c clear · ? help (Esc cancels)',
   'help.commands': '/settings settings (statusline / language / theme / token stats / diagnostics) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /rewind session checkpoints (roll workspace back to a past turn) · /init [--global] generate AGENTS.md · /agents subagent config · /orchestrate parallel pipeline (fan-out+combine+review) · /goal goal mechanism (derive criteria and loop until met) · /exit quit · /clear clear context · /help help',
   'help.scroll': 'Scroll: mouse wheel / PgUp/PgDn pages · Ctrl+U/Ctrl+D pages (empty input) · ↑/↓ per line (empty input) · End to bottom',
   'help.more': 'Full command list: omni --help (console)',
@@ -184,6 +189,7 @@ const EN: Record<string, string> = {
   'menu.variants.status': 'Thinking level: ↑/↓ or number · Enter confirm · Esc cancel',
   'menu.model.title': 'Model',
   'menu.model.status': 'Model: ↑/↓ or number · Enter confirm · Esc cancel',
+  'menu.model.ungrouped': 'Ungrouped',
   'menu.session.title': 'Sessions',
   'menu.session.status': 'Sessions: ↑/↓ or number · Enter confirm · Esc cancel',
   'menu.settings.title': 'Settings',

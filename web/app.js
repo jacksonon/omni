@@ -40,6 +40,7 @@ const state = {
   sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
   steerText: null,      // 运行中 Cmd+Enter 打断消息（仅当前会话，优先于 queue）
+  attachments: [],      // 输入区附件（+ 按钮/拖拽采集；{ id, kind: image|text|path, name, size, dataUrl?, content? }）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -93,7 +94,7 @@ const I18N_ZH = {
   'hero.preview': '预览版',
   'hero.workspace': '当前工作区',
   // composer
-  'composer.attach': '添加上下文',
+  'composer.attach': '选择文件/图片',
   'composer.permission': '权限设置',
   'composer.plan': '计划',
   'composer.settings': '运行设置',
@@ -109,6 +110,13 @@ const I18N_ZH = {
   'composer.runningQueued': '运行中 · ⏳ 排队 {n} 条 · Enter 排队 · ⌘/Ctrl+Enter 打断',
   'composer.queued': '⏳ 排队中（{n}）',
   'composer.chooseSession': '选择或新建会话',
+  // 附件
+  'attach.remove': '移除附件',
+  'attach.imageTooLarge': '⚠ 图片超过 4MB 上限，已跳过：{name}',
+  'attach.modelNoImage': '⚠ 当前模型不支持图片，已转为路径附件：{name}',
+  'attach.truncated': '（已截断，可用 read_file 定向读取）',
+  'attach.running': '⚠ 运行中无法附带附件，请等待当前回复完成',
+  'attach.image': '图片',
   // 权限
   'perm.full': '完全访问',
   'perm.safe': '帮我批准',
@@ -163,7 +171,7 @@ const I18N_ZH = {
   'settings.themeSub': '界面配色方案，选择后立即生效并保存。',
   'settings.modelSub': '切换对话使用的模型与思考深度。',
   'settings.workspaceSub': '智能体读写文件、执行命令所用的根目录。',
-  'settings.apikeySub': '配置所选模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段一致，保存后写入全局配置文件。',
+  'settings.apikeySub': '配置模型的端点、密钥、推理级别与上下文长度。支持 providers 分组（一个端点对应多个模型），与 omni.json 的 providers 字段一致，保存后写入全局配置文件。',
   'settings.aboutSub': '',
   'settings.permission': '权限级别',
   'settings.permissionDesc': '控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。',
@@ -177,6 +185,59 @@ const I18N_ZH = {
   'settings.langDesc': '界面显示语言，保存后立即生效。',
   'settings.concurrency': '并行会话上限',
   'settings.concurrencyDesc': '允许同时运行的会话数量（1-16），超过上限时新消息排队等待。',
+  // providers（一个端点配置多个模型）
+  'provider.ungrouped': '未分组',
+  'provider.new': '+ 新建 provider',
+  'provider.empty': '选择左侧 provider 或未分组模型编辑',
+  'provider.baseURL': '端点（baseURL）',
+  'provider.baseURLDesc': 'OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1。',
+  'provider.apiKey': 'API Key',
+  'provider.apiKeyDesc': '留空表示沿用配置文件中已保存的密钥。',
+  'provider.fetch': '获取模型列表',
+  'provider.save': '保存',
+  'provider.delete': '删除',
+  'provider.userAgent': 'User-Agent',
+  'provider.userAgentDesc': '部分网关需要自定义 User-Agent 绕过 WAF。',
+  'provider.models': '组内模型',
+  'provider.modelsCount': '{n} 个模型',
+  'provider.addModel': '添加',
+  'provider.setDefault': '设为默认',
+  'provider.edit': '编辑',
+  'provider.removeModel': '删除模型',
+  'provider.removeConfirm': '确定删除模型「{name}」？',
+  'provider.removeProviderConfirm': '确定删除 provider「{name}」及其全部模型？',
+  'provider.namePlaceholder': 'provider 名称（如 bigmodel）',
+  'provider.inherit': '继承端点',
+  'provider.override': '覆盖端点',
+  'provider.migrate': '迁移到 provider',
+  'provider.migrateHint': '该模型与 provider「{p}」端点相同，可合并到分组',
+  'provider.migrateDone': '已迁移',
+  'provider.fetched': '获取到 {n} 个模型，勾选后添加',
+  'provider.addSelected': '添加选中',
+  'provider.fetchFail': '获取失败',
+  'provider.fetching': '获取中…',
+  'provider.selectHint': '勾选要启用的模型',
+  'provider.saved': '✓ 已保存',
+  'provider.defaultSet': '已设为默认',
+  'provider.needDefault': '请先设置其它默认模型',
+  'provider.noBaseURL': '请先填写 baseURL',
+  'provider.emptyModels': '该分组还没有模型——点「获取模型列表」或直接输入模型名添加',
+  'provider.newName': '新建 provider 名称',
+  // 模型列表表单字段 + 错误提示（本地化）
+  'provider.fldBaseURL': 'baseURL',
+  'provider.fldApiKey': 'API Key',
+  'provider.fldEfforts': '思考级别选项',
+  'provider.fldEffort': '当前级别',
+  'provider.fldContext': '上下文长度',
+  'provider.fldApiModel': 'apiModel',
+  'provider.fldDisplay': '显示名',
+  'provider.defaultBadge': '默认',
+  'provider.errSave': '保存失败：{msg}',
+  'provider.errDelete': '删除失败：{msg}',
+  'provider.errAdd': '添加失败：{msg}',
+  'provider.errMigrate': '迁移失败：{msg}',
+  'provider.errSetDefault': '设为默认失败：{msg}',
+  'provider.errFetch': '获取失败：{msg}',
   'settings.themeName': '界面主题',
   'settings.themeDesc': '亮色 / 暗色 / 跟随系统（跟随系统时随操作系统深浅色自动切换）。',
   'settings.statusbar': '状态栏',
@@ -212,6 +273,68 @@ const I18N_ZH = {
   'settings.version': '版本',
   'settings.server': '服务地址',
   'settings.tools': '可用工具',
+  // 快捷键
+  'settings.shortcuts': '快捷键',
+  'settings.shortcutsSub': '查看并自定义所有键盘快捷键：点击「录制」按下组合键绑定，Backspace 清除，Esc 取消；冲突自动检测。',
+  'shortcut.groupSessions': '会话',
+  'shortcut.groupView': '视图',
+  'shortcut.groupClipboard': '剪贴板',
+  'shortcut.groupModel': '模型',
+  'shortcut.groupPermission': '权限',
+  'shortcut.groupSystem': '系统',
+  'shortcut.groupCommands': '命令',
+  'shortcut.record': '录制',
+  'shortcut.recording': '请按下组合键…',
+  'shortcut.enabled': '启用',
+  'shortcut.disabled': '已禁用',
+  'shortcut.unbound': '未绑定',
+  'shortcut.conflict': '冲突：{combo} 已绑定到「{label}」',
+  'shortcut.restore': '恢复默认',
+  'shortcut.restoreConfirm': '恢复全部默认快捷键？',
+  'shortcut.cheatsheetTitle': '快捷键速查表',
+  'shortcut.cheatsheetHint': '可在 设置 → 快捷键 重新绑定',
+  'shortcut.switchTitle': '切换会话',
+  'shortcut.switchPlaceholder': '搜索会话，无匹配时 Enter 新建…',
+  'shortcut.switchEmpty': '无匹配会话 · Enter 新建',
+  'shortcut.newSession': '新建会话',
+  'shortcut.newSessionDesc': '创建新会话（运行中也可用，不打断当前任务）',
+  'shortcut.sessionSwitch': '会话快速切换',
+  'shortcut.sessionSwitchDesc': '弹出会话切换面板：输入过滤，无匹配时 Enter 新建',
+  'shortcut.sessionActions': '会话操作菜单',
+  'shortcut.sessionActionsDesc': '分叉 / 导出 / 检查点 / 重命名 / 删除',
+  'shortcut.stopTask': '停止当前任务',
+  'shortcut.stopTaskDesc': '中断正在运行的 agent 回合',
+  'shortcut.toggleSidebar': '切换侧边栏',
+  'shortcut.toggleSidebarDesc': '展开 / 收起左侧会话栏（桌面布局）',
+  'shortcut.focusSearch': '聚焦会话搜索',
+  'shortcut.focusSearchDesc': '聚焦侧栏会话搜索框（焦点不在输入框时）',
+  'shortcut.cycleTheme': '切换明暗主题',
+  'shortcut.cycleThemeDesc': '亮色 → 暗色 → 跟随系统 循环',
+  'shortcut.fullscreen': '全屏切换',
+  'shortcut.fullscreenDesc': '进入 / 退出浏览器全屏',
+  'shortcut.scrollTop': '滚动到顶部',
+  'shortcut.scrollTopDesc': '消息区滚动到顶部',
+  'shortcut.scrollBottom': '滚动到底部',
+  'shortcut.scrollBottomDesc': '消息区滚动到底部',
+  'shortcut.copyLastReply': '复制最后回复',
+  'shortcut.copyLastReplyDesc': '复制最后一条助手回复到剪贴板',
+  'shortcut.copyTitle': '复制会话标题',
+  'shortcut.copyTitleDesc': '复制当前会话标题到剪贴板',
+  'shortcut.copyId': '复制会话 ID',
+  'shortcut.copyIdDesc': '复制当前会话 ID 到剪贴板',
+  'shortcut.openModelPanel': '打开模型面板',
+  'shortcut.openModelPanelDesc': '切换模型与思考级别面板',
+  'shortcut.cyclePermission': '循环切换权限',
+  'shortcut.cyclePermissionDesc': '只读 → 危险询问 → 全询问 → 全量直通（静默）',
+  'shortcut.openSettings': '打开设置',
+  'shortcut.openSettingsDesc': '打开设置弹窗',
+  'shortcut.cheatsheet': '快捷键速查表',
+  'shortcut.cheatsheetDesc': '查看全部快捷键与当前绑定',
+  'shortcut.planMode': '切换计划模式',
+  'shortcut.planModeDesc': '只读调研模式开关',
+  'shortcut.searchPlaceholder': '搜索功能或快捷键…（点击条目可到设置里重新绑定）',
+  'shortcut.jumpToSettings': '点击在 设置 → 快捷键 中重新绑定',
+  'shortcut.noMatch': '没有匹配「{q}」的快捷键——试试功能名、分组或键位（如 ⌘K）',
   // 模态框
   'modal.rewindTitle': '会话检查点（/rewind）',
   'modal.dirTitle': '选择工作目录',
@@ -236,7 +359,7 @@ const I18N_EN = {
   'hero.tagline': 'Explore the unknown',
   'hero.preview': 'Preview',
   'hero.workspace': 'Current workspace',
-  'composer.attach': 'Add context',
+  'composer.attach': 'Select files/images',
   'composer.permission': 'Permissions',
   'composer.plan': 'Plan',
   'composer.settings': 'Run settings',
@@ -252,6 +375,13 @@ const I18N_EN = {
   'composer.runningQueued': 'Running · ⏳ {n} queued · Enter to queue · ⌘/Ctrl+Enter to steer',
   'composer.queued': '⏳ Queued ({n})',
   'composer.chooseSession': 'Select or create a session',
+  // attachments
+  'attach.remove': 'Remove attachment',
+  'attach.imageTooLarge': '⚠ Image exceeds 4MB limit, skipped: {name}',
+  'attach.modelNoImage': '⚠ Current model does not support images; converted to a path attachment: {name}',
+  'attach.truncated': '(truncated; use read_file for the full file)',
+  'attach.running': '⚠ Cannot attach files while running — wait for the current reply to finish',
+  'attach.image': 'Image',
   'perm.full': 'Full access',
   'perm.safe': 'Auto-approve',
   'perm.ask': 'Ask to approve',
@@ -301,7 +431,7 @@ const I18N_EN = {
   'settings.themeSub': 'Color scheme. Applies immediately and is saved.',
   'settings.modelSub': 'Switch the model and reasoning depth.',
   'settings.workspaceSub': 'Root directory the agent reads/writes files and runs commands in.',
-  'settings.apikeySub': 'Configure endpoint, key, reasoning levels and context length for the selected model — same fields as models in omni.json, saved to the global config file.',
+  'settings.apikeySub': 'Configure endpoints, keys, reasoning levels and context length. Supports providers groups (one endpoint with multiple models) — same fields as providers in omni.json, saved to the global config file.',
   'settings.permission': 'Permission level',
   'settings.permissionDesc': 'Confirmation policy before running commands: safe asks on risky ops, ask asks always, read is read-only.',
   'settings.permSafe': 'safe · ask on risky',
@@ -314,6 +444,59 @@ const I18N_EN = {
   'settings.langDesc': 'UI language. Applies immediately.',
   'settings.concurrency': 'Max concurrent sessions',
   'settings.concurrencyDesc': 'Number of sessions allowed to run simultaneously (1-16). New messages queue when at limit.',
+  // providers
+  'provider.ungrouped': 'Ungrouped',
+  'provider.new': '+ New provider',
+  'provider.empty': 'Select a provider on the left or an ungrouped model to edit',
+  'provider.baseURL': 'Endpoint (baseURL)',
+  'provider.baseURLDesc': 'OpenAI-compatible API address, e.g. <code>https://api.deepseek.com/v1</code>.',
+  'provider.apiKey': 'API Key',
+  'provider.apiKeyDesc': 'Leave empty to keep the key already saved in the config file.',
+  'provider.fetch': 'Fetch models',
+  'provider.save': 'Save',
+  'provider.delete': 'Delete',
+  'provider.userAgent': 'User-Agent',
+  'provider.userAgentDesc': 'Some gateways require a custom User-Agent to bypass WAF.',
+  'provider.models': 'Models in group',
+  'provider.modelsCount': '{n} models',
+  'provider.addModel': 'Add',
+  'provider.setDefault': 'Set default',
+  'provider.edit': 'Edit',
+  'provider.removeModel': 'Delete model',
+  'provider.removeConfirm': 'Delete model "{name}"?',
+  'provider.removeProviderConfirm': 'Delete provider "{name}" and all its models?',
+  'provider.namePlaceholder': 'Provider name (e.g. bigmodel)',
+  'provider.inherit': 'Inherit endpoint',
+  'provider.override': 'Override endpoint',
+  'provider.migrate': 'Migrate to provider',
+  'provider.migrateHint': 'Same endpoint as provider "{p}" — can be merged into the group',
+  'provider.migrateDone': 'Migrated',
+  'provider.fetched': 'Got {n} models; check the ones to enable',
+  'provider.addSelected': 'Add selected',
+  'provider.fetchFail': 'Fetch failed',
+  'provider.fetching': 'Fetching…',
+  'provider.selectHint': 'Check models to enable',
+  'provider.saved': '✓ Saved',
+  'provider.defaultSet': 'Set as default',
+  'provider.needDefault': 'Set another default model first',
+  'provider.noBaseURL': 'Fill in baseURL first',
+  'provider.emptyModels': 'No models yet — click "Fetch models" above or type a model name to add',
+  'provider.newName': 'New provider name',
+  // model list form fields + error messages (localization)
+  'provider.fldBaseURL': 'baseURL',
+  'provider.fldApiKey': 'API Key',
+  'provider.fldEfforts': 'Reasoning efforts',
+  'provider.fldEffort': 'Current effort',
+  'provider.fldContext': 'Context length',
+  'provider.fldApiModel': 'apiModel',
+  'provider.fldDisplay': 'Display name',
+  'provider.defaultBadge': 'Default',
+  'provider.errSave': 'Save failed: {msg}',
+  'provider.errDelete': 'Delete failed: {msg}',
+  'provider.errAdd': 'Add failed: {msg}',
+  'provider.errMigrate': 'Migrate failed: {msg}',
+  'provider.errSetDefault': 'Set default failed: {msg}',
+  'provider.errFetch': 'Fetch failed: {msg}',
   'settings.themeName': 'UI theme',
   'settings.themeDesc': 'Light / Dark / System (system follows the OS color scheme).',
   'settings.statusbar': 'Status bar',
@@ -355,6 +538,68 @@ const I18N_EN = {
   'modal.cancel': 'Cancel',
   'modal.select': 'Select this folder',
   'modal.close': 'Close',
+  // Shortcuts
+  'settings.shortcuts': 'Shortcuts',
+  'settings.shortcutsSub': 'View and customize keyboard shortcuts: click Record and press a combination to bind, Backspace to clear, Esc to cancel; conflicts are detected automatically.',
+  'shortcut.groupSessions': 'Sessions',
+  'shortcut.groupView': 'View',
+  'shortcut.groupClipboard': 'Clipboard',
+  'shortcut.groupModel': 'Model',
+  'shortcut.groupPermission': 'Permission',
+  'shortcut.groupSystem': 'System',
+  'shortcut.groupCommands': 'Commands',
+  'shortcut.record': 'Record',
+  'shortcut.recording': 'Press keys…',
+  'shortcut.enabled': 'Enabled',
+  'shortcut.disabled': 'Disabled',
+  'shortcut.unbound': 'Unbound',
+  'shortcut.conflict': 'Conflict: {combo} is already bound to "{label}"',
+  'shortcut.restore': 'Restore defaults',
+  'shortcut.restoreConfirm': 'Restore all default shortcuts?',
+  'shortcut.cheatsheetTitle': 'Keyboard shortcuts',
+  'shortcut.cheatsheetHint': 'Rebind in Settings → Shortcuts',
+  'shortcut.switchTitle': 'Switch session',
+  'shortcut.switchPlaceholder': 'Search sessions; Enter creates a new one when no match…',
+  'shortcut.switchEmpty': 'No matching session · Enter to create',
+  'shortcut.newSession': 'New session',
+  'shortcut.newSessionDesc': 'Create a new session (works while running)',
+  'shortcut.sessionSwitch': 'Quick session switch',
+  'shortcut.sessionSwitchDesc': 'Open the session switcher; filter to pick, Enter to create when no match',
+  'shortcut.sessionActions': 'Session actions',
+  'shortcut.sessionActionsDesc': 'Fork / export / checkpoints / rename / delete',
+  'shortcut.stopTask': 'Stop current task',
+  'shortcut.stopTaskDesc': 'Interrupt the running agent turn',
+  'shortcut.toggleSidebar': 'Toggle sidebar',
+  'shortcut.toggleSidebarDesc': 'Expand / collapse the session sidebar (desktop)',
+  'shortcut.focusSearch': 'Focus session search',
+  'shortcut.focusSearchDesc': 'Focus the sidebar session search (when not typing)',
+  'shortcut.cycleTheme': 'Cycle theme',
+  'shortcut.cycleThemeDesc': 'Light → dark → system',
+  'shortcut.fullscreen': 'Toggle fullscreen',
+  'shortcut.fullscreenDesc': 'Enter / exit browser fullscreen',
+  'shortcut.scrollTop': 'Scroll to top',
+  'shortcut.scrollTopDesc': 'Scroll message area to top',
+  'shortcut.scrollBottom': 'Scroll to bottom',
+  'shortcut.scrollBottomDesc': 'Scroll message area to bottom',
+  'shortcut.copyLastReply': 'Copy last reply',
+  'shortcut.copyLastReplyDesc': 'Copy the last assistant reply',
+  'shortcut.copyTitle': 'Copy session title',
+  'shortcut.copyTitleDesc': 'Copy the current session title',
+  'shortcut.copyId': 'Copy session ID',
+  'shortcut.copyIdDesc': 'Copy the current session ID',
+  'shortcut.openModelPanel': 'Open model panel',
+  'shortcut.openModelPanelDesc': 'Open the model & reasoning-level panel',
+  'shortcut.cyclePermission': 'Cycle permission',
+  'shortcut.cyclePermissionDesc': 'read → safe → ask → full (silent)',
+  'shortcut.openSettings': 'Open settings',
+  'shortcut.openSettingsDesc': 'Open the settings dialog',
+  'shortcut.cheatsheet': 'Shortcut cheatsheet',
+  'shortcut.cheatsheetDesc': 'View all shortcuts and current bindings',
+  'shortcut.planMode': 'Toggle plan mode',
+  'shortcut.planModeDesc': 'Read-only research mode',
+  'shortcut.searchPlaceholder': 'Search feature or shortcut… (click an item to rebind in settings)',
+  'shortcut.jumpToSettings': 'Click to rebind in Settings → Shortcuts',
+  'shortcut.noMatch': 'No shortcut matches "{q}" — try a feature name, group, or key like ⌘K',
 };
 function t(key, vars) {
   const lang = state.language === 'en' ? I18N_EN : I18N_ZH;
@@ -376,6 +621,7 @@ function applyLanguage(lang) {
   renderStatusbarSettings();
   updateComposerStatus();
   renderThemeOptions(state.status?.webTheme || getStoredTheme() || 'system');
+  renderShortcutsSettings();
   const lg = $('#set-language');
   if (lg) lg.value = state.language;
   return state.language;
@@ -546,37 +792,206 @@ function initScrollFollow() {
   }, { passive: true });
 }
 
-/* 助手消息块（含流式光标） */
+/* 助手消息块（流式光标：打字机效果，注入 span 到最后一个文本块末尾，与字符同行） */
 function assistantBlock(sessionId) {
   setEmptyState(false);
   const b = makeBlock('assistant', sessionId);
   const wrap = el('div', 'msg assistant');
   const body = el('div', 'md-body');
-  body.classList.add('cursor-blink');
   wrap.appendChild(body);
   msgList().appendChild(wrap);
-  b.stopCursor = () => body.classList.remove('cursor-blink');
-  // 节流重渲染：chunk 高频时只更新文本 + 定时 paint
+  b._streaming = true; // paint 时向最后一个文本块末尾注入 .stream-cursor span
+  b.stopCursor = () => {
+    if (!b._streaming) return;
+    b._streaming = false;
+    b.paint(); // 重绘：移除光标 span
+  };
   b._text = '';
   b._body = body;
   b._dirty = false;
   b.paint = () => {
     body.innerHTML = mdToHtml(b._text);
+    if (b._streaming) appendStreamCursor(body);
     scrollBottom();
   };
   return b;
 }
 
-/* 用户消息块 */
-function userBlock(sessionId, text) {
+/** 流式光标：在最后一个有内容的文本块末尾注入内联竖条 span（打字机效果，
+ *  与最后一个字符同行、随流式移动）。光标是真实 span（不是 ::after 伪元素——
+ *  ::after 位于 md-body 末尾 = 最后一个块级 </p> 之后，会落到下一行） */
+function appendStreamCursor(body) {
+  body.querySelectorAll('.stream-cursor').forEach((c) => c.remove());
+  const blocks = [...body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, td, code, pre')];
+  const cur = document.createElement('span');
+  cur.className = 'stream-cursor';
+  if (blocks.length > 0) blocks[blocks.length - 1].appendChild(cur);
+  else body.appendChild(cur);
+}
+
+/* 用户消息块（可选附件：图片缩略图 / 文件标签，随后接正文文本） */
+function userBlock(sessionId, text, attachments) {
   setEmptyState(false);
   const b = makeBlock('user', sessionId);
   const wrap = el('div', 'msg user');
-  wrap.appendChild(el('div', 'bubble', text));
+  const bubble = el('div', 'bubble');
+  if (attachments && attachments.length) {
+    const row = el('div', 'bubble-attachments');
+    attachments.forEach((a) => {
+      if (a.kind === 'image') {
+        const img = document.createElement('img');
+        img.className = 'bubble-img';
+        img.src = a.dataUrl;
+        img.alt = a.name || t('attach.image');
+        img.title = a.name || t('attach.image');
+        row.appendChild(img);
+      } else {
+        row.appendChild(el('span', 'bubble-file', (a.kind === 'text' ? '📄 ' : '📎 ') + (a.name || '')));
+      }
+    });
+    bubble.appendChild(row);
+  }
+  if (text) bubble.appendChild(document.createTextNode(text));
+  wrap.appendChild(bubble);
   msgList().appendChild(wrap);
   state.autoFollow = true; // 用户发消息 → 恢复跟随
   scrollBottom(true);
   return b;
+}
+
+/* ---------------- 附件（+ 选择器 / 拖拽；图片压缩 / 文本截断 / 路径占位） ---------------- */
+const TEXT_EXT = /\.(md|txt|json|js|mjs|cjs|ts|tsx|jsx|py|go|rs|rb|java|c|h|cpp|hpp|cs|sh|bash|zsh|yml|yaml|toml|ini|cfg|xml|html|css|scss|sql|csv|log|env|conf|gitignore|dockerfile)$/i;
+const IMAGE_MAX_BYTES = 4 * 1024 * 1024; // 单图上限（D5）
+const ATTACH_TEXT_MAX = 30 * 1024; // 文本附件注入上限（D6，同 preloadMaxBytes）
+let _attachSeq = 0;
+function attachId() { return 'a' + Date.now().toString(36) + (++_attachSeq); }
+function formatFileSize(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+function isTextFile(file) {
+  if (file.type && file.type.startsWith('text/')) return true;
+  if (TEXT_EXT.test(file.name)) return true;
+  return false;
+}
+/** 当前模型是否支持图片（D7）：models 表无 capabilities 时按支持处理 */
+function modelSupportsImage() {
+  const st = state.status || {};
+  const m = (st.models || []).find((x) => x.name === st.model);
+  if (!m || !m.capabilities) return true;
+  const mods = m.capabilities.modalities || [];
+  return mods.includes('image') || mods.includes('input_image');
+}
+/** 图片压缩：canvas 等比缩放长边 ≤1024（PNG 带透明保留 PNG，其余 JPEG 0.85） */
+function compressImage(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1024;
+      const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      const isPng = file.type === 'image/png';
+      resolve(canvas.toDataURL(isPng ? 'image/png' : 'image/jpeg', 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+/** 处理选中的文件（+ 按钮 / 拖拽共用）：图片→压缩 dataUrl，文本→注入内容，其它→路径占位 */
+async function handleAttachFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  for (const file of files) {
+    if (file.type.startsWith('image/')) {
+      if (!modelSupportsImage()) {
+        state.attachments.push({ id: attachId(), kind: 'path', name: file.name, size: file.size });
+        metaLine(state.session, [t('attach.modelNoImage', { name: file.name })]);
+        continue;
+      }
+      if (file.size > IMAGE_MAX_BYTES) {
+        metaLine(state.session, [t('attach.imageTooLarge', { name: file.name })]);
+        continue;
+      }
+      const dataUrl = await compressImage(file);
+      if (!dataUrl) { metaLine(state.session, [`⚠ 无法读取图片：${file.name}`]); continue; }
+      state.attachments.push({ id: attachId(), kind: 'image', name: file.name, size: file.size, dataUrl });
+    } else if (isTextFile(file)) {
+      let content = '';
+      try { content = await file.text(); } catch { content = ''; }
+      if (!content) { state.attachments.push({ id: attachId(), kind: 'path', name: file.name, size: file.size }); continue; }
+      if (content.length > ATTACH_TEXT_MAX) content = content.slice(0, ATTACH_TEXT_MAX) + '\n' + t('attach.truncated');
+      state.attachments.push({ id: attachId(), kind: 'text', name: file.name, size: file.size, content });
+    } else {
+      state.attachments.push({ id: attachId(), kind: 'path', name: file.name, size: file.size });
+    }
+  }
+  renderAttachList();
+}
+/** 附件条渲染（输入框上方）：图片缩略图 / 名称+大小，每条 × 移除 */
+function renderAttachList() {
+  const list = $('#attach-list');
+  if (!list) return;
+  const atts = state.attachments;
+  if (!atts.length) { list.classList.add('hidden'); list.innerHTML = ''; return; }
+  list.classList.remove('hidden');
+  list.innerHTML = '';
+  atts.forEach((a) => {
+    const chip = el('div', 'attach-chip' + (a.kind === 'image' ? ' is-image' : ''));
+    if (a.kind === 'image') {
+      const img = document.createElement('img');
+      img.src = a.dataUrl; img.alt = a.name;
+      chip.appendChild(img);
+    } else {
+      chip.appendChild(el('span', 'attach-icon', a.kind === 'text' ? '📄' : '📎'));
+    }
+    const meta = el('div', 'attach-meta');
+    meta.appendChild(el('span', 'attach-name', a.name));
+    if (a.size) meta.appendChild(el('span', 'attach-size', formatFileSize(a.size)));
+    chip.appendChild(meta);
+    const rm = el('button', 'attach-remove', '×');
+    rm.type = 'button';
+    rm.title = t('attach.remove');
+    rm.addEventListener('click', () => {
+      state.attachments = state.attachments.filter((x) => x.id !== a.id);
+      renderAttachList();
+      updateComposer();
+    });
+    chip.appendChild(rm);
+    list.appendChild(chip);
+  });
+}
+/** 解析会话历史里的用户消息 content（字符串或数组）→ { text, attachments }（历史恢复最小渲染） */
+function parseUserContent(content) {
+  if (typeof content === 'string') return { text: content, attachments: [] };
+  if (!Array.isArray(content)) return { text: '', attachments: [] };
+  const attachments = [];
+  let text = '';
+  content.forEach((p) => {
+    if (!p || typeof p !== 'object') return;
+    if (p.type === 'image_url') {
+      const url = (p.image_url && typeof p.image_url.url === 'string') ? p.image_url.url : '';
+      attachments.push({ id: attachId(), kind: 'image', name: t('attach.image'), dataUrl: url.startsWith('data:image/') ? url : '' });
+    } else if (p.type === 'text' && typeof p.text === 'string') {
+      const m = p.text.match(/^【附件：(.+?)】\n([\s\S]*)$/);
+      if (m) {
+        attachments.push({ id: attachId(), kind: 'text', name: m[1], content: m[2] });
+      } else if (p.text.startsWith('[附件：')) {
+        const nm = p.text.replace(/^\[附件：(.+?)（[\s\S]*$/, '$1');
+        attachments.push({ id: attachId(), kind: 'path', name: nm || '附件' });
+      } else {
+        text += p.text;
+      }
+    }
+  });
+  return { text, attachments };
 }
 
 /* 思考块 */
@@ -1072,6 +1487,28 @@ async function openRewindModal(sessionId) {
 $('#btn-close-rewind').addEventListener('click', () => $('#rewind-modal').classList.add('hidden'));
 $('#rewind-modal').addEventListener('click', (e) => { if (e.target === $('#rewind-modal')) $('#rewind-modal').classList.add('hidden'); });
 
+/* —— 快捷键弹窗：⌘K 会话切换 + ⌘/ 速查表 —— */
+$('#btn-close-sw').addEventListener('click', closeSessionSwitch);
+$('#session-switch-modal').addEventListener('click', (e) => { if (e.target === $('#session-switch-modal')) closeSessionSwitch(); });
+$('#btn-close-sc').addEventListener('click', () => $('#shortcuts-modal').classList.add('hidden'));
+$('#shortcuts-modal').addEventListener('click', (e) => { if (e.target === $('#shortcuts-modal')) $('#shortcuts-modal').classList.add('hidden'); });
+// ⌘/ 速查表可搜索：输入即过滤（按功能名/描述/分组/绑定键），点击条目跳到 设置 → 快捷键 对应项
+$('#sc-search').addEventListener('input', (e) => { scFilter = e.target.value; openCheatsheet(); });
+$('#sw-search').addEventListener('input', (e) => { swFilter = e.target.value; swSelIdx = 0; renderSessionSwitch(); });
+$('#sw-search').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); swSelIdx = Math.min(swSelIdx + 1, Math.max(swItems.length - 1, 0)); renderSessionSwitch(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); swSelIdx = Math.max(swSelIdx - 1, 0); renderSessionSwitch(); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    const s = swItems[swSelIdx];
+    if (s) { pickSession(s); return; }
+    // 无匹配 → 新建会话并发送输入文本（D5：Enter 直接新建）
+    const text = swFilter.trim();
+    closeSessionSwitch();
+    if (text) newSession().then(() => doSend(text)).catch((err) => console.error(err));
+  }
+});
+
 /** 工作区操作菜单（组头 ⋯）：移除工作区（清单去掉 + 删该区全部会话记录，目录本身不动） */
 function showWorkspaceActions(e, project, count) {
   closeSessionActions();
@@ -1225,9 +1662,9 @@ function updatePermissionPill() {
   if (pill) pill.className = 'perm-pill' + (perm === 'full' ? ' full' : perm === 'ask' ? ' ask' : perm === 'read' ? ' read' : '');
 }
 
-/* —— 权限 / 添加 / 模型 pop 渲染 —— */
+/* —— 权限 / 模型 pop 渲染 —— */
 function closeAllComposerPops() {
-  ['#permission-pop', '#add-menu', '#model-pop'].forEach((sel) => {
+  ['#permission-pop', '#model-pop'].forEach((sel) => {
     const n = $(sel);
     if (n) n.classList.add('hidden');
   });
@@ -1288,86 +1725,6 @@ function renderPermissionPop() {
   });
   pop.appendChild(list);
 }
-function renderAddMenu() {
-  const pop = $('#add-menu');
-  if (!pop) return;
-  pop.innerHTML = '';
-  const searchRow = el('div', 'am-search');
-  const sIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  const sUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  sUse.setAttribute('href', '#i-search');
-  sIcon.appendChild(sUse);
-  searchRow.appendChild(sIcon);
-  const inp = document.createElement('input');
-  inp.placeholder = '搜索文件和文件夹…';
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllComposerPops(); });
-  inp.addEventListener('input', () => {
-    const q = inp.value.trim().toLowerCase();
-    pop.querySelectorAll('.am-item').forEach((row) => {
-      const t = row.textContent?.toLowerCase() || '';
-      row.style.display = !q || t.includes(q) ? '' : 'none';
-    });
-  });
-  searchRow.appendChild(inp);
-  const fIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  const fUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  fUse.setAttribute('href', '#i-folder');
-  fIcon.appendChild(fUse);
-  // placeholder icon before input? already sIcon is search; keep.
-  pop.appendChild(searchRow);
-  pop.appendChild(el('div', 'am-section', '添加'));
-  const mkItem = (icon, title, desc, onClick, active) => {
-    const b = el('button', 'am-item' + (active ? ' active' : ''));
-    b.type = 'button';
-    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    u.setAttribute('href', `#${icon}`);
-    ic.appendChild(u);
-    b.appendChild(ic);
-    const main = el('div', 'am-main');
-    main.appendChild(el('div', 'am-title', title));
-    if (desc) main.appendChild(el('div', 'am-desc', desc));
-    b.appendChild(main);
-    if (active) {
-      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      ck.setAttribute('class', 'am-check');
-      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      cu.setAttribute('href', '#i-check');
-      ck.appendChild(cu);
-      b.appendChild(ck);
-    }
-    if (onClick) b.addEventListener('click', onClick);
-    return b;
-  };
-  pop.appendChild(mkItem('i-folder', '在项目中使用 Work', '为新聊天选择项目', () => { closeAllComposerPops(); browseWorkspace(); }));
-  pop.appendChild(mkItem('i-target', '目标', '自动推导验收标准并循环执行直至达标（/goal）', () => {
-    closeAllComposerPops();
-    const t = prompt('输入目标');
-    if (t && t.trim()) runSlashCommand('/goal ' + t.trim());
-  }));
-  const planActive = !!state.planMode;
-  pop.appendChild(mkItem('i-spark', '计划模式', planActive ? '已开启' : '开启计划模式', () => {
-    applySettings({ planMode: !planActive }).then(() => renderAddMenu()).catch((e) => alert(e.message));
-  }, planActive));
-  pop.appendChild(mkItem('i-check', '录制技能', '', () => {
-    closeAllComposerPops();
-    const name = prompt('技能名（小写字母+连字符，如 my-skill）');
-    if (!name || !name.trim()) return;
-    const desc = prompt('技能描述（可选）') || '';
-    api('/api/skills/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: name.trim(), description: desc.trim() }),
-    })
-      .then((data) => alert(`技能「${data.name}」已创建于 ${data.path}`))
-      .catch((e) => alert(`创建技能失败：${e.message}`));
-  }));
-  const tip = el('div', 'am-section', '提示：输入 @ 提及文件');
-  tip.style.textTransform = 'none';
-  tip.style.fontWeight = '400';
-  pop.appendChild(tip);
-}
-
 /** 从历史消息渲染会话内容（用户/思考/工具卡片/回答）——selectSession 与
  *  运行中刷新后的 run.end 回填共用；不清会话状态、不动待发送队列。 */
 async function renderSessionHistory(id) {
@@ -1378,7 +1735,9 @@ async function renderSessionHistory(id) {
     data.messages.forEach((m) => {
       const txt = typeof m.content === 'string' ? m.content : '';
       if (m.role === 'user') {
-        userBlock(id, txt);
+        // 数组 content（图片/文本附件）：解析为附件 chips + 正文（历史恢复最小渲染）
+        const parsed = parseUserContent(m.content);
+        userBlock(id, parsed.text, parsed.attachments);
       } else if (m.role === 'assistant') {
         // 先恢复 thinking（reasoning 已持久化），再恢复工具卡片，最后正文——
         // 与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
@@ -1640,19 +1999,22 @@ const STATUS_SEGMENTS = [
     id: 'speed', labelKey: 'statusbar.speed',
     build: (s, u) => {
       const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const rate = s.llmMs > 0 ? Math.round(u.completion / (s.llmMs / 1000)) : 0;
+      // 生成耗时优先 genMs；单 chunk 响应 genMs=0 → 回退 llmMs - firstTokenSum，1ms 下限防除零
+      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
       return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
     buildEn: (s, u) => {
       const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const rate = s.llmMs > 0 ? Math.round(u.completion / (s.llmMs / 1000)) : 0;
+      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
       return `First token avg ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
   {
     id: 'cache', labelKey: 'statusbar.cache',
-    build: (s, u) => `缓存命中 ${u.prompt > 0 ? Math.round((s.cached / u.prompt) * 100) : 0}%`,
-    buildEn: (s, u) => `Cache hit ${u.prompt > 0 ? Math.round((s.cached / u.prompt) * 100) : 0}%`,
+    build: (s, u) => `缓存命中 ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
+    buildEn: (s, u) => `Cache hit ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
   },
   {
     id: 'tokens', labelKey: 'statusbar.tokens',
@@ -1673,7 +2035,7 @@ function fmtCompact(n) {
 }
 function statsOf(sid) {
   if (!state.sessionStats.has(sid)) {
-    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, cached: 0 });
+    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 });
   }
   return state.sessionStats.get(sid);
 }
@@ -1846,10 +2208,17 @@ bus.on('title', (ev) => {
 
 bus.on('user.message', (ev) => {
   if (ev.sessionId !== state.session) return;
-  // steer 打断消息已进当前轮 → 消费「期望已插入」标记，run.end 不再重复发送
-  if (ev.steer && state.steerText === ev.text) state.steerText = null;
+  // steer 打断消息：loop 处理中断后经 onUserMessage 广播（无 steer 标记）。文本匹配
+  // steerText 即消费「期望已插入」标记（run.end 不再补发），并渲染一次——消息只进当前轮
+  // 一次（服务端 /steer 不再重复广播，修复「Cmd+Enter 一次发出两个」）
+  if (state.steerText !== null && ev.text === state.steerText) {
+    state.steerText = null;
+    userBlock(ev.sessionId, ev.text);
+    return;
+  }
   // 乐观回显去重：doSend 已本地显示非 steer 用户消息，SSE 重复到达时跳过
-  if (!ev.steer && state._pendingUserText && ev.text === state._pendingUserText) {
+  // 注意：纯附件消息 text 为空（''）时 _pendingUserText 仍非 null，用 !== null 而非 truthy 判定
+  if (!ev.steer && state._pendingUserText !== null && ev.text === state._pendingUserText) {
     state._pendingUserText = null;
     return;
   }
@@ -2021,12 +2390,13 @@ bus.on('turn.step', (ev) => {
   if (ev.sessionId !== state.session) return;
 });
 
-// lap：LLM 请求墙钟 / 首 token
+// lap：LLM 请求墙钟 / 首 token / 生成耗时（tok/s 用 genMs——排除首 token 等待）
 bus.on('lap', (ev) => {
   if (ev.sessionId !== state.session) return;
   const s = statsOf(ev.sessionId);
   s.llmMs += ev.llmMs || 0;
   if (ev.firstTokenMs != null) { s.firstTokenSum += ev.firstTokenMs; s.firstTokenCount++; }
+  if (ev.genMs != null) s.genMs += ev.genMs;
   updateComposerStatus();
 });
 
@@ -2383,6 +2753,435 @@ async function runSlashCommand(cmd) {
   }
 }
 
+/* ================= 快捷键系统（keyboard-shortcuts-spec.md） =================
+ * 注册表驱动：⌘/ 速查表、设置-快捷键 pane、冲突检测、localStorage 持久化、
+ * 全局分发全部由 SHORTCUT_FEATURES 派生——新增功能只需加一行。
+ * 键位约定：跟随 DeepSeek Harness (dsh)——macOS ⌘ / 其它平台 Ctrl（平台中立 'Meta'）；
+ * 组合键在输入框聚焦时也生效（D9），裸键（/、⇧Tab）仅焦点不在编辑区时触发。
+ */
+
+/* ==== shortcuts-pure-start ====（纯函数块，供探针单测，勿引用 DOM） */
+const SHORTCUTS_STORAGE_KEY = 'omni-web-shortcuts-v1';
+const GROUP_IDS = ['sessions', 'view', 'clipboard', 'model', 'permission', 'system', 'commands'];
+const PERM_ORDER = ['read', 'safe', 'ask', 'full'];
+
+/** 组合键解析：'Meta+Shift+M' → { mods:Set(['Meta','Shift']), key:'m' }；非法返回 null */
+function parseCombo(str) {
+  if (!str || typeof str !== 'string') return null;
+  const parts = String(str).split('+');
+  if (parts.length < 1) return null;
+  const key = parts.pop().toLowerCase();
+  if (!key) return null;
+  return { mods: new Set(parts), key };
+}
+/** 标点键（长度 1 的非字母数字、非空格）：用于 ⇧ 上档布局归一化 */
+function isPunctKey(key) {
+  return key.length === 1 && !/[a-z0-9]/.test(key) && key !== ' ';
+}
+/** 事件 → 键名（布局无关：标点走 e.code 映射，字母小写化） */
+function keyNameFromEvent(e) {
+  if (e.key === ' ') return 'Space';
+  if (e.key.length === 1 && e.code && e.code.startsWith('Key')) return e.key.toLowerCase();
+  if (e.key.length === 1 && /^[0-9]$/.test(e.key)) return e.key;
+  if (e.key.length === 1) {
+    const codeMap = { Slash: '/', Period: '.', Comma: ',', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backslash: '\\', Minus: '-', Equal: '=', Backquote: '`' };
+    if (e.code && codeMap[e.code]) return codeMap[e.code];
+    return e.key.toLowerCase();
+  }
+  return e.key;
+}
+/** 事件 → 候选组合键列表（⌘ 与 Ctrl 平台中立为 'Meta'；标点键需 Shift 的布局去掉 Shift 再给一个变体） */
+function comboVariants(e) {
+  const mods = [];
+  if (e.metaKey || e.ctrlKey) mods.push('Meta');
+  if (e.altKey) mods.push('Alt');
+  if (e.shiftKey) mods.push('Shift');
+  const key = keyNameFromEvent(e);
+  const primary = [...mods, key].join('+');
+  const alt = mods.includes('Shift') && isPunctKey(key) ? mods.filter((m) => m !== 'Shift').concat(key).join('+') : null;
+  return alt ? [primary, alt] : [primary];
+}
+function isModifierOnly(e) { return ['Meta', 'Control', 'Shift', 'Alt'].includes(e.key); }
+function isEditableTarget(el) {
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+}
+/** 组合键结构相等（parseCombo 已小写化 key，'Meta+n' ≡ 'Meta+N'） */
+function combosEqual(a, b) {
+  if (a === b) return true;
+  const pa = parseCombo(a);
+  const pb = parseCombo(b);
+  if (!pa || !pb) return false;
+  if (pa.key !== pb.key || pa.mods.size !== pb.mods.size) return false;
+  for (const m of pa.mods) if (!pb.mods.has(m)) return false;
+  return true;
+}
+/** 组合键展示：macOS ⌘/⌥/⇧，其它平台 Ctrl/Alt/Shift */
+function formatCombo(str) {
+  if (!str) return '';
+  const p = parseCombo(str);
+  if (!p) return str;
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '');
+  const modLabels = { Meta: isMac ? '⌘' : 'Ctrl', Alt: isMac ? '⌥' : 'Alt', Shift: isMac ? '⇧' : 'Shift' };
+  const keyLabel = p.key === ' ' ? 'Space'
+    : p.key === 'arrowup' ? '↑' : p.key === 'arrowdown' ? '↓'
+    : p.key === 'arrowleft' ? '←' : p.key === 'arrowright' ? '→'
+    : p.key === 'tab' ? 'Tab' : p.key === 'enter' ? 'Enter' : p.key === 'escape' ? 'Esc'
+    : p.key.length === 1 ? p.key.toUpperCase() : p.key;
+  const parts = [...p.mods].map((m) => modLabels[m] || m).concat(keyLabel);
+  return parts.join(isMac ? '' : '+');
+}
+/** localStorage 覆盖：{ [featureId]: combo | null }；缺省 = 用默认键；null = 禁用 */
+function getShortcutOverrides(localStore) {
+  try { return JSON.parse((localStore || localStorage).getItem(SHORTCUTS_STORAGE_KEY) || '{}') || {}; } catch { return {}; }
+}
+function setShortcutOverride(localStore, id, combo) {
+  const o = getShortcutOverrides(localStore);
+  if (combo === undefined) delete o[id];
+  else o[id] = combo;
+  try { (localStore || localStorage).setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(o)); } catch { /* 隐私模式等场景忽略 */ }
+}
+function getBinding(f, localStore) {
+  const o = getShortcutOverrides(localStore);
+  return Object.prototype.hasOwnProperty.call(o, f.id) ? o[f.id] : (f.defaultCombo || null);
+}
+/** 分发匹配：返回命中的 feature（含裸键编辑态过滤），无命中返回 null */
+function matchShortcut(features, bindingOf, combo, editable) {
+  for (const f of features) {
+    const bind = bindingOf(f);
+    if (!bind) continue;
+    const hasMod = /(^|\+)Meta/.test(bind);
+    if (!hasMod && editable) continue; // 裸键在输入框聚焦时不抢焦点（D9）
+    if (combosEqual(combo, bind)) return f;
+  }
+  return null;
+}
+/** 冲突检测：其它已启用绑定里是否有同一组合键 */
+function findShortcutClash(features, bindingOf, excludeId, combo) {
+  for (const f of features) {
+    if (f.id === excludeId) continue;
+    if (combosEqual(bindingOf(f), combo)) return f;
+  }
+  return null;
+}
+/**
+ * 速查表搜索匹配（纯函数）：功能 id / 分组 / 绑定键 + 调用方提供的可搜索文本
+ * （featureLabel + featureDesc + 分组名，即 i18n 化的展示文案）任一处包含全部查询词。
+ * 多词 AND（空格分隔）；空查询全部命中。
+ */
+function cheatsheetMatches(f, q, hayExtra) {
+  if (!q) return true;
+  const raw = getBinding(f) || '';
+  // 原始绑定（Meta+K）+ 渲染键位（⌘K / Ctrl+K）都进搜索文本——两种输入习惯都能命中
+  const hay = [f.id, f.group, raw, formatCombo(raw), hayExtra || ''].join(' ').toLowerCase();
+  return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+}
+/* ==== shortcuts-pure-end ==== */
+
+const SHORTCUT_FEATURES = [
+  { id: 'newSession', group: 'sessions', labelKey: 'shortcut.newSession', descKey: 'shortcut.newSessionDesc', defaultCombo: 'Meta+N', run: () => newSession().catch((e) => console.error(e)) },
+  { id: 'sessionSwitch', group: 'sessions', labelKey: 'shortcut.sessionSwitch', descKey: 'shortcut.sessionSwitchDesc', defaultCombo: 'Meta+K', run: toggleSessionSwitch },
+  { id: 'sessionActions', group: 'sessions', labelKey: 'shortcut.sessionActions', descKey: 'shortcut.sessionActionsDesc', defaultCombo: 'Meta+Shift+A', run: () => openSessionActionsMenu(state.session) },
+  { id: 'stopTask', group: 'sessions', labelKey: 'shortcut.stopTask', descKey: 'shortcut.stopTaskDesc', defaultCombo: 'Meta+.', run: () => { if (sessionRunning()) cancelCurrentRun(); } },
+  { id: 'toggleSidebar', group: 'view', labelKey: 'shortcut.toggleSidebar', descKey: 'shortcut.toggleSidebarDesc', defaultCombo: 'Meta+B', run: toggleSidebar },
+  { id: 'focusSearch', group: 'view', labelKey: 'shortcut.focusSearch', descKey: 'shortcut.focusSearchDesc', defaultCombo: '/', run: focusSessionSearch },
+  { id: 'cycleTheme', group: 'view', labelKey: 'shortcut.cycleTheme', descKey: 'shortcut.cycleThemeDesc', defaultCombo: 'Meta+Shift+L', run: cycleTheme },
+  { id: 'fullscreen', group: 'view', labelKey: 'shortcut.fullscreen', descKey: 'shortcut.fullscreenDesc', defaultCombo: 'Meta+Shift+F', run: toggleFullscreen },
+  { id: 'scrollTop', group: 'view', labelKey: 'shortcut.scrollTop', descKey: 'shortcut.scrollTopDesc', defaultCombo: 'Meta+ArrowUp', run: () => scrollMessages('top') },
+  { id: 'scrollBottom', group: 'view', labelKey: 'shortcut.scrollBottom', descKey: 'shortcut.scrollBottomDesc', defaultCombo: 'Meta+ArrowDown', run: () => scrollMessages('bottom') },
+  { id: 'copyLastReply', group: 'clipboard', labelKey: 'shortcut.copyLastReply', descKey: 'shortcut.copyLastReplyDesc', defaultCombo: 'Meta+Shift+M', run: copyLastReply },
+  { id: 'copyTitle', group: 'clipboard', labelKey: 'shortcut.copyTitle', descKey: 'shortcut.copyTitleDesc', defaultCombo: 'Meta+Shift+Y', run: copySessionTitle },
+  { id: 'copyId', group: 'clipboard', labelKey: 'shortcut.copyId', descKey: 'shortcut.copyIdDesc', defaultCombo: 'Meta+Shift+U', run: copySessionId },
+  { id: 'openModelPanel', group: 'model', labelKey: 'shortcut.openModelPanel', descKey: 'shortcut.openModelPanelDesc', defaultCombo: 'Meta+M', run: () => togglePop('#model-pop') },
+  { id: 'cyclePermission', group: 'permission', labelKey: 'shortcut.cyclePermission', descKey: 'shortcut.cyclePermissionDesc', defaultCombo: 'Shift+Tab', run: cyclePermission },
+  { id: 'openSettings', group: 'system', labelKey: 'shortcut.openSettings', descKey: 'shortcut.openSettingsDesc', defaultCombo: 'Meta+,', run: openSettings },
+  { id: 'cheatsheet', group: 'system', labelKey: 'shortcut.cheatsheet', descKey: 'shortcut.cheatsheetDesc', defaultCombo: 'Meta+/', run: toggleCheatsheet },
+  { id: 'planMode', group: 'system', labelKey: 'shortcut.planMode', descKey: 'shortcut.planModeDesc', defaultCombo: 'Meta+Shift+P', run: togglePlanMode },
+];
+// 命令组：30+ 斜杠命令默认不绑键，可在 设置 → 快捷键 录制绑定（D16）
+SLASH_COMMANDS.forEach((c) => {
+  SHORTCUT_FEATURES.push({ id: 'cmd:' + c.name, group: 'commands', label: c.name, desc: c.desc, defaultCombo: null, run: () => runSlashCommand(c.name + ' ') });
+});
+
+function featureLabel(f) { return f.label || (f.labelKey ? t(f.labelKey) : f.id); }
+function featureDesc(f) { return f.desc || (f.descKey ? t(f.descKey) : ''); }
+
+/* —— run() 实现 —— */
+function toggleSidebar() {
+  if (window.innerWidth <= 760) return; // 移动端 overlay 侧栏不做（D15）
+  $('#app').classList.toggle('sidebar-collapsed');
+}
+function focusSessionSearch() {
+  // 收起态下搜索框不可见：先展开侧栏再聚焦（与点击搜索图标同语义）
+  if ($('#app').classList.contains('sidebar-collapsed')) $('#app').classList.remove('sidebar-collapsed');
+  $('#session-search').focus();
+}
+function cyclePermission() {
+  const cur = state.status?.permission || 'safe';
+  const next = PERM_ORDER[(PERM_ORDER.indexOf(cur) + 1) % PERM_ORDER.length] || 'read';
+  applySettings({ permission: next }).catch((err) => alert(`设置失败：${err.message}`)); // 静默切换（D12），失败才提示
+}
+function cycleTheme() {
+  const cur = getStoredTheme() || state.status?.webTheme || 'system';
+  const order = ['light', 'dark', 'system'];
+  const next = order[(order.indexOf(cur) + 1) % order.length] || 'light';
+  applyTheme(next);
+  storeTheme(next);
+  api('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ webTheme: next }),
+  }).catch(() => {});
+}
+function togglePlanMode() {
+  const next = !state.planMode;
+  state.planMode = next;
+  $('#plan-mode').checked = next;
+  const sp = $('#set-plan');
+  if (sp) sp.checked = next;
+  updateComposer();
+  applySettings({ planMode: next }).catch((err) => alert(`设置失败：${err.message}`));
+}
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+function scrollMessages(dir) {
+  const sb = document.querySelector('.scroll-body');
+  if (!sb) return;
+  sb.scrollTop = dir === 'top' ? 0 : sb.scrollHeight;
+}
+function copyText(text) {
+  if (!text) return;
+  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).catch(() => {}); return; }
+  const ta = el('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+  ta.remove();
+}
+function copyLastReply() {
+  const blocks = document.querySelectorAll('#messages .msg.assistant');
+  const last = blocks[blocks.length - 1];
+  copyText(last ? last.textContent.trim() : '');
+}
+function copySessionTitle() { copyText($('#chat-title')?.textContent || ''); }
+function copySessionId() { copyText(state.session || ''); }
+function openSessionActionsMenu(session) {
+  if (!session) return;
+  const anchor = $('#chat-title') || document.body;
+  const r = anchor.getBoundingClientRect();
+  showSessionActions({ clientX: r.left + 24, clientY: r.bottom + 4 }, session);
+}
+
+/* —— ⌘K 会话快速切换面板（全部会话跨工作区；无匹配 Enter 新建） —— */
+let swFilter = '';
+let swSelIdx = 0;
+let swItems = [];
+function toggleSessionSwitch() {
+  const m = $('#session-switch-modal');
+  if (!m) return;
+  if (m.classList.contains('hidden')) openSessionSwitch();
+  else closeSessionSwitch();
+}
+function openSessionSwitch() {
+  const inp = $('#sw-search');
+  if (!inp) return;
+  $('#session-switch-modal').classList.remove('hidden');
+  inp.value = '';
+  swFilter = '';
+  swSelIdx = 0;
+  renderSessionSwitch();
+  inp.focus();
+}
+function closeSessionSwitch() { $('#session-switch-modal').classList.add('hidden'); }
+function renderSessionSwitch() {
+  const list = $('#sw-list');
+  if (!list) return;
+  const q = swFilter.trim().toLowerCase();
+  swItems = q
+    ? state.sessions.filter((s) => (s.title || s.id || '').toLowerCase().includes(q))
+    : state.sessions.slice();
+  list.innerHTML = '';
+  if (!swItems.length) {
+    list.appendChild(el('div', 'sw-empty', t('shortcut.switchEmpty')));
+    return;
+  }
+  swItems.forEach((s, i) => {
+    const row = el('div', 'sw-item' + (i === swSelIdx ? ' selected' : ''));
+    row.appendChild(el('div', 'sw-title', s.title || t('session.new')));
+    row.appendChild(el('div', 'sw-meta', `${projectName(s.project || '(未知工作区)')} · ${s.messages || 0} 条消息`));
+    row.addEventListener('click', () => pickSession(s));
+    list.appendChild(row);
+  });
+}
+function pickSession(s) {
+  closeSessionSwitch();
+  const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
+  const needSwitch = target && target !== (state.status?.cwd || '');
+  const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
+  if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => alert(`打开会话失败：${err.message}`));
+  else doSelect();
+}
+
+/* —— ⌘/ 快捷键速查表（可搜索 + 点击跳转设置对应项） —— */
+let scFilter = '';
+function toggleCheatsheet() {
+  const m = $('#shortcuts-modal');
+  if (!m) return;
+  if (m.classList.contains('hidden')) openCheatsheet();
+  else m.classList.add('hidden');
+}
+function openCheatsheet() {
+  const body = $('#shortcuts-body');
+  if (!body) return;
+  body.innerHTML = '';
+  const q = scFilter.trim();
+  for (const g of GROUP_IDS) {
+    // 搜索匹配：id/分组/绑定键（纯函数）+ i18n 化的功能名/描述/分组标签
+    const feats = SHORTCUT_FEATURES.filter((f) => f.group === g && cheatsheetMatches(f, q, `${featureLabel(f)} ${featureDesc(f)}`));
+    if (!feats.length) continue;
+    body.appendChild(el('div', 'scs-group-title', t('shortcut.group' + g[0].toUpperCase() + g.slice(1))));
+    for (const f of feats) {
+      const bind = getBinding(f);
+      const row = el('div', 'scs-row');
+      row.title = t('shortcut.jumpToSettings');
+      const label = el('div', 'scs-label', featureLabel(f));
+      label.title = featureDesc(f);
+      row.appendChild(label);
+      const chip = el('kbd', 'kbd-chip' + (bind === null ? ' disabled' : ''), bind === null ? t('shortcut.disabled') : (bind ? formatCombo(bind) : t('shortcut.unbound')));
+      row.appendChild(chip);
+      // 点击条目 → 关闭速查表，跳转 设置 → 快捷键 对应项（高亮 + 滚动到可见）
+      row.addEventListener('click', () => jumpToShortcutSettings(f.id));
+      body.appendChild(row);
+    }
+  }
+  if (q && !body.children.length) {
+    body.appendChild(el('div', 'scs-empty', t('shortcut.noMatch', { q })));
+  }
+  $('#shortcuts-modal').classList.remove('hidden');
+  const search = $('#sc-search');
+  if (search) { search.value = q; search.focus(); }
+}
+/** 速查表条目 → 设置-快捷键对应项：跳转并高亮该功能行（可立即录制新绑定） */
+function jumpToShortcutSettings(id) {
+  $('#shortcuts-modal').classList.add('hidden');
+  openSettings();
+  // 激活「快捷键」pane（与设置导航点击同逻辑）
+  document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n.dataset.pane === 'shortcuts'));
+  document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === 'shortcuts'));
+  scHighlightId = id; // 先记目标：renderShortcutsSettings 重建行时重新应用（异步 refreshStatus 不会冲掉）
+  renderShortcutsSettings();
+  const row = document.querySelector(`.sc-row[data-feature="${id}"]`);
+  if (row) row.scrollIntoView({ block: 'center' });
+  setTimeout(() => { scHighlightId = null; }, 2400);
+}
+
+/* —— 设置 → 快捷键 pane（录制 / 清除 / 禁用 / 冲突检测 / 恢复默认） —— */
+let recordingFeatureId = null;
+// 速查表点击跳转的高亮目标：renderShortcutsSettings 重建行时重新应用——openSettings 里的
+// refreshStatus() 是异步的，回来后可能再次 renderShortcutsSettings 把行整个重建（此前
+// 实测高亮在 0.1s 内消失）；记录 id 让每次重绘都带上 sc-highlight，超时后清空
+let scHighlightId = null;
+function startRecording(id) {
+  closeSessionActions();
+  recordingFeatureId = id;
+  renderShortcutsSettings();
+}
+function renderShortcutsSettings() {
+  const box = $('#shortcuts-list');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const g of GROUP_IDS) {
+    const feats = SHORTCUT_FEATURES.filter((f) => f.group === g);
+    if (!feats.length) continue;
+    box.appendChild(el('div', 'sc-group-title', t('shortcut.group' + g[0].toUpperCase() + g.slice(1))));
+    for (const f of feats) {
+      const bind = getBinding(f);
+      const row = el('div', 'sc-row' + (recordingFeatureId === f.id ? ' recording' : '') + (scHighlightId === f.id ? ' sc-highlight' : ''));
+      row.dataset.feature = f.id; // 速查表点击跳转定位用（jumpToShortcutSettings 滚动+高亮）
+      const info = el('div', 'sc-info');
+      info.appendChild(el('h4', null, featureLabel(f)));
+      info.appendChild(el('p', null, featureDesc(f)));
+      row.appendChild(info);
+      const chip = el('kbd', 'kbd-chip' + (bind === null ? ' disabled' : ''), bind === null ? t('shortcut.disabled') : (bind ? formatCombo(bind) : t('shortcut.unbound')));
+      chip.title = featureDesc(f);
+      row.appendChild(chip);
+      const rec = el('button', 'secondary-button sc-rec', recordingFeatureId === f.id ? t('shortcut.recording') : t('shortcut.record'));
+      rec.type = 'button';
+      rec.addEventListener('click', () => startRecording(f.id));
+      row.appendChild(rec);
+      // 启用/禁用开关：默认键为 null（斜杠命令）且未绑定时不显示
+      if (f.defaultCombo !== null || bind !== null) {
+        const en = document.createElement('input');
+        en.type = 'checkbox';
+        en.className = 'toggle-switch';
+        en.checked = bind !== null;
+        en.title = t('shortcut.enabled');
+        en.addEventListener('change', () => {
+          setShortcutOverride(undefined, en.checked ? (f.defaultCombo || null) : null);
+          renderShortcutsSettings();
+        });
+        row.appendChild(en);
+      }
+      box.appendChild(row);
+    }
+  }
+  const restore = el('button', 'primary-button sc-restore', t('shortcut.restore'));
+  restore.type = 'button';
+  restore.addEventListener('click', () => {
+    if (confirm(t('shortcut.restoreConfirm'))) {
+      try { localStorage.removeItem(SHORTCUTS_STORAGE_KEY); } catch { /* ignore */ }
+      recordingFeatureId = null;
+      renderShortcutsSettings();
+    }
+  });
+  box.appendChild(restore);
+}
+
+/* —— 录制捕获（capture 阶段先于分发器执行，防止录制按键触发已绑定功能） —— */
+function shortcutRecorder(e) {
+  if (recordingFeatureId === null) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === 'Escape') { recordingFeatureId = null; renderShortcutsSettings(); return; }
+  if (e.key === 'Backspace') {
+    setShortcutOverride(undefined, recordingFeatureId, null);
+    recordingFeatureId = null;
+    renderShortcutsSettings();
+    return;
+  }
+  if (isModifierOnly(e)) return; // 等待实际按键
+  const combo = comboVariants(e)[0];
+  const clash = findShortcutClash(SHORTCUT_FEATURES, (f) => getBinding(f), recordingFeatureId, combo);
+  if (clash) {
+    alert(t('shortcut.conflict', { combo: formatCombo(combo), label: featureLabel(clash) }));
+    return;
+  }
+  setShortcutOverride(undefined, recordingFeatureId, combo);
+  recordingFeatureId = null;
+  renderShortcutsSettings();
+}
+
+/* —— 全局分发（bubble 阶段；录制捕获先拦截） —— */
+function shortcutDispatcher(e) {
+  if (e.repeat || isModifierOnly(e)) return;
+  const editable = isEditableTarget(document.activeElement);
+  for (const combo of comboVariants(e)) {
+    const hit = matchShortcut(SHORTCUT_FEATURES, (f) => getBinding(f), combo, editable);
+    if (hit) {
+      e.preventDefault();
+      e.stopPropagation();
+      hit.run();
+      return;
+    }
+  }
+}
+document.addEventListener('keydown', shortcutRecorder, true);
+document.addEventListener('keydown', shortcutDispatcher);
+
 /* ---------------- 输入 / 发送 ---------------- */
 const input = $('#input');
 function autoResize() {
@@ -2428,7 +3227,7 @@ input.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (state._sending) return; // 发送锁：防止 Cmd+Enter 快速重复触发
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !state.attachments.length) return;
     // 斜杠命令：直接执行（不发送给 Agent）
     if (text.startsWith('/')) {
       cmdPalette.classList.add('hidden');
@@ -2438,6 +3237,7 @@ input.addEventListener('keydown', (e) => {
       return;
     }
     if (sessionRunning()) {
+      if (state.attachments.length) { metaLine(state.session, [t('attach.running')]); return; } // 运行中不支持附件
       if (e.metaKey || e.ctrlKey) steerMessage(text);
       else queueMessage(text);
     } else {
@@ -2447,17 +3247,14 @@ input.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('keydown', (e) => {
-  const isNew = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
-  if (isNew) {
-    e.preventDefault();
-    if (!sessionRunning()) newSession().catch((err) => console.error(err));
-  } else if (e.key === '/' && document.activeElement !== input && document.activeElement?.tagName !== 'INPUT') {
-    e.preventDefault();
-    $('#session-search').focus();
-  } else if (e.key === 'Escape') {
-    const anyPopOpen = ['#permission-pop', '#add-menu', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
+  // ⌘/Ctrl+K 新建会话、/ 聚焦搜索已移入快捷键注册表（keyboard-shortcuts-spec.md）：
+  // ⌘N=新建、⌘K=会话快速切换、/ = 聚焦搜索（裸键，输入框聚焦时不触发）
+  if (e.key === 'Escape') {
+    const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
     let escConsumed = false;
+    if (!$('#session-switch-modal').classList.contains('hidden')) { closeSessionSwitch(); escConsumed = true; }
+    else if (!$('#shortcuts-modal').classList.contains('hidden')) { $('#shortcuts-modal').classList.add('hidden'); escConsumed = true; }
     if (!$('#rewind-modal').classList.contains('hidden')) { $('#rewind-modal').classList.add('hidden'); escConsumed = true; }
     if (!$('#dirpicker-modal').classList.contains('hidden')) { closeDirPicker(); escConsumed = true; }
     else if (!$('#settings-modal').classList.contains('hidden')) { closeSettings(); escConsumed = true; }
@@ -2473,10 +3270,12 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* 纯发送（不检查 running 状态，由调用方保证） */
+/* 纯发送（不检查 running 状态，由调用方保证）；text 为空但带附件也可发送 */
 async function doSend(text) {
   input.value = '';
   autoResize();
+  const atts = state.attachments.slice();
+  if (atts.length) { state.attachments = []; renderAttachList(); }
   setEmptyState(false);
   state._sending = false; // 释放发送锁（input 已清空 + runningSessions 即将 add）
   try {
@@ -2492,9 +3291,9 @@ async function doSend(text) {
     state._localRunning.add(state.session); // 本地运行标记：status 覆盖前保持圆环/取消态
     updateComposer();
     updateStatusText();
-    // 乐观回显：先显示用户消息，再预建 thinking（保证顺序 user -> thinking，
+    // 乐观回显：先显示用户消息（含附件），再预建 thinking（保证顺序 user -> thinking，
     // 避免预建 thinking 跑到用户消息上方；SSE 的 user.message 重复到达时去重）
-    userBlock(state.session, text);
+    userBlock(state.session, text, atts);
     if (currentThinking) { currentThinking.finish(); currentThinking = null; }
     currentThinking = thinkingBlock(state.session);
     state._pendingUserText = text;
@@ -2502,12 +3301,21 @@ async function doSend(text) {
     await api(`/api/sessions/${state.session}/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        attachments: atts.map((a) => (a.kind === 'image'
+          ? { kind: 'image', name: a.name, dataUrl: a.dataUrl }
+          : a.kind === 'text'
+            ? { kind: 'text', name: a.name, content: a.content }
+            : { kind: 'path', name: a.name })),
+      }),
     });
   } catch (e) {
     state.runningSessions.delete(state.session);
     state._localRunning.delete(state.session);
     state._pendingUserText = null;
+    // 发送失败：恢复附件，便于重试
+    if (atts.length) { state.attachments = atts; renderAttachList(); }
     if (currentThinking) { currentThinking.finish(); currentThinking = null; }
     if (state.session) metaLine(state.session, [t('send.failed', { msg: e.message })]);
     updateComposer();
@@ -2515,10 +3323,10 @@ async function doSend(text) {
   }
 }
 
-/* 空闲发送 */
+/* 空闲发送（text 或附件任一非空即可） */
 function sendMessage() {
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !state.attachments.length) return;
   if (sessionRunning()) return; // 仅本会话运行中拦截（其它会话可并行）
   doSend(text);
 }
@@ -2756,6 +3564,7 @@ function openSettings() {
   refreshStatus();
   $('#settings-modal').classList.remove('hidden');
   document.body.classList.add('settings-open');
+  renderShortcutsSettings();
 }
 function closeSettings() {
   $('#settings-modal').classList.add('hidden');
@@ -2776,21 +3585,35 @@ $('#composer-model').addEventListener('click', (e) => {
   if (pop.classList.contains('hidden')) openModelPop();
   else closeModelPop();
 });
+/* + 按钮 = 文件/图片选择器（D4：不再弹 popover）；与拖拽共用 handleAttachFiles */
 $('#btn-attach').addEventListener('click', (e) => {
   e.stopPropagation();
-  const pop = $('#add-menu');
-  if (pop.classList.contains('hidden')) { renderAddMenu(); pop.classList.remove('hidden'); }
-  else pop.classList.add('hidden');
-  // 关闭其它
-  $('#permission-pop').classList.add('hidden');
-  $('#model-pop').classList.add('hidden');
+  closeAllComposerPops();
+  $('#attach-input').click();
 });
+$('#attach-input').addEventListener('change', (e) => {
+  handleAttachFiles(e.target.files);
+  e.target.value = ''; // 允许再次选择同一文件
+});
+// 拖拽（D8）：整个 composer 卡片可拖放，拖入高亮
+{
+  const card = $('#composer-card');
+  let dragDepth = 0;
+  card.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; card.classList.add('drag-over'); });
+  card.addEventListener('dragover', (e) => { e.preventDefault(); });
+  card.addEventListener('dragleave', () => { dragDepth--; if (dragDepth <= 0) { dragDepth = 0; card.classList.remove('drag-over'); } });
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    card.classList.remove('drag-over');
+    handleAttachFiles(e.dataTransfer && e.dataTransfer.files);
+  });
+}
 $('#btn-permission').addEventListener('click', (e) => {
   e.stopPropagation();
   const pop = $('#permission-pop');
   if (pop.classList.contains('hidden')) { renderPermissionPop(); pop.classList.remove('hidden'); }
   else pop.classList.add('hidden');
-  $('#add-menu').classList.add('hidden');
   $('#model-pop').classList.add('hidden');
 });
 
@@ -2799,7 +3622,6 @@ function openModelPop() {
   renderModelPop(state.status || {});
   $('#model-pop').classList.remove('hidden');
   $('#permission-pop').classList.add('hidden');
-  $('#add-menu').classList.add('hidden');
 }
 
 function closeModelPop() {
@@ -2880,7 +3702,7 @@ document.addEventListener('click', (e) => {
     return n && (n.contains(target) || (n.previousElementSibling && n.previousElementSibling.contains && n.previousElementSibling.contains(target)));
   };
   // 统一关闭逻辑：若点击不在任何 pop/触发器内则全关
-  const pops = ['#model-pop', '#permission-pop', '#add-menu'];
+  const pops = ['#model-pop', '#permission-pop'];
   const triggers = ['#composer-model', '#btn-permission', '#btn-attach'];
   const hitPop = pops.some((sel) => { const n = $(sel); return n && n.contains(target); });
   const hitTrig = triggers.some((sel) => { const n = $(sel); return n && n.contains(target); });
@@ -2911,6 +3733,16 @@ $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
   renderSessionList();
 });
+// 收起侧栏后搜索按钮（图标）点击无效的修复：搜索控件是 label 包 svg+input，
+// 收起态 input 被 display:none，点击 label 无法聚焦隐藏输入框——改为点击时展开侧栏并聚焦
+$('.session-search').addEventListener('click', (e) => {
+  if ($('#app').classList.contains('sidebar-collapsed')) {
+    e.preventDefault();
+    $('#app').classList.remove('sidebar-collapsed');
+    // 等展开过渡（max-width .18s）后再聚焦，避免聚焦到仍不可见的输入框
+    setTimeout(() => $('#session-search').focus(), 80);
+  }
+});
 $('#btn-sidebar-toggle').addEventListener('click', () => {
   $('#app').classList.toggle('sidebar-collapsed');
 });
@@ -2932,105 +3764,393 @@ $('#set-concurrency').addEventListener('change', (e) => {
   e.target.value = String(val);
   applySettings({ webConcurrency: val }).catch((err) => alert(`设置失败：${err.message}`));
 });
-/* ---------------- 模型配置表单（设置 → 模型配置 tab） ---------------- */
-/** 预览配置文件（omni.json models 表）中已存储的模型列表，点击切换编辑对象 */
-function renderSavedModelList(s) {
-  const box = $('#cfg-model-list');
+/* ---------------- 模型配置（providers 分组：一个端点配置多个模型，设置面板「模型配置」tab） ---------------- */
+let cfgProviderSel = null;   // 当前选中分组：null=未选、''=未分组、'name'=provider、'__new__'=新建
+let cfgProviderNewName = '';
+
+function providerModelsOf(g) { return Array.isArray(g && g.models) ? g.models : []; }
+
+/** 渲染左侧 provider 列表（未分组 + 各 provider 分组；点击走 #providers-list 委托监听） */
+function renderProvidersNav(s) {
+  const box = $('#providers-list');
   if (!box) return;
-  const models = Array.isArray(s.models) ? s.models : [];
-  box.innerHTML = '';
-  if (!models.length) {
-    box.appendChild(el('div', 'cfg-model-empty', '暂无已存储模型'));
+  const groups = Array.isArray(s.providers) ? s.providers : [];
+  box.innerHTML = groups.map((g) => {
+    const active = cfgProviderSel === g.name && !cfgProviderNewName;
+    return `<button class="provider-nav-item${active ? ' active' : ''}" type="button" data-provider="${esc(g.name)}">
+      <span class="pni-icon">${g.name ? '🔌' : '📁'}</span>
+      <span class="pni-name">${esc(g.name || t('provider.ungrouped'))}</span>
+      <span class="pni-count">${providerModelsOf(g).length}</span>
+    </button>`;
+  }).join('');
+}
+// 委托监听：点击分组切换（不用 per-item 闭包——renderProvidersNav 每次重建 DOM，
+// 闭包捕获的旧 s 可能过期；委托读 state.status 恒为最新）
+$('#providers-list')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.provider-nav-item');
+  if (!btn) return;
+  cfgProviderSel = btn.dataset.provider ?? '';
+  cfgProviderNewName = '';
+  const s = state.status || {};
+  renderProvidersNav(s);
+  renderProviderEdit(s);
+});
+
+/** 渲染右侧编辑区（provider 级字段 + 组内模型列表 / 未分组扁平模型） */
+function renderProviderEdit(s) {
+  const groups = Array.isArray(s.providers) ? s.providers : [];
+  const empty = $('#provider-edit-empty');
+  const edit = $('#provider-edit');
+  const isNew = cfgProviderSel === '__new__' || cfgProviderNewName;
+  const group = !isNew ? groups.find((g) => g.name === cfgProviderSel) || null : null;
+  if (!group && !isNew) {
+    if (empty) empty.classList.remove('hidden');
+    if (edit) edit.classList.add('hidden');
     return;
   }
-  const sel = $('#cfg-model');
-  const active = sel ? sel.value : (s.model || '');
-  models.forEach((m) => {
-    const item = el('button', 'cfg-model-chip' + (m.name === active ? ' active' : ''));
-    item.type = 'button';
-    item.appendChild(el('span', 'cmc-name', m.name));
-    if (m.baseURL) {
-      item.appendChild(el('span', 'cmc-ep', m.baseURL.replace(/^https?:\/\//, '').replace(/\/v\d+\/?$/, '')));
-    }
-    item.addEventListener('click', () => {
-      state.cfgModelName = m.name;
-      const sel2 = $('#cfg-model');
-      if (sel2) sel2.value = m.name;
-      fillModelConfigForm(state.status || {});
+  if (empty) empty.classList.add('hidden');
+  if (edit) edit.classList.remove('hidden');
+
+  const pnameInput = $('#p-name');
+  const pnameStatic = $('#p-name-static');
+  if (isNew) {
+    pnameInput.classList.remove('hidden');
+    pnameStatic.textContent = '';
+    pnameInput.value = cfgProviderNewName;
+  } else {
+    pnameInput.classList.add('hidden');
+    pnameStatic.textContent = group.name;
+  }
+
+  const baseRow = $('#p-baseurl')?.closest('.setting-row');
+  const keyRow = $('#p-apikey')?.closest('.setting-row');
+  const uaRow = $('#p-useragent')?.closest('.setting-row');
+  const fetchBtn = $('#btn-p-fetch');
+  const saveBtn = $('#btn-save-provider');
+  const delBtn = $('#btn-del-provider');
+  const fetchResult = $('#p-fetch-result');
+  const isFlat = !!group && !group.name; // 未分组虚拟组
+
+  if (isFlat) {
+    // 未分组：无 provider 级字段 → 隐藏编辑行，只显示扁平模型列表
+    if (baseRow) baseRow.classList.add('hidden');
+    if (keyRow) keyRow.classList.add('hidden');
+    if (uaRow) uaRow.classList.add('hidden');
+    if (fetchBtn) fetchBtn.closest('.apikey-row').classList.add('hidden');
+    if (delBtn) delBtn.classList.add('hidden');
+    if (saveBtn) saveBtn.classList.add('hidden');
+    const models = providerModelsOf(group);
+    const countEl = $('#p-models-count');
+    if (countEl) countEl.textContent = t('provider.modelsCount', { n: models.length });
+    renderFlatModels(s, group);
+    return;
+  }
+
+  if (baseRow) baseRow.classList.remove('hidden');
+  if (keyRow) keyRow.classList.remove('hidden');
+  if (uaRow) uaRow.classList.remove('hidden');
+  if (fetchBtn) fetchBtn.closest('.apikey-row').classList.remove('hidden');
+  if (delBtn) delBtn.classList.remove('hidden');
+  if (saveBtn) saveBtn.classList.remove('hidden');
+  $('#p-baseurl').value = group ? (group.baseURL || '') : '';
+  $('#p-apikey').value = '';
+  $('#p-useragent').value = group ? (group.userAgent || '') : '';
+  if (fetchResult) fetchResult.classList.add('hidden');
+
+  // 删除 provider（新建模式无删除）
+  if (delBtn) {
+    delBtn.onclick = () => {
+      if (!group || !confirm(t('provider.removeProviderConfirm', { name: group.name }))) return;
+      api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerRemove: { provider: group.name } }),
+      }).then(() => { cfgProviderSel = null; refreshStatus().catch(() => {}); })
+        .catch((err) => alert(t('provider.errDelete', { msg: err.message })));
+    };
+  }
+  // 保存 provider（新建 = 创建 + 切到新分组；已有 = 更新）
+  if (saveBtn) {
+    saveBtn.onclick = () => {
+      const name = isNew ? (pnameInput.value.trim() || '') : group.name;
+      if (isNew && !name) { alert(t('provider.newName')); return; }
+      api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providerConfig: {
+            provider: name,
+            baseURL: $('#p-baseurl').value.trim() || undefined,
+            apiKey: $('#p-apikey').value.trim() || undefined,
+            userAgent: $('#p-useragent').value.trim() || undefined,
+          },
+        }),
+      }).then(() => {
+        $('#p-apikey').value = '';
+        cfgProviderSel = name;
+        cfgProviderNewName = '';
+        refreshStatus().then((s) => { renderProvidersNav(s); renderProviderEdit(s); }).catch(() => {});
+      }).catch((err) => alert(t('provider.errSave', { msg: err.message })));
+    };
+  }
+  // 获取模型列表（GET {baseURL}/models → 勾选启用）
+  if (fetchBtn) {
+    fetchBtn.onclick = async () => {
+      const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
+      if (!b) { alert(t('provider.noBaseURL')); return; }
+      if (fetchResult) {
+        fetchResult.classList.remove('hidden');
+        fetchResult.innerHTML = `<div class="spin">${t('provider.fetching')}</div>`;
+      }
+      try {
+        const data = await api('/api/settings', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            providerDiscover: { baseURL: b, apiKey: $('#p-apikey').value.trim() || (group ? group.apiKey : undefined) || undefined },
+          }),
+        });
+        const ids = Array.isArray(data.models) ? data.models : [];
+        if (!fetchResult) return;
+        fetchResult.innerHTML = `<div>${t('provider.fetched', { n: ids.length })}</div>` +
+          ids.map((id) => `<label><input type="checkbox" value="${esc(id)}"> ${esc(id)}</label>`).join('') +
+          `<button id="btn-add-selected" class="primary-button" style="margin-top:6px" type="button">${t('provider.addSelected')}</button>`;
+        $('#btn-add-selected')?.addEventListener('click', () => {
+          const checked = [...fetchResult.querySelectorAll('input:checked')].map((c) => c.value);
+          if (!checked.length) return;
+          Promise.all(checked.map((mid) => api('/api/settings', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ providerModel: { provider: group.name, modelName: mid } }),
+          }))).then(() => {
+            if (fetchResult) fetchResult.classList.add('hidden');
+            refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});
+          }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
+        });
+      } catch (err) {
+        if (fetchResult) fetchResult.innerHTML = `<div>${t('provider.errFetch', { msg: esc(err.message) })}</div>`;
+      }
+    };
+  }
+  // 组内模型列表
+  const models = group ? providerModelsOf(group) : [];
+  const countEl = $('#p-models-count');
+  if (countEl) countEl.textContent = t('provider.modelsCount', { n: models.length });
+  renderProviderModels(s, group, isNew);
+}
+
+/** 渲染未分组扁平模型列表（每个模型独立编辑端点/级别/上下文 + 同端点迁移提示） */
+function renderFlatModels(s, group) {
+  const container = $('#provider-models');
+  if (!container) return;
+  const models = providerModelsOf(group);
+  const providers = (Array.isArray(s.providers) ? s.providers : []).filter((g) => g.name);
+  container.innerHTML = '';
+  if (models.length === 0) container.appendChild(el('div', 'cfg-model-empty', t('provider.emptyModels')));
+  models.forEach((m) => container.appendChild(flatModelItem(s, m, providers)));
+}
+
+function flatModelItem(s, m, providers) {
+  const item = el('div', 'pm-item' + (m.name === s.model ? ' default' : ''));
+  const head = el('div', 'pm-head');
+  head.appendChild(el('span', 'pm-name', m.name));
+  if (m.apiModel) head.appendChild(el('span', 'pm-apimodel', m.apiModel));
+  if (m.name === s.model) head.appendChild(el('span', 'pm-def-badge', t('provider.defaultBadge')));
+  const actions = el('div', 'pm-actions');
+  // 同端点 provider → 迁移提示（D3）
+  const match = providers.find((g) => g.baseURL && g.baseURL === m.baseURL && g.apiKey === m.apiKey);
+  if (match) {
+    const migrateBtn = el('button', 'pm-btn', '→');
+    migrateBtn.title = t('provider.migrateHint', { p: match.name });
+    migrateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm(t('provider.migrateHint', { p: match.name }) + '？')) return;
+      api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerMigrate: { modelName: m.name, provider: match.name } }),
+      }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
+        .catch((err) => alert(t('provider.errMigrate', { msg: err.message })));
     });
-    box.appendChild(item);
-  });
-}
-function fillModelConfigForm(s) {
-  const sel = $('#cfg-model');
-  if (!sel) return;
-  const models = Array.isArray(s.models) ? s.models : [];
-  const cur = state.cfgModelName && models.some((m) => m.name === state.cfgModelName) ? state.cfgModelName : (s.model || '');
-  const sig = JSON.stringify([models.map((m) => m.name), cur]);
-  if (sel.dataset.sig !== sig) {
-    sel.dataset.sig = sig;
-    sel.innerHTML = '';
-    for (const m of models) {
-      const o = document.createElement('option');
-      o.value = m.name; o.textContent = modelLabel(m);
-      o.selected = m.name === cur;
-      sel.appendChild(o);
-    }
-    sel.value = cur;
+    actions.appendChild(migrateBtn);
   }
-  renderSavedModelList(s);
-  const m = models.find((x) => x.name === sel.value) || {};
-  $('#cfg-baseurl').value = m.baseURL || '';
+  head.appendChild(actions);
+  item.appendChild(head);
+
+  const body = el('div', 'pm-body');
+  body.innerHTML = `
+    <div class="pm-row"><label>${t('provider.fldBaseURL')}</label><input class="cfg-text" value="${esc(m.baseURL || '')}" placeholder="https://..."></div>
+    <div class="pm-row"><label>${t('provider.fldApiKey')}</label><input type="password" class="cfg-text" placeholder="sk-…"></div>
+    <div class="pm-row"><label>${t('provider.fldEfforts')}</label><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high"></div>
+    <div class="pm-row"><label>${t('provider.fldEffort')}</label><select class="setting-control"></select></div>
+    <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" style="width:160px" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
+    <button class="primary-button" style="align-self:flex-start" type="button">${t('provider.save')}</button>
+  `;
   const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
-  $('#cfg-efforts').value = opts.join(', ');
-  const curEff = m.reasoningEffort || s.reasoningEffort || opts[0] || '';
-  const effSel = $('#cfg-effort-current');
-  const esig = JSON.stringify([opts, curEff]);
-  if (effSel.dataset.sig !== esig) {
-    effSel.dataset.sig = esig;
-    effSel.innerHTML = '';
-    for (const o of opts) {
-      const op = document.createElement('option');
-      op.value = o; op.textContent = o;
-      op.selected = o === curEff;
-      effSel.appendChild(op);
-    }
-    effSel.value = curEff;
-  }
-  $('#cfg-context').value = m.limit?.context || '';
+  const sel = body.querySelector('select');
+  opts.forEach((o) => {
+    const op = document.createElement('option');
+    op.value = o; op.textContent = o;
+    if (o === (m.reasoningEffort || s.reasoningEffort || opts[0])) op.selected = true;
+    sel.appendChild(op);
+  });
+  body.querySelector('button').addEventListener('click', () => {
+    const inputs = body.querySelectorAll('input');
+    api('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelConfig: {
+          modelName: m.name,
+          baseURL: inputs[0].value.trim() || undefined,
+          apiKey: inputs[1].value.trim() || undefined,
+          reasoningEffortOptions: inputs[2].value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
+          reasoningEffort: body.querySelector('select').value || undefined,
+          contextLimit: Number(inputs[3].value) > 0 ? Number(inputs[3].value) : undefined,
+        },
+      }),
+    }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
+      .catch((err) => alert(t('provider.errSave', { msg: err.message })));
+  });
+  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn')) return; body.classList.toggle('open'); });
+  item.appendChild(body);
+  return item;
 }
-// 模型下拉切换时刷新表单
-document.addEventListener('change', (e) => {
-  if (e.target.id === 'cfg-model') {
-    state.cfgModelName = e.target.value;
-    fillModelConfigForm(state.status || {});
+
+/** 渲染 provider 组内模型列表 */
+function renderProviderModels(s, group, isNew) {
+  const container = $('#provider-models');
+  if (!container) return;
+  const models = isNew ? [] : providerModelsOf(group);
+  container.innerHTML = '';
+  if (models.length === 0) container.appendChild(el('div', 'cfg-model-empty', t('provider.emptyModels')));
+  models.forEach((m) => container.appendChild(providerModelItem(s, group, m)));
+}
+
+function providerModelItem(s, group, m) {
+  const isDefault = m.name === s.model || `${group.name}/${m.name}` === s.model;
+  const item = el('div', 'pm-item' + (isDefault ? ' default' : ''));
+  const head = el('div', 'pm-head');
+  head.appendChild(el('span', 'pm-name', m.name));
+  if (m.apiModel) head.appendChild(el('span', 'pm-apimodel', m.apiModel));
+  if (isDefault) head.appendChild(el('span', 'pm-def-badge', t('provider.defaultBadge')));
+  const actions = el('div', 'pm-actions');
+  if (!isDefault) {
+    const defBtn = el('button', 'pm-btn', '★');
+    defBtn.title = t('provider.setDefault');
+    defBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ setDefaultModel: { model: `${group.name}/${m.name}` } }),
+      }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
+        .catch((err) => alert(t('provider.errSetDefault', { msg: err.message })));
+    });
+    actions.appendChild(defBtn);
   }
-});
-// 保存模型配置
-$('#btn-save-model').addEventListener('click', () => {
-  const sel = $('#cfg-model');
-  const name = sel.value;
-  if (!name) { alert('没有可保存的模型'); return; }
-  const mc = {
-    modelName: name,
-    baseURL: $('#cfg-baseurl').value.trim() || undefined,
-    apiKey: $('#set-apikey').value.trim() || undefined,
-    reasoningEffortOptions: $('#cfg-efforts').value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
-    reasoningEffort: $('#cfg-effort-current').value || undefined,
-    contextLimit: Number($('#cfg-context').value) > 0 ? Number($('#cfg-context').value) : undefined,
+  const delBtn = el('button', 'pm-btn danger', '×');
+  delBtn.title = t('provider.removeModel');
+  delBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!confirm(t('provider.removeConfirm', { name: m.name }))) return;
+    api('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerRemove: { provider: group.name, modelName: m.name } }),
+    }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
+      .catch((err) => alert(t('provider.errDelete', { msg: err.message })));
+  });
+  actions.appendChild(delBtn);
+  head.appendChild(actions);
+  item.appendChild(head);
+
+  const hasOverride = !!(m.overrideBaseURL || m.overrideApiKey);
+  const body = el('div', 'pm-body');
+  body.innerHTML = `
+    <div class="pm-row"><label>${t('provider.fldApiModel')}</label><input class="cfg-text" value="${esc(m.apiModel || '')}" placeholder="${esc(m.name)}"></div>
+    <div class="pm-row"><label>${t('provider.fldDisplay')}</label><input class="cfg-text" value="${esc(m.displayName || '')}" placeholder="${esc(m.name)}"></div>
+    <div class="pm-row"><label>${t('provider.fldEfforts')}</label><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high"></div>
+    <div class="pm-row"><label>${t('provider.fldEffort')}</label><select class="setting-control"></select></div>
+    <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" style="width:160px" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
+    <div class="pm-row"><label></label><span class="inherit-toggle${hasOverride ? '' : ' active'}" data-mode="inherit">${t('provider.inherit')}</span>&nbsp;/&nbsp;<span class="inherit-toggle${hasOverride ? ' active' : ''}" data-mode="override">${t('provider.override')}</span></div>
+    <div class="pm-row" data-ovr><label>${t('provider.fldBaseURL')}</label><input class="cfg-text" value="${esc(m.overrideBaseURL || '')}" placeholder="${esc(group.baseURL || '')}"></div>
+    <div class="pm-row" data-ovr><label>${t('provider.fldApiKey')}</label><input type="password" class="cfg-text" placeholder="sk-…"></div>
+    <button class="primary-button" style="align-self:flex-start" type="button">${t('provider.save')}</button>
+  `;
+  const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
+  const effSel = body.querySelector('select');
+  opts.forEach((o) => {
+    const op = document.createElement('option');
+    op.value = o; op.textContent = o;
+    if (o === (m.reasoningEffort || s.reasoningEffort || opts[0])) op.selected = true;
+    effSel.appendChild(op);
+  });
+  const ovrRows = body.querySelectorAll('[data-ovr]');
+  if (!hasOverride) ovrRows.forEach((r) => r.style.display = 'none');
+  body.querySelectorAll('.inherit-toggle').forEach((tog) => {
+    tog.addEventListener('click', () => {
+      body.querySelectorAll('.inherit-toggle').forEach((x) => x.classList.remove('active'));
+      tog.classList.add('active');
+      const isOvr = tog.dataset.mode === 'override';
+      ovrRows.forEach((r) => r.style.display = isOvr ? '' : 'none');
+    });
+  });
+  body.querySelector('button').addEventListener('click', () => {
+    const inputs = body.querySelectorAll('input');
+    const isOverride = body.querySelector('.inherit-toggle.active')?.dataset.mode === 'override';
+    api('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providerModel: {
+          provider: group.name,
+          modelName: m.name,
+          apiModel: inputs[0].value.trim() || undefined,
+          displayName: inputs[1].value.trim() || undefined,
+          reasoningEffortOptions: inputs[2].value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
+          reasoningEffort: body.querySelector('select').value || undefined,
+          contextLimit: Number(inputs[3].value) > 0 ? Number(inputs[3].value) : undefined,
+          overrideBaseURL: isOverride ? (inputs[4]?.value?.trim() || undefined) : undefined,
+          overrideApiKey: isOverride ? (inputs[5]?.value?.trim() || undefined) : undefined,
+        },
+      }),
+    }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
+      .catch((err) => alert(t('provider.errSave', { msg: err.message })));
+  });
+  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn')) return; body.classList.toggle('open'); });
+  item.appendChild(body);
+  return item;
+}
+
+/** 设置面板「模型配置」tab 数据刷新：左侧分组列表 + 右侧编辑区 + 底部动作按钮 */
+function fillModelConfigForm(s) {
+  // 首次打开（从未选择过分组）：自动选中当前默认模型所属的 provider 分组——
+  // 已添加的 provider 模型列表直接可见（而非停在「选择左侧分组」空态）
+  if (cfgProviderSel === null) {
+    const groups = Array.isArray(s.providers) ? s.providers : [];
+    if (groups.length > 0) {
+      const cur = s.model || '';
+      const named = groups.find((g) => g.name);
+      const own = groups.find((g) => g.name && providerModelsOf(g).some((m) => m.name === cur || `${g.name}/${m.name}` === cur));
+      cfgProviderSel = own ? own.name : (named ? named.name : groups[0].name);
+    }
+  }
+  renderProvidersNav(s);
+  renderProviderEdit(s);
+  // 添加模型（组内）——onclick 覆盖注册防重复监听
+  $('#btn-add-model').onclick = () => {
+    const nameInput = $('#pm-name');
+    const apiModelInput = $('#pm-apimodel');
+    const name = nameInput.value.trim();
+    if (!name || cfgProviderSel === null || cfgProviderSel === '' || cfgProviderSel === '__new__') return;
+    api('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerModel: { provider: cfgProviderSel, modelName: name, apiModel: apiModelInput.value.trim() || undefined } }),
+    }).then(() => {
+      nameInput.value = ''; apiModelInput.value = '';
+      refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});
+    }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
   };
-  api('/api/settings', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ modelConfig: mc }),
-  }).then(() => {
-    $('#set-apikey').value = '';
-    const note = $('#model-save-note');
-    note.classList.remove('hidden');
-    setTimeout(() => note.classList.add('hidden'), 2500);
-    refreshStatus().catch(() => {});
-  }).catch((err) => alert(`保存失败：${err.message}`));
-});
+  // 新建 provider
+  $('#btn-provider-new').onclick = () => {
+    cfgProviderSel = '__new__';
+    cfgProviderNewName = '';
+    renderProvidersNav(s);
+    renderProviderEdit(s);
+  };
+}
 $('#plan-mode').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
 });

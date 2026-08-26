@@ -379,7 +379,8 @@ export async function runAgent(
     output.onRound(step, maxSteps);
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
     const llmT0 = Date.now();
-    let firstTokenAt: number | null = null;
+    let firstTokenAt: number | null = null; // 首个有意义内容（reasoning/content/tool_call）的到达时间
+    let lastContentAt: number | null = null; // 最后一个非空内容 chunk 的到达时间（生成耗时 = lastContentAt - firstTokenAt）
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> | null = null;
     /** fallback 回退链（P0）：主模型失败时按序尝试的 [client, model] 对（惰性构建一次） */
     let fallbacks: { client: OpenAI; model: string; endpoint?: ModelEndpoint }[] | null = null;
@@ -508,12 +509,20 @@ export async function runAgent(
         const chunk = next.value;
         if (!streamStarted) {
           streamStarted = true;
-          firstTokenAt ??= Date.now(); // 首 chunk 到达时间（首 token 延迟 = firstTokenAt - llmT0）
           output.onStreamStart();
         }
         if (chunk.usage) lastUsage = chunk.usage; // include_usage 时末 chunk 携带用量
         const delta = chunk.choices[0]?.delta;
         const piece = extractReasoning(delta, opts.compatibility?.reasoningField);
+        // 首 token 计时锚点 = 首个**有实际内容**的 delta（reasoning/content/tool_call），
+        // 而非首个 chunk——有些网关先发 role-only 空 delta，会让 TTFT 偏小。
+        // lastContentAt 同步刷新到最后一个内容 chunk：生成耗时 = lastContentAt - firstTokenAt
+        // （排除首 token 等待，tok/s 才是真实生成速率而非含 prefill 的平均吞吐）。
+        if (piece || delta?.content || (delta?.tool_calls && delta.tool_calls.length > 0)) {
+          const now = Date.now();
+          firstTokenAt ??= now;
+          lastContentAt = now;
+        }
         if (piece) {
           reasoning += piece;
           thinking.write(piece);
@@ -537,7 +546,11 @@ export async function runAgent(
       // 半截 assistant 消息不入上下文（push 在流结束后），下一轮不受污染
       if (isAbortLike(err)) {
         if (content) output.onAnswerEnd();
-        output.onLlmLap?.(Date.now() - llmT0, firstTokenAt !== null ? Date.now() - firstTokenAt : null);
+        output.onLlmLap?.(
+          Date.now() - llmT0,
+          firstTokenAt !== null ? Date.now() - firstTokenAt : null,
+          firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
+        );
         if (thinking.shown) finishThinking();
         // 打断（steer，Cmd/Ctrl+Enter）：取走打断消息 push 进 messages（作为当前轮的
         // 新 user 消息），**同一轮内继续**——模型直接回答打断消息，不结束本轮；
@@ -563,7 +576,11 @@ export async function runAgent(
     }
     if (thinking.shown) finishThinking(); // 流结束仍展开 → 兜底结束思考区
     if (content) output.onAnswerEnd();
-    output.onLlmLap?.(Date.now() - llmT0, firstTokenAt !== null ? Date.now() - firstTokenAt : null);
+    output.onLlmLap?.(
+      Date.now() - llmT0,
+      firstTokenAt !== null ? Date.now() - firstTokenAt : null,
+      firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
+    );
     if (lastUsage) {
       // 缓存命中 token：OpenAI 系 prompt_tokens_details.cached_tokens；DeepSeek 系 prompt_cache_hit_tokens
       const usage = lastUsage as OpenAI.Completions.CompletionUsage & {

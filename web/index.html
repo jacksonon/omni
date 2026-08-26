@@ -37,6 +37,7 @@
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/></symbol>
   <symbol id="i-warp" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l2 2 6-6"/></symbol>
   <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.2 0-1.1.9-2 2-2h1.5A5 5 0 0 0 22 11.5C22 6.3 17.5 2 12 2Z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/><circle cx="17.5" cy="15" r="1"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect width="18" height="12" x="3" y="6" rx="2"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10"/></symbol>
 </svg>
 
 <div id="app" class="app-frame empty-session">
@@ -89,12 +90,13 @@
         <div class="composer-card" id="composer-card">
           <div id="cmd-palette" class="cmd-palette hidden"></div>
           <div id="mention-pop" class="mention-pop hidden"></div>
+          <div id="attach-list" class="attach-list hidden"></div>
           <textarea id="input" rows="1" placeholder="随心输入" aria-label="消息输入"></textarea>
           <div class="composer-row">
             <div class="composer-tools">
               <div class="attach-wrap">
-                <button id="btn-attach" class="attach-button" type="button" title="添加上下文" aria-label="添加上下文" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
-                <div id="add-menu" class="add-menu hidden"></div>
+                <button id="btn-attach" class="attach-button" type="button" title="选择文件/图片" aria-label="选择文件/图片" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
+                <input id="attach-input" type="file" multiple accept="image/*,text/*,.md,.txt,.json,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.go,.rs,.rb,.java,.c,.h,.cpp,.hpp,.cs,.sh,.bash,.zsh,.yml,.yaml,.toml,.ini,.xml,.html,.css,.scss,.sql,.csv,.log" hidden>
               </div>
               <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
               <label class="plan-toggle hidden"><input type="checkbox" id="plan-mode"><span data-i18n="composer.plan">计划</span></label>
@@ -143,6 +145,7 @@
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
         <button class="settings-nav-item" type="button" data-pane="statusbar"><svg><use href="#i-laptop"/></svg><span data-i18n="settings.statusbar">状态栏</span></button>
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
+        <button class="settings-nav-item" type="button" data-pane="shortcuts"><svg><use href="#i-keyboard"/></svg><span data-i18n="settings.shortcuts">快捷键</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
       <div class="settings-content">
@@ -193,42 +196,60 @@
 
         <section class="settings-pane" data-pane="apikey">
           <h3 class="settings-pane-title" data-i18n="settings.apikey">模型配置</h3>
-          <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置模型的端点、密钥、推理级别与上下文长度——与 omni.json 的 models 字段共享，保存后写入全局配置文件。</p>
-          <div class="settings-group">
-            <div class="setting-row col">
-              <div class="setting-info"><h4 data-i18n="settings.savedModels">已存储模型</h4><p data-i18n="settings.savedModelsDesc">当前配置文件（omni.json 的 models 表）中已存储的模型，点击可编辑。</p></div>
-              <div id="cfg-model-list" class="cfg-model-list"></div>
+          <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置模型的端点、密钥、推理级别与上下文长度。支持 providers 分组（一个端点对应多个模型），与 omni.json 的 providers 字段保持一致，保存后写入全局配置文件。</p>
+          <div class="providers-layout">
+            <nav class="providers-nav" aria-label="Provider 列表">
+              <div id="providers-list"></div>
+              <button id="btn-provider-new" class="primary-button" type="button" data-i18n="provider.new">+ 新建 provider</button>
+            </nav>
+            <div class="providers-edit">
+              <div id="provider-edit-empty" class="providers-empty" data-i18n="provider.empty">选择左侧 provider 或未分组模型编辑</div>
+              <div id="provider-edit" class="provider-edit hidden">
+                <div class="provider-head">
+                  <input type="text" id="p-name" class="cfg-text hidden" style="max-width:260px" placeholder="provider 名称（如 bigmodel）" data-i18n-placeholder="provider.namePlaceholder" autocomplete="off" spellcheck="false">
+                  <span id="p-name-static" class="p-name"></span>
+                </div>
+                <div class="settings-group">
+                  <div class="setting-row col">
+                    <div class="setting-info"><h4 data-i18n="provider.baseURL">端点（baseURL）</h4><p data-i18n="provider.baseURLDesc">OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
+                    <input type="text" id="p-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="setting-row col">
+                    <div class="setting-info"><h4 data-i18n="provider.apiKey">API Key</h4><p data-i18n="provider.apiKeyDesc">留空表示沿用配置文件中已保存的密钥。</p></div>
+                    <div class="apikey-row">
+                      <input type="password" id="p-apikey" placeholder="sk-…" autocomplete="off">
+                      <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
+                      <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
+                      <button id="btn-del-provider" class="primary-button danger" type="button" data-i18n="provider.delete">删除</button>
+                    </div>
+                  </div>
+                  <div class="setting-row col">
+                    <div class="setting-info"><h4 data-i18n="provider.userAgent">User-Agent</h4><p data-i18n="provider.userAgentDesc">部分网关需要自定义 User-Agent 绕过 WAF。</p></div>
+                    <input type="text" id="p-useragent" class="cfg-text" placeholder="curl/7.79.1" autocomplete="off" spellcheck="false">
+                  </div>
+                </div>
+                <div id="p-fetch-result" class="fetch-result hidden"></div>
+                <div class="settings-group" style="margin-top:12px">
+                  <div class="setting-row">
+                    <div class="setting-info"><h4 data-i18n="provider.models">组内模型</h4><p class="p-models-sub" id="p-models-count" data-i18n="provider.modelsCount">0 个模型</p></div>
+                    <div class="pm-add-row">
+                      <input type="text" id="pm-name" class="cfg-text" style="width:auto;flex:1" placeholder="模型名" autocomplete="off" spellcheck="false">
+                      <input type="text" id="pm-apimodel" class="cfg-text" style="width:auto;flex:1;max-width:180px" placeholder="apiModel（可选）" autocomplete="off" spellcheck="false">
+                      <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="provider-models" class="provider-models"></div>
+              </div>
             </div>
           </div>
+        </section>
+
+        <section class="settings-pane" data-pane="shortcuts">
+          <h3 class="settings-pane-title" data-i18n="settings.shortcuts">快捷键</h3>
+          <p class="settings-pane-sub" data-i18n="settings.shortcutsSub">查看并自定义所有键盘快捷键：点击「录制」按下组合键绑定，Backspace 清除，Esc 取消；冲突自动检测。</p>
           <div class="settings-group">
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.cfgModel">配置的模型</h4><p data-i18n="settings.cfgModelDesc">选择要编辑的模型，切换后下方字段同步为该模型的配置。</p></div>
-              <select id="cfg-model" class="setting-control"></select>
-            </div>
-            <div class="setting-row col">
-              <div class="setting-info"><h4 data-i18n="settings.baseURL">端点（baseURL）</h4><p data-i18n="settings.baseURLDesc">OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
-              <input type="text" id="cfg-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="setting-row col">
-              <div class="setting-info"><h4 data-i18n="settings.apiKey">API Key</h4><p data-i18n="settings.apiKeyDesc">留空表示沿用配置文件中已保存的密钥。</p></div>
-              <div class="apikey-row">
-                <input type="password" id="set-apikey" placeholder="sk-…" autocomplete="off">
-                <button id="btn-save-model" class="primary-button" type="button" data-i18n="settings.save">保存</button>
-              </div>
-              <p id="model-save-note" class="save-note hidden" data-i18n="settings.saved">✓ 已保存到配置文件</p>
-            </div>
-            <div class="setting-row col">
-              <div class="setting-info"><h4 data-i18n="settings.variants">思考级别选项（variants）</h4><p data-i18n="settings.variantsDesc">逗号分隔，如 <code>low,medium,high</code>；模型只支持这些级别。</p></div>
-              <input type="text" id="cfg-efforts" class="cfg-text" placeholder="low,medium,high" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.effortCurrent">当前思考级别</h4><p data-i18n="settings.effortCurrentDesc">默认使用哪一个级别。</p></div>
-              <select id="cfg-effort-current" class="setting-control"></select>
-            </div>
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.context">上下文长度（context）</h4><p data-i18n="settings.contextDesc">模型的上下文窗口大小（token 数），如 <code>128000</code>。</p></div>
-              <input type="number" id="cfg-context" class="setting-control" style="width:160px" placeholder="128000" min="0" step="1000">
-            </div>
+            <div id="shortcuts-list" class="shortcuts-list"></div>
           </div>
         </section>
 
@@ -244,6 +265,23 @@
     </div>
   </div>
 </div>
+<div id="session-switch-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sw-title">
+  <div class="modal-card sw-card">
+    <div class="modal-head"><h2 id="sw-title" data-i18n="shortcut.switchTitle">切换会话</h2><button class="icon-button" id="btn-close-sw" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <input type="text" id="sw-search" class="sw-search" placeholder="搜索会话，无匹配时 Enter 新建…" autocomplete="off" spellcheck="false" data-i18n-placeholder="shortcut.switchPlaceholder">
+    <div id="sw-list" class="sw-list"></div>
+  </div>
+</div>
+
+<div id="shortcuts-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sc-title">
+  <div class="modal-card shortcuts-card">
+    <div class="modal-head"><h2 id="sc-title" data-i18n="shortcut.cheatsheetTitle">快捷键速查表</h2><button class="icon-button" id="btn-close-sc" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <input type="text" id="sc-search" class="sw-search" placeholder="搜索功能或快捷键…" autocomplete="off" spellcheck="false" data-i18n-placeholder="shortcut.searchPlaceholder">
+    <div id="shortcuts-body" class="shortcuts-body"></div>
+    <p class="cheatsheet-hint" data-i18n="shortcut.cheatsheetHint">可在 设置 → 快捷键 重新绑定</p>
+  </div>
+</div>
+
 <div id="dirpicker-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dirpicker-title">
   <div class="modal-card">
     <div class="modal-head"><h2 id="dirpicker-title" data-i18n="modal.dirTitle">选择工作目录</h2><button class="icon-button" id="btn-close-dirpicker" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>

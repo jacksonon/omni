@@ -198,6 +198,14 @@ export function menuPanelRows(
   }
   for (let k = top; k < top + win; k++) {
     const opt = menu.options[k]!;
+    if (opt.group) {
+      // 分组头行：dim、不可选中（不渲染光标/✓，不登记 menuIdx——点击忽略）
+      rows.push({
+        text: cardContentLine(opt.label, inner),
+        style: { dim: true },
+      });
+      continue;
+    }
     const cursor = k === menu.selectedIndex ? '› ' : '  ';
     const check = opt.value === menu.currentValue ? ' ✓' : '';
     rows.push({

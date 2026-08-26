@@ -24,7 +24,7 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { ChatCompletionContentPart, ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 import { createClient } from '../client.js';
 import { prepareContext, summarizeContext } from '../agent/context.js';
@@ -101,13 +101,19 @@ import {
   persistLanguageToConfig,
   persistModelDefaultToConfig,
   persistModelToConfig,
+  persistModelConfigToGlobal,
+  persistModelDefaultToGlobal,
+  persistProviderConfigToGlobal,
+  persistProviderModelToGlobal,
+  removeProviderFromGlobal,
+  removeProviderModelFromGlobal,
+  migrateFlatModelToGlobal,
   persistReasoningEffortToConfig,
   persistStatuslineToConfig,
   persistVariantToConfig,
   persistWebWorkspaceToConfig,
   persistWebThemeToConfig,
   persistWebConcurrencyToConfig,
-  persistModelConfigToGlobal,
   removeWebWorkspaceFromConfig,
 } from '../config/write.js';
 import type { PermissionTier } from '../safety/policy.js';
@@ -335,6 +341,49 @@ async function getGitInfo(cwd: string): Promise<Record<string, unknown>> {
 }
 
 /* ---------------- 状态快照 ---------------- */
+
+/** 下发 providers 分组结构（设置面板「模型配置」渲染，settings-providers-spec）：
+ *  cfg.providers 逐组展开 + 未分组扁平模型（runOpts.models 中 provider 为空的显式顶层条目）。
+ *  未分组同端点自动合并展示在前端（D3）；apiKey 沿用 models 既有下发方式。 */
+function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
+  const out: Record<string, unknown>[] = [];
+  for (const [name, p] of Object.entries(runOpts.cfg?.providers ?? {})) {
+    out.push({
+      name,
+      baseURL: p.baseURL,
+      apiKey: p.apiKey,
+      userAgent: p.userAgent,
+      models: Object.entries(p.models ?? {}).map(([mid, m]) => ({
+        name: mid,
+        apiModel: m.apiModel,
+        displayName: m.displayName,
+        reasoningEffortOptions: m.reasoningEffortOptions,
+        reasoningEffort: m.reasoningEffort,
+        limit: m.limit,
+        variants: m.variants,
+        overrideBaseURL: m.baseURL, // 模型级覆盖（继承/覆盖开关）
+        overrideApiKey: m.apiKey,
+      })),
+    });
+  }
+  const flat = (runOpts.models ?? [])
+    .filter((m) => !m.provider)
+    .map((m) => ({
+      name: m.name,
+      baseURL: m.baseURL,
+      apiKey: m.apiKey,
+      userAgent: m.userAgent,
+      apiModel: m.apiModel,
+      displayName: m.displayName,
+      reasoningEffortOptions: m.reasoningEffortOptions,
+      reasoningEffort: m.reasoningEffort,
+      limit: m.limit,
+      variants: m.variants,
+    }));
+  if (flat.length > 0) out.push({ name: '', models: flat });
+  return out;
+}
+
 async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<string, unknown>> {
   const git = await getGitInfo(process.cwd());
   return {
@@ -342,6 +391,7 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     cwd: process.cwd(),
     model: runOpts.modelRuntime?.model ?? '',
     models: runOpts.models ?? [],
+    providers: buildProvidersStatus(runOpts),
     permission: runOpts.permission ?? 'safe',
     planMode: runOpts.planMode ?? false,
     reasoningEffort: runOpts.reasoningEffort ?? undefined,
@@ -447,18 +497,61 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
   };
 
+  /** 前端 `+` 文件/图片选择器提交的附件（D11：扩展 POST /api/sessions/:id/messages 的 body） */
+  type WebAttachment = {
+    kind: 'image' | 'text' | 'path';
+    name?: string;
+    dataUrl?: string; // image：data:image/… base64
+    content?: string; // text：读取后的内容（前端已截断 30KB）
+    path?: string; // path：占位文件名
+  };
+
+  /** 校验附件：非法项静默丢弃（dataUrl 必须以 data:image/ 开头且 ≤8MB 防超长 body） */
+  function sanitizeAttachments(atts: WebAttachment[] | undefined): WebAttachment[] {
+    if (!Array.isArray(atts)) return [];
+    return atts.filter((a) => {
+      if (!a || typeof a !== 'object') return false;
+      if (a.kind === 'image') {
+        return typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:image/') && a.dataUrl.length <= 8 * 1024 * 1024;
+      }
+      if (a.kind === 'text') return typeof a.content === 'string' && a.content.length > 0;
+      if (a.kind === 'path') return true;
+      return false;
+    });
+  }
+
+  /** 组装用户消息 content：无附件 → 原字符串（完全向后兼容）；有附件 → content 数组。
+   *  UserPromptSubmit hook 改写的仍是文本部分（prompt），附件 part 原样保留（hook 后追加）。 */
+  function buildUserContent(prompt: string, atts: WebAttachment[]): string | ChatCompletionContentPart[] {
+    if (!atts.length) return prompt;
+    const parts: ChatCompletionContentPart[] = [];
+    for (const a of atts) {
+      const name = a.name || '附件';
+      if (a.kind === 'image') {
+        parts.push({ type: 'image_url', image_url: { url: a.dataUrl! } });
+      } else if (a.kind === 'text') {
+        parts.push({ type: 'text', text: `【附件：${name}】\n${a.content}` });
+      } else {
+        parts.push({ type: 'text', text: `[附件：${name}（二进制/不支持，路径已提供，可用 read_file 读取）]` });
+      }
+    }
+    if (prompt.trim()) parts.push({ type: 'text', text: prompt });
+    return parts;
+  }
+
   /** 发送消息 → 启动一轮 Agent 运行（后台执行，事件经 SSE 推送）。
    *  1.0 P0-2：并发安全——每会话一个运行句柄 + 原型链克隆的会话级 runOpts。 */
   async function sendMessage(
     sessionId: string,
     text: string,
-    o: { quiet?: boolean } = {}
+    o: { quiet?: boolean; attachments?: WebAttachment[] } = {}
   ): Promise<{ error?: string }> {
     const s = sessions.get(sessionId);
     if (!s) return { error: '会话不存在' };
     const capErr = capacityError(sessionId);
     if (capErr) return { error: capErr };
-    if (!text.trim()) return { error: '消息为空' };
+    const atts = sanitizeAttachments(o.attachments);
+    if (!text.trim() && !atts.length) return { error: '消息为空' };
 
     const ro = runtimeFor(s);
     const controller = new AbortController();
@@ -498,7 +591,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
     }
 
-    s.messages.push({ role: 'user', content: prompt });
+    s.messages.push({ role: 'user', content: buildUserContent(prompt, atts) });
     if (!o.quiet) output.onUserMessage(prompt); // 排队跨会话消息不在当前对话流回显
     // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘）；
     // 失败静默不打扰对话
@@ -555,6 +648,85 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
     void broadcast('status', await buildStatus(runOpts));
     return true;
+  }
+
+  /** 按模型名重建当前运行时客户端（端点字段变化时）；失败保持现状 */
+  function rebuildRuntimeFor(modelName: string): void {
+    const ep = (runOpts.models ?? []).find((m) => m.name === modelName);
+    if (!ep) return;
+    try {
+      const client = createClient(
+        {
+          name: modelName,
+          baseURL: ep.baseURL ?? cfg.baseURL,
+          apiKey: ep.apiKey ?? cfg.apiKey,
+          userAgent: ep.userAgent ?? cfg.userAgent,
+        },
+        ep.apiKey ?? cfg.apiKey ?? ''
+      );
+      runOpts.modelRuntime = { client, model: modelName };
+    } catch {
+      // 失败保持现状
+    }
+  }
+
+  /* ---------------- providers 运行时同步（设置 → 模型配置：一个端点配置多个模型） ---------------- */
+
+  /** 同步 provider 级字段到所有属于该 provider 的扁平模型；当前模型端点变化 → 重建 client */
+  function syncProviderFields(provider: string, fields: { baseURL?: string; apiKey?: string; userAgent?: string }): void {
+    if (!runOpts.models) return;
+    let needRebuild = false;
+    runOpts.models.forEach((m, i) => {
+      if (m.provider !== provider) return;
+      const p: Record<string, unknown> = {};
+      if (fields.baseURL !== undefined) p.baseURL = fields.baseURL;
+      if (fields.apiKey !== undefined) p.apiKey = fields.apiKey;
+      if (fields.userAgent !== undefined) p.userAgent = fields.userAgent;
+      runOpts.models![i] = { ...runOpts.models![i], ...p };
+      if (fields.baseURL !== undefined || fields.apiKey !== undefined) needRebuild = true;
+    });
+    if (needRebuild) {
+      const cur = runOpts.modelRuntime?.model ?? '';
+      if (runOpts.models.some((m) => m.name === cur && m.provider === provider)) rebuildRuntimeFor(cur);
+    }
+  }
+
+  /** 把一个 provider 模型条目加入运行时扁平表（按 config 同款 key 策略：冲突 → provider/name） */
+  function addProviderModelToRunOpts(provider: string, modelName: string, entry: Record<string, unknown>): string {
+    if (!runOpts.models) return '';
+    const collides = runOpts.models.some((m) => m.name === modelName && !m.provider);
+    const key = collides ? `${provider}/${modelName}` : modelName;
+    const idx = runOpts.models.findIndex((m) => m.name === key);
+    if (idx >= 0) runOpts.models[idx] = { ...runOpts.models[idx], ...entry, name: key } as never;
+    else runOpts.models.push({ name: key, ...entry } as never);
+    return key;
+  }
+
+  /** 删除运行时扁平表中属于某 provider 的全部条目（或单个模型）；当前模型被删 → 回退剩余首个 */
+  function removeProviderFromRunOpts(provider: string, modelName?: string): void {
+    if (!runOpts.models) return;
+    const targets = modelName
+      ? runOpts.models.filter((m) => m.provider === provider && (m.name === modelName || m.name === `${provider}/${modelName}`))
+      : runOpts.models.filter((m) => m.provider === provider);
+    const cur = runOpts.modelRuntime?.model ?? '';
+    const removingCurrent = targets.some((m) => m.name === cur);
+    runOpts.models = runOpts.models.filter((m) => !targets.includes(m));
+    if (removingCurrent && runOpts.models.length > 0) {
+      void switchModel(runOpts.models[0].name);
+    }
+  }
+
+  /** 镜像 provider 改动到 runOpts.cfg.providers（buildStatus 数据源；mutate 返回 null = 删除该 provider） */
+  function syncCfgProvider(
+    provider: string,
+    mutate: (p: Record<string, unknown> | undefined) => Record<string, unknown> | null
+  ): void {
+    const provs = ((runOpts.cfg?.providers ?? {}) as Record<string, Record<string, unknown>>);
+    const next = { ...provs };
+    const res = mutate(next[provider]);
+    if (res) next[provider] = res;
+    else delete next[provider];
+    if (runOpts.cfg) (runOpts.cfg as { providers?: unknown }).providers = next;
   }
 
   /** 切换工作目录（chdir + 重建 ctx/runOpts），失败回滚并抛出。
@@ -1428,7 +1600,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         if (p === sessionPath('messages') && req.method === 'POST') {
           const body = await readBody(req);
-          const err = await sendMessage(sid, typeof body.text === 'string' ? body.text : '');
+          const err = await sendMessage(sid, typeof body.text === 'string' ? body.text : '', {
+            attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
+          });
           if (err.error) {
             json(res, 409, err);
             return;
@@ -1452,10 +1626,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           const text = typeof body.text === 'string' ? body.text.trim() : '';
           if (!text) { json(res, 400, { error: '消息为空' }); return; }
           // 直接写入本运行的中断槽 + abort（runOpts.interruptPending 是只读探测，不能传参）
+          // 注意：这里**不**广播 user.message——loop 处理中断时会经 output.onUserMessage
+          // 广播一次（唯一来源）；若在此处再广播，前端会收到两条 user.message（一条 steer、
+          // 一条 loop 的），对话流出现**重复的两条打断消息**（用户反馈「Cmd+Enter 一次发出两个」）。
           run0.interruptText = text;
           run0.controller.abort();
-          // 广播用户消息（前端立即显示打断消息）
-          broadcast('user.message', { sessionId: sid, text, steer: true });
           json(res, 202, { ok: true });
           return;
         }
@@ -1634,6 +1809,158 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             }
             if (efforts) runOpts.reasoningEffortOptions = efforts;
             if (effort) runOpts.reasoningEffort = effort;
+          }
+        }
+        // —— providers 分组动作（settings-providers-spec）：一个端点配置多个模型 ——
+        // provider 级新建/更新（共享 baseURL/apiKey/userAgent）
+        if (body.providerConfig && typeof body.providerConfig === 'object') {
+          const pc = body.providerConfig as Record<string, unknown>;
+          const provider = typeof pc.provider === 'string' ? pc.provider.trim() : '';
+          if (!provider) { json(res, 400, { error: '缺少 provider 名称' }); return; }
+          const baseURL = typeof pc.baseURL === 'string' && pc.baseURL.trim() ? pc.baseURL.trim() : undefined;
+          const apiKey = typeof pc.apiKey === 'string' && pc.apiKey.trim() ? pc.apiKey.trim() : undefined;
+          const userAgent = typeof pc.userAgent === 'string' && pc.userAgent.trim() ? pc.userAgent.trim() : undefined;
+          const pr = persistProviderConfigToGlobal({ provider, baseURL, apiKey, userAgent }, cfg);
+          if (!pr.ok) { json(res, 400, { error: pr.message }); return; }
+          syncProviderFields(provider, { baseURL, apiKey, userAgent });
+          syncCfgProvider(provider, (p) => ({ ...(p ?? {}), ...(baseURL ? { baseURL } : {}), ...(apiKey ? { apiKey } : {}), ...(userAgent ? { userAgent } : {}) }));
+        }
+        // 组内模型新增/更新（含继承/覆盖开关、元数据）
+        if (body.providerModel && typeof body.providerModel === 'object') {
+          const pm = body.providerModel as Record<string, unknown>;
+          const provider = typeof pm.provider === 'string' ? pm.provider.trim() : '';
+          const modelName = typeof pm.modelName === 'string' ? pm.modelName.trim() : '';
+          if (!provider || !modelName) { json(res, 400, { error: '缺少 provider 或模型名' }); return; }
+          const apiModel = typeof pm.apiModel === 'string' && pm.apiModel.trim() ? pm.apiModel.trim() : undefined;
+          const displayName = typeof pm.displayName === 'string' && pm.displayName.trim() ? pm.displayName.trim() : undefined;
+          const efforts = Array.isArray(pm.reasoningEffortOptions)
+            ? (pm.reasoningEffortOptions as unknown[]).map(String).filter((x) => x.trim())
+            : undefined;
+          const effort = typeof pm.reasoningEffort === 'string' && pm.reasoningEffort.trim() ? pm.reasoningEffort.trim() : undefined;
+          const ctxLimit = typeof pm.contextLimit === 'number' && pm.contextLimit > 0 ? Math.floor(pm.contextLimit) : undefined;
+          const overrideBaseURL = typeof pm.overrideBaseURL === 'string' && pm.overrideBaseURL.trim() ? pm.overrideBaseURL.trim() : undefined;
+          const overrideApiKey = typeof pm.overrideApiKey === 'string' && pm.overrideApiKey.trim() ? pm.overrideApiKey.trim() : undefined;
+          const pr = persistProviderModelToGlobal(
+            { provider, modelName, apiModel, displayName, reasoningEffortOptions: efforts, reasoningEffort: effort, contextLimit: ctxLimit, overrideBaseURL, overrideApiKey },
+            cfg
+          );
+          if (!pr.ok) { json(res, 400, { error: pr.message }); return; }
+          // 运行时：加入扁平表（继承端点 → 从 provider 取；覆盖 → 用模型级）
+          const p = runOpts.cfg?.providers?.[provider];
+          const entry: Record<string, unknown> = {
+            provider,
+            ...(overrideBaseURL ? { baseURL: overrideBaseURL } : p?.baseURL ? { baseURL: p.baseURL } : {}),
+            ...(overrideApiKey ? { apiKey: overrideApiKey } : p?.apiKey ? { apiKey: p.apiKey } : {}),
+            ...(p?.userAgent ? { userAgent: p.userAgent } : {}),
+            ...(apiModel ? { apiModel } : {}),
+            ...(displayName ? { displayName } : {}),
+            ...(efforts ? { reasoningEffortOptions: efforts } : {}),
+            ...(effort ? { reasoningEffort: effort } : {}),
+            ...(ctxLimit ? { limit: { context: ctxLimit } } : {}),
+          };
+          const key = addProviderModelToRunOpts(provider, modelName, entry);
+          if ((runOpts.modelRuntime?.model ?? '') === key && (overrideBaseURL !== undefined || overrideApiKey !== undefined)) {
+            rebuildRuntimeFor(key);
+          }
+          // 镜像到 runOpts.cfg.providers（buildStatus 数据源）
+          syncCfgProvider(provider, (p) => {
+            const cur = { ...(p ?? {}) } as Record<string, unknown>;
+            const models = (cur.models && typeof cur.models === 'object' && !Array.isArray(cur.models)
+              ? { ...(cur.models as Record<string, unknown>) } : {}) as Record<string, unknown>;
+            const me = (models[modelName] && typeof models[modelName] === 'object' && !Array.isArray(models[modelName])
+              ? { ...(models[modelName] as Record<string, unknown>) } : {}) as Record<string, unknown>;
+            if (apiModel !== undefined) me.apiModel = apiModel;
+            if (displayName !== undefined) me.displayName = displayName;
+            if (efforts !== undefined) me.reasoningEffortOptions = efforts;
+            if (effort !== undefined) me.reasoningEffort = effort;
+            if (ctxLimit !== undefined) me.limit = { context: ctxLimit };
+            if (overrideBaseURL !== undefined) me.baseURL = overrideBaseURL;
+            else delete me.baseURL;
+            if (overrideApiKey !== undefined) me.apiKey = overrideApiKey;
+            else delete me.apiKey;
+            models[modelName] = me;
+            cur.models = models;
+            return cur;
+          });
+        }
+        // 删除 provider（无 modelName）或组内模型
+        if (body.providerRemove && typeof body.providerRemove === 'object') {
+          const pr = body.providerRemove as Record<string, unknown>;
+          const provider = typeof pr.provider === 'string' ? pr.provider.trim() : '';
+          if (!provider) { json(res, 400, { error: '缺少 provider 名称' }); return; }
+          const modelName = typeof pr.modelName === 'string' && pr.modelName.trim() ? pr.modelName.trim() : undefined;
+          const rem = modelName
+            ? removeProviderModelFromGlobal(provider, modelName, cfg)
+            : removeProviderFromGlobal(provider, cfg);
+          if (!rem.ok) { json(res, 400, { error: rem.message }); return; }
+          removeProviderFromRunOpts(provider, modelName);
+          syncCfgProvider(provider, (p) => {
+            if (!p) return p ?? null;
+            if (modelName) {
+              const models = { ...((p.models ?? {}) as Record<string, unknown>) } as Record<string, unknown>;
+              delete models[modelName];
+              p.models = models;
+              return p;
+            }
+            return null; // 删整个 provider
+          });
+        }
+        // 扁平模型迁入 provider（D3：UI 检测同端点后确认触发）
+        if (body.providerMigrate && typeof body.providerMigrate === 'object') {
+          const pm = body.providerMigrate as Record<string, unknown>;
+          const modelName = typeof pm.modelName === 'string' ? pm.modelName.trim() : '';
+          const provider = typeof pm.provider === 'string' ? pm.provider.trim() : '';
+          if (!modelName || !provider) { json(res, 400, { error: '缺少模型名或 provider' }); return; }
+          const mig = migrateFlatModelToGlobal({ modelName, provider }, cfg);
+          if (!mig.ok) { json(res, 400, { error: mig.message }); return; }
+          // 运行时：扁平条目转为 provider 组条目
+          if (runOpts.models) {
+            const p = runOpts.cfg?.providers?.[provider];
+            const idx = runOpts.models.findIndex((m) => m.name === modelName && !m.provider);
+            if (idx >= 0) {
+              const flat = runOpts.models[idx];
+              runOpts.models[idx] = {
+                ...flat,
+                name: modelName,
+                provider,
+                ...(p?.baseURL ? { baseURL: p.baseURL } : {}),
+                ...(p?.apiKey ? { apiKey: p.apiKey } : {}),
+                ...(p?.userAgent ? { userAgent: p.userAgent } : {}),
+              } as never;
+            }
+            if ((runOpts.modelRuntime?.model ?? '') === modelName) rebuildRuntimeFor(modelName);
+          }
+          syncCfgProvider(provider, (p) => {
+            const cur = { ...(p ?? {}) } as Record<string, unknown>;
+            const models = (cur.models ?? {}) as Record<string, unknown>;
+            models[modelName] = {};
+            cur.models = models;
+            return cur;
+          });
+        }
+        // 设为默认模型（D7）：写顶层 model + 运行时切换
+        if (body.setDefaultModel && typeof body.setDefaultModel === 'object') {
+          const sdm = body.setDefaultModel as Record<string, unknown>;
+          const model = typeof sdm.model === 'string' && sdm.model.trim() ? sdm.model.trim() : '';
+          if (!model) { json(res, 400, { error: '缺少模型名' }); return; }
+          if (!(runOpts.models ?? []).some((m) => m.name === model)) { json(res, 400, { error: `未知模型：${model}` }); return; }
+          persistModelDefaultToGlobal(model);
+          if (!(await switchModel(model))) { json(res, 400, { error: `切换失败：${model}` }); return; }
+        }
+        // 获取远端可用模型列表（GET {baseURL}/models；配置完 baseURL+key 后点「获取模型列表」）
+        if (body.providerDiscover && typeof body.providerDiscover === 'object') {
+          const pd = body.providerDiscover as Record<string, unknown>;
+          const baseURL = typeof pd.baseURL === 'string' && pd.baseURL.trim() ? pd.baseURL.trim() : undefined;
+          const apiKey = typeof pd.apiKey === 'string' && pd.apiKey.trim() ? pd.apiKey.trim() : undefined;
+          if (!baseURL) { json(res, 400, { error: '缺少 baseURL' }); return; }
+          try {
+            const { discoverModels } = await import('../client.js');
+            const ids = await discoverModels({ baseURL, apiKey });
+            json(res, 200, { models: ids });
+            return;
+          } catch (err) {
+            json(res, 400, { error: `获取模型列表失败：${(err as Error)?.message ?? err}` });
+            return;
           }
         }
         void broadcast('status', await buildStatus(runOpts));

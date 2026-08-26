@@ -111,7 +111,8 @@ export interface TuiMenu {
   id: string;
   /** 面板标题（如「主题」） */
   title: string;
-  options: { label: string; value: string }[];
+  /** 选项（group=true 为分组头行：dim 展示、不可选中、不参与 ↑/↓/数字选择） */
+  options: { label: string; value: string; group?: boolean }[];
   /** 当前高亮的选项下标（› 光标） */
   selectedIndex: number;
   /** 当前生效的值（✓ 标记） */
@@ -185,6 +186,8 @@ export interface SessionStats {
   toolsMs: number;
   firstTokenSum: number;
   firstTokenCount: number;
+  /** 纯生成耗时累计（lastContentAt - firstTokenAt，排除首 token 等待；tok/s = completion / genMs） */
+  genMs: number;
   cached: number;
 }
 
@@ -260,6 +263,13 @@ export interface TuiState {
    * 输入框的 lineCount 实时同步；computeRows 用它精确计算内容区预算——
    * 输入框变高时内容区相应减少，状态栏/输入框永远不会被挤出去。
    */
+  /**
+   * Ctrl+X 前缀快捷键是否激活（opencode 风格）：激活时下一个按键触发
+   * 绑定动作（t 主题 / p 权限 / m 模型 / v 级别 / s 设置 / l 计划 / h 思考 /
+   * u 撤销 / r 重做 / c 清空 / ? 帮助），Esc 或未绑定键取消前缀。
+   * 激活期间状态栏显示绑定键提示（shortcut.hint）。
+   */
+  shortcutPrefix: boolean;
   /** spinner 帧索引（-1 = 不显示） */
   spinnerIndex: number;
   /**
@@ -513,6 +523,7 @@ export function createTuiState(): TuiState {
     version: '',
     scrollTop: null,
     scrollIntent: null,
+    shortcutPrefix: false,
     spinnerIndex: -1,
     loading: false,
     loadingIndex: -1,
@@ -529,7 +540,7 @@ export function createTuiState(): TuiState {
     activeVariant: null,    sessionTitle: null,
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
-    stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, cached: 0 },
+    stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
     themeMode: 'system',
     detectedTheme: 'dark',
     menu: null,

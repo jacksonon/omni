@@ -1111,7 +1111,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
       //   解析 → 运行时注册（缺省字段回退顶层配置）→ 切换 → 持久化到配置文件
       const args = (ctx.args ?? '').trim();
       if (!args) {
-        openModelMenu(ctx.state, modelMenuLabels(ctx.runOpts?.models ?? [], ctx.models ?? []));
+        openModelMenu(ctx.state, modelMenuLabels(ctx.runOpts?.models ?? [], ctx.models ?? []), ctx.runOpts?.models);
         return;
       }
       if (/^add(?:\s|$)/.test(args)) {
@@ -1610,6 +1610,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
     run: (ctx) => {
       const lang = ctx.state.language;
       pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.intro') }, '/help');
+      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.shortcuts') }, '/help');
       pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.commands') }, '/help');
       pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/help');
       pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.more') }, '/help');
@@ -1688,12 +1689,24 @@ export function handleMenuKey(key: TuiKey, state: TuiState): boolean {
   const menu = state.menu;
   if (!menu) return false;
   switch (key.name) {
-    case 'up':
-      menu.selectedIndex = (menu.selectedIndex - 1 + menu.options.length) % menu.options.length;
+    case 'up': {
+      let i = menu.selectedIndex;
+      for (let k = 0; k < menu.options.length; k++) {
+        i = (i - 1 + menu.options.length) % menu.options.length;
+        if (!menu.options[i]!.group) break;
+      }
+      menu.selectedIndex = i;
       return true;
-    case 'down':
-      menu.selectedIndex = (menu.selectedIndex + 1) % menu.options.length;
+    }
+    case 'down': {
+      let i = menu.selectedIndex;
+      for (let k = 0; k < menu.options.length; k++) {
+        i = (i + 1) % menu.options.length;
+        if (!menu.options[i]!.group) break;
+      }
+      menu.selectedIndex = i;
       return true;
+    }
     case 'return':
     case 'kpenter':
     case 'linefeed':
@@ -1707,7 +1720,11 @@ export function handleMenuKey(key: TuiKey, state: TuiState): boolean {
       // 数字键 1..9 直接选中（窗口内第 N 项；scrollTop 由渲染层收敛）
       const n = Number(key.name);
       if (Number.isInteger(n) && n >= 1 && n <= 9 && menu.scrollTop + n - 1 < menu.options.length) {
-        menu.selectedIndex = menu.scrollTop + n - 1;
+        let target = menu.scrollTop + n - 1;
+        if (menu.options[target]?.group) { // 落在组头 → 顺延到下一个可选模型
+          while (target < menu.options.length - 1 && menu.options[target]?.group) target++;
+        }
+        menu.selectedIndex = target;
         confirmMenu(state);
         return true;
       }
@@ -1792,16 +1809,36 @@ function modelMenuLabels(
   });
 }
 
-/** 打开模型切换面板（/model）：列出可用模型（附元数据摘要），高亮当前；↑/↓/数字 + Enter/Esc 操作 */
+/** 打开模型切换面板（/model）：列出可用模型（附元数据摘要），高亮当前；↑/↓/数字 + Enter/Esc 操作。
+ *  endpoints 可选：存在 provider 分组时按 provider 插入组头行（dim、不可选中），
+ *  全扁平（无 provider）时不插组头——面板形态与旧版完全一致。 */
 export function openModelMenu(
   state: TuiState,
-  entries: string[] | { label: string; value: string }[] = state.models
+  entries: string[] | { label: string; value: string }[] = state.models,
+  endpoints?: import('../client.js').ModelEndpoint[]
 ): void {
-  const options = (entries.length > 0 ? entries : [state.model || 'gpt-4o-mini']).map((m) =>
+  const base = (entries.length > 0 ? entries : [state.model || 'gpt-4o-mini']).map((m) =>
     typeof m === 'string' ? { label: m, value: m } : m
   );
+  const hasGroups = !!endpoints?.some((m) => m.provider);
+  const options: { label: string; value: string; group?: boolean }[] = [];
+  if (hasGroups) {
+    let prev: string | null = null;
+    for (const m of base) {
+      const ep = endpoints?.find((e) => e.name === m.value);
+      const g = ep?.provider ?? '';
+      if (g !== prev) {
+        options.push({ label: g ? `[${g}]` : t(state.language, 'menu.model.ungrouped'), value: '__group__', group: true });
+        prev = g;
+      }
+      options.push(m);
+    }
+  } else {
+    options.push(...base);
+  }
   const current = state.model;
-  const idx = Math.max(0, options.findIndex((o) => o.value === current));
+  let idx = Math.max(0, options.findIndex((o) => o.value === current && !o.group));
+  if (options[idx]?.group) idx = Math.max(0, options.findIndex((o) => !o.group)); // 兜底：初始不在组头
   state.menu = {
     id: 'model',
     title: t(state.language, 'menu.model.title'),
@@ -1996,6 +2033,7 @@ export function confirmMenu(state: TuiState): void {
   const menu = state.menu;
   if (!menu) return;
   const opt = menu.options[menu.selectedIndex];
+  if (!opt || opt.group) return; // 组头行不可选中
   const label = opt.label;
   const lang = state.language;
   if (menu.id === 'theme') {

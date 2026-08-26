@@ -129,8 +129,8 @@ export class WebOutput implements Output {
     // 轮数统计由客户端按 run.end 计数（turn.step / tool.start 累计），无需额外事件
   }
 
-  onLlmLap?(llmMs: number, firstTokenMs: number | null): void {
-    this.announce('lap', { llmMs, firstTokenMs });
+  onLlmLap?(llmMs: number, firstTokenMs: number | null, genMs?: number): void {
+    this.announce('lap', { llmMs, firstTokenMs, genMs });
   }
 
   onToolsLap?(toolsMs: number): void {

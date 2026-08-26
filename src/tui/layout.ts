@@ -73,12 +73,16 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
     labelEn: 'First token/Rate',
     build: (s, t) => {
       const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const rate = s.llmMs > 0 ? Math.round(t.completion / (s.llmMs / 1000)) : 0;
+      // 生成耗时优先用 genMs（首内容 → 末内容）；单 chunk 响应 genMs=0 时回退
+      // llmMs - firstTokenSum（首 token → 流结束，仍 >0），1ms 下限防除零
+      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
       return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
     buildEn: (s, t) => {
       const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const rate = s.llmMs > 0 ? Math.round(t.completion / (s.llmMs / 1000)) : 0;
+      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
       return `First token avg ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
@@ -86,8 +90,8 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
     id: 'cache',
     label: '缓存命中',
     labelEn: 'Cache hit',
-    build: (s, t) => `缓存命中 ${t.prompt > 0 ? Math.round((s.cached / t.prompt) * 100) : 0}%`,
-    buildEn: (s, t) => `Cache hit ${t.prompt > 0 ? Math.round((s.cached / t.prompt) * 100) : 0}%`,
+    build: (s, t) => `缓存命中 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
+    buildEn: (s, t) => `Cache hit ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
   },
   {
     id: 'tokens',

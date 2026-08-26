@@ -51,8 +51,9 @@ export interface Output {
   onUsage(usage: TokenUsage): void;
   /** 一次 Agent 回合开始（交互模式每轮用户提交 / 单次任务各 1 次；TUI footer 轮数统计用） */
   onTurnStart?(): void;
-  /** 一次 LLM 流式请求完成（llmMs=请求墙钟毫秒；firstTokenMs=首个 chunk 延迟，失败/无正文为 null） */
-  onLlmLap?(llmMs: number, firstTokenMs: number | null): void;
+  /** 一次 LLM 流式请求完成（llmMs=请求墙钟毫秒；firstTokenMs=首 token 延迟，失败/无正文为 null；
+   *  genMs=纯生成耗时毫秒（lastContentAt - firstTokenAt，排除首 token 等待；无内容为 undefined）） */
+  onLlmLap?(llmMs: number, firstTokenMs: number | null, genMs?: number): void;
   /** 一轮的工具调用全部完成（toolsMs=该轮工具执行墙钟毫秒） */
   onToolsLap?(toolsMs: number): void;
   /** 模型请求失败 */

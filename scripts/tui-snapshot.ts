@@ -663,14 +663,15 @@ async function main(): Promise<void> {
   const out13 = new TuiOutput13(s13b, { showThinking: true }, fakeSession13);
   out13.onTurnStart(); // 轮 +1
   out13.onToolStep(0, 50, 'run_command', '$ ls'); // 步 +1
-  out13.onLlmLap(1000, 500); // LLM 墙钟 1s + 首 token 500ms
+  out13.onLlmLap(1000, 500, 500); // LLM 墙钟 1s + 首 token 500ms + 生成耗时 500ms
   out13.onToolsLap(200); // 工具墙钟 0.2s
   out13.onUsage({ prompt: 1000, completion: 200, total: 1200, cached: 970 });
   out13.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
   await out13.flush();
   const frame13 = t13b.captureCharFrame();
-  // 期望：1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 350 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok
-  const expect13 = '1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 350 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok';
+  // 期望：1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok
+  //（tok/s = 输出 350 / 生成耗时 0.5s——排除首 token 等待，非 llmMs 全墙钟）
+  const expect13 = '1 轮 · 1 步| LLM 1s · 工具调用 0.2s| 首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok';
   if (!frame13.includes(expect13)) {
     console.error(`✗ 场景 13 统计累计不符\n期望: ${expect13}\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
     process.exit(1);
@@ -679,12 +680,13 @@ async function main(): Promise<void> {
   const s13c = createTuiState();
   s13c.model = 'mock';
   s13c.tokens = { prompt: 3_000_000, completion: 44_200, total: 3_044_200, cached: 2_910_000 };
-  s13c.stats = { turns: 7, steps: 41, llmMs: 394_642, toolsMs: 7_000, firstTokenSum: 45_500, firstTokenCount: 7, cached: 2_910_000 };
+  s13c.stats = { turns: 7, steps: 41, llmMs: 394_642, toolsMs: 7_000, firstTokenSum: 45_500, firstTokenCount: 7, genMs: 349_142, cached: 2_910_000 };
   const t13c = await createTestRenderer({ width: 120, height: 20 });
   const tree13c = mountTree(t13c.renderer, s13c, { withInput: true });
   await t13c.renderOnce();
   const frame13c = t13c.captureCharFrame();
-  const expect13c = '7 轮 · 41 步| LLM 6m35s · 工具调用 7.0s| 首 token 平均 6.5s · 112 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok';
+  // 用户示例格式验证（示例值；tok/s = 输出 44.2K / 生成耗时 349.1s ≈ 127）
+  const expect13c = '7 轮 · 41 步| LLM 6m35s · 工具调用 7.0s| 首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok';
   if (!frame13c.includes(expect13c)) {
     console.error(`✗ 场景 13 示例格式不符\n期望: ${expect13c}\n实际帧:\n${frame13c}`);
     process.exit(1);
@@ -3041,6 +3043,9 @@ async function main(): Promise<void> {
   console.log('=== 场景 34：/model 切换模型 ===');
   // a) config models 解析：顶层 model + models 缺省字段回退到顶层
   const tmp34 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-model-'));
+  const oldXdg34 = process.env.XDG_CONFIG_HOME;
+  const fakeXdg34 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-xdg34-'));
+  process.env.XDG_CONFIG_HOME = fakeXdg34;
   fs.writeFileSync(
     path.join(tmp34, 'omni.json'),
     JSON.stringify({
@@ -3075,6 +3080,8 @@ async function main(): Promise<void> {
   const runCtx34 = prepareRun({});
   await attachRuntime(runCtx34, {} as never);
   process.env.OMNI_CONFIG = oldEnv34;
+  process.env.XDG_CONFIG_HOME = oldXdg34;
+  fs.rmSync(fakeXdg34, { recursive: true, force: true });
   const models34 = runCtx34.runOpts.models ?? [];
   if (models34.length !== 3 || models34[0].name !== 'deepseek-chat' || !models34.find((m) => m.name === 'glm-4-flash') || !models34.find((m) => m.name === 'moonshot-v1-8k')) {
     console.error(`✗ 场景 34 attachRuntime 未展开 models 列表: ${JSON.stringify(models34.map((m) => m.name))}`);
@@ -4055,13 +4062,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // buildFooterStats 按新配置拼行（去掉 llm；cache 移到 speed 前）
-  s39.stats = { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, cached: 9700 };
+  s39.stats = { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 };
   s39.tokens = { prompt: 10000, completion: 73700, total: 83700 };
   const statsLine39 = layout39.buildFooterStats(s39);
   if (
     !statsLine39.includes('7 轮 · 41 步') ||
     !statsLine39.includes('缓存命中 97%') ||
-    !statsLine39.includes('首 token 平均 6.5s · 112 tok/s') ||
+    !statsLine39.includes('首 token 平均 6.5s · 115 tok/s') ||
     !statsLine39.includes('输入 10.0K tok · 输出 73.7K tok') ||
     statsLine39.includes('LLM')
   ) {
@@ -4607,7 +4614,7 @@ async function main(): Promise<void> {
   }
   // b) footer 统计行按语言：buildFooterStats 读 state.language 选 build/buildEn
   const s43f = createTuiState();
-  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, cached: 900 };
+  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 0, cached: 900 };
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
   s43f.statusline = ['rounds', 'llm'];
   const zhLine43 = buildFooterStats(s43f);
@@ -5504,6 +5511,68 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 45 通过：ask_user 竖向勾选列表（队列串行/渲染与预算/↑↓空格勾选/Enter 提交/自定义/鼠标/工具结果）');
+
+  console.log('=== 场景 46：Ctrl+X 前缀快捷键（opencode 风格）===');
+  const { TUI_SHORTCUTS, matchShortcutKey } = await import('../src/tui/shortcuts.js');
+  const { t: t46 } = await import('../src/tui/i18n.js');
+  // a) 绑定表：键 → 斜杠命令（全部是注册表内存在的命令名，与手输等价）
+  const expectBindings: [string, string][] = [
+    ['t', '/settings theme'], ['p', '/permission'], ['m', '/model'], ['v', '/variants'],
+    ['s', '/settings'], ['l', '/plan'], ['h', '/thinking'], ['u', '/undo'],
+    ['r', '/redo'], ['c', '/clear'], ['?', '/help'],
+  ];
+  for (const [k, cmd] of expectBindings) {
+    if (TUI_SHORTCUTS[k] !== cmd) {
+      console.error(`✗ 场景 46 绑定 ${k} → ${TUI_SHORTCUTS[k]}（期望 ${cmd}）`);
+      process.exit(1);
+    }
+    if (matchShortcutKey({ name: k, sequence: k, preventDefault: () => {}, stopPropagation: () => {} }) !== cmd) {
+      console.error(`✗ 场景 46 matchShortcutKey(${k}) 未命中 ${cmd}`);
+      process.exit(1);
+    }
+  }
+  // b) Esc → null（取消前缀）；未绑定键 → undefined（取消并放行输入框）
+  for (const esc of ['escape', 'esc']) {
+    if (matchShortcutKey({ name: esc, sequence: '\x1b', preventDefault: () => {}, stopPropagation: () => {} }) !== null) {
+      console.error(`✗ 场景 46 ${esc} 应返回 null（取消前缀）`);
+      process.exit(1);
+    }
+  }
+  const unbound = matchShortcutKey({ name: 'q', sequence: 'q', preventDefault: () => {}, stopPropagation: () => {} });
+  if (unbound !== undefined) {
+    console.error(`✗ 场景 46 未绑定键应返回 undefined（取消并放行）: ${unbound}`);
+    process.exit(1);
+  }
+  // c) 前缀状态机：激活（shortcutPrefix + 状态栏提示）→ 命中触发清前缀 → 未命中键取消放行
+  const s46 = createTuiState();
+  s46.language = 'zh';
+  if (s46.shortcutPrefix !== false) {
+    console.error('✗ 场景 46 初始 shortcutPrefix 应为 false');
+    process.exit(1);
+  }
+  // 激活（Ctrl+X）后状态栏应显示绑定键提示（i18n shortcut.hint 已配）
+  const hint46 = t46('zh', 'shortcut.hint');
+  if (!hint46.includes('Ctrl-X') || !hint46.includes('t 主题')) {
+    console.error(`✗ 场景 46 shortcut.hint 文案异常: ${hint46}`);
+    process.exit(1);
+  }
+  s46.shortcutPrefix = true;
+  s46.status = hint46;
+  // 命中 't' → 触发 /settings theme 并清前缀（模拟 interactive 前缀分支）
+  const cmd46 = matchShortcutKey({ name: 't', sequence: 't', preventDefault: () => {}, stopPropagation: () => {} });
+  s46.shortcutPrefix = false;
+  s46.status = '';
+  if (cmd46 !== '/settings theme' || s46.shortcutPrefix !== false) {
+    console.error('✗ 场景 46 前缀命中后未正确触发/清前缀');
+    process.exit(1);
+  }
+  // d) /help 帮助输出含 Ctrl+X 说明（help.shortcuts i18n 键已配）
+  const helpSc46 = t46('en', 'help.shortcuts');
+  if (!helpSc46.includes('Ctrl+X')) {
+    console.error(`✗ 场景 46 help.shortcuts(en) 缺失 Ctrl+X: ${helpSc46}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 46 通过：Ctrl+X 前缀快捷键（绑定表/matchShortcutKey 三态/前缀状态机/帮助提示）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

@@ -28,10 +28,12 @@ import { EventRecorder } from '../agent/events.js';
 import { refreshTrace } from './trace.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
-import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose } from './commands.js';
+import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
+import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig, persistVariantToConfig } from '../config/write.js';
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
+import { t } from './i18n.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
 import { pushCmdLine, pushLine, type ScrollAction, type TuiState } from './state.js';
@@ -167,6 +169,30 @@ export async function runTuiInteractive(
     out.onTurnEnd();
   };
 
+  // Ctrl+X 前缀快捷键的目标上下文：ctx 在每轮循环内重建（含当前 client/model），
+  // 这里在循环里每轮更新引用——前缀动作（/settings theme /permission /undo 等）
+  // 与手输斜杠命令走同一 runCommand 分发，完全等价。
+  // 首次等待输入（第一轮循环前）时循环尚未建 ctx：这里用入口参数建一个最小等价
+  // ctx 兜底（前缀命令均为菜单/切换类，不依赖回调字段；循环内每轮会刷新完整引用）。
+  let shortcutCtx: TuiCommandContext | null = {
+    state, out, session, input, messages,
+    client, model,
+    models: (runOpts.models ?? []).map((m) => m.name),
+    undoStack: runOpts.undoStack,
+    tools: runOpts.tools,
+    maxSubagentSteps: runOpts.maxSubagentSteps,
+    subagents: runOpts.subagents,
+    maxSubagentDepth: runOpts.maxSubagentDepth,
+    architectModel: runOpts.architectModel,
+    editorModel: runOpts.editorModel,
+    runOpts,
+    sessionPath: runOpts.sessionPath,
+    cfg: runOpts.cfg,
+    mcpServers: runOpts.mcpServers,
+    mcpHandles: runOpts.mcpHandles,
+    events: runOpts.events,
+    hooks: runOpts.hooks,
+  };
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
     // 让输入框先插入字符、repaintTree 再读到最新文本。合并 pending：连发按键只挂一个定时器。
@@ -180,6 +206,50 @@ export async function runTuiInteractive(
         void session.paint().catch(() => {});
       }, 0);
     };
+    // Ctrl+X 前缀快捷键（opencode 风格，见 shortcuts.ts）：前缀激活时下一个按键
+    // 触发绑定动作（t 主题 / p 权限 / m 模型 / v 级别 / s 设置 / l 计划 / h 思考 /
+    // u 撤销 / r 重做 / c 清空 / ? 帮助）——执行与手输斜杠命令等价的 runCommand；
+    // Esc 取消前缀；未绑定键取消前缀并放行给输入框（继续输入即返回）。
+    if (state.shortcutPrefix) {
+      const cmd = matchShortcutKey(key);
+      if (cmd) {
+        state.shortcutPrefix = false;
+        state.status = '';
+        key.preventDefault();
+        const c = shortcutCtx;
+        if (c) {
+          void runCommand(c, cmd)
+            .then(() => session.paint())
+            .catch((err) => {
+              pushLine(state, {
+                kind: 'warn',
+                text: `命令执行出错：${(err as Error)?.message ?? String(err)}`,
+              });
+              return session.paint();
+            });
+        }
+        paintNow();
+        return;
+      }
+      // 取消前缀：Esc（消费）或未绑定键（取消后放行给输入框继续处理）
+      state.shortcutPrefix = false;
+      state.status = '';
+      paintNow();
+      if (key.name === 'escape' || key.name === 'esc') {
+        key.preventDefault();
+        return;
+      }
+      // 未绑定键：继续下方正常处理（输入框编辑等），不 return
+    }
+    // Ctrl+X 进入前缀（无模态浮层时；ask 提问面板由 onAskKey 先消费按键，避免冲突）：
+    // 状态栏显示绑定键提示，再按一次绑定键触发 / 再按 Esc/其它键取消。
+    if (key.ctrl && key.name === 'x' && !state.menu && !state.settingsPanel && !state.ask) {
+      state.shortcutPrefix = true;
+      state.status = t(state.language, 'shortcut.hint');
+      key.preventDefault();
+      paintNow();
+      return;
+    }
     // 工具审批卡片的按键（y/Enter 批准、n/Esc 拒绝）已挂在 startTui 全局
     // （单任务与交互模式共用，避免双重监听重复 resolve）——这里不再处理。
     // 命令面板打开时：面板消费所有按键（↑/↓/数字选择、Enter 确认、Esc 取消），
@@ -776,6 +846,8 @@ export async function runTuiInteractive(
           void restoreSession(file, msgs);
         },
       };
+      // Ctrl+X 前缀快捷键的 ctx 引用：每轮刷新（当前 client/model 等字段随之更新）
+      shortcutCtx = ctx;
       // /settings 菜单确认「环境诊断」的意图（confirmMenu 纯 state 无法执行——
       // 记录 doctorPending，这里在命令分发前消费，输出诊断报告到命令面板）
       if (state.doctorPending) {

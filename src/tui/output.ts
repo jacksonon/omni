@@ -268,13 +268,14 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
-  onLlmLap(llmMs: number, firstTokenMs: number | null): void {
-    // LLM 请求墙钟累计 + 首 token 延迟累计（平均 = sum/count）
+  onLlmLap(llmMs: number, firstTokenMs: number | null, genMs?: number): void {
+    // LLM 请求墙钟累计 + 首 token 延迟累计（平均 = sum/count）+ 纯生成耗时（tok/s 用）
     this.state.stats.llmMs += llmMs;
     if (firstTokenMs !== null) {
       this.state.stats.firstTokenSum += firstTokenMs;
       this.state.stats.firstTokenCount += 1;
     }
+    if (genMs !== undefined) this.state.stats.genMs += genMs;
     this.schedulePaint();
   }
 

@@ -89,6 +89,21 @@ const server = http.createServer((req, res) => {
 
   // 兼容 baseURL 带 /v1 与不带 /v1 两种情况
   const isChat = req.url?.endsWith('/chat/completions') ?? false;
+  // GET {baseURL}/models（providers「获取模型列表」e2e：OpenAI 兼容模型发现）
+  if (req.method === 'GET' && req.url?.endsWith('/models')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'glm-4-flash', object: 'model' },
+          { id: 'glm-4-plus', object: 'model' },
+          { id: 'deepseek-chat', object: 'model' },
+        ],
+      })
+    );
+    return;
+  }
   if (req.method !== 'POST' || !isChat) {
     res.writeHead(404).end();
     return;
@@ -171,13 +186,25 @@ const server = http.createServer((req, res) => {
     const sendChunk = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
     // stream_options.include_usage 时末 chunk 携带 usage（TUI footer 展示 token 用量）
+    // cached = 缓存命中 token（OpenAI 系 prompt_tokens_details.cached_tokens）：首轮 0、次轮起 90
+    //（第二轮 prompt 相同 → 网关命中缓存；命中率 = cached/prompt 的验证数据源）
+    const cacheHit = hasToolResult ? 90 : 0;
     const usageChunk = (id) => ({
       id,
       object: 'chat.completion.chunk',
       created: Date.now(),
       model: 'mock',
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      ...(wantUsage ? { usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 } } : {}),
+      ...(wantUsage
+        ? {
+            usage: {
+              prompt_tokens: 123,
+              completion_tokens: 45,
+              total_tokens: 168,
+              prompt_tokens_details: { cached_tokens: cacheHit },
+            },
+          }
+        : {}),
     });
 
     if (wantSummary) {
