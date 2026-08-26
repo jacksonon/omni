@@ -209,19 +209,14 @@ omni -h / -v                      # help / version
 ```jsonc
 {
   // ── Model & endpoint ──
-  "model": "gpt-4o-mini",              // default model name
-  "baseURL": "https://api.deepseek.com/v1", // OpenAI-compatible API URL (env var also works)
-  "apiKey": "sk-xxx",                  // prefer env var OMNI_API_KEY (keeps keys out of config files)
-  "userAgent": "Mozilla/5.0 …",        // custom UA (some gateway WAFs block the SDK default UA)
-  "providers": {                        // 1.0: one gateway, many models — merged into `models` at load (flat form still works)
+  "model": "gpt-4o-mini",              // default model name; endpoints/keys live only in `providers` below
+  "providers": {                        // 1.0: the only endpoint format (legacy flat `models` removed) — one gateway, many models
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
       "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 } } } }
   },
-  // Flat `models`: missing fields fall back to top level; replaced by providers expansion if both exist
-  "models": {                          // multi-model endpoints (/model switch): missing fields fall back to top level
-    "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" }
-  },
-  // Per-model reasoning level (each model can have its own, falls back to top level):
+  // Endpoint fallback comes from env vars only (OMNI_BASE_URL / OMNI_API_KEY);
+  // top-level baseURL/apiKey/userAgent in config files are no longer parsed.
+  // Per-model reasoning level (each model can have its own, falls back to top level; under providers.<group>.models.<model>):
   "reasoningEffort": "medium",         // reasoning level (reasoning_effort; unset = omit the param, use model default)
   "reasoningEffortOptions": ["low", "medium", "high"], // levels supported by /variants (customizable)
   // Named variants (1.0): { id: { description?, reasoningEffort?, body?, headers? } }
@@ -329,8 +324,8 @@ JSONL to `~/.config/omni/audit.log` for later auditing.
 ```
 
 Adds, switches to it, and **persists** it to the config file (plain-JSON configs are rewritten
-automatically; JSONC configs get a hint to add it manually). Each entry in `models` can have its own
-baseURL/apiKey/userAgent; missing fields fall back to the top level.
+automatically; JSONC configs get a hint to add it manually). It is written as a single-model
+`providers` group (`providers.<name>.models.<name>`); the endpoint lives at the provider level.
 
 ### Reasoning level (`/variants`)
 

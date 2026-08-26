@@ -18,11 +18,17 @@ import { parseJsonc } from './jsonc.js';
 import { findInDir, findProjectConfig } from './discover.js';
 
 export interface OmniConfig {
+  /** 默认（活动）模型名：从 providers 分组里选一个模型（或环境变量 OMNI_MODEL） */
   model: string;
+  /**
+   * 端点兜底字段——**只由环境变量填充**（OMNI_BASE_URL / OMNI_API_KEY），
+   * 配置文件不再解析顶层 baseURL/apiKey/userAgent（端点与密钥只认 providers 分组）。
+   * 保留字段：环境变量是运行时覆盖层，缺省字段时回退到它。
+   */
   baseURL?: string;
   apiKey?: string;
   maxSteps: number;
-  /** 自定义 User-Agent（部分网关的 WAF 会拦截 SDK 默认 UA，可配置浏览器 UA 绕过） */
+  /** 自定义 User-Agent（部分网关的 WAF 会拦截 SDK 默认 UA，可在 providers 分组里配置绕过） */
   userAgent?: string;
   /** 是否在终端展示思考过程（默认 true；关闭后仍会落盘 .omni/last-thinking.md） */
   showThinking: boolean;
@@ -56,23 +62,20 @@ export interface OmniConfig {
   /** /variants 支持的思考级别选项（默认 low/medium/high，可自行配置支持哪些） */
   reasoningEffortOptions: string[];
   /**
-   * 多模型配置：{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffortOptions?, reasoningEffort? } }（/model 切换）。
-   * 每个模型可有自己的端点/密钥/UA；缺省字段回退到顶层 baseURL/apiKey/userAgent。
-   * **per-model variants**：reasoningEffortOptions = 该模型 /variants 支持的思考级别选项、
-   * reasoningEffort = 该模型的当前思考级别——两者缺省回退顶层同名字段（只配置了端点
-   * 的模型自动继承全局思考级别配置）。/model 切换到该模型时自动带出（面板选项/请求同步）。
-   * 顶层 `model` 为默认模型（总是可用）。
+   * 内部合并表（运行时唯一形态）：providers 分组展开后合并进本表，供 /model 切换、
+   * loop 请求、web 设置等消费。**不再从配置文件的扁平 models 字段解析**——
+   * 端点/密钥只认 providers 分组（1.0）。
    *
    * 1.0 模型元数据（TODO 七 7.1）：limit（context/output token 上限）、modalities
    * （输入/输出类型数组）、capabilities（tools/reasoning/temperature）、apiModel 别名、
    * displayName、disabled 隐藏；variants = 命名请求叠加层表。未声明时的兜底假设见
-   * client.ts MODEL_DEFAULTS。**providers 分组展开后也合并进本表**（向后兼容扁平形态）。
+   * client.ts MODEL_DEFAULTS。
    */
   models?: Record<string, ModelEntryConfig>;
   /**
-   * Provider 分组（1.0 P0-3，对标 opencode providers）：一个 baseURL 挂多个模型——
-   * 同网关共享 baseURL/apiKey/userAgent/headers，models 只写差异字段。
-   * 加载期展开合并进 `models` 表（key 冲突时显式 models 条目优先），扁平形态继续可用。
+   * Provider 分组（1.0 P0-3，对标 opencode providers）：**配置端点的唯一格式**——
+   * 一个 baseURL 挂多个模型，同网关共享 baseURL/apiKey/userAgent/headers，
+   * models 只写差异字段。加载期展开合并进 `models` 表供运行时消费。
    */
   providers?: Record<
     string,
@@ -435,9 +438,9 @@ export function resolveEnvRef(value: string | undefined): string | undefined {
 function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: string, sources: string[]): void {
   if (!data) return;
   if (typeof data.model === 'string') cfg.model = data.model;
-  if (typeof data.baseURL === 'string') cfg.baseURL = data.baseURL;
-  if (typeof data.apiKey === 'string') cfg.apiKey = data.apiKey;
-  if (typeof data.userAgent === 'string') cfg.userAgent = data.userAgent;
+  // 端点/密钥只认 providers 分组：不再解析顶层扁平 baseURL/apiKey/userAgent 与扁平
+  // models 表（旧版兼容已移除）——环境变量 OMNI_BASE_URL/OMNI_API_KEY 仍可在 loadConfig
+  // 阶段作为运行时覆盖写入 cfg.baseURL/cfg.apiKey。
   if (typeof data.maxSteps === 'number' && Number.isFinite(data.maxSteps)) {
     cfg.maxSteps = Math.max(1, Math.floor(data.maxSteps));
   }
@@ -460,45 +463,8 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.reasoningEffort === 'string' && data.reasoningEffort.trim()) {
     cfg.reasoningEffort = data.reasoningEffort.trim();
   }
-  if (data.models && typeof data.models === 'object' && !Array.isArray(data.models)) {
-    const models: Record<string, ModelEntryConfig> = {};
-    for (const [name, v] of Object.entries(data.models as Record<string, unknown>)) {
-      if (!v || typeof v !== 'object') continue;
-      const e = v as Record<string, unknown>;
-      const entry: ModelEntryConfig = {
-        ...(typeof e.baseURL === 'string' ? { baseURL: e.baseURL } : {}),
-        ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey } : {}),
-        ...(typeof e.userAgent === 'string' ? { userAgent: e.userAgent } : {}),
-        ...(e.headers && typeof e.headers === 'object' && !Array.isArray(e.headers)
-          ? { headers: e.headers as Record<string, string> }
-          : {}),
-        // per-model variants：只收非空字符串数组/字符串；非法值丢弃（回退顶层）
-        ...(Array.isArray(e.reasoningEffortOptions)
-          ? {
-              reasoningEffortOptions: (e.reasoningEffortOptions as unknown[]).filter(
-                (x): x is string => typeof x === 'string' && !!x.trim()
-              ),
-            }
-          : {}),
-        ...(typeof e.reasoningEffort === 'string' && e.reasoningEffort.trim()
-          ? { reasoningEffort: e.reasoningEffort.trim() }
-          : {}),
-        ...(typeof e.variant === 'string' && e.variant.trim() ? { variant: e.variant.trim() } : {}),
-        ...parseVariantsField(e.variants),
-        ...(typeof e.apiModel === 'string' && e.apiModel.trim() ? { apiModel: e.apiModel.trim() } : {}),
-        ...(typeof e.displayName === 'string' && e.displayName.trim()
-          ? { displayName: e.displayName.trim() }
-          : {}),
-        ...parseLimitField(e.limit),
-        ...parseModalitiesField(e.modalities),
-        ...parseCapabilitiesField(e.capabilities),
-        ...(e.disabled === true ? { disabled: true } : {}),
-      };
-      models[name] = entry;
-    }
-    if (Object.keys(models).length > 0) cfg.models = models;
-  }
-  // Provider 分组（1.0 P0-3）：原样校验保留，loadConfig 末尾统一展开合并进 models
+  // Provider 分组（1.0 P0-3）：配置文件里唯一的端点格式，原样校验保留，
+  // loadConfig 末尾统一展开合并进内部 models 表
   if (data.providers && typeof data.providers === 'object' && !Array.isArray(data.providers)) {
     const providers: NonNullable<OmniConfig['providers']> = {};
     for (const [name, v] of Object.entries(data.providers as Record<string, unknown>)) {
@@ -816,16 +782,6 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   const envResolvedKey = resolveEnvRef(cfg.apiKey);
   if (envResolvedKey === undefined && cfg.apiKey) cfg.apiKey = undefined;
   else if (envResolvedKey) cfg.apiKey = envResolvedKey;
-  if (cfg.models) {
-    for (const [name, e] of Object.entries(cfg.models)) {
-      if (e.apiKey) {
-        const r = resolveEnvRef(e.apiKey);
-        if (r === undefined) delete e.apiKey;
-        else e.apiKey = r;
-      }
-      void name;
-    }
-  }
   if (cfg.providers) {
     for (const p of Object.values(cfg.providers)) {
       if (p.apiKey) {
@@ -834,9 +790,9 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
         else p.apiKey = r;
       }
     }
-    // Provider 展开（1.0 P0-3）：provider 级 → model 级逐字段覆盖，合并进扁平 models 表。
-    // key 冲突策略：显式顶层 models 条目优先保留原名；被占用的 provider 条目改挂
-    // `provider/modelID`（/model 面板按该名切换，语义清晰）。
+    // Provider 展开（1.0 P0-3）：provider 级 → model 级逐字段覆盖，合并进内部 models 表
+    // （唯一来源——配置文件不再解析扁平 models 字段）。key 冲突不存在（无扁平表），
+    // 模型名含 / 时仍改挂 `provider/modelID` 避免歧义（/model 面板按该名切换）。
     const models: Record<string, ModelEntryConfig> = {};
     for (const [pname, p] of Object.entries(cfg.providers)) {
       for (const [mid, m] of Object.entries(p.models ?? {})) {
@@ -847,7 +803,7 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
           ...(p.headers ? { headers: p.headers } : {}),
           ...m,
         };
-        const key = mid.includes('/') || cfg.models?.[mid] ? `${pname}/${mid}` : mid;
+        const key = mid.includes('/') ? `${pname}/${mid}` : mid;
         merged.apiModel ??= mid; // 目录友好名 ≠ API 名：缺省 apiModel = 原始 modelID
         merged.provider = pname;
         models[key] = merged;

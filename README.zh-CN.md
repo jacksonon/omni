@@ -127,10 +127,7 @@ export OMNI_MODEL=deepseek-chat                     # 可选
 
 ```jsonc
 {
-  "model": "deepseek-chat",              // 模型名（默认 gpt-4o-mini）
-  "baseURL": "https://api.deepseek.com/v1", // OpenAI 兼容 API 地址
-  "apiKey": "sk-xxx",                    // 更推荐用环境变量 OMNI_API_KEY
-  "userAgent": "Mozilla/5.0 …",          // 自定义 UA（部分网关 WAF 拦截 SDK 默认 UA 时可配置）
+  "model": "deepseek-chat",              // 模型名（默认 gpt-4o-mini）；端点/密钥只认下方 providers 分组
   "maxSteps": 50,                        // Agent 最大循环步数（防死循环兜底）
   "showThinking": true,                  // 展示思考过程（仍落盘）
   "permission": "safe",                  // 安全护栏：full / safe（默认）/ ask / read
@@ -139,7 +136,7 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "sandboxNetworkAllow": ["api.openai.com"],  // 沙箱网络白名单（hostname；经内置过滤代理出网，TLS 不解密）
   "sandboxFailClosed": false,                // true = 无沙箱原语时拒绝执行（fail-closed，企业安全门）
   "sandboxWritePaths": [],                   // workspace-write 额外可写白名单（绝对路径）
-  "providers": {                              // 1.0：一个网关挂多个模型——加载期合并进 models（扁平形态向后兼容）
+  "providers": {                              // 1.0：一个网关挂多个模型（端点/密钥的唯一格式；旧版扁平 models 已移除）
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
       "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 },
                    "variants": { "fast": { "reasoningEffort": "low" },
@@ -165,10 +162,9 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "reasoningEffortOptions": ["low", "medium", "high"], // /variants 支持的思考级别选项（可自定义）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
-  "models": {                           // 多模型端点（/model 切换/添加）：缺省字段回退顶层；per-model 思考级别（reasoningEffortOptions/reasoningEffort）+ 命名 variants（variants 表 + variant 字段 + apiModel 别名）；/model add 可运行时添加并持久化
-    "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
-    "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
-  },
+  // 多模型端点（/model 切换/添加）只认 providers 分组——per-model 思考级别
+  // （reasoningEffortOptions/reasoningEffort）+ 命名 variants（variants 表 + variant 字段 +
+  // apiModel 别名）都写在 providers.<组>.models.<模型>；/model add 运行时添加并持久化（单模型分组）
   "mcpServers": {                        // MCP 外部工具：{ 名称: { command, args?, env? } | { url, headers? }；enabledTools?/disabledTools?；defaultToolsApprovalMode? = auto|prompt|writes|approve }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   },

@@ -23,6 +23,8 @@
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
   <symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 10-10M16 7l3 3"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-2.72 1.72a3 3 0 1 1-4.24-4.24"/><path d="m1 1 22 22"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11.5V16"/></symbol>
   <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="6" cy="8" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M18 8.5a9 9 0 0 1-9 7.5"/></symbol>
   <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="11" rx="2"/><path d="M2 19h20"/></symbol>
@@ -97,6 +99,7 @@
               <div class="attach-wrap">
                 <button id="btn-attach" class="attach-button" type="button" title="选择文件/图片" aria-label="选择文件/图片" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
                 <input id="attach-input" type="file" multiple accept="image/*,text/*,.md,.txt,.json,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.go,.rs,.rb,.java,.c,.h,.cpp,.hpp,.cs,.sh,.bash,.zsh,.yml,.yaml,.toml,.ini,.xml,.html,.css,.scss,.sql,.csv,.log" hidden>
+                <input id="workspace-input" type="file" webkitdirectory hidden aria-label="选择工作目录">
               </div>
               <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
               <label class="plan-toggle" title="计划模式" data-i18n-title="shortcut.planModeDesc"><input type="checkbox" id="plan-mode"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
@@ -215,18 +218,24 @@
                     <input type="text" id="p-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
                   </div>
                   <div class="setting-row col">
-                    <div class="setting-info"><h4 data-i18n="provider.apiKey">API Key</h4><p data-i18n="provider.apiKeyDesc">留空表示沿用配置文件中已保存的密钥。</p></div>
+                    <div class="setting-info"><h4 data-i18n="provider.apiKey">API Key</h4><p data-i18n="provider.apiKeyDesc">密钥以掩码显示；点击右侧眼睛可查看明文。</p></div>
                     <div class="apikey-row">
-                      <input type="password" id="p-apikey" placeholder="sk-…" autocomplete="off">
-                      <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
-                      <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
-                      <button id="btn-del-provider" class="primary-button danger" type="button" data-i18n="provider.delete">删除</button>
+                      <div class="apikey-input-wrap">
+                        <input type="password" id="p-apikey" placeholder="sk-…" autocomplete="off">
+                        <button id="btn-p-key-eye" class="eye-button" type="button" title="显示/隐藏" data-i18n-title="provider.eye" aria-label="显示/隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
+                      </div>
                     </div>
                   </div>
                   <div class="setting-row col">
                     <div class="setting-info"><h4 data-i18n="provider.userAgent">User-Agent</h4><p data-i18n="provider.userAgentDesc">部分网关需要自定义 User-Agent 绕过 WAF。</p></div>
                     <input type="text" id="p-useragent" class="cfg-text" placeholder="curl/7.79.1" autocomplete="off" spellcheck="false">
                   </div>
+                </div>
+                <div class="provider-actions" id="provider-actions">
+                  <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
+                  <span class="provider-actions-spacer"></span>
+                  <button id="btn-del-provider" class="secondary-button danger" type="button" data-i18n="provider.delete">删除</button>
+                  <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
                 </div>
                 <div id="p-fetch-result" class="fetch-result hidden"></div>
                 <div class="settings-group" style="margin-top:12px">

@@ -17,15 +17,19 @@ const WEB_PORT = MOCK_PORT + 7;
 const BASE = `http://127.0.0.1:${WEB_PORT}`;
 process.env.XDG_CONFIG_HOME = XDG;
 
-// 临时配置文件：两个模型 + 无 webTheme（测试默认 system）
+// 临时配置文件：两个模型 + 无 webTheme（测试默认 system）——端点只认 providers 分组
 const cfgDir = path.join(XDG, 'omni');
 mkdirSync(cfgDir, { recursive: true });
 const cfgPath = path.join(cfgDir, 'omni.json');
 writeFileSync(cfgPath, JSON.stringify({
   model: 'mock-model',
-  baseURL: `http://127.0.0.1:${MOCK_PORT}/v1`,
-  apiKey: 'sk-mock',
-  models: { 'mock-model': {}, 'mock-high': {} },
+  providers: {
+    mock: {
+      baseURL: `http://127.0.0.1:${MOCK_PORT}/v1`,
+      apiKey: 'sk-mock',
+      models: { 'mock-model': {}, 'mock-high': {} },
+    },
+  },
 }, null, 2));
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -74,33 +78,32 @@ try {
   console.log('D. POST webTheme=system →', r2.json.webTheme);
   if (r2.json.webTheme !== 'system') throw new Error('应能切回 system');
 
-  // E. 模型配置保存（modelConfig）→ status.models 更新 + 配置文件写入
+  // E. 模型配置保存（providerModel，providers-only）→ status.models 更新 + 配置文件写入
   const r3 = await post('/api/settings', {
-    modelConfig: {
+    providerModel: {
+      provider: 'mock',
       modelName: 'mock-high',
-      baseURL: `http://127.0.0.1:${MOCK_PORT}/v1`,
-      apiKey: 'sk-configured',
+      apiModel: 'mock-high',
       reasoningEffortOptions: ['low', 'high'],
       reasoningEffort: 'high',
       contextLimit: 64000,
     },
   });
-  console.log('E. POST modelConfig → status', r3.status, 'models 中 mock-high =', JSON.stringify(
+  console.log('E. POST providerModel → status', r3.status, 'models 中 mock-high =', JSON.stringify(
     (r3.json.models || []).find((m) => m.name === 'mock-high')
   ));
   const mh = (r3.json.models || []).find((m) => m.name === 'mock-high');
   if (!mh || mh.reasoningEffortOptions?.join(',') !== 'low,high' || mh.reasoningEffort !== 'high' || mh.limit?.context !== 64000) {
-    throw new Error('modelConfig 未同步到 status.models');
+    throw new Error('providerModel 未同步到 status.models');
   }
 
-  // F. 配置文件写入校验（全局配置 XDG/omni/omni.json）
+  // F. 配置文件写入校验（全局配置 XDG/omni/omni.json；组内模型继承 provider 端点）
   const cfg3 = JSON.parse((await import('node:fs')).readFileSync(cfgPath, 'utf8'));
-  const stored = cfg3.models?.['mock-high'];
-  console.log('F. 配置文件 models.mock-high =', JSON.stringify(stored));
-  if (!stored || stored.baseURL !== `http://127.0.0.1:${MOCK_PORT}/v1` || stored.apiKey !== 'sk-configured'
-      || stored.reasoningEffortOptions?.join(',') !== 'low,high' || stored.reasoningEffort !== 'high'
+  const stored = cfg3.providers?.mock?.models?.['mock-high'];
+  console.log('F. 配置文件 providers.mock.models.mock-high =', JSON.stringify(stored));
+  if (!stored || stored.reasoningEffortOptions?.join(',') !== 'low,high' || stored.reasoningEffort !== 'high'
       || stored.limit?.context !== 64000) {
-    throw new Error('modelConfig 未写入配置文件');
+    throw new Error('providerModel 未写入配置文件');
   }
 
   // G. 语言设置（language）→ status 更新（持久化走与 C 段相同的配置文件写入机制）

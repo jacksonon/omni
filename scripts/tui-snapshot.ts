@@ -721,6 +721,18 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 14 行首缺细线字符: ${JSON.stringify(r.text)}`);
       process.exit(1);
     }
+    // 整行灰色背景：chunk 总列数 == 内容区宽（竖线 + 文字 + 行尾填充色块）——
+    // 用户要求「显示完整的灰色背景，而不是仅在文字下面显示灰色」
+    const totalW14 = r.chunks!.reduce((a, c) => a + visualWidth(c.text), 0);
+    if (totalW14 !== 62) {
+      console.error(`✗ 场景 14 用户消息行未铺满整行灰底（chunk 总宽 ${totalW14}，应 62 = 内容区宽）`);
+      process.exit(1);
+    }
+    const last14 = r.chunks![r.chunks!.length - 1];
+    if (!last14 || last14.text.trim() !== '' || last14.bg !== '#3f3f46') {
+      console.error(`✗ 场景 14 行尾缺少灰色填充 chunk: ${JSON.stringify(last14)}`);
+      process.exit(1);
+    }
   }
   const joined14 = userRows14.map((r) => r.text).join('');
   if (!joined14.includes('USERBAR-END')) {
@@ -3050,19 +3062,30 @@ async function main(): Promise<void> {
     path.join(tmp34, 'omni.json'),
     JSON.stringify({
       model: 'deepseek-chat',
-      baseURL: 'https://api.deepseek.com/v1',
-      apiKey: 'sk-top',
-      // per-model variants：顶层全局思考级别 + glm 专属级别/选项（moonshot 只配端点 → 回退全局）
+      // per-model variants：顶层全局思考级别 + glm 专属级别/选项（moonshot 只配模型 → 回退全局）
       reasoningEffort: 'medium',
       reasoningEffortOptions: ['low', 'medium', 'high'],
-      models: {
-        'glm-4-flash': {
+      // 端点/密钥只认 providers 分组（旧版扁平 models 表已移除）
+      providers: {
+        ds: {
+          baseURL: 'https://api.deepseek.com/v1',
+          apiKey: 'sk-top',
+          models: { 'deepseek-chat': {} },
+        },
+        bigmodel: {
           baseURL: 'https://open.bigmodel.cn/api/paas/v4',
           apiKey: 'sk-glm',
-          reasoningEffortOptions: ['low', 'high'],
-          reasoningEffort: 'high',
+          models: {
+            'glm-4-flash': {
+              reasoningEffortOptions: ['low', 'high'],
+              reasoningEffort: 'high',
+            },
+          },
         },
-        'moonshot-v1-8k': { baseURL: 'https://api.moonshot.cn/v1' },
+        moonshot: {
+          baseURL: 'https://api.moonshot.cn/v1',
+          models: { 'moonshot-v1-8k': {} },
+        },
       },
     })
   );
@@ -3070,7 +3093,7 @@ async function main(): Promise<void> {
   const oldEnv34 = process.env.OMNI_CONFIG;
   process.env.OMNI_CONFIG = path.join(tmp34, 'omni.json');
   const cfg34 = loadConfig();
-  if (!cfg34.models || Object.keys(cfg34.models).length !== 2) {
+  if (!cfg34.models || Object.keys(cfg34.models).length !== 3) {
     console.error(`✗ 场景 34 config models 解析失败: ${JSON.stringify(cfg34.models)}`);
     process.exit(1);
   }
@@ -3093,8 +3116,9 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 glm 端点缺省字段未生效: ${JSON.stringify(glm34)}`);
     process.exit(1);
   }
-  if (moon34.apiKey !== 'sk-top' || moon34.baseURL !== 'https://api.moonshot.cn/v1') {
-    console.error(`✗ 场景 34 moonshot 未回退顶层 apiKey: ${JSON.stringify(moon34)}`);
+  // moonshot 无 apiKey（providers-only 无顶层回退；密钥在 provider 级）
+  if (moon34.apiKey !== undefined || moon34.baseURL !== 'https://api.moonshot.cn/v1') {
+    console.error(`✗ 场景 34 moonshot 未按 provider 解析: ${JSON.stringify(moon34)}`);
     process.exit(1);
   }
   // b2) per-model variants 展开：端点携带解析后的思考级别（缺省回退顶层全局）
@@ -3201,9 +3225,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // f) persistModelToConfig：纯 JSON 配置文件自动追加 + JSONC 跳过 + 无配置时新建
+  //    （providers-only：/model add 建立单模型 provider 分组，不再写扁平 models 表）
   const tmp34b = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-add-'));
   const jsonFile = path.join(tmp34b, 'omni.json');
-  fs.writeFileSync(jsonFile, JSON.stringify({ model: 'a', models: { a: { baseURL: 'https://a.com/v1' } } }));
+  fs.writeFileSync(jsonFile, JSON.stringify({ model: 'a', providers: { a: { baseURL: 'https://a.com/v1', models: { a: {} } } } }));
   const cfg34add = { sources: [jsonFile] } as never;
   const resJson = persistModelToConfig('b', { baseURL: 'https://b.com/v1', apiKey: 'sk-b' }, cfg34add);
   if (!resJson.ok || resJson.file !== jsonFile) {
@@ -3211,13 +3236,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const written34 = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-  if (written34.models?.b?.baseURL !== 'https://b.com/v1' || written34.models?.b?.apiKey !== 'sk-b' || written34.models?.a?.baseURL !== 'https://a.com/v1') {
+  if (written34.providers?.b?.baseURL !== 'https://b.com/v1' || written34.providers?.b?.apiKey !== 'sk-b' || written34.providers?.b?.models?.b?.baseURL !== undefined) {
     console.error(`✗ 场景 34 持久化内容错误: ${JSON.stringify(written34)}`);
+    process.exit(1);
+  }
+  if (written34.providers?.a?.baseURL !== 'https://a.com/v1' || written34.providers?.a?.models?.a === undefined || 'models' in written34) {
+    console.error(`✗ 场景 34 既有 provider 保留 / 无扁平 models 字段: ${JSON.stringify(written34)}`);
     process.exit(1);
   }
   // JSONC（带注释）不自动改写，返回提示
   const jsoncFile = path.join(tmp34b, 'omni.jsonc');
-  fs.writeFileSync(jsoncFile, '{ "model": "a", // 注释\n "models": {} }\n');
+  fs.writeFileSync(jsoncFile, '{ "model": "a", // 注释\n "providers": {} }\n');
   const resJsonc = persistModelToConfig('c', { baseURL: 'https://c.com/v1' }, { sources: [jsoncFile] } as never);
   if (resJsonc.ok || !resJsonc.message.includes('手动')) {
     console.error(`✗ 场景 34 JSONC 未跳过自动改写: ${JSON.stringify(resJsonc)}`);
@@ -3233,7 +3262,7 @@ async function main(): Promise<void> {
   process.chdir(tmp34c);
   const resNew = persistModelToConfig('n', { baseURL: 'https://n.com/v1' }, { sources: [] } as never);
   process.chdir(oldCwd34);
-  if (!resNew.ok || !fs.existsSync(path.join(tmp34c, 'omni.json')) || JSON.parse(fs.readFileSync(path.join(tmp34c, 'omni.json'), 'utf8')).models?.n?.baseURL !== 'https://n.com/v1') {
+  if (!resNew.ok || !fs.existsSync(path.join(tmp34c, 'omni.json')) || JSON.parse(fs.readFileSync(path.join(tmp34c, 'omni.json'), 'utf8')).providers?.n?.baseURL !== 'https://n.com/v1') {
     console.error(`✗ 场景 34 无配置时未新建 omni.json: ${JSON.stringify(resNew)}`);
     process.exit(1);
   }
@@ -3261,11 +3290,11 @@ async function main(): Promise<void> {
   } as never;
   await cmd34.runCommand(runCtx34add, '/model add glm-4-flash --base-url https://open.bigmodel.cn/api/paas/v4 --api-key sk-glm');
   process.chdir(oldCwd34g);
-  // 持久化目标落在临时目录：项目根不被污染，临时目录出现测试 fixture
+  // 持久化目标落在临时目录：项目根不被污染，临时目录出现测试 fixture（providers 分组）
   const gWritten = fs.existsSync(path.join(tmp34g, 'omni.json'))
     ? JSON.parse(fs.readFileSync(path.join(tmp34g, 'omni.json'), 'utf8'))
     : null;
-  if (!gWritten || gWritten.models?.['glm-4-flash']?.baseURL !== 'https://open.bigmodel.cn/api/paas/v4') {
+  if (!gWritten || gWritten.providers?.['glm-4-flash']?.baseURL !== 'https://open.bigmodel.cn/api/paas/v4' || gWritten.providers?.['glm-4-flash']?.models?.['glm-4-flash'] === undefined) {
     console.error(`✗ 场景 34 /model add 分发未持久化到临时 cwd: ${JSON.stringify(gWritten)}`);
     process.exit(1);
   }
@@ -3322,8 +3351,8 @@ async function main(): Promise<void> {
     console.error('✗ 场景 34 JSONC 文件被破坏（注释丢失）');
     process.exit(1);
   }
-  // h2) per-model variants 持久化：当前模型在 models 表有专属条目 → 写 models.<模型>.reasoningEffort；
-  //     未指定模型 / 未知模型 → 写顶层全局（models 表既有专属级别不被破坏）
+  // h2) per-model variants 持久化：当前模型在 providers 分组里有条目 → 写组内模型专属级别；
+  //     未指定模型 / 未知模型 → 写顶层全局（既有组内专属级别不被破坏）
   const tmp34e = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-eff-model-'));
   const jsonFile3 = path.join(tmp34e, 'omni.json');
   fs.writeFileSync(
@@ -3331,7 +3360,10 @@ async function main(): Promise<void> {
     JSON.stringify({
       model: 'a',
       reasoningEffort: 'medium',
-      models: { a: { baseURL: 'https://a.com/v1' }, b: { baseURL: 'https://b.com/v1' } },
+      providers: {
+        g1: { baseURL: 'https://a.com/v1', models: { a: {} } },
+        g2: { baseURL: 'https://b.com/v1', models: { b: {} } },
+      },
     })
   );
   const resEffModel = persistReasoningEffortToConfig('high', { sources: [jsonFile3] } as never, 'a');
@@ -3341,10 +3373,11 @@ async function main(): Promise<void> {
   }
   const writtenEff = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
   if (
-    writtenEff.models?.a?.reasoningEffort !== 'high' ||
+    writtenEff.providers?.g1?.models?.a?.reasoningEffort !== 'high' ||
     writtenEff.reasoningEffort !== 'medium' ||
-    writtenEff.models?.b?.reasoningEffort !== undefined ||
-    writtenEff.models?.a?.baseURL !== 'https://a.com/v1'
+    writtenEff.providers?.g2?.models?.b?.reasoningEffort !== undefined ||
+    writtenEff.providers?.g1?.baseURL !== 'https://a.com/v1' ||
+    'models' in writtenEff
   ) {
     console.error(`✗ 场景 34 per-model 持久化内容错误: ${JSON.stringify(writtenEff)}`);
     process.exit(1);
@@ -3355,7 +3388,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const writtenEff2 = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
-  if (writtenEff2.reasoningEffort !== 'low' || writtenEff2.models?.a?.reasoningEffort !== 'high') {
+  if (writtenEff2.reasoningEffort !== 'low' || writtenEff2.providers?.g1?.models?.a?.reasoningEffort !== 'high') {
     console.error(`✗ 场景 34 全局持久化污染模型专属级别: ${JSON.stringify(writtenEff2)}`);
     process.exit(1);
   }
@@ -3365,8 +3398,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const writtenEff3 = JSON.parse(fs.readFileSync(jsonFile3, 'utf8'));
-  if (writtenEff3.reasoningEffort !== 'medium' || writtenEff3.models?.a?.reasoningEffort !== 'high') {
-    console.error(`✗ 场景 34 未知模型误写 models 表: ${JSON.stringify(writtenEff3)}`);
+  if (writtenEff3.reasoningEffort !== 'medium' || writtenEff3.providers?.g1?.models?.a?.reasoningEffort !== 'high') {
+    console.error(`✗ 场景 34 未知模型误写组内专属级别: ${JSON.stringify(writtenEff3)}`);
     process.exit(1);
   }
   fs.rmSync(tmp34e, { recursive: true, force: true });

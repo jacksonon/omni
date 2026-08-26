@@ -534,8 +534,16 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 
 /* API Key 行 */
 .apikey-row { display: flex; gap: 8px; }
-.apikey-row input { flex: 1; height: 38px; min-width: 0; padding: 0 16px; border: 1px solid var(--line-2); border-radius: 999px; outline: 0; color: var(--text); background: var(--surface); }
-.apikey-row input:focus { border-color: var(--blue); }
+.apikey-input-wrap { position: relative; flex: 1; min-width: 0; }
+.apikey-input-wrap input { width: 100%; height: 38px; min-width: 0; padding: 0 42px 0 16px; border: 1px solid var(--line-2); border-radius: 999px; outline: 0; color: var(--text); background: var(--surface); }
+.apikey-input-wrap input:focus { border-color: var(--blue); }
+.eye-button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
+.eye-button:hover { color: var(--text); }
+.eye-button svg { width: 16px; height: 16px; }
+.provider-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.provider-actions-spacer { flex: 1; }
+.secondary-button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line-2)); }
+.secondary-button.danger:hover { background: color-mix(in srgb, var(--red) 8%, var(--surface)); }
 .save-note { margin: 0; color: var(--green); font-size: 12.5px; line-height: 18px; }
 
 /* 文件夹浏览器（设置 → 工作目录 → 浏览…） */
@@ -623,6 +631,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .fetch-result { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface-muted); font-size: 12.5px; max-height: 200px; overflow-y: auto; }
 .fetch-result label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
 .fetch-result label input { margin: 0; }
+.fetch-result .fetch-hint { color: var(--text-tertiary); font-size: 11.5px; padding: 2px 0 4px; }
+.fetch-result .primary-button:disabled { opacity: .45; cursor: default; }
 .pop-select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 9px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; cursor: pointer; }
 .pop-select:focus { border-color: var(--blue); }
 .pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }

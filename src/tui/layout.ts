@@ -285,14 +285,23 @@ export function wrapRow(row: Row, width: number): Row[] {
   }));
 }
 
-/** 用户消息行：左侧蓝色细线（▍ 3/8 块 ≈3px），文字 + 底色按主题（深色：白字深灰底；
- * 亮色：深字淡灰底）；折行后每行都保留竖线与底——整段消息被框住，对标 opencode 用户气泡 */
+/** 用户消息行：左侧蓝色细线（▍ 3/8 块 ≈3px）+ **整行灰色背景**（不只文字底下——
+ * 文字 + 竖线 + 行尾剩余列全部填充主题底色，整行色块，对标工具卡片/用户气泡）
+ * 按主题（深色：白字深灰底；亮色：深字淡灰底）；折行后每行都保留竖线 + 整行底。 */
 export function wrapUserLine(text: string, width: number, theme: TuiTheme): Row[] {
   const inner = Math.max(1, width - 1); // 竖线占 1 列
   const chunks: MdChunk[] = [{ text, fg: theme.userText, bg: theme.footerBg }];
-  return wrapChunks(chunks, inner).map((rowChunks) => ({
-    text: `${ACCENT_BAR}${rowChunks.map((c) => c.text).join('')}`,
-    style: { fg: theme.userText, bg: theme.footerBg },
-    chunks: [{ text: ACCENT_BAR, fg: theme.accentBlue, bg: theme.footerBg }, ...rowChunks],
-  }));
+  return wrapChunks(chunks, inner).map((rowChunks) => {
+    const used = 1 + rowChunks.reduce((a, c) => a + visualWidth(c.text), 0); // 竖线 + 文字列数
+    const fill = Math.max(0, width - used); // 行尾剩余列：填充灰色背景，整行铺满
+    return {
+      text: `${ACCENT_BAR}${rowChunks.map((c) => c.text).join('')}`,
+      style: { fg: theme.userText, bg: theme.footerBg },
+      chunks: [
+        { text: ACCENT_BAR, fg: theme.accentBlue, bg: theme.footerBg },
+        ...rowChunks,
+        ...(fill > 0 ? [{ text: ' '.repeat(fill), bg: theme.footerBg }] : []),
+      ],
+    };
+  });
 }

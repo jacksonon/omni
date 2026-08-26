@@ -192,7 +192,8 @@ const I18N_ZH = {
   'provider.baseURL': '端点（baseURL）',
   'provider.baseURLDesc': 'OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1。',
   'provider.apiKey': 'API Key',
-  'provider.apiKeyDesc': '留空表示沿用配置文件中已保存的密钥。',
+  'provider.apiKeyDesc': '密钥以掩码显示；点击右侧眼睛可查看明文。',
+  'provider.eye': '显示/隐藏 API Key',
   'provider.fetch': '获取模型列表',
   'provider.save': '保存',
   'provider.delete': '删除',
@@ -215,6 +216,7 @@ const I18N_ZH = {
   'provider.fetched': '获取到 {n} 个模型，勾选后添加',
   'provider.addSelected': '添加选中',
   'provider.fetchFail': '获取失败',
+  'provider.fetchEmpty': '未获取到模型——检查 baseURL / API Key 是否正确。',
   'provider.fetching': '获取中…',
   'provider.selectHint': '勾选要启用的模型',
   'provider.saved': '✓ 已保存',
@@ -222,6 +224,7 @@ const I18N_ZH = {
   'provider.needDefault': '请先设置其它默认模型',
   'provider.noBaseURL': '请先填写 baseURL',
   'provider.emptyModels': '该分组还没有模型——点「获取模型列表」或直接输入模型名添加',
+  'provider.emptyModelsFetch': '该分组还没有模型——点「获取模型列表」勾选启用',
   'provider.newName': '新建 provider 名称',
   // 模型列表表单字段 + 错误提示（本地化）
   'provider.fldBaseURL': 'baseURL',
@@ -256,8 +259,6 @@ const I18N_ZH = {
   'settings.browse': '切换…',
   'settings.cfgModel': '配置的模型',
   'settings.cfgModelDesc': '选择要编辑的模型，切换后下方字段同步为该模型的配置。',
-  'settings.savedModels': '已存储模型',
-  'settings.savedModelsDesc': '当前配置文件（omni.json 的 models 表）中已存储的模型，点击可编辑。',
   'settings.baseURL': '端点（baseURL）',
   'settings.baseURLDesc': 'OpenAI 兼容 API 地址，如 https://api.deepseek.com/v1。',
   'settings.apiKey': 'API Key',
@@ -451,7 +452,8 @@ const I18N_EN = {
   'provider.baseURL': 'Endpoint (baseURL)',
   'provider.baseURLDesc': 'OpenAI-compatible API address, e.g. <code>https://api.deepseek.com/v1</code>.',
   'provider.apiKey': 'API Key',
-  'provider.apiKeyDesc': 'Leave empty to keep the key already saved in the config file.',
+  'provider.apiKeyDesc': 'The key is masked; click the eye to reveal it.',
+  'provider.eye': 'Show/Hide API key',
   'provider.fetch': 'Fetch models',
   'provider.save': 'Save',
   'provider.delete': 'Delete',
@@ -474,6 +476,7 @@ const I18N_EN = {
   'provider.fetched': 'Got {n} models; check the ones to enable',
   'provider.addSelected': 'Add selected',
   'provider.fetchFail': 'Fetch failed',
+  'provider.fetchEmpty': 'No models returned — check baseURL / API key.',
   'provider.fetching': 'Fetching…',
   'provider.selectHint': 'Check models to enable',
   'provider.saved': '✓ Saved',
@@ -481,6 +484,7 @@ const I18N_EN = {
   'provider.needDefault': 'Set another default model first',
   'provider.noBaseURL': 'Fill in baseURL first',
   'provider.emptyModels': 'No models yet — click "Fetch models" above or type a model name to add',
+  'provider.emptyModelsFetch': 'No models yet — click "Fetch models" and check the ones to enable',
   'provider.newName': 'New provider name',
   // model list form fields + error messages (localization)
   'provider.fldBaseURL': 'baseURL',
@@ -515,8 +519,6 @@ const I18N_EN = {
   'settings.browse': 'Browse…',
   'settings.cfgModel': 'Model to configure',
   'settings.cfgModelDesc': 'Select the model to edit; fields below follow its config.',
-  'settings.savedModels': 'Stored models',
-  'settings.savedModelsDesc': 'Models stored in the config file (models table of omni.json); click to edit.',
   'settings.baseURL': 'Endpoint (baseURL)',
   'settings.baseURLDesc': 'OpenAI-compatible API base URL, e.g. https://api.deepseek.com/v1.',
   'settings.apiKey': 'API Key',
@@ -2095,7 +2097,9 @@ function renderStatusbarSettings() {
   });
 }
 
-/** 浏览新工作区：Electron 原生对话框；纯浏览器 → 页面内文件夹浏览器 */
+/** 浏览新工作区：优先系统原生文件夹选择（Electron 原生对话框；浏览器 webkitdirectory 原生目录框）。
+ *  纯浏览器只能拿到所选文件夹的相对路径（无 File.path），提供不了后端 chdir 需要的绝对路径，
+ *  此时回退到页面内目录浏览器（服务端列目录，可导航到任意绝对路径）。 */
 function browseWorkspace() {
   if (window.omni && typeof window.omni.pickDirectory === 'function') {
     window.omni.pickDirectory()
@@ -2103,10 +2107,31 @@ function browseWorkspace() {
         if (dir) switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
       })
       .catch(() => {});
-  } else {
-    openDirPicker(state.status?.cwd || '/');
+    return;
   }
+  // 浏览器：点击隐藏的 webkitdirectory input → 系统原生目录选择框（与输入区选择文件同款交互）
+  const input = $('#workspace-input');
+  input.value = '';
+  input.click();
 }
+
+/* webkitdirectory 选中目录：Electron 里 File.path 是绝对路径 → 直接切换；
+   纯浏览器无 File.path（只有 webkitRelativePath 相对路径）→ 回退页面内目录浏览器 */
+$('#workspace-input').addEventListener('change', (e) => {
+  const files = e.target.files;
+  if (!files || !files.length) return;
+  const f = files[0];
+  if (typeof f.path === 'string' && f.path && f.webkitRelativePath) {
+    // 绝对路径 = file.path 去掉相对部分（「所选文件夹/子路径/文件名」）
+    const dir = f.path.slice(0, f.path.length - f.webkitRelativePath.length).replace(/[\\/]+$/, '');
+    if (dir) {
+      switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
+      return;
+    }
+  }
+  // 纯浏览器：拿不到绝对路径 → 打开页面内目录浏览器（仍能完成切换）
+  openDirPicker(state.status?.cwd || '/');
+});
 
 /** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
 async function switchWorkspace(dir) {
@@ -3595,6 +3620,26 @@ $('#attach-input').addEventListener('change', (e) => {
   handleAttachFiles(e.target.files);
   e.target.value = ''; // 允许再次选择同一文件
 });
+// 粘贴（macOS ⌘V / Windows·Linux Ctrl+V，浏览器统一派发 paste 事件，无需判断平台键）：
+//   剪贴板带文件（Finder/资源管理器复制的文件）或图片（截图 / 网页复制图片）→ 作为附件加入输入区；
+//   纯文本/富文本 → 不拦截，走默认粘贴。与 + 按钮/拖拽共用 handleAttachFiles。
+$('#input').addEventListener('paste', (e) => {
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const files = Array.from(cd.files || []);
+  // 截图 / 从网页复制的图片：clipboardData.files 为空，图片在 items 里（getAsFile 转 File）
+  if (!files.length) {
+    for (const item of Array.from(cd.items || [])) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+  }
+  if (!files.length) return; // 纯文本：保持默认粘贴行为
+  e.preventDefault(); // 附加上传，不把文件路径文本粘进输入框
+  handleAttachFiles(files);
+});
 // 拖拽（D8）：整个 composer 卡片可拖放，拖入高亮
 {
   const card = $('#composer-card');
@@ -3767,8 +3812,42 @@ $('#set-concurrency').addEventListener('change', (e) => {
 /* ---------------- 模型配置（providers 分组：一个端点配置多个模型，设置面板「模型配置」tab） ---------------- */
 let cfgProviderSel = null;   // 当前选中分组：null=未选、''=未分组、'name'=provider、'__new__'=新建
 let cfgProviderNewName = '';
+let cfgProviderApiKey = '';  // 当前编辑 provider 的已保存 apiKey（眼睛按钮 reveal 用）
 
 function providerModelsOf(g) { return Array.isArray(g && g.models) ? g.models : []; }
+
+/**
+ * 添加模型前解析目标 provider 名（手动添加与「获取模型列表」勾选两种方式共用）。
+ * - 新建模式（__new__）：先落盘 provider 配置（baseURL/apiKey/userAgent），返回新分组名；
+ * - 已选分组：直接返回分组名；未分组（''）/未选（null）返回 null（不可添加）。
+ */
+async function ensureProviderName() {
+  if (cfgProviderSel === '__new__' || cfgProviderNewName) {
+    const name = $('#p-name').value.trim();
+    if (!name) { alert(t('provider.newName')); return null; }
+    try {
+      await api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providerConfig: {
+            provider: name,
+            baseURL: $('#p-baseurl').value.trim() || undefined,
+            apiKey: $('#p-apikey').value.trim() || undefined,
+            userAgent: $('#p-useragent').value.trim() || undefined,
+          },
+        }),
+      });
+    } catch (err) {
+      alert(t('provider.errSave', { msg: err.message }));
+      return null;
+    }
+    cfgProviderSel = name;
+    cfgProviderNewName = '';
+    $('#p-apikey').value = '';
+    return name;
+  }
+  return cfgProviderSel || null; // ''（未分组）与 null（未选）都不可添加
+}
 
 /** 渲染左侧 provider 列表（未分组 + 各 provider 分组；点击走 #providers-list 委托监听） */
 function renderProvidersNav(s) {
@@ -3829,31 +3908,31 @@ function renderProviderEdit(s) {
   const saveBtn = $('#btn-save-provider');
   const delBtn = $('#btn-del-provider');
   const fetchResult = $('#p-fetch-result');
-  const isFlat = !!group && !group.name; // 未分组虚拟组
-
-  if (isFlat) {
-    // 未分组：无 provider 级字段 → 隐藏编辑行，只显示扁平模型列表
-    if (baseRow) baseRow.classList.add('hidden');
-    if (keyRow) keyRow.classList.add('hidden');
-    if (uaRow) uaRow.classList.add('hidden');
-    if (fetchBtn) fetchBtn.closest('.apikey-row').classList.add('hidden');
-    if (delBtn) delBtn.classList.add('hidden');
-    if (saveBtn) saveBtn.classList.add('hidden');
-    const models = providerModelsOf(group);
-    const countEl = $('#p-models-count');
-    if (countEl) countEl.textContent = t('provider.modelsCount', { n: models.length });
-    renderFlatModels(s, group);
-    return;
-  }
+  const actionsBar = $('#provider-actions');
 
   if (baseRow) baseRow.classList.remove('hidden');
   if (keyRow) keyRow.classList.remove('hidden');
   if (uaRow) uaRow.classList.remove('hidden');
-  if (fetchBtn) fetchBtn.closest('.apikey-row').classList.remove('hidden');
-  if (delBtn) delBtn.classList.remove('hidden');
-  if (saveBtn) saveBtn.classList.remove('hidden');
+  if (actionsBar) actionsBar.classList.remove('hidden');
   $('#p-baseurl').value = group ? (group.baseURL || '') : '';
-  $('#p-apikey').value = '';
+  cfgProviderApiKey = group ? (group.apiKey || '') : '';
+  const apiKeyInput = $('#p-apikey');
+  if (apiKeyInput) {
+    // 预填已保存密钥（type=password 掩码显示）；新建 provider 无密钥则留空
+    apiKeyInput.type = 'password';
+    apiKeyInput.value = cfgProviderApiKey;
+    const eyeBtn = $('#btn-p-key-eye');
+    if (eyeBtn) {
+      const setEyeIcon = (revealed) => eyeBtn.querySelector('use')?.setAttribute('href', revealed ? '#i-eye-off' : '#i-eye');
+      setEyeIcon(false);
+      eyeBtn.onclick = () => {
+        if (!apiKeyInput.value) return; // 无内容可显示
+        const revealed = apiKeyInput.type === 'text';
+        apiKeyInput.type = revealed ? 'password' : 'text';
+        setEyeIcon(!revealed);
+      };
+    }
+  }
   $('#p-useragent').value = group ? (group.userAgent || '') : '';
   if (fetchResult) fetchResult.classList.add('hidden');
 
@@ -3909,15 +3988,29 @@ function renderProviderEdit(s) {
         });
         const ids = Array.isArray(data.models) ? data.models : [];
         if (!fetchResult) return;
+        if (ids.length === 0) {
+          fetchResult.innerHTML = `<div>${t('provider.fetchEmpty')}</div>`;
+          return;
+        }
         fetchResult.innerHTML = `<div>${t('provider.fetched', { n: ids.length })}</div>` +
+          `<div class="fetch-hint">${t('provider.selectHint')}</div>` +
           ids.map((id) => `<label><input type="checkbox" value="${esc(id)}"> ${esc(id)}</label>`).join('') +
           `<button id="btn-add-selected" class="primary-button" style="margin-top:6px" type="button">${t('provider.addSelected')}</button>`;
-        $('#btn-add-selected')?.addEventListener('click', () => {
+        const refreshAddBtn = () => {
+          const btn = $('#btn-add-selected');
+          const n = fetchResult.querySelectorAll('input:checked').length;
+          if (btn) { btn.disabled = n === 0; btn.textContent = n > 0 ? `${t('provider.addSelected')}（${n}）` : t('provider.addSelected'); }
+        };
+        fetchResult.querySelectorAll('input[type="checkbox"]').forEach((c) => c.addEventListener('change', refreshAddBtn));
+        refreshAddBtn();
+        $('#btn-add-selected')?.addEventListener('click', async () => {
           const checked = [...fetchResult.querySelectorAll('input:checked')].map((c) => c.value);
           if (!checked.length) return;
+          const provider = await ensureProviderName();
+          if (!provider) return;
           Promise.all(checked.map((mid) => api('/api/settings', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ providerModel: { provider: group.name, modelName: mid } }),
+            body: JSON.stringify({ providerModel: { provider, modelName: mid } }),
           }))).then(() => {
             if (fetchResult) fetchResult.classList.add('hidden');
             refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});
@@ -3932,83 +4025,10 @@ function renderProviderEdit(s) {
   const models = group ? providerModelsOf(group) : [];
   const countEl = $('#p-models-count');
   if (countEl) countEl.textContent = t('provider.modelsCount', { n: models.length });
+  // 手动添加与「获取模型列表」勾选两种方式并存（不再互斥）
+  const addRow = $('#pm-name')?.closest('.pm-add-row');
+  if (addRow) addRow.classList.remove('hidden');
   renderProviderModels(s, group, isNew);
-}
-
-/** 渲染未分组扁平模型列表（每个模型独立编辑端点/级别/上下文 + 同端点迁移提示） */
-function renderFlatModels(s, group) {
-  const container = $('#provider-models');
-  if (!container) return;
-  const models = providerModelsOf(group);
-  const providers = (Array.isArray(s.providers) ? s.providers : []).filter((g) => g.name);
-  container.innerHTML = '';
-  if (models.length === 0) container.appendChild(el('div', 'cfg-model-empty', t('provider.emptyModels')));
-  models.forEach((m) => container.appendChild(flatModelItem(s, m, providers)));
-}
-
-function flatModelItem(s, m, providers) {
-  const item = el('div', 'pm-item' + (m.name === s.model ? ' default' : ''));
-  const head = el('div', 'pm-head');
-  head.appendChild(el('span', 'pm-name', m.name));
-  if (m.apiModel) head.appendChild(el('span', 'pm-apimodel', m.apiModel));
-  if (m.name === s.model) head.appendChild(el('span', 'pm-def-badge', t('provider.defaultBadge')));
-  const actions = el('div', 'pm-actions');
-  // 同端点 provider → 迁移提示（D3）
-  const match = providers.find((g) => g.baseURL && g.baseURL === m.baseURL && g.apiKey === m.apiKey);
-  if (match) {
-    const migrateBtn = el('button', 'pm-btn', '→');
-    migrateBtn.title = t('provider.migrateHint', { p: match.name });
-    migrateBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (!confirm(t('provider.migrateHint', { p: match.name }) + '？')) return;
-      api('/api/settings', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ providerMigrate: { modelName: m.name, provider: match.name } }),
-      }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
-        .catch((err) => alert(t('provider.errMigrate', { msg: err.message })));
-    });
-    actions.appendChild(migrateBtn);
-  }
-  head.appendChild(actions);
-  item.appendChild(head);
-
-  const body = el('div', 'pm-body');
-  body.innerHTML = `
-    <div class="pm-row"><label>${t('provider.fldBaseURL')}</label><input class="cfg-text" value="${esc(m.baseURL || '')}" placeholder="https://..."></div>
-    <div class="pm-row"><label>${t('provider.fldApiKey')}</label><input type="password" class="cfg-text" placeholder="sk-…"></div>
-    <div class="pm-row"><label>${t('provider.fldEfforts')}</label><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high"></div>
-    <div class="pm-row"><label>${t('provider.fldEffort')}</label><select class="setting-control"></select></div>
-    <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" style="width:160px" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
-    <button class="primary-button" style="align-self:flex-start" type="button">${t('provider.save')}</button>
-  `;
-  const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
-  const sel = body.querySelector('select');
-  opts.forEach((o) => {
-    const op = document.createElement('option');
-    op.value = o; op.textContent = o;
-    if (o === (m.reasoningEffort || s.reasoningEffort || opts[0])) op.selected = true;
-    sel.appendChild(op);
-  });
-  body.querySelector('button').addEventListener('click', () => {
-    const inputs = body.querySelectorAll('input');
-    api('/api/settings', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        modelConfig: {
-          modelName: m.name,
-          baseURL: inputs[0].value.trim() || undefined,
-          apiKey: inputs[1].value.trim() || undefined,
-          reasoningEffortOptions: inputs[2].value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
-          reasoningEffort: body.querySelector('select').value || undefined,
-          contextLimit: Number(inputs[3].value) > 0 ? Number(inputs[3].value) : undefined,
-        },
-      }),
-    }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
-      .catch((err) => alert(t('provider.errSave', { msg: err.message })));
-  });
-  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn')) return; body.classList.toggle('open'); });
-  item.appendChild(body);
-  return item;
 }
 
 /** 渲染 provider 组内模型列表 */
@@ -4129,15 +4149,17 @@ function fillModelConfigForm(s) {
   }
   renderProvidersNav(s);
   renderProviderEdit(s);
-  // 添加模型（组内）——onclick 覆盖注册防重复监听
-  $('#btn-add-model').onclick = () => {
+  // 添加模型（组内；新建模式下先落盘 provider 配置再添加）——onclick 覆盖注册防重复监听
+  $('#btn-add-model').onclick = async () => {
     const nameInput = $('#pm-name');
     const apiModelInput = $('#pm-apimodel');
-    const name = nameInput.value.trim();
-    if (!name || cfgProviderSel === null || cfgProviderSel === '' || cfgProviderSel === '__new__') return;
+    const modelName = nameInput.value.trim();
+    if (!modelName) return;
+    const provider = await ensureProviderName();
+    if (!provider) return;
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerModel: { provider: cfgProviderSel, modelName: name, apiModel: apiModelInput.value.trim() || undefined } }),
+      body: JSON.stringify({ providerModel: { provider, modelName, apiModel: apiModelInput.value.trim() || undefined } }),
     }).then(() => {
       nameInput.value = ''; apiModelInput.value = '';
       refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});

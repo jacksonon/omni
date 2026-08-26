@@ -101,13 +101,11 @@ import {
   persistLanguageToConfig,
   persistModelDefaultToConfig,
   persistModelToConfig,
-  persistModelConfigToGlobal,
   persistModelDefaultToGlobal,
   persistProviderConfigToGlobal,
   persistProviderModelToGlobal,
   removeProviderFromGlobal,
   removeProviderModelFromGlobal,
-  migrateFlatModelToGlobal,
   persistReasoningEffortToConfig,
   persistStatuslineToConfig,
   persistVariantToConfig,
@@ -343,8 +341,7 @@ async function getGitInfo(cwd: string): Promise<Record<string, unknown>> {
 /* ---------------- 状态快照 ---------------- */
 
 /** 下发 providers 分组结构（设置面板「模型配置」渲染，settings-providers-spec）：
- *  cfg.providers 逐组展开 + 未分组扁平模型（runOpts.models 中 provider 为空的显式顶层条目）。
- *  未分组同端点自动合并展示在前端（D3）；apiKey 沿用 models 既有下发方式。 */
+ *  cfg.providers 逐组展开——端点/密钥只认 providers 分组（旧版扁平 models 表已移除）。 */
 function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
   const out: Record<string, unknown>[] = [];
   for (const [name, p] of Object.entries(runOpts.cfg?.providers ?? {})) {
@@ -366,21 +363,6 @@ function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
       })),
     });
   }
-  const flat = (runOpts.models ?? [])
-    .filter((m) => !m.provider)
-    .map((m) => ({
-      name: m.name,
-      baseURL: m.baseURL,
-      apiKey: m.apiKey,
-      userAgent: m.userAgent,
-      apiModel: m.apiModel,
-      displayName: m.displayName,
-      reasoningEffortOptions: m.reasoningEffortOptions,
-      reasoningEffort: m.reasoningEffort,
-      limit: m.limit,
-      variants: m.variants,
-    }));
-  if (flat.length > 0) out.push({ name: '', models: flat });
   return out;
 }
 
@@ -1764,53 +1746,6 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           cfg.statusline = next;
           persistStatuslineToConfig(next, cfg);
         }
-        // 设置面板「模型配置」tab：保存所选模型的端点/密钥/级别/上下文到全局配置 + 运行时应用
-        if (body.modelConfig && typeof body.modelConfig === 'object') {
-          const mc = body.modelConfig as Record<string, unknown>;
-          const name = typeof mc.modelName === 'string' && mc.modelName.trim()
-            ? mc.modelName.trim() : (runOpts.modelRuntime?.model ?? cfg.model);
-          const baseURL = typeof mc.baseURL === 'string' && mc.baseURL.trim() ? mc.baseURL.trim() : undefined;
-          const apiKey = typeof mc.apiKey === 'string' && mc.apiKey.trim() ? mc.apiKey.trim() : undefined;
-          const efforts = Array.isArray(mc.reasoningEffortOptions)
-            ? (mc.reasoningEffortOptions as unknown[]).map(String).filter((x) => x.trim())
-            : undefined;
-          const effort = typeof mc.reasoningEffort === 'string' && mc.reasoningEffort.trim() ? mc.reasoningEffort.trim() : undefined;
-          const ctxLimit = typeof mc.contextLimit === 'number' && mc.contextLimit > 0 ? Math.floor(mc.contextLimit) : undefined;
-          persistModelConfigToGlobal(
-            { modelName: name, baseURL, apiKey, reasoningEffortOptions: efforts, reasoningEffort: effort, contextLimit: ctxLimit },
-            cfg
-          );
-          // 同步内存 models 表 + 运行时应用（仅当保存的是当前模型）
-          const isCurrent = name === (runOpts.modelRuntime?.model ?? cfg.model);
-          if (runOpts.models) {
-            const idx = runOpts.models.findIndex((m) => m.name === name);
-            const patch: Record<string, unknown> = {};
-            if (baseURL) patch.baseURL = baseURL;
-            if (apiKey) patch.apiKey = apiKey;
-            if (efforts) patch.reasoningEffortOptions = efforts;
-            if (effort) patch.reasoningEffort = effort;
-            if (ctxLimit) patch.limit = { context: ctxLimit };
-            if (idx >= 0) runOpts.models[idx] = { ...runOpts.models[idx], ...patch };
-            else runOpts.models.push({ name, ...patch });
-          }
-          if (isCurrent) {
-            if (baseURL || apiKey) {
-              const ep = runOpts.models?.find((m) => m.name === name);
-              const client = createClient(
-                {
-                  name,
-                  baseURL: baseURL ?? ep?.baseURL ?? cfg.baseURL,
-                  apiKey: apiKey ?? ep?.apiKey ?? cfg.apiKey,
-                  userAgent: ep?.userAgent ?? cfg.userAgent,
-                },
-                apiKey ?? ep?.apiKey ?? cfg.apiKey ?? ''
-              );
-              runOpts.modelRuntime = { client, model: name };
-            }
-            if (efforts) runOpts.reasoningEffortOptions = efforts;
-            if (effort) runOpts.reasoningEffort = effort;
-          }
-        }
         // —— providers 分组动作（settings-providers-spec）：一个端点配置多个模型 ——
         // provider 级新建/更新（共享 baseURL/apiKey/userAgent）
         if (body.providerConfig && typeof body.providerConfig === 'object') {
@@ -1903,39 +1838,6 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
               return p;
             }
             return null; // 删整个 provider
-          });
-        }
-        // 扁平模型迁入 provider（D3：UI 检测同端点后确认触发）
-        if (body.providerMigrate && typeof body.providerMigrate === 'object') {
-          const pm = body.providerMigrate as Record<string, unknown>;
-          const modelName = typeof pm.modelName === 'string' ? pm.modelName.trim() : '';
-          const provider = typeof pm.provider === 'string' ? pm.provider.trim() : '';
-          if (!modelName || !provider) { json(res, 400, { error: '缺少模型名或 provider' }); return; }
-          const mig = migrateFlatModelToGlobal({ modelName, provider }, cfg);
-          if (!mig.ok) { json(res, 400, { error: mig.message }); return; }
-          // 运行时：扁平条目转为 provider 组条目
-          if (runOpts.models) {
-            const p = runOpts.cfg?.providers?.[provider];
-            const idx = runOpts.models.findIndex((m) => m.name === modelName && !m.provider);
-            if (idx >= 0) {
-              const flat = runOpts.models[idx];
-              runOpts.models[idx] = {
-                ...flat,
-                name: modelName,
-                provider,
-                ...(p?.baseURL ? { baseURL: p.baseURL } : {}),
-                ...(p?.apiKey ? { apiKey: p.apiKey } : {}),
-                ...(p?.userAgent ? { userAgent: p.userAgent } : {}),
-              } as never;
-            }
-            if ((runOpts.modelRuntime?.model ?? '') === modelName) rebuildRuntimeFor(modelName);
-          }
-          syncCfgProvider(provider, (p) => {
-            const cur = { ...(p ?? {}) } as Record<string, unknown>;
-            const models = (cur.models ?? {}) as Record<string, unknown>;
-            models[modelName] = {};
-            cur.models = models;
-            return cur;
           });
         }
         // 设为默认模型（D7）：写顶层 model + 运行时切换

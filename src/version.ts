@@ -1,2 +1,2 @@
 /** CLI 版本号（与 package.json 保持一致） */
-export const VERSION = '0.6.9';
+export const VERSION = '0.7.0';

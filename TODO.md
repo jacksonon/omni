@@ -147,10 +147,10 @@
 
 - [x] **P0 Provider 分组（第一百六十五次）**（对标 opencode `providers`）：
       现状 `models` 是以「模型名」为 key 的扁平表
-      （`{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffort?… } }`）——同一网关下挂 N 个
+      （`{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffort?… } }`）——同一模型下挂 N 个
       模型要么重复写 N 遍端点字段，要么全部挤在顶层唯一 baseURL 回退上，
-      **无法表达「一个网关 + 一组模型」**。新增 `providers` 分组（扁平 `models` 向后兼容，
-      迁移期两种形态并存）：
+      **无法表达「一个网关 + 一组模型」**。新增 `providers` 分组（第一百六十九次起
+      **扁平 `models` 与顶层 baseURL/apiKey/userAgent 解析已移除**，providers 为唯一格式）：
 
       ```jsonc
       {
@@ -196,7 +196,7 @@
 ### 7.2 现状盘点：模型与多端点待优化项
 
 - [x] **P0 fallback 模型回退链**（第一百六十四次，Claude Code fallbackModel 同款）：
-      config `fallbackModels: []`（最多 3 级按序回退；条目为 models 表模型名）——主模型
+      config `fallbackModels: []`（最多 3 级按序回退；条目为 providers 分组模型名）——主模型
       可重试失败（429 限流 / 超时 / 5xx 网关 / 网络错误；401/400 配置问题不浪费回退）
       自动切换备用端点重试本轮，提示「已回退到 X」（meta 行）；本轮内后续请求继续用
       备用端点（activeClient），下一回合从主模型重新开始。三端 Output 均有回退提示。

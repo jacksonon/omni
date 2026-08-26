@@ -116,7 +116,7 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 - [x] **P0-3 模型层重构落地**（providers 分组 + limit/modalities/capabilities 元数据 + 命名 variants + 跨端点路由 + `{env:VAR}` + max_tokens + 模型发现 + 配置向后兼容）（即 TODO.md 第七节修订需求）：providers 分组（一个 baseURL 挂多模型）
       + limit/modalities/capabilities 元数据 + 命名 variants 叠加层 + provider fallback chain
       + architect/editor 跨端点路由 + `{env:VAR}` 密钥引用 + max_tokens 按 limit.output 下发
-      + /v1/models 发现与列表增强。**配置向后兼容扁平 models 表。**
+      + /v1/models 发现与列表增强。**扁平 models 表与顶层 baseURL/apiKey 解析已移除（第一百六十九次），providers 为唯一端点格式。**
 - [x] **P0-4 沙箱 2.0**（网络白名单过滤代理 + fail-closed + 凭据 masking + 策略文件写保护；Windows fail-closed 文档说明）：出站流量走内置代理按 hostname 白名单放行
       （不解密 TLS）；凭证 masking（沙箱内读到 sentinel 占位符，代理注入真实值）；
       Windows 无 bwrap/sandbox-exec 等价物时 **fail-closed 可配**（failIfUnavailable 选项，

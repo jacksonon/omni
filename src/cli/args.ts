@@ -122,12 +122,12 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   5. CLI 参数   --model
 
 配置字段：
-  { "model": "deepseek-chat", "baseURL": "https://api.deepseek.com/v1",
-    "apiKey": "sk-xxx", "maxSteps": 20,
-    "showThinking": true,       // 默认展示思考过程；false 关闭（仍落盘 .omni/last-thinking.md）
+  { "model": "deepseek-chat", "maxSteps": 20,
+    "showThinking": true,       // 默认展示思考过程；false 关闭（仍写入 .omni/last-thinking.md）
     "reasoningEffort": "medium", // 思考级别（/variants 切换；不配置则不传 reasoning_effort）
-    "models": {                  // 多模型端点（/model 切换；缺省字段回退顶层 baseURL/apiKey；
-      "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" } //   /model add 命令可运行时添加并持久化）
+    "providers": {              // 多模型端点（/model 切换）——端点/密钥的唯一格式：
+      "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm",
+        "models": { "glm-4-flash": {} } } //  /model add 命令可运行时添加并持久化（单模型分组）
     } }
 
 示例：cp omni.example.jsonc omni.json 后按需修改。`);

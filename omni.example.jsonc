@@ -4,17 +4,10 @@
   // 优先级（从低到高）：默认值 < 全局配置 < 项目配置 < 自定义配置 < 环境变量 < CLI 参数
   // 全局配置位置：~/.config/omni/omni.json
 
-  // 模型名（OpenAI 系用 gpt-4o 等；DeepSeek 用 deepseek-chat）
+  // 模型名（OpenAI 系用 gpt-4o 等；DeepSeek 用 deepseek-chat）；
+  // 端点与密钥 **只认下方 providers 分组**（配置文件不再解析顶层 baseURL/apiKey/userAgent；
+  // 兜底端点/密钥只来自环境变量 OMNI_BASE_URL / OMNI_API_KEY）
   "model": "deepseek-chat",
-
-  // OpenAI 兼容 API 地址（智谱 / Moonshot / 本地 vLLM 等都可以）
-  "baseURL": "https://api.deepseek.com/v1",
-
-  // API Key（更推荐用环境变量 OMNI_API_KEY，避免明文入库；如放这里请注意文件权限）
-  "apiKey": "sk-你的密钥",
-
-  // 自定义 User-Agent（部分网关的 WAF 会拦截 SDK 默认 UA，可配置浏览器 UA 绕过）
-  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
 
   // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
   "maxSteps": 50,
@@ -49,7 +42,7 @@
   // "sandboxWritePaths": ["/tmp/omni-shared"],
 
   // fallback 模型回退链（可选，最多 3 级）：主模型可重试失败（429 限流/超时/5xx 网关）
-  // 时按序自动切换备用端点重试本轮，提示「已回退到 X」。条目须在 models 表中有定义。
+  // 时按序自动切换备用端点重试本轮，提示「已回退到 X」。条目须在 providers 分组中有定义。
   // "fallbackModels": ["deepseek-chat", "glm-4-flash"],
 
   // 自动 git commit（默认 false）：每轮对话结束若工作区有改动则自动提交
@@ -122,24 +115,22 @@
   // "architect": "gpt-5",
   // "editor": "gpt-5-mini",
 
-  // 多模型端点（/model 命令切换）：两种写法等价，加载期都会合并成扁平 models 表——
-  //   A) providers 分组（推荐，1.0）：一个网关挂多个模型，baseURL/apiKey 只写一次
-  //      providers."<网关名>".{ baseURL, apiKey, userAgent?, headers?, models: { 模型名: { … } } }
-  //      ——模型条目缺省字段回退网关、再回退顶层；模型名带 / 或与扁平 models 同名时改挂
-  //      "<网关>/<模型>"，apiModel 缺省 = 模型名。
-  //   B) 扁平 models：{ 模型名: { baseURL?, apiKey?, userAgent?, headers?, … } }，缺省字段回退顶层；
-  //      顶层 model 总是可用（默认模型）。两者同时存在时扁平 models 会被 providers 展开替换。
+  // 多模型端点（/model 命令切换）：**只认 providers 分组**（1.0，旧版扁平 models 表已移除）
+  //   providers."<网关名>".{ baseURL, apiKey, userAgent?, headers?, models: { 模型名: { … } } }
+  //   ——一个网关挂多个模型，baseURL/apiKey 只写一次；模型条目缺省字段回退网关；
+  //     模型名带 / 时改挂 "<网关>/<模型>"（/model 按该名切换），apiModel 缺省 = 模型名。
+  //     顶层 model 选默认模型；端点兜底只来自环境变量 OMNI_BASE_URL / OMNI_API_KEY。
   // 也可以在交互模式用 /model add <名称> [--base-url] [--api-key] [--user-agent] 运行时添加并持久化
-  // （自动写入配置文件 models 字段；带注释的 JSONC 文件不自动改，需手动添加）
+  // （自动写入配置文件 providers 字段——单模型 provider 分组；带注释的 JSONC 不自动改，需手动添加）
   // **per-model variants**：每个模型可配自己的思考级别——reasoningEffortOptions（该模型
   // /variants 面板支持的选项）与 reasoningEffort（该模型的当前思考级别），两者缺省回退顶层
-  // 同名字段（只配端点的模型自动继承全局）；/model 切换到该模型时自动带出，/variants 切换
-  // 会持久化到 models."<模型名>".reasoningEffort（仅该模型生效，其他模型不受影响）
+  // 同名字段；/model 切换到该模型时自动带出，/variants 切换会持久化到
+  // providers."<网关>".models."<模型名>".reasoningEffort（仅该模型生效，其他模型不受影响）
   // **命名 variants（1.0）**：模型条目可加 variants 表——{ id: { description?, reasoningEffort?,
   //   body?, headers? } }，每个 id 是**请求叠加层**（与请求体 deep-merge）；当前选中项记在
   //   variant 字段；/variants 面板列出思考级别 + 命名 variants，选中命名项即叠加生效并持久化
-  //   models."<模型名>".variant。apiModel = 发给 API 的真实模型名（目录友好名 ≠ API 名，/model
-  //   按别名也能切换）；displayName = 面板显示名；limit/modalities/capabilities = 元数据。
+  //   providers."<网关>".models."<模型名>".variant。apiModel = 发给 API 的真实模型名（目录友好名
+  //   ≠ API 名，/model 按别名也能切换）；displayName = 面板显示名；limit/modalities/capabilities = 元数据。
   // 示例（一个网关挂两个模型，mimo 带专属级别 + 命名 variants + apiModel 别名）:
   // "providers": {
   //   "opencode": {
@@ -158,12 +149,6 @@
   //       "muse-spark-1.2-contributor": { "reasoningEffort": "xhigh" }
   //     }
   //   }
-  // }
-  // 扁平等价写法（向后兼容；含专属级别）:
-  // "models": {
-  //   "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm",
-  //     "reasoningEffortOptions": ["low", "high"], "reasoningEffort": "high" },
-  //   "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1", "apiKey": "sk-moonshot" }
   // }
 
   // ── TUI 底部状态行（输入区域下方的对话信息）──────────────

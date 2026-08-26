@@ -108,7 +108,10 @@ function loadConfigObject(cfg: OmniConfig): LoadConfigResult {
 }
 
 /**
- * 把模型端点写入配置文件的 models 字段（/model add 持久化）。
+ * 把模型端点写入配置文件（/model add 持久化）。
+ * 端点只认 providers 分组（旧版扁平 models 表已移除）：`/model add <名称>` 建立一个
+ * 以模型名命名的单模型 provider 分组（`providers.<名称>.models.<名称>`），端点字段归
+ * provider 级；模型级只留空对象（缺省字段继承 provider，不烘焙进配置文件）。
  */
 export function persistModelToConfig(
   name: string,
@@ -120,27 +123,31 @@ export function persistModelToConfig(
     return {
       ok: false,
       file: null,
-      message: `${res.message}（models 字段手动添加："${name}": { "baseURL": "...", "apiKey": "..." }）`,
+      message: `${res.message}（providers 字段手动添加："${name}": { "baseURL": "...", "apiKey": "...", "models": { "${name}": {} } }）`,
     };
   }
   const cfgObj = res.obj;
-  const models =
-    cfgObj.models && typeof cfgObj.models === 'object' && !Array.isArray(cfgObj.models)
-      ? (cfgObj.models as Record<string, unknown>)
-      : {};
-  models[name] = {
-    ...(endpoint.baseURL ? { baseURL: endpoint.baseURL } : {}),
-    ...(endpoint.apiKey ? { apiKey: endpoint.apiKey } : {}),
-    ...(endpoint.userAgent ? { userAgent: endpoint.userAgent } : {}),
-  };
-  cfgObj.models = models;
+  const providers = providersOf(cfgObj);
+  const p = (providers[name] && typeof providers[name] === 'object' && !Array.isArray(providers[name])
+    ? { ...(providers[name] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  if (endpoint.baseURL) p.baseURL = endpoint.baseURL;
+  if (endpoint.apiKey) p.apiKey = endpoint.apiKey;
+  if (endpoint.userAgent) p.userAgent = endpoint.userAgent;
+  const models = (p.models && typeof p.models === 'object' && !Array.isArray(p.models)
+    ? (p.models as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  models[name] = {}; // 模型级不写端点（继承 provider）；元数据字段由设置面板/手动编辑
+  p.models = models;
+  providers[name] = p;
+  cfgObj.providers = providers;
   try {
     writeFileSync(res.file, `${JSON.stringify(cfgObj, null, 2)}\n`);
   } catch (err) {
     return {
       ok: false,
       file: null,
-      message: `写入配置失败：${(err as Error)?.message ?? err}（可手动在配置文件 models 字段添加）`,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（可手动在配置文件 providers 字段添加）`,
     };
   }
   return { ok: true, file: res.file, message: `已写入 ${res.file}（下次会话自动加载；可再 /model <名称> 切换）` };
@@ -241,61 +248,10 @@ export function persistWebConcurrencyToConfig(val: number, _cfg: OmniConfig): Pe
   return { ok: true, file, message: `已保存并行会话上限 → ${file}` };
 }
 
-export interface ModelConfigPatch {
-  modelName: string;
-  baseURL?: string;
-  apiKey?: string;
-  reasoningEffortOptions?: string[];
-  reasoningEffort?: string;
-  contextLimit?: number;
-}
-
-/**
- * 把模型配置写入**全局配置**的 models.<name> 字段（设置面板「模型配置」tab 保存时调用）。
- * 合并已有字段（保留 userAgent、limit.output 等未改字段），结构对齐 omni.json 的 models 条目。
- */
-export function persistModelConfigToGlobal(patch: ModelConfigPatch, _cfg: OmniConfig): PersistModelResult {
-  const name = patch.modelName;
-  if (!name) return { ok: false, file: null, message: '缺少模型名' };
-  const file = globalConfigFile();
-  let obj: Record<string, unknown> = {};
-  if (existsSync(file)) {
-    const text = readFileSync(file, 'utf8');
-    if (text.trim()) {
-      try { obj = JSON.parse(text) as Record<string, unknown>; }
-      catch {
-        return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动在 models 字段配置` };
-      }
-    }
-  }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return { ok: false, file: null, message: '全局配置格式异常，未自动修改——请手动在 models 字段配置' };
-  }
-  const models = (obj.models && typeof obj.models === 'object' && !Array.isArray(obj.models)
-    ? (obj.models as Record<string, unknown>) : {}) as Record<string, unknown>;
-  const cur = (models[name] && typeof models[name] === 'object' && !Array.isArray(models[name])
-    ? { ...(models[name] as Record<string, unknown>) } : {}) as Record<string, unknown>;
-  if (patch.baseURL !== undefined) cur.baseURL = patch.baseURL;
-  if (patch.apiKey !== undefined) cur.apiKey = patch.apiKey;
-  if (patch.reasoningEffortOptions !== undefined) cur.reasoningEffortOptions = patch.reasoningEffortOptions;
-  if (patch.reasoningEffort !== undefined) cur.reasoningEffort = patch.reasoningEffort;
-  if (patch.contextLimit !== undefined) {
-    const limit = cur.limit && typeof cur.limit === 'object' && !Array.isArray(cur.limit) ? { ...(cur.limit as Record<string, unknown>) } : {};
-    limit.context = patch.contextLimit;
-    cur.limit = limit;
-  }
-  models[name] = cur;
-  obj.models = models;
-  try { writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`); }
-  catch (err) {
-    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
-  }
-  return { ok: true, file, message: `已保存模型配置 → ${file}` };
-}
-
 /* ---------------- Providers 分组持久化（设置 → 模型配置：一个端点配置多个模型） ----------------
  * 全部写**全局配置**（~/.config/omni/omni.json，XDG-aware，机器级偏好跨项目生效）。
- * 沿用「纯 JSON 才自动改、JSONC 拒绝」模式（与 persistModelConfigToGlobal 一致）。 */
+ * 沿用「纯 JSON 才自动改、JSONC 拒绝」模式。
+ * 端点/密钥只认 providers 分组（旧版扁平 models 表已移除）。 */
 
 export interface ProviderConfigPatch {
   provider: string;
@@ -464,65 +420,6 @@ export function removeProviderModelFromGlobal(provider: string, modelName: strin
 }
 
 /**
- * 扁平模型迁入 provider（D3：UI 检测到扁平条目与 provider 同端点时，用户确认后触发）。
- * 仅当扁平条目 baseURL/apiKey 与目标 provider 一致（或 provider 缺端点）时才执行，防止误迁移；
- * 组内模型条目 = 扁平条目去掉 baseURL/apiKey（端点归 provider 级），随后删除扁平条目。
- */
-export function migrateFlatModelToGlobal(
-  opts: { modelName: string; provider: string },
-  _cfg: OmniConfig
-): PersistModelResult {
-  const { modelName, provider } = opts;
-  const mid = modelName.trim();
-  const pname = provider.trim();
-  if (!mid || !pname) return { ok: false, file: null, message: '缺少模型名或 provider' };
-  const file = globalConfigFile();
-  const load = loadGlobalConfigObject(file, ' models / providers 字段');
-  if (!load.ok) return load;
-  const obj = load.obj;
-  const models = (obj.models && typeof obj.models === 'object' && !Array.isArray(obj.models)
-    ? (obj.models as Record<string, unknown>)
-    : {}) as Record<string, unknown>;
-  const flat = models[mid];
-  if (!flat || typeof flat !== 'object' || Array.isArray(flat)) {
-    return { ok: false, file: null, message: `全局配置里没有扁平模型「${mid}」` };
-  }
-  const flatE = flat as Record<string, unknown>;
-  const providers = providersOf(obj);
-  const p = (providers[pname] && typeof providers[pname] === 'object' && !Array.isArray(providers[pname])
-    ? { ...(providers[pname] as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
-  const flatURL = typeof flatE.baseURL === 'string' ? flatE.baseURL : undefined;
-  const flatKey = typeof flatE.apiKey === 'string' ? flatE.apiKey : undefined;
-  const pURL = typeof p.baseURL === 'string' ? p.baseURL : undefined;
-  const pKey = typeof p.apiKey === 'string' ? p.apiKey : undefined;
-  if ((flatURL && pURL && flatURL !== pURL) || (flatKey && pKey && flatKey !== pKey)) {
-    return {
-      ok: false,
-      file: null,
-      message: `「${mid}」的端点与 provider「${pname}」不一致，未迁移——可先修改 provider 端点再迁移`,
-    };
-  }
-  // provider 缺端点时以扁平条目为准（迁移前先对齐，保证合并后端点一致）
-  if (flatURL && !pURL) p.baseURL = flatURL;
-  if (flatKey && !pKey) p.apiKey = flatKey;
-  // 组内模型条目 = 扁平条目去掉端点字段（baseURL/apiKey/userAgent/headers 归 provider 级）
-  const { baseURL: _b, apiKey: _k, userAgent: _ua, headers: _hd, ...rest } = flatE;
-  const pmodels = (p.models && typeof p.models === 'object' && !Array.isArray(p.models)
-    ? (p.models as Record<string, unknown>)
-    : {}) as Record<string, unknown>;
-  pmodels[mid] = rest;
-  p.models = pmodels;
-  providers[pname] = p;
-  obj.providers = providers;
-  const nextModels = { ...models };
-  delete nextModels[mid];
-  if (Object.keys(nextModels).length > 0) obj.models = nextModels;
-  else delete obj.models;
-  return persistGlobalJson(file, obj, ` providers.${pname}.models.${mid}`);
-}
-
-/**
  * 把默认模型名写入**全局配置**顶层 model 字段（Web 设置面板「设为默认」——面板只写全局，
  * 不依赖 loadConfigObject 的层叠目标，避免无配置文件时落到 cwd）。
  */
@@ -559,9 +456,36 @@ export function persistModelDefaultToConfig(model: string, cfg: OmniConfig): Per
 }
 
 /**
+ * 在配置文件的 providers 分组里定位模型（per-model 持久化用）：
+ * · 模型名含 `/`（`provider/mid` 形态）→ 直接定位该组；
+ * · 否则在全部组里按 mid 查找（模型名即组内 id）。
+ * 找不到返回 null（模型不在 providers 里 → 只能写顶层全局字段）。
+ */
+function locateProviderModel(
+  obj: Record<string, unknown>,
+  modelName: string
+): { provider: string; mid: string } | null {
+  const providers = providersOf(obj);
+  if (modelName.includes('/')) {
+    const [p, m] = modelName.split('/');
+    const g = providers[p];
+    if (g && typeof g === 'object' && g.models && typeof g.models === 'object' && (g.models as Record<string, unknown>)[m]) {
+      return { provider: p, mid: m };
+    }
+    return null;
+  }
+  for (const [p, g] of Object.entries(providers)) {
+    if (g && typeof g === 'object' && g.models && typeof g.models === 'object') {
+      if (modelName in (g.models as Record<string, unknown>)) return { provider: p, mid: modelName };
+    }
+  }
+  return null;
+}
+
+/**
  * 把思考级别写入配置文件（/variants 面板确认持久化）。
- * 现在思考级别是 **per-model**（第一百四十次后）：当前模型在配置文件 models 表里有
- * 专属条目 → 写入 models.<模型名>.reasoningEffort（该模型专属，切换回其他模型不影响）；
+ * 现在思考级别是 **per-model**（第一百四十次后）：当前模型在配置文件 providers 分组里
+ * → 写入 providers.<组>.models.<模型>.reasoningEffort（该模型专属，切换回其他模型不影响）；
  * 否则写入顶层 reasoningEffort（全局默认，所有未配置专属级别的模型共用）。
  * 运行时已即时生效（interactive 每轮同步进 runOpts.reasoningEffort），这里只落盘供下次会话加载。
  */
@@ -575,20 +499,24 @@ export function persistReasoningEffortToConfig(
     return {
       ok: false,
       file: null,
-      message: `${res.message}（reasoningEffort 字段手动添加${modelName ? `：models."${modelName}".reasoningEffort` : ''} = "${effort}"）`,
+      message: `${res.message}（reasoningEffort 字段手动添加${modelName ? `：providers 组内模型 reasoningEffort` : ''} = "${effort}"）`,
     };
   }
   const cfgObj = res.obj;
-  const models =
-    cfgObj.models && typeof cfgObj.models === 'object' && !Array.isArray(cfgObj.models)
-      ? (cfgObj.models as Record<string, unknown>)
-      : null;
-  const modelEntry = modelName ? models?.[modelName] : undefined;
-  if (modelName && modelEntry && typeof modelEntry === 'object') {
-    // per-model：当前模型在 models 表有专属条目（自定义端点模型）→ 写模型专属级别
-    (modelEntry as Record<string, unknown>).reasoningEffort = effort;
+  const loc = modelName ? locateProviderModel(cfgObj, modelName) : null;
+  if (loc) {
+    // per-model：模型在 providers 分组里 → 写组内模型专属级别
+    const g = cfgObj.providers as Record<string, Record<string, unknown>>;
+    const group = g[loc.provider] as Record<string, unknown>;
+    const models = group.models as Record<string, unknown>;
+    const entry = (models[loc.mid] && typeof models[loc.mid] === 'object' && !Array.isArray(models[loc.mid])
+      ? { ...(models[loc.mid] as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    entry.reasoningEffort = effort;
+    models[loc.mid] = entry;
+    group.models = models;
   } else {
-    // 全局默认：models 表没有该模型条目（或未指定模型）→ 顶层 reasoningEffort
+    // 全局默认：模型不在 providers 分组（或未指定模型）→ 顶层 reasoningEffort
     cfgObj.reasoningEffort = effort;
   }
   try {
@@ -597,20 +525,20 @@ export function persistReasoningEffortToConfig(
     return {
       ok: false,
       file: null,
-      message: `写入配置失败：${(err as Error)?.message ?? err}（reasoningEffort 字段手动添加${modelName ? `：models."${modelName}".reasoningEffort` : ''} = "${effort}"）`,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（reasoningEffort 字段手动添加${modelName ? `：providers 组内模型 reasoningEffort` : ''} = "${effort}"）`,
     };
   }
   return {
     ok: true,
     file: res.file,
-    message: `已保存思考级别 → ${res.file}（重启后同样生效${modelName && modelEntry && typeof modelEntry === 'object' ? `；仅对模型 ${modelName} 生效` : '；全局默认'}）`,
+    message: `已保存思考级别 → ${res.file}（重启后同样生效${loc ? `；仅对模型 ${loc.mid} 生效` : '；全局默认'}）`,
   };
 }
 
 /**
  * 把命名 variant 选择写入配置文件（1.0 P0-3，/variants <id> 切换命名叠加层后持久化）：
- * 写 models."<模型>".variant（仅该模型生效）；variantId = null 表示清除（回到基础级别）。
- * 命名 variant 是 per-model 概念——没有 models 条目时报错提示先在配置里定义 variants。
+ * 写 providers.<组>.models.<模型>.variant（仅该模型生效）；variantId = null 表示清除（回到基础级别）。
+ * 命名 variant 是 per-model 概念——模型不在 providers 分组时报错提示先在配置里定义 variants。
  */
 export function persistVariantToConfig(
   variantId: string | null,
@@ -622,24 +550,28 @@ export function persistVariantToConfig(
     return {
       ok: false,
       file: null,
-      message: `${res.message}（variant 字段手动添加${modelName ? `：models."${modelName}".variant` : ''}${variantId ? ` = "${variantId}"` : '（删除该字段）'}）`,
+      message: `${res.message}（variant 字段手动添加${modelName ? `：providers 组内模型 variant` : ''}${variantId ? ` = "${variantId}"` : '（删除该字段）'}）`,
     };
   }
   const cfgObj = res.obj;
-  const models =
-    cfgObj.models && typeof cfgObj.models === 'object' && !Array.isArray(cfgObj.models)
-      ? (cfgObj.models as Record<string, unknown>)
-      : null;
-  const modelEntry = modelName ? models?.[modelName] : undefined;
-  if (!modelName || !modelEntry || typeof modelEntry !== 'object') {
+  const loc = modelName ? locateProviderModel(cfgObj, modelName) : null;
+  if (!loc) {
     return {
       ok: false,
       file: res.file,
-      message: `命名 variant 仅支持配置文件 models 表里的模型（当前模型 ${modelName ?? ''} 无条目）——请先在 models."${modelName ?? ''}".variants 定义。`,
+      message: `命名 variant 仅支持配置文件 providers 分组里的模型（当前模型 ${modelName ?? ''} 不在任何分组）——请先在 providers."<组>".models."${modelName ?? ''}".variants 定义。`,
     };
   }
-  if (variantId) (modelEntry as Record<string, unknown>).variant = variantId;
-  else delete (modelEntry as Record<string, unknown>).variant;
+  const g = cfgObj.providers as Record<string, Record<string, unknown>>;
+  const group = g[loc.provider] as Record<string, unknown>;
+  const models = group.models as Record<string, unknown>;
+  const entry = (models[loc.mid] && typeof models[loc.mid] === 'object' && !Array.isArray(models[loc.mid])
+    ? { ...(models[loc.mid] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  if (variantId) entry.variant = variantId;
+  else delete entry.variant;
+  models[loc.mid] = entry;
+  group.models = models;
   try {
     writeFileSync(res.file, `${JSON.stringify(cfgObj, null, 2)}\n`);
   } catch (err) {
@@ -648,7 +580,7 @@ export function persistVariantToConfig(
   return {
     ok: true,
     file: res.file,
-    message: `已保存命名变体 → ${res.file}（仅对模型 ${modelName} 生效${variantId ? '' : '，已清除'}）`,
+    message: `已保存命名变体 → ${res.file}（仅对模型 ${loc.mid} 生效${variantId ? '' : '，已清除'}）`,
   };
 }
 

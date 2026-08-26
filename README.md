@@ -142,10 +142,7 @@ Config fields (see `omni.example.jsonc` for a full example):
 
 ```jsonc
 {
-  "model": "deepseek-chat",              // model name (default gpt-4o-mini)
-  "baseURL": "https://api.deepseek.com/v1", // OpenAI-compatible API URL
-  "apiKey": "sk-xxx",                    // prefer the OMNI_API_KEY env var
-  "userAgent": "Mozilla/5.0 …",          // custom UA (some gateways WAF-block the SDK default UA)
+  "model": "deepseek-chat",              // model name (default gpt-4o-mini); endpoints/keys live only in `providers` below
   "maxSteps": 50,                        // max agent loop steps (dead-loop guard)
   "showThinking": true,                  // show thinking (still saved to disk)
   "permission": "safe",                  // safety tier: full / safe (default) / ask / read
@@ -154,7 +151,7 @@ Config fields (see `omni.example.jsonc` for a full example):
   "sandboxNetworkAllow": ["api.openai.com"],  // sandbox network allowlist (hostnames; via built-in filtering proxy, TLS untouched)
   "sandboxFailClosed": false,                // true = refuse to run when no sandbox primitive exists (fail-closed, enterprise)
   "sandboxWritePaths": [],                   // extra writable paths for workspace-write (absolute)
-  "providers": {                              // 1.0: one gateway, many models — merged into `models` at load (flat form still works)
+  "providers": {                              // 1.0: one gateway, many models — the only endpoint format (legacy flat `models` removed)
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "{env:GLM_KEY}",
       "models": { "glm-4-flash": { "limit": { "context": 128000, "output": 8192 },
                    "variants": { "fast": { "reasoningEffort": "low" },
@@ -180,10 +177,9 @@ Config fields (see `omni.example.jsonc` for a full example):
   "reasoningEffortOptions": ["low", "medium", "high"], // options supported by /variants (customizable)
   "architect": "gpt-5",                  // model routing: /plan uses a strong model (falls back to current)
   "editor": "gpt-5-mini",                // model routing: execution uses a light model (falls back to current)
-  "models": {                           // multi-model endpoints (/model switch/add): missing fields fall back to top level; per-model reasoning level (reasoningEffortOptions/reasoningEffort) + named variants (variants table + variant field + apiModel alias); /model add adds at runtime and persists
-    "glm-4-flash": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm" },
-    "moonshot-v1-8k": { "baseURL": "https://api.moonshot.cn/v1" }
-  },
+  // multi-model endpoints (/model switch/add) use `providers` groups only — per-model reasoning
+  // level (reasoningEffortOptions/reasoningEffort) + named variants (variants table + variant field +
+  // apiModel alias) live under providers.<group>.models.<model>; /model add persists at runtime (single-model group)
   "mcpServers": {                        // MCP external tools: { name: { command, args?, env? } | { url, headers? }; enabledTools?/disabledTools?; defaultToolsApprovalMode? = auto|prompt|writes|approve }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   },

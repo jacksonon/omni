@@ -129,8 +129,8 @@ export function prepareRun(
   opts: { allowMissingKey?: boolean } = {}
 ): RunContext {
   const cfg = loadConfig(overrides);
-  // 默认模型（cfg.model）的端点配置：顶层缺省字段回退到 models.<model>（每模型独立
-  // 密钥/端点/UA 是合法用法——用户把密钥放在 models 里而不写顶层 apiKey 时，
+  // 默认模型（cfg.model）的端点配置：从 providers 展开后的内部 models 表解析（每模型
+  // 独立密钥/端点/UA 是合法用法——用户把密钥放在 providers 分组里而不写顶层 apiKey 时，
   // 不应报「未找到 API Key」闪退，从默认模型的端点配置解析即可）
   const defModel = cfg.models?.[cfg.model];
   let apiKey = defModel?.apiKey ?? cfg.apiKey;
@@ -140,7 +140,7 @@ export function prepareRun(
   if (!apiKey) {
     throw new Error(
       `未找到 API Key。设置方式：
-  · 配置文件 omni.json / omni.jsonc 的 "apiKey" 字段（或 models."${cfg.model}".apiKey）
+  · 配置文件 omni.json / omni.jsonc 的 providers 分组（providers."<组>".apiKey，模型 ${cfg.model} 须在该分组 models 中）
   · 环境变量 OMNI_API_KEY（或 OPENAI_API_KEY）
 更多帮助见 omni --help`
     );

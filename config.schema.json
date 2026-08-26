@@ -7,20 +7,8 @@
   "properties": {
     "model": {
       "type": "string",
-      "description": "默认模型名（默认 gpt-4o-mini）",
+      "description": "默认模型名（默认 gpt-4o-mini）；端点/密钥只认 providers 分组（配置文件不再解析顶层 baseURL/apiKey/userAgent，兜底只来自环境变量 OMNI_BASE_URL/OMNI_API_KEY）",
       "default": "gpt-4o-mini"
-    },
-    "baseURL": {
-      "type": "string",
-      "description": "OpenAI 兼容 API 地址（缺省 api.openai.com）"
-    },
-    "apiKey": {
-      "type": "string",
-      "description": "API Key（更推荐环境变量 OMNI_API_KEY；支持 {env:VAR} 引用）"
-    },
-    "userAgent": {
-      "type": "string",
-      "description": "自定义 User-Agent（部分网关 WAF 拦截 SDK 默认 UA）"
     },
     "maxSteps": {
       "type": "integer",
@@ -269,16 +257,9 @@
         }
       }
     },
-    "models": {
-      "type": "object",
-      "description": "多模型端点（/model 切换）：{ 模型名: { baseURL?, apiKey?, userAgent?, reasoningEffortOptions?, reasoningEffort?, variant?, variants?, apiModel?, displayName?, limit?, modalities?, capabilities?, disabled? } }；缺省字段回退顶层",
-      "additionalProperties": {
-        "$ref": "#/definitions/modelEntry"
-      }
-    },
     "providers": {
       "type": "object",
-      "description": "Provider 分组（一个 baseURL 挂多个模型；加载期展开合并进 models 表，扁平形态向后兼容）",
+      "description": "Provider 分组（一个 baseURL 挂多个模型）——配置文件**端点/密钥的唯一格式**（旧版扁平 models 表与顶层 baseURL/apiKey/userAgent 解析已移除；加载期展开合并进内部 models 表）",
       "additionalProperties": {
         "type": "object",
         "properties": {
