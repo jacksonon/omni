@@ -40,6 +40,9 @@ export function messagesHaveImage(messages: ChatCompletionMessageParam[]): boole
   });
 }
 
+/** 可被 abort 中断的 sleep（fallback 端点间间隔等待用） */
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 /** deep-merge（命名 variants 的 body 叠加）：对象递归合并，其余类型直接覆盖 */
 function deepMerge<T extends Record<string, unknown>>(base: T, patch: Record<string, unknown> | undefined): T {
   if (!patch) return base;
@@ -445,7 +448,20 @@ export async function runAgent(
           model: ep.apiModel?.trim() || ep.name,
           endpoint: ep,
         }));
-        for (const fb of fallbacks) {
+        for (let fi = 0; fi < fallbacks.length; fi++) {
+          const fb = fallbacks[fi];
+          // 跨端点切换前指数退避等待（对齐 SDK 同款策略：1s 起步、每换一个备用端点
+          // 翻倍 1s → 2s → 4s，让上游网关压力释放；fallback 上限 3 级所以封顶 4s）。
+          // 切换期间 abort 仍能立即打断（waitAbort 包 sleep）。取消时不再继续
+          // 后续 fallback。
+          if (fi > 0 && !opts.abortSignal?.aborted) {
+            const delay = 1000 * Math.pow(2, fi - 1);
+            await waitAbort(sleep(delay), opts.abortSignal);
+          }
+          if (opts.abortSignal?.aborted) {
+            err = abortError();
+            break;
+          }
           try {
             const fbBuilt = buildStreamParams(fb.endpoint, fb.model, requestMessages, toolSchemas, {
               signal: opts.abortSignal,
@@ -463,11 +479,15 @@ export async function runAgent(
             output.onFallback?.(fb.model);
             break; // 该备用端点可用：跳出回退循环
           } catch (fbErr) {
-            if ((fbErr as Error)?.name === 'AbortError' || !isRetryableRequestError(fbErr)) {
-              err = fbErr; // abort / 非可重试错误 → 交给下方失败路径如实呈现
+            if (isAbortLike(fbErr)) {
+              err = fbErr; // 取消：交给下方失败路径（不是请求错误，按 abort 处理）
               break;
             }
-            err = fbErr; // 该备用也挂：记下错误继续下一个
+            if (!isRetryableRequestError(fbErr)) {
+              err = fbErr; // 401/400 等配置问题：换端点也救不回来，停止继续试
+              break;
+            }
+            err = fbErr; // 该备用也挂（5xx/429/网络）：记下错误继续下一个备用
           }
         }
       }

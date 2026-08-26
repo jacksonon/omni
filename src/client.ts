@@ -133,13 +133,21 @@ export function _resetClientCache(): void {
   clientCache.clear();
 }
 
-/** 按端点配置创建 OpenAI 客户端（timeout/maxRetries 与主入口一致） */
+/**
+ * 按端点配置创建 OpenAI 客户端（timeout/maxRetries 对齐 OpenAI Cookbook 策略）：
+ * · `timeout: 60_000` — 单请求 60s 兜底（与 Cookbook 推荐的 60s 一致）
+ * · `maxRetries: 5` — SDK 内部对 408/409/429/5xx（503/504 等）自动指数退避重试 5 次，
+ *   吃满默认退避序列 0.5s → 1s → 2s → 4s → 8s（封顶 8s，加抖动）；
+ *   服务器返回 `Retry-After`/`retry-after-ms` 头时优先尊重（< 60s 才采纳）。
+ *   Cookbook 建议「指数退避起步 0.5s 封顶 8s，重试 5–6 次」，此处取上限 5 次。
+ * · `/agents/<id>/runs` 这类长路径：把 60s 顶到上限更稳（Cookbook 建议 60–600s）
+ */
 export function createClient(endpoint: ModelEndpoint, fallbackApiKey: string): OpenAI {
   return new OpenAI({
     apiKey: endpoint.apiKey ?? fallbackApiKey,
     baseURL: endpoint.baseURL,
     timeout: 60_000,
-    maxRetries: 1,
+    maxRetries: 5,
     ...(endpoint.userAgent || endpoint.headers
       ? {
           defaultHeaders: {
