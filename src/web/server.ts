@@ -1096,7 +1096,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
       // /variants：字符串级别 + 命名 variants（1.0 P0-3）——<id> 命中当前模型的
       // variants 表时切叠加层并持久化 models."<模型>".variant；未知报错列可用项。
-      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high'];
+      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max'];
       const ep = (runOpts.models ?? []).find((m) => m.name === model);
       const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();

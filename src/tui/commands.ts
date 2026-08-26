@@ -1857,7 +1857,7 @@ export function openVariantsMenu(
   endpoints?: import('../client.js').ModelEndpoint[]
 ): void {
   const ep = endpoints?.find((m) => m.name === state.model);
-  const efforts = (state.reasoningEffortOptions ?? ['low', 'medium', 'high']).map((v) => ({
+  const efforts = (state.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max']).map((v) => ({
     label: v,
     value: v,
   }));

@@ -159,7 +159,7 @@ export OMNI_MODEL=deepseek-chat                     # 可选
   "maxSubagentSteps": 10,                // 子代理最大循环步数（默认 10）
   "skills": true,                        // 技能（SKILL.md）发现与 skill 工具（默认 true）
   "reasoningEffort": "medium",            // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
-  "reasoningEffortOptions": ["low", "medium", "high"], // /variants 支持的思考级别选项（可自定义）
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 支持的思考级别选项（可自定义）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
   // 多模型端点（/model 切换/添加）只认 providers 分组——per-model 思考级别

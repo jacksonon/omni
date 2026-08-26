@@ -326,7 +326,7 @@ const DEFAULTS = {
   summarizeWindow: 8,
   preloadFiles: true,
   skills: true,
-  reasoningEffortOptions: ['low', 'medium', 'high'],
+  reasoningEffortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
   preloadMaxFiles: 5,
   preloadMaxBytes: 30 * 1024,
   allowSubagents: true,

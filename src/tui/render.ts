@@ -27,10 +27,10 @@
  *
  * 灰色块（输入框 + 模型行，淡灰色背景，四边 16px 圆角）与对话流区分；
  * 左侧**蓝色细线（▍，与对话流用户消息同款）**贴左缘、**竖跨整个灰色背景**（含上下
- * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4，
- * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0，
- * 灰块 = 圆角边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4）。模型行（**左对齐**
- * ——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）。
+ * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 模型 1 = inputLines+3，
+ * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0
+ * 且输入框与模型行之间无间距，灰块 = 圆角边框 2 + 输入 inputLines + 模型 1 = inputLines+3）。
+ * 模型行（**左对齐**——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
  *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
  *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/⚡）；
@@ -233,8 +233,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
 
     // 左侧蓝色细线（▍ 3/8 块，与对话流用户消息左侧同款）：**紧贴灰块左缘**、竖跨整块。
     // marginLeft:-1 把细线拉到圆角边框列上（边框线同色不可见，细线盖住边框格 →
-    // 与用户消息的 ▍ 一样贴块左缘；探针实测负 margin 生效）。高度（inputLines + 4 =
-    // 圆角边框 2 + 输入 + 间距 + 模型行）由 repaintTree 每次重绘按最新 inputLines
+    // 与用户消息的 ▍ 一样贴块左缘；探针实测负 margin 生效）。高度（inputLines + 3 =
+    // 圆角边框 2 + 输入 + 模型行）由 repaintTree 每次重绘按最新 inputLines
     // 同步；marginTop/Bottom -1 使 margin-box 与内容列同高不撑大灰块，同时渲染起点
     // 上移 1 行盖住顶边框、向下溢到底边框——**竖跨整个灰色背景**（用户要求）。
     // bg 与灰块同色，折行/增高时连续
@@ -244,13 +244,12 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerBox.add(blueLine);
 
     // 内容列：paddingX 1 让输入文字与圆角边框保持 1 列间距（细线让 1 列）；
-    // **paddingY 0**（用户要求输入区域高度变低：灰块从 inputLines+6 降为 inputLines+4，
-    // 去掉上下 padding 2 行——圆角边框本身已提供上下视觉边界）；
-    // gap:1 在输入框与模型行之间留 1 行间距（用户要求，细线连续穿过间距）
+    // **paddingY 0 + 无 gap**（用户要求输入区域高度调低：灰块从 inputLines+6 降为
+    // inputLines+4，再降为 inputLines+3——去掉上下 padding 与输入框/模型行之间的
+    // 1 行间距，内容紧凑，圆角边框已提供上下视觉边界）
     const contentCol = new BoxRenderable(ctx, {
       flexDirection: 'column',
       flexGrow: 1,
-      gap: 1,
       paddingX: 1,
       paddingY: 0,
     });
@@ -633,7 +632,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const pendingRows = pendingCount > 0 ? 1 + pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
   // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）。联想/菜单/命令面板浮层共用：
   // 浮层底边钳制在此行上方——永不遮住输入区。inputLines 刷新后（下方 if 块内）重新赋值。
-  let footerTop = (height ?? 24) - 7 - pendingRows - 1;
+  let footerTop = (height ?? 24) - 6 - pendingRows - 1;
   // 状态栏：dark 保持 dim 白字（原样）；light 去掉 dim 属性 + 显式深灰文字
   //（浅底上 dim 白字看不见，dim+深灰又会半亮发浅）
   (tree.status as { attributes?: number }).attributes = createTextAttributes(isLightTheme(theme) ? {} : { dim: true });
@@ -646,14 +645,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 3);
     state.inputLines = Math.min(5, Math.max(1, estimateInputLines(tree.input.plainText, inner)));
   }
-  // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 + 模型）
-  // = inputLines + 4 行；显式 height 钉到 inputLines + 4，marginTop/Bottom -1 使
-  // **margin-box = inputLines + 2 与内容列同高（不撑大灰块）**，渲染起点上移 1 行
+  // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 模型）
+  // = inputLines + 3 行；显式 height 钉到 inputLines + 3，marginTop/Bottom -1 使
+  // **margin-box = inputLines + 1 与内容列同高（不撑大灰层）**，渲染起点上移 1 行
   // 盖住顶边框行、向下溢到底边框行——**竖跨整个灰色背景含上下圆角边框行**（用户要求）。
   // 颜色按主题（fg 蓝 / bg 与灰块同色）
   if (tree.blueLine) {
-    tree.blueLine.height = Math.max(1, state.inputLines) + 4;
-    tree.blueLine.content = Array(Math.max(1, state.inputLines) + 4).fill(ACCENT_BAR).join('\n');
+    tree.blueLine.height = Math.max(1, state.inputLines) + 3;
+    tree.blueLine.content = Array(Math.max(1, state.inputLines) + 3).fill(ACCENT_BAR).join('\n');
     tree.blueLine.fg = parseColor(theme.accentBlue);
     tree.blueLine.bg = parseColor(theme.footerBg);
   }
@@ -666,7 +665,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
     // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块（圆角边框 2 行））
-    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
+    footerTop = (height ?? 24) - 6 - pendingRows - state.inputLines; // 灰色块顶部（0-based 屏幕行；统计行与灰块间距 1 行）
     if (!state.menu && !state.settingsPanel && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -824,8 +823,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const visible = !!picker && picker.items.length > 0;
     tree.suggestBox.visible = visible;
     if (visible && picker) {
-      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows)
-      const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
+      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 统计行(1) - 灰色块(inputLines+3，含圆角边框) - 待发送区(pendingRows)
+      const footerTop = (height ?? 24) - 6 - pendingRows - state.inputLines;
       // 紧凑下拉：内部行（含提示行）≤ 8（小视口按剩余空间收缩）——面板不铺满整个内容区，
       // 而是悬停在输入框上方的一小片下拉（用户反馈菜单铺满全屏不像“输入框上方的菜单”）
       const interiorBudget = Math.max(3, Math.min(8, footerTop - 3));
@@ -1114,11 +1113,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   // 待发送消息行的点击区域：底部固定块（待发送区 + 灰色块）被 marginTop:auto 钉在视口
   // 底部，位置是**确定**的（与内容长度/滚动无关）——底部块顶 = 视口 - 根底内边距(1)
-  // - 统计行间距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+4)。
+  // - 统计行间距(1) - 统计行(1) - 待发送区(pendingRows) - 灰色块(inputLines+3)。
   // 标题行在底部块顶，消息行从 +1 开始：消息 i 在 y = wrapperTop + 1 + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
-    const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines;
+    const wrapperTop = (height ?? 24) - 6 - pendingRows - state.inputLines;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
   }
   // ask_user 提问面板（输入区上方）：**竖向勾选列表**——❓ 问题（单选/多选）+ 每行

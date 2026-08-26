@@ -286,7 +286,7 @@ export function wrapRow(row: Row, width: number): Row[] {
 }
 
 /** 用户消息行：左侧蓝色细线（▍ 3/8 块 ≈3px）+ **整行灰色背景**（不只文字底下——
- * 文字 + 竖线 + 行尾剩余列全部填充主题底色，整行色块，对标工具卡片/用户气泡）
+ * 文字 + 竖线 + 行尾剩余字符全部填充灰色背景，整行对齐，类比工具卡片/用户气泡）
  * 按主题（深色：白字深灰底；亮色：深字淡灰底）；折行后每行都保留竖线 + 整行底。 */
 export function wrapUserLine(text: string, width: number, theme: TuiTheme): Row[] {
   const inner = Math.max(1, width - 1); // 竖线占 1 列
@@ -304,4 +304,19 @@ export function wrapUserLine(text: string, width: number, theme: TuiTheme): Row[
       ],
     };
   });
+}
+
+/** 用户消息气泡的上下留白行：整行灰色背景（竖线 + 行尾填充），让气泡高度略高于文本——
+ * 用户要求「灰色背景区域高度稍微高一点，不要和文本等高」。留白行与文本行同构（▍ 蓝线
+ * 连续 + 灰底铺满），气泡看起来是上下带 padding 的色块（对标 opencode 用户气泡）。 */
+export function userPadRow(width: number, theme: TuiTheme): Row {
+  const fill = Math.max(0, width - 1);
+  return {
+    text: `${ACCENT_BAR}${' '.repeat(fill)}`,
+    style: { fg: theme.userText, bg: theme.footerBg },
+    chunks: [
+      { text: ACCENT_BAR, fg: theme.accentBlue, bg: theme.footerBg },
+      { text: ' '.repeat(fill), bg: theme.footerBg },
+    ],
+  };
 }

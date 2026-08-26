@@ -266,7 +266,7 @@ const I18N_ZH = {
   'settings.save': '保存',
   'settings.saved': '✓ 已保存到配置文件',
   'settings.variants': '思考级别选项（variants）',
-  'settings.variantsDesc': '逗号分隔，如 low,medium,high；模型只支持这些级别。',
+  'settings.variantsDesc': '逗号分隔，如 low,medium,high,xhigh,max；模型只支持这些级别，留空继承全局。',
   'settings.effortCurrent': '当前思考级别',
   'settings.effortCurrentDesc': '默认使用哪一个级别。',
   'settings.context': '上下文长度（context）',
@@ -526,7 +526,7 @@ const I18N_EN = {
   'settings.save': 'Save',
   'settings.saved': '✓ Saved to config file',
   'settings.variants': 'Reasoning levels (variants)',
-  'settings.variantsDesc': 'Comma-separated, e.g. low,medium,high; the model only supports these.',
+  'settings.variantsDesc': 'Comma-separated, e.g. low,medium,high,xhigh,max; the model only supports these. Leave empty to inherit global.',
   'settings.effortCurrent': 'Current level',
   'settings.effortCurrentDesc': 'Which level to use by default.',
   'settings.context': 'Context length',
@@ -3702,7 +3702,8 @@ function renderModelPop(s) {
     pop.appendChild(sel);
   }
 
-  // 推理强度：slider（拖动实时预览，松手生效）
+  // 推理强度：无级滑条（step any，拖动连续不跳格）+ 动效——拖动中轨道填充跟手预览最近档位，
+  // 松手吸附最近档位并播放动效（thumb 脉冲 + 标签弹跳 + 刻度高亮弹跳），短暂停留后自动关闭
   pop.appendChild(el('div', 'pop-sep'));
   pop.appendChild(el('div', 'pop-head', '推理强度'));
   if (!efforts.length) {
@@ -3720,21 +3721,57 @@ function renderModelPop(s) {
     range.className = 'pop-slider';
     range.min = '0';
     range.max = String(efforts.length - 1);
-    range.step = '1';
+    range.step = 'any'; // 无级拖拽：拖动过程不跳格
     range.value = String(idx);
     let applied = idx;
-    range.addEventListener('input', () => { val.textContent = efforts[Number(range.value)] ?? ''; });
+    const setFill = (pos) => range.style.setProperty('--fill', `${(pos / Math.max(1, efforts.length - 1)) * 100}%`);
+    const nearestIdx = () => Math.min(efforts.length - 1, Math.max(0, Math.round(Number(range.value))));
+    // 刻度高亮；animate=true 时给刚激活的刻度一个缩放弹跳（重触发 .pop 动画）
+    const setTicks = (pos, animate) => {
+      ticks.querySelectorAll('span').forEach((sp, i) => {
+        const on = i === pos;
+        sp.classList.toggle('active', on);
+        if (on && animate) { sp.classList.remove('pop'); void sp.offsetWidth; sp.classList.add('pop'); }
+      });
+    };
+    // 重触发单次 CSS 动画（thumb 脉冲 / 标签弹跳）
+    const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
+    setFill(idx);
+    // 拖动中：轨道填充跟手（dragging 时 CSS 无过渡）+ 预览吸附档位标签 + 刻度高亮（不弹跳）
+    range.addEventListener('input', () => {
+      range.classList.add('dragging');
+      const pos = nearestIdx();
+      val.textContent = efforts[pos] ?? '';
+      setFill(pos);
+      setTicks(pos, false);
+    });
+    // 松手：吸附最近档位并生效；播放动效（thumb 脉冲 + 标签弹跳 + 刻度弹跳），短暂停留后关闭
     range.addEventListener('change', () => {
-      const pos = Number(range.value);
+      const pos = nearestIdx();
       const v = efforts[pos];
-      if (pos === applied || !v) return;
+      range.value = String(pos); // 吸附
+      range.classList.remove('dragging');
+      setFill(pos);
+      setTicks(pos, true);
+      if (!v) return;
+      replay(val, 'snap');
+      replay(range, 'snap');
+      if (pos === applied) return;
       applySettings({ reasoningEffort: v })
-        .then(() => { applied = pos; closeModelPop(); })
+        .then(() => { applied = pos; setTimeout(closeModelPop, 300); }) // 留 300ms 让动效可见
         .catch((err) => { alert(`设置失败：${err.message}`); range.value = String(applied); val.textContent = efforts[applied]; });
     });
     pop.appendChild(range);
     const ticks = el('div', 'pop-ticks');
-    efforts.forEach((t) => ticks.appendChild(el('span', null, t)));
+    efforts.forEach((t, i) => {
+      const sp = el('span', null, t);
+      if (i === idx) sp.classList.add('active'); // 初始高亮当前档位
+      sp.addEventListener('click', () => { // 点刻度直达该档
+        range.value = String(i);
+        range.dispatchEvent(new Event('change'));
+      });
+      ticks.appendChild(sp);
+    });
     pop.appendChild(ticks);
   }
 }
@@ -4045,10 +4082,19 @@ function providerModelItem(s, group, m) {
   const isDefault = m.name === s.model || `${group.name}/${m.name}` === s.model;
   const item = el('div', 'pm-item' + (isDefault ? ' default' : ''));
   const head = el('div', 'pm-head');
+  // 展开箭头（▸→▾）——per-model 设置（含思考级别选项）可点击展开的可发现性提示
+  head.appendChild(el('span', 'pm-chev', '▸'));
   head.appendChild(el('span', 'pm-name', m.name));
   if (m.apiModel) head.appendChild(el('span', 'pm-apimodel', m.apiModel));
   if (isDefault) head.appendChild(el('span', 'pm-def-badge', t('provider.defaultBadge')));
+  // 思考级别摘要徽标：模型级设置了思考级别/选项时在头部直接可见（用户要求模型可设支持思考级别）
+  if (m.reasoningEffort) head.appendChild(el('span', 'pm-effort', `思考 ${m.reasoningEffort}`));
+  else if (m.reasoningEffortOptions?.length) head.appendChild(el('span', 'pm-effort', `思考级别 ${m.reasoningEffortOptions.length} 档`));
   const actions = el('div', 'pm-actions');
+  // 编辑按钮：显式展开/收起该模型的设置表单（含思考级别选项）
+  const editBtn = el('button', 'pm-edit-btn', t('provider.edit'));
+  editBtn.addEventListener('click', (e) => { e.stopPropagation(); body.classList.toggle('open'); });
+  actions.appendChild(editBtn);
   if (!isDefault) {
     const defBtn = el('button', 'pm-btn', '★');
     defBtn.title = t('provider.setDefault');
@@ -4082,7 +4128,7 @@ function providerModelItem(s, group, m) {
   body.innerHTML = `
     <div class="pm-row"><label>${t('provider.fldApiModel')}</label><input class="cfg-text" value="${esc(m.apiModel || '')}" placeholder="${esc(m.name)}"></div>
     <div class="pm-row"><label>${t('provider.fldDisplay')}</label><input class="cfg-text" value="${esc(m.displayName || '')}" placeholder="${esc(m.name)}"></div>
-    <div class="pm-row"><label>${t('provider.fldEfforts')}</label><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high"></div>
+    <div class="pm-row"><label>${t('provider.fldEfforts')}</label><div class="pm-eff-input"><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high,xhigh,max" title="${esc(t('settings.variantsDesc'))}"><p class="pm-hint">${esc(t('settings.variantsDesc'))}</p></div></div>
     <div class="pm-row"><label>${t('provider.fldEffort')}</label><select class="setting-control"></select></div>
     <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" style="width:160px" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
     <div class="pm-row"><label></label><span class="inherit-toggle${hasOverride ? '' : ' active'}" data-mode="inherit">${t('provider.inherit')}</span>&nbsp;/&nbsp;<span class="inherit-toggle${hasOverride ? ' active' : ''}" data-mode="override">${t('provider.override')}</span></div>
@@ -4090,7 +4136,7 @@ function providerModelItem(s, group, m) {
     <div class="pm-row" data-ovr><label>${t('provider.fldApiKey')}</label><input type="password" class="cfg-text" placeholder="sk-…"></div>
     <button class="primary-button" style="align-self:flex-start" type="button">${t('provider.save')}</button>
   `;
-  const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high']).filter(Boolean);
+  const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high', 'xhigh', 'max']).filter(Boolean);
   const effSel = body.querySelector('select');
   opts.forEach((o) => {
     const op = document.createElement('option');
@@ -4129,7 +4175,7 @@ function providerModelItem(s, group, m) {
     }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
       .catch((err) => alert(t('provider.errSave', { msg: err.message })));
   });
-  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn')) return; body.classList.toggle('open'); });
+  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn, .pm-edit-btn')) return; body.classList.toggle('open'); });
   item.appendChild(body);
   return item;
 }

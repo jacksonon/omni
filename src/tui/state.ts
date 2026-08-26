@@ -558,7 +558,7 @@ export function createTuiState(): TuiState {
     planMode: false,
     permission: 'safe',
     reasoningEffort: '',
-    reasoningEffortOptions: ['low', 'medium', 'high'],
+    reasoningEffortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
     sessionPick: null,
     doctorPending: false,
     inputText: '',

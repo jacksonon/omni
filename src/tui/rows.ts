@@ -20,7 +20,7 @@ import {
 } from '../output/format.js';
 import { INLINE_CODE_FG, markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
-import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
+import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { visualWidth } from './width.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { TRACE_W } from './trace.js';
@@ -422,10 +422,14 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'user') {
-      // 用户消息：每行左侧带蓝色竖粗线（折行后连续，整段消息被竖线框住）
+      // 用户消息：整块灰色背景气泡（对标 opencode 用户气泡）——顶部留白 + 文本行
+      // （每行左侧蓝色竖粗线，折行后连续，整段消息被竖线框住）+ 底部留白。上下留白
+      // 让气泡高度略高于文本（用户要求「灰色背景区域高度稍微高一点，不要和文本等高」）。
+      body.push(userPadRow(width, theme));
       for (const seg of line.text.split('\n')) {
         body.push(...wrapUserLine(seg, width, theme));
       }
+      body.push(userPadRow(width, theme));
       // 用户消息与后续内容（思考/回答/工具卡片）之间留 1 行间距，
       // 避免用户输入与 AI 思考紧贴（用户反馈距离太近）
       body.push({ text: '', style: {} });
@@ -557,9 +561,9 @@ export function buildBody(state: TuiState, width: number): Row[] {
  * renderable，不在这里。
  *
  * 行数预算：根 Box paddingY(2) = 2 行固定（无边框）；
- * 交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块（输入框 inputLines + 间距 1 + 模型 1，paddingY 0）
- * + 统计行间距(1) + 统计行(1)，即内容区 = 高度 - 10 - inputLines（inputLines=1 时即高度 - 11）；
- * 单次任务模式内容区 = 高度 - 4。
+ * 交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块（输入框 inputLines + 模型 1，paddingY 0 无间距）
+ * + 统计行间距(1) + 统计行(1)，即内容区 = 高度 - 9 - inputLines（inputLines=1 时即高度 - 10）；
+ * 单次模式内容区 = 高度 - 4。
  *
  * 多行输入框自动增高（Enter 发送 / Shift+Enter 换行），inputLines 由 repaintTree
  * 每次从输入框 lineCount 实时同步（蓝色细线同步增高）——输入框变高时内容区预算
@@ -578,7 +582,7 @@ export function computeRows(
   // 1 列间隔 + 根右内边距）——对话流右移、长行重新折行，面板不盖内容
   const contentW = Math.max(1, (width ?? 80) - CONTENT_PAD - (state.traceOpen ? TRACE_W + 2 : 0));
   const body = buildBody(state, contentW);
-  // footer 高度预算：输入内容行数(1-5) + 间距 1 + 模型行 1 + 统计行 1（paddingY 0，
+  // footer 高度预算：输入内容行数(1-5) + 模型行 1 + 统计行 1（paddingY 0、无间距，
   // 灰块低）+ 16px 圆角边框 2 行（rounded border 同色线）；极小高度时不强塞内容行（避免把灰色块挤出视口）
   const inputLines = opts?.withInput ? Math.min(5, Math.max(1, state.inputLines ?? 1)) : 0;
   // 命令联想列表是**独立浮层**（absolute 定位，见 repaintTree）——不占内容流，
@@ -591,8 +595,8 @@ export function computeRows(
   // ask_user 提问面板（输入区上方）：❓ 问题行 1 + 每选项 1 行 + 自定义行 1 + 确认行 1 +
   // 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
   const askRows = opts?.withInput && state.ask ? state.ask.options.length + 4 : 0;
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows) + ask 面板(askRows)
-  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + askRows : 2));
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+3，含圆角边框) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows) + ask 面板(askRows)
+  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 5 + pendingRows + askRows : 2));
   const total = body.length;
 
   // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）

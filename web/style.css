@@ -617,6 +617,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .pm-head .pm-name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-head .pm-apimodel { color: var(--text-caption); font-size: 11px; font-family: var(--mono); }
 .pm-head .pm-def-badge { flex: none; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); font-size: 10px; font-weight: 600; line-height: 18px; }
+/* 模型项头部：展开箭头 + 思考级别摘要徽标 + 编辑按钮——per-model 设置（含思考级别选项）可发现 */
+.pm-head .pm-chev { flex: none; font-size: 10px; color: var(--text-tertiary); transition: transform .15s var(--ease); }
+.pm-item:has(.pm-body.open) .pm-chev { transform: rotate(90deg); }
+.pm-head .pm-effort { flex: none; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); font-size: 10px; font-weight: 600; line-height: 18px; }
+.pm-head .pm-edit-btn { flex: none; height: 26px; padding: 0 9px; border: 0; border-radius: 6px; background: var(--surface-hover); color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.pm-head .pm-edit-btn:hover { color: var(--blue); }
+.pm-body .pm-row .pm-eff-input { flex: 1; min-width: 0; }
+.pm-eff-input input { width: 100%; }
+.pm-eff-input .pm-hint { margin: 4px 0 0; font-size: 11px; color: var(--text-tertiary); line-height: 1.4; }
 .pm-head .pm-actions { flex: none; display: flex; gap: 4px; }
 .pm-head .pm-btn { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
 .pm-head .pm-btn:hover { background: var(--surface-hover); color: var(--text); }
@@ -637,9 +646,70 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .pop-select:focus { border-color: var(--blue); }
 .pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
 .pop-head-row .pop-head { padding: 0; }
-.pop-val { color: var(--blue); font-size: 12px; font-weight: 500; }
-.pop-slider { width: 100%; margin: 2px 0 4px; accent-color: var(--blue); cursor: pointer; }
+.pop-val { color: var(--blue); font-size: 12px; font-weight: 500; display: inline-block; }
+/* 吸附时标签弹跳 */
+@keyframes pop-val-snap {
+  0% { transform: scale(1.32); }
+  100% { transform: scale(1); }
+}
+.pop-val.snap { animation: pop-val-snap .25s var(--ease); }
+/* 推理强度滑条：无级拖拽 + 动效——填充轨道（--fill 由 JS 驱动）平滑过渡，拖动中跟手、松手吸附 */
+.pop-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 10px 0 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  background:
+    linear-gradient(var(--blue), var(--blue)) 0 0 / var(--fill, 0%) 100% no-repeat,
+    var(--line-2);
+  transition: background-size .18s var(--ease);
+}
+.pop-slider.dragging { transition: none; }
+.pop-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px; /* 居中于 4px 轨道 */
+  border: 0;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+  cursor: pointer;
+  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.pop-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+.pop-slider::-webkit-slider-thumb:active { transform: scale(1.3); }
+/* 松手吸附：thumb 脉冲（缩放 + 光圈） */
+@keyframes pop-slider-snap {
+  0% { transform: scale(1.45); box-shadow: 0 0 0 7px color-mix(in srgb, var(--blue) 30%, transparent); }
+  100% { transform: scale(1); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+}
+.pop-slider.snap::-webkit-slider-thumb { animation: pop-slider-snap .3s var(--ease); }
+/* Firefox 兼容 */
+.pop-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--blue);
+  cursor: pointer;
+}
+.pop-slider::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--blue); }
+.pop-slider.snap::-moz-range-thumb { animation: pop-slider-snap .3s var(--ease); }
 .pop-ticks { display: flex; justify-content: space-between; padding: 0 2px 2px; color: var(--text-caption); font-size: 11px; }
+.pop-ticks span { padding: 2px 3px; border-radius: 6px; cursor: pointer; transition: color .15s var(--ease), background .15s var(--ease); }
+.pop-ticks span:hover { color: var(--text-secondary); }
+.pop-ticks span.active { color: var(--blue); font-weight: 600; }
+/* 吸附时激活刻度弹跳 */
+@keyframes pop-tick-snap {
+  0% { transform: scale(1.35); background: color-mix(in srgb, var(--blue) 22%, transparent); }
+  100% { transform: scale(1); background: transparent; }
+}
+.pop-ticks span.pop { animation: pop-tick-snap .25s var(--ease); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: rgba(97, 102, 107, .3); background-clip: padding-box; }

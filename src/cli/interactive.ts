@@ -481,7 +481,7 @@ export async function runInteractive(
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
       // /variants：显示当前思考级别/命名变体；<级别> 切字符串级别；<id> 命中当前模型
       // 的命名 variants 表时切换叠加层（1.0 P0-3，未知报错列可用项）
-      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high'];
+      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max'];
       const ep = (runOpts.models ?? []).find((m) => m.name === currentModel);
       const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();

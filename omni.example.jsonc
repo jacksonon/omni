@@ -104,11 +104,11 @@
   // 模型用 skill 工具按需加载完整内容；/skill 命令列出/find 网络检索/add 安装
   "skills": true,
 
-  // 模型思考级别（reasoning_effort，OpenAI 系 low/medium/high）：
+  // 模型思考级别（reasoning_effort，OpenAI 系 low/medium/high/xhigh/max）：
   // 不配置 = 请求不带该参数（用模型默认）；/variants 命令可切换
   "reasoningEffort": "medium",
   // /variants 支持的思考级别选项（可自行配置支持哪些）
-  "reasoningEffortOptions": ["low", "medium", "high"],
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"],
 
   // 模型路由（architect/editor）：/plan 计划模式自动用 architect（强模型规划）、
   // 执行阶段用 editor（轻模型执行）；缺省回退当前模型（不配置 = 始终用当前模型）
@@ -138,7 +138,7 @@
   //     "apiKey": "{env:ZEN_KEY}",
   //     "models": {
   //       "mimo-v2.5": {
-  //         "reasoningEffortOptions": ["low", "medium", "high", "xhigh"],
+  //         "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"],
   //         "reasoningEffort": "high",
   //         "variants": {
   //           "fast": { "description": "低思考快速", "reasoningEffort": "low" },

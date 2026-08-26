@@ -701,8 +701,19 @@ async function main(): Promise<void> {
   s14.status = '任务完成';
   const rows14 = computeRows(s14, { height: 20, width: 64 }, { withInput: true });
   const userRows14 = rows14.filter((r) => r.chunks?.some((c) => c.fg === '#3b82f6' && c.text === '▍'));
-  if (userRows14.length < 2) {
-    console.error(`✗ 场景 14 用户消息折行后细线行数不足（${userRows14.length}，应 ≥2）`);
+  if (userRows14.length < 4) {
+    console.error(`✗ 场景 14 用户消息细线行数不足（${userRows14.length}，应 ≥4 = 上下留白 + ≥2 文本行）`);
+    process.exit(1);
+  }
+  // 气泡上下各 1 行留白（整行灰底无文字）——用户要求「灰色背景区域高度稍微高一点，不要和文本等高」
+  const padRows14 = userRows14.filter((r) => r.text.replace(/\u258d/g, '').trim() === '');
+  if (padRows14.length !== 2) {
+    console.error(`✗ 场景 14 气泡上下留白行数异常（${padRows14.length}，应恰 2：顶部 + 底部）`);
+    process.exit(1);
+  }
+  const textRows14 = userRows14.filter((r) => !padRows14.includes(r));
+  if (textRows14.length < 2) {
+    console.error(`✗ 场景 14 折行文本行数不足（${textRows14.length}，应 ≥2）`);
     process.exit(1);
   }
   for (const r of userRows14) {
@@ -711,9 +722,13 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 14 行首细线 chunk 异常: ${JSON.stringify(first)}`);
       process.exit(1);
     }
-    // 文本 chunk：白色 + 灰色背景（用户消息气泡底色）
+    // 留白行：整行灰底即可；文本行额外断言白字
     const rest = r.chunks!.slice(1);
-    if (!rest.some((c) => c.bg === '#3f3f46') || !rest.some((c) => c.fg === '#e2e8f0')) {
+    if (!rest.some((c) => c.bg === '#3f3f46')) {
+      console.error(`✗ 场景 14 未灰色背景: ${JSON.stringify(rest)}`);
+      process.exit(1);
+    }
+    if (!padRows14.includes(r) && !rest.some((c) => c.fg === '#e2e8f0')) {
       console.error(`✗ 场景 14 文本未白字灰底: ${JSON.stringify(rest)}`);
       process.exit(1);
     }
@@ -1021,8 +1036,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // d) 左侧蓝色细线（与对话流用户消息同款 ▍）：紧贴灰块左缘、**竖跨整个灰色背景
-  //    含上下圆角边框行**——单行输入 = 边框 1 + 输入 1 + 间距 1 + 模型 1 + 边框 1 = 5 行；
-  //    增高到 3 行输入后 = 7 行
+  //    含上下圆角边框行**——单行输入 = 边框 1 + 输入 1 + 模型 1 + 边框 1 = 4 行；
+  //    增高到 3 行输入后 = 6 行（输入区域高度调低：无间距行）
   if (!tree15.blueLine) {
     console.error('✗ 场景 15 输入区域蓝色细线未创建');
     process.exit(1);
@@ -1033,8 +1048,8 @@ async function main(): Promise<void> {
     const chunks = (c as { chunks?: { text: string }[] })?.chunks;
     return (chunks ?? []).map((ch) => ch.text).join('');
   };
-  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍') {
-    console.error(`✗ 场景 15 单行输入时细线高度错误: ${JSON.stringify(barText15(tree15.blueLine))}（应 5 行 ▍）`);
+  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍') {
+    console.error(`✗ 场景 15 单行输入时细线高度错误: ${JSON.stringify(barText15(tree15.blueLine))}（应 4 行 ▍）`);
     process.exit(1);
   }
   // 帧内灰色块**全部行（含上下边框行）**左侧都以 ▍ 开头——细线真实渲染在
@@ -1064,8 +1079,8 @@ async function main(): Promise<void> {
     console.error('✗ 场景 15 输入增高后渲染缺失（输入/模型行）');
     process.exit(1);
   }
-  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍\n▍\n▍') {
-    console.error(`✗ 场景 15 输入增高后细线高度未同步: ${JSON.stringify(barText15(tree15.blueLine))}（应 7 行 ▍）`);
+  if (barText15(tree15.blueLine) !== '▍\n▍\n▍\n▍\n▍\n▍') {
+    console.error(`✗ 场景 15 输入增高后细线高度未同步: ${JSON.stringify(barText15(tree15.blueLine))}（应 6 行 ▍）`);
     process.exit(1);
   }
   const lines15b = frame15b.split('\n');
@@ -1270,11 +1285,17 @@ async function main(): Promise<void> {
   const userIdx18 = rows18b.findIndex((r) => r.text.includes('你好'));
   // 思考模块展开态 = `- thinking` 头行 + 内容（用户要求）——间距以**头行**为思考起点
   const thinkIdx18 = rows18b.findIndex((r) => r.text.trim().startsWith('- thinking'));
-  if (userIdx18 < 0 || thinkIdx18 < 0 || thinkIdx18 - userIdx18 !== 2) {
-    console.error(`✗ 场景 18 用户消息与思考之间缺空行（thinkIdx=${thinkIdx18} userIdx=${userIdx18}，应差 2）`);
+  if (userIdx18 < 0 || thinkIdx18 < 0 || thinkIdx18 - userIdx18 !== 3) {
+    console.error(`✗ 场景 18 用户消息与思考之间缺空行（thinkIdx=${thinkIdx18} userIdx=${userIdx18}，应差 3 = 气泡底部留白 + 空行）`);
     process.exit(1);
   }
-  if (rows18b[userIdx18 + 1].text !== '' || rows18b[userIdx18 + 1].chunks) {
+  // 气泡底部留白行（整行灰底）+ 空白行——用户气泡上下留白后间距结构：文本 → 底留白 → 空行 → 思考
+  const bottomPad18 = rows18b[userIdx18 + 1];
+  if (!bottomPad18?.chunks?.some((c) => c.bg === '#3f3f46') || bottomPad18.text.replace(/\u258d/g, '').trim() !== '') {
+    console.error('✗ 场景 18 用户气泡底部缺留白行（整行灰底无文字）');
+    process.exit(1);
+  }
+  if (rows18b[userIdx18 + 2].text !== '' || rows18b[userIdx18 + 2].chunks) {
     console.error('✗ 场景 18 用户消息后的间距行不是空白行');
     process.exit(1);
   }
@@ -1536,7 +1557,9 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 20 标题不应出现在信息流: ${JSON.stringify(rows20[0]?.text)}`);
     process.exit(1);
   }
-  if (!rows20[0].text.includes('你好')) {
+  // 首个内容块 = 用户气泡（顶部留白行 + 文本行——气泡上下留白后首行是灰底留白）
+  const firstContent20 = rows20.find((r) => r.text.replace(/\u258d/g, '').trim() !== '') ?? rows20[0];
+  if (!firstContent20.text.includes('你好')) {
     console.error(`✗ 场景 20 首行应为用户消息（标题已从流中移除）: ${JSON.stringify(rows20[0]?.text)}`);
     process.exit(1);
   }
@@ -3899,7 +3922,8 @@ async function main(): Promise<void> {
   const t37h = await createTestRenderer({ width: 64, height: 20 });
   const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
   await repaintTree(t37h.renderer, tree37h, s37h, 64, 20);
-  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
+  // 灰色块高度调低后 footerTop 上移 1 行 → 菜单窗口多容纳 1 个选项（11..16）
+  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, 16, -1, -1, -1])) {
     console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
     process.exit(1);
   }
@@ -3914,13 +3938,15 @@ async function main(): Promise<void> {
   //     「会话 15/9/3」等窗口外标签不得泄漏进帧
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
-  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 4 个', '╰']) {
+  // 灰块变矮后窗口多 1 行（选项 11..16 = 会话 8..3）→ 下方提示「↓ 还有 3 个」
+  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 3 个', '╰']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
-  for (const outside of ['会话 9 ·', '会话 3 ·', '会话 15 ·']) {
+  // 窗口扩到 6 行后「会话 3」已进窗口（11..16），窗口外改为 2/9/15
+  for (const outside of ['会话 9 ·', '会话 2 ·', '会话 15 ·']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
       process.exit(1);

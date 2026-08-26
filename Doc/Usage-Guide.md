@@ -218,7 +218,7 @@ omni -h / -v                      # help / version
   // top-level baseURL/apiKey/userAgent in config files are no longer parsed.
   // Per-model reasoning level (each model can have its own, falls back to top level; under providers.<group>.models.<model>):
   "reasoningEffort": "medium",         // reasoning level (reasoning_effort; unset = omit the param, use model default)
-  "reasoningEffortOptions": ["low", "medium", "high"], // levels supported by /variants (customizable)
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // levels supported by /variants (customizable)
   // Named variants (1.0): { id: { description?, reasoningEffort?, body?, headers? } }
   // each id is a request overlay (deep-merged into the request body); the current pick is stored
   // in the `variant` field; the /variants panel lists both reasoning levels and named variants;
