@@ -52,8 +52,9 @@ const ZH: Record<string, string> = {
 
   // 输入区 / footer（render.ts）
   'input.placeholder': '输入消息，Enter 发送；Shift+Enter 换行',
-  'footer.model': '{model}',
-  'footer.planMode': ' · 计划模式',
+  'footer.model': '{mode} · {model}{provider}',
+  'footer.mode.build': 'Build',
+  'footer.mode.plan': 'Plan',
   'footer.effort': ' · {effort}',
   'pending.title': '⏳ 待发送（{q}{s}）',
   'pending.steer': ' · ⚡ {s} 打断',
@@ -147,8 +148,9 @@ const EN: Record<string, string> = {
   'settings.hint': 'Space · ←/→ move · Enter · Esc cancel',
 
   'input.placeholder': 'Type a message, Enter to send; Shift+Enter for newline',
-  'footer.model': '{model}',
-  'footer.planMode': ' · Plan mode',
+  'footer.model': '{mode} · {model}{provider}',
+  'footer.mode.build': 'Build',
+  'footer.mode.plan': 'Plan',
   'footer.effort': ' · {effort}',
   'pending.title': '⏳ Pending ({q}{s})',
   'pending.steer': ' · ⚡ {s} steer',

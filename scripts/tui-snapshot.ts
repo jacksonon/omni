@@ -945,10 +945,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
-  // b2) 输入区域右侧 loading（与模型行同一行）：未运行隐藏；运行中转圈（帧随
-  //     loadingIndex 换）；Esc/会话结束（loading=false）清空消失
+  // b2) 模型行最左侧 loading（用户要求「有对话信息时最左侧显示 loading + esc」）：
+  //    未运行隐藏；运行中转圈（帧随 loadingIndex 换）；Esc/会话结束（loading=false）清空消失
   if (!tree15.footerLoading) {
-    console.error('✗ 场景 15 右侧 loading 节点未创建');
+    console.error('✗ 场景 15 loading 节点未创建');
     process.exit(1);
   }
   const loadingText15 = (t: unknown): string => {
@@ -978,8 +978,8 @@ async function main(): Promise<void> {
     console.log(frame15load);
     process.exit(1);
   }
-  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) < frameLines15[loadRow15]!.indexOf('mock')) {
-    console.error('✗ 场景 15 loading 应位于模型行文字右侧（灰色块右缘）');
+  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) >= frameLines15[loadRow15]!.indexOf('mock')) {
+    console.error('✗ 场景 15 loading 应位于模型行最左侧（灰色块左缘，模型文本之前）');
     process.exit(1);
   }
   s15.loading = false;
@@ -990,7 +990,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 15 会话结束（loading=false）后 loading 应清空');
     process.exit(1);
   }
-  // b3) loading 右侧「esc」取消提示：运行中显示（跟随 loading）、结束后消失
+  // b3) loading 右侧「esc」取消提示（同样在最左侧、loading 之后）：运行中显示（跟随 loading）、结束后消失
   if (!tree15.footerEsc) {
     console.error('✗ 场景 15 footerEsc 节点未创建');
     process.exit(1);
@@ -2448,21 +2448,25 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 28 PLAN_MODE_NOTE 内容缺失: ${JSON.stringify(PLAN_MODE_NOTE.slice(0, 60))}`);
     process.exit(1);
   }
-  // d) footer 常驻指示：planMode=true 时模型行显示「模型 X · 计划模式」
+  // d) footer 常驻指示：planMode=true 时模型行显示「Plan · mock」（Build/Plan 模式前缀）
   const s28b = createTuiState();
   s28b.version = '0.1.0';
   s28b.model = 'mock';
   s28b.planMode = true;
   pushLine(s28b, { kind: 'user', text: '你好' });
   const r28 = await render(s28b);
-  if (!r28.frame.includes('mock · 计划模式')) {
-    console.error('✗ 场景 28 footer 未显示计划模式指示');
+  if (!r28.frame.includes('Plan · mock')) {
+    console.error('✗ 场景 28 footer 未显示 Plan 模式前缀');
     process.exit(1);
   }
   s28b.planMode = false;
   const r28b = await render(s28b);
-  if (r28b.frame.includes('计划模式')) {
-    console.error('✗ 场景 28 退出计划模式后 footer 指示未消失');
+  if (!r28b.frame.includes('Build · mock')) {
+    console.error('✗ 场景 28 退出计划模式后 footer 未显示 Build 前缀');
+    process.exit(1);
+  }
+  if (r28b.frame.includes('Plan')) {
+    console.error('✗ 场景 28 退出计划模式后 footer 仍显示 Plan');
     process.exit(1);
   }
   console.log('✓ 场景 28 通过：/plan 注册切换 + 只读工具过滤（write/run 不可见）+ 系统提示 + footer 常驻指示');

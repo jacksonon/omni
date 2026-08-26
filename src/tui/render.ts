@@ -21,7 +21,7 @@
  *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
- *   ▍ grok-4.5 · medium            │ 模型+思考级别（级别按强度着色；左对齐）
+ *   ▍ ⠙ esc Build · grok-4.5 demo · medium │ 模型行（loading+esc 最左；模式/模型/组/级别）
  *   ╰──────────────────────────────╯
  *         8 轮 · 65 步| LLM 20m32s · 工具调用 8.6s| …  ← 统计行（灰块下方，居中）
  *
@@ -327,43 +327,41 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     });
     contentCol.add(input);
 
-    // 模型行（输入框下方，灰色块内，**左对齐**——用户要求从右侧移到左侧显示）：
-    // 模型名 + 思考级别（只显示 `模型名 · 级别`，无「模型/思考」字样——用户要求；
-    // 级别按强度着色）+ **loading/esc 跟在左侧现有文本右面**（用户要求——
-    // 不再钉在灰块右缘，紧跟模型文本之后）。发送/取消按钮已移除
-    //（TUI 无点击交互，改用 Esc 取消命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
+    // 模型行（输入框下方，灰色块内，**左对齐**）：**loading + esc 提示在最左侧**
+    // （用户要求「有对话信息时，在最左侧显示 loading + esc 提示」——原来在思考级别
+    // 右侧），随后是模式 + 模型 + provider + 思考级别：`Build/Plan · 模型名 组 · 级别`
+    //（模式前缀：/plan 计划模式显示 Plan，普通 Build；级别按强度着色）。
+    // 发送/取消按钮已移除（TUI 无点击交互，改用 Esc 取消命令 + Enter 排队 + Cmd/Ctrl+Enter steer）
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
       justifyContent: 'flex-start',
       alignItems: 'center',
       gap: 1,
     });
-    footerModel = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    footerModel.fg = parseColor(theme.footerText);
-    footerEffort = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    footerEffort.fg = parseColor(theme.footerDim); // 思考强度用稍淡的颜色
-    modelRow.add(footerModel);
-    modelRow.add(footerEffort);
-    // loading（用户要求「显示在输入区域右侧，和模型 id 那一行对齐」——现在直接在
-    // 模型行内、模型文本右面）：会话进行中转圈（state.loading + loadingIndex），
-    // Esc/会话结束 stopLoading 消失
+    // loading（会话进行中转圈 state.loading + loadingIndex；Esc/会话结束消失）——
+    // **最左侧**（用户要求）：对话进行中在模型行最左端显示，紧贴灰块左缘的蓝色细线之后
     footerLoading = new TextRenderable(ctx, {
       content: '',
       wrapMode: 'none',
-      marginLeft: 1,
     });
     footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
-    // loading 右侧「esc」取消提示（用户要求「loading 按钮右侧增加 esc 文本」）：
-    // 淡色小字；跟随 loading 显示/隐藏
+    // loading 右侧「esc」取消提示（淡色小字；跟随 loading 显示/隐藏）
     footerEsc = new TextRenderable(ctx, {
       content: '',
       wrapMode: 'none',
-      marginLeft: 1,
       attributes: createTextAttributes({ dim: true }),
     });
     footerEsc.fg = parseColor(theme.footerDim);
     modelRow.add(footerLoading);
     modelRow.add(footerEsc);
+    // 模型文本（模式 + 模型名 + provider 组名）：`Build · mock demo`
+    footerModel = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerModel.fg = parseColor(theme.footerText);
+    modelRow.add(footerModel);
+    // 思考级别（` · medium`，按级别强度着色 effortColor；未设置思考级别时为空）
+    footerEffort = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerEffort.fg = parseColor(theme.footerDim);
+    modelRow.add(footerEffort);
     contentCol.add(modelRow);
 
     footerBox.add(contentCol);
@@ -836,13 +834,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       }
     }
   }
-  // 模型行（输入框下方，灰色块内，左对齐）：模型 + 思考强度（淡色；用户要求移到左侧）
-  // 计划模式（/plan）：模型行追加常驻指示「· 计划模式」——用户随时知道自己处于只读调研态
+  // 模型行（输入框下方，灰色块内，左对齐）：`Build/Plan · 模型名 组名 · 思考级别`
+  // ——模式前缀（/plan 计划模式 = Plan，普通 = Build）+ 模型名 + provider 组名 +
+  // 思考级别（淡色；按强度着色在下方 footerEffort 单独设置）。loading/esc 已排最左。
   if (tree.footerModel) {
     const lang = state.language;
-    tree.footerModel.content = state.planMode
-      ? `${tf(lang, 'footer.model', { model: state.model })}${t(lang, 'footer.planMode')}`
-      : tf(lang, 'footer.model', { model: state.model });
+    const mode = t(lang, state.planMode ? 'footer.mode.plan' : 'footer.mode.build');
+    const provider = state.provider ? ` ${state.provider}` : '';
+    tree.footerModel.content = tf(lang, 'footer.model', { mode, model: state.model, provider });
   }
   if (tree.footerEffort) {
     tree.footerEffort.content = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';

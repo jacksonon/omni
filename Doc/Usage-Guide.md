@@ -157,7 +157,7 @@ With a real TTY + bun (or the TUI package), starting without a task enters the f
 │  (final answer…)                             │
 │  ────────────────────────────────────────   │
 │  ▍ Type a message…                           │
-│  mock-model · medium                  ⠙ esc  │
+│  ⠙ esc Build · mock-model demo · medium      │
 │  7 turns · 41 steps| LLM 10m58s · tools 7s| …│
 └─────────────────────────────────────────────┘
 ```
@@ -348,9 +348,11 @@ next startup keeps your choice.
 | Auto-grow input | multi-line input grows 1–5 rows automatically; beyond 5 rows it scrolls internally |
 | Submit while running | ordinary messages go to the "⏳ pending (N)" list, sent when the turn ends; steer messages get priority |
 
-Inside the gray block the model line sits on the left (`model name · reasoning level`; the level is
-color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple) with the loading
-animation and the `esc` hint on the right; below the block is the configurable status/stats line
+Inside the gray block the model line sits on the left (`Build/Plan · model name provider · reasoning level` —
+mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider group, and the level
+color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple);
+while something is running, the loading animation and `esc` hint sit at the **far left** of that line
+(cancel the current turn); below the block is the configurable status/stats line
 (`/settings statusline` toggling and ordering).
 
 ### `/` command suggestions

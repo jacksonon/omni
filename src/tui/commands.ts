@@ -502,7 +502,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
     run: (ctx) => {
       // 会话级开关：只对模型暴露只读工具（read_file/list_directory/search_code）+ 系统提示
       // 追加只读说明（loop 读 runOpts.planMode；interactive 每轮从 state 同步）。
-      // footer 模型行显示「模型 X · 计划模式」作为常驻指示；不推 meta 提示文字。
+      // footer 模型行模式前缀显示 `Plan`/`Build` 作为常驻指示；不推 meta 提示文字。
       ctx.state.planMode = !ctx.state.planMode;
     },
   },

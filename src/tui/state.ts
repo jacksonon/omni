@@ -253,6 +253,9 @@ export interface TuiState {
   lines: TuiLine[];
   status: string;
   model: string;
+  /** 当前模型所属 provider 组名（config providers 分组；模型不在分组内为空串）。
+   *  interactive 从 runOpts.models 按 state.model 解析；/model 切换时 applyEndpoint 同步。 */
+  provider: string;
   version: string;
   /** 内容区滚动位置：null = 跟随最新（自动）；数字 = 视口首行索引（上滚状态） */
   scrollTop: number | null;
@@ -409,7 +412,7 @@ export interface TuiState {
   mentionDismissedKey: string | null;
   /**
    * 计划模式（/plan 切换）：只读调研，不修改文件。
-   * 会话级状态（/clear 不清除）；footer 模型行显示「模型 X · 计划模式」；
+   * 会话级状态（/clear 不清除）；footer 模型行模式前缀显示 `Plan`（普通为 `Build`）；
    * interactive 每轮把它同步进 runOpts.planMode（loop 据此过滤只读工具 + 系统提示）。
    */
   planMode: boolean;
@@ -525,6 +528,7 @@ export function createTuiState(): TuiState {
     lines: [],
     status: '',
     model: '',
+    provider: '',
     version: '',
     scrollTop: null,
     scrollIntent: null,
