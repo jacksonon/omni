@@ -95,7 +95,7 @@ import type { Output } from '../output/types.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
-import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveModelCapabilities, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
   parseModelAddArgs,
@@ -1725,6 +1725,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
       }
 
+      if (p === '/api/settings/model-capabilities' && req.method === 'GET') {
+        // 模型能力表查询（models.dev 快照）：设置面板「模型配置」编辑表单自动补缺用
+        const name = url.searchParams.get('name') ?? '';
+        json(res, 200, resolveModelCapabilities(name));
+        return;
+      }
+
       if (p === '/api/settings' && req.method === 'POST') {
         const body = await readBody(req);
         // API Key（可选）：覆盖当前模型端点（仅本次运行，不写配置文件）
@@ -1885,7 +1892,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           persistModelDefaultToGlobal(model);
           if (!(await switchModel(model))) { json(res, 400, { error: `切换失败：${model}` }); return; }
         }
-        // 获取远端可用模型列表（GET {baseURL}/models；配置完 baseURL+key 后点「获取模型列表」）
+        // 获取远端可用模型列表（GET {baseURL}/models；配置完 baseURL+key 后点「获取模型列表」）——
+        // 每个模型附带 models.dev 能力表（context/思考级别档位），前端勾选添加时直接预填。
         if (body.providerDiscover && typeof body.providerDiscover === 'object') {
           const pd = body.providerDiscover as Record<string, unknown>;
           const baseURL = typeof pd.baseURL === 'string' && pd.baseURL.trim() ? pd.baseURL.trim() : undefined;
@@ -1894,7 +1902,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           try {
             const { discoverModels } = await import('../client.js');
             const ids = await discoverModels({ baseURL, apiKey });
-            json(res, 200, { models: ids });
+            const models = ids.map((id) => ({ id, ...resolveModelCapabilities(id) }));
+            json(res, 200, { models });
             return;
           } catch (err) {
             json(res, 400, { error: `获取模型列表失败：${(err as Error)?.message ?? err}` });

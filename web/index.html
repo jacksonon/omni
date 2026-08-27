@@ -199,62 +199,57 @@
         <section class="settings-pane" data-pane="apikey">
           <h3 class="settings-pane-title" data-i18n="settings.apikey">模型配置</h3>
           <p class="settings-pane-sub" data-i18n="settings.apikeySub">配置模型的端点、密钥、推理级别与上下文长度。支持 providers 分组（一个端点对应多个模型），与 omni.json 的 providers 字段保持一致，保存后写入全局配置文件。</p>
-          <div class="providers-layout">
-            <nav class="providers-nav" aria-label="Provider 列表">
-              <div id="providers-list"></div>
-              <button id="btn-provider-new" class="primary-button" type="button" data-i18n="provider.new">+ 新建 provider</button>
-            </nav>
-            <div class="providers-edit">
-              <div id="provider-edit-empty" class="providers-empty" data-i18n="provider.empty">选择左侧 provider 或未分组模型编辑</div>
-              <div id="provider-edit" class="provider-edit hidden">
-                <div class="provider-head">
-                  <input type="text" id="p-name" class="cfg-text hidden" style="max-width:260px" placeholder="provider 名称（如 bigmodel）" data-i18n-placeholder="provider.namePlaceholder" autocomplete="off" spellcheck="false">
-                  <span id="p-name-static" class="p-name"></span>
+          <div class="mc-layout">
+            <div class="mc-provider-bar">
+              <input type="text" id="mc-provider-search" class="cfg-text mc-search" placeholder="搜索 provider…" data-i18n-placeholder="provider.searchProvider" autocomplete="off" spellcheck="false">
+              <div id="mc-provider-chips" class="mc-chips"></div>
+              <button id="btn-provider-new" class="secondary-button mc-new-btn" type="button" data-i18n="provider.new">+ 新建 provider</button>
+            </div>
+            <div id="mc-empty" class="mc-empty hidden" data-i18n="provider.empty">还没有 provider——点「+ 新建 provider」添加</div>
+            <div id="mc-provider-panel" class="mc-provider-panel hidden">
+              <div class="mc-provider-head">
+                <input type="text" id="p-name" class="cfg-text hidden" style="max-width:260px" placeholder="provider 名称（如 bigmodel）" data-i18n-placeholder="provider.namePlaceholder" autocomplete="off" spellcheck="false">
+                <span id="p-name-static" class="p-name"></span>
+                <span id="mc-provider-badges" class="mc-badges"></span>
+              </div>
+              <div class="settings-group">
+                <div class="mc-form-row">
+                  <label data-i18n="provider.baseURL">端点（baseURL）</label>
+                  <input type="text" id="p-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
                 </div>
-                <div class="settings-group">
-                  <div class="setting-row col">
-                    <div class="setting-info"><h4 data-i18n="provider.baseURL">端点（baseURL）</h4><p data-i18n="provider.baseURLDesc">OpenAI 兼容 API 地址，如 <code>https://api.deepseek.com/v1</code>。</p></div>
-                    <input type="text" id="p-baseurl" class="cfg-text" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
-                  </div>
-                  <div class="setting-row col">
-                    <div class="setting-info"><h4 data-i18n="provider.apiKey">API Key</h4><p data-i18n="provider.apiKeyDesc">密钥以掩码显示；点击右侧眼睛可查看明文。</p></div>
-                    <div class="apikey-row">
-                      <div class="apikey-input-wrap">
-                        <input type="password" id="p-apikey" placeholder="sk-…" autocomplete="off">
-                        <button id="btn-p-key-eye" class="eye-button" type="button" title="显示/隐藏" data-i18n-title="provider.eye" aria-label="显示/隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
-                      </div>
+                <div class="mc-form-row">
+                  <label data-i18n="provider.apiKey">API Key</label>
+                  <div class="apikey-row">
+                    <div class="apikey-input-wrap">
+                      <input type="password" id="p-apikey" placeholder="sk-…" autocomplete="off">
+                      <button id="btn-p-key-eye" class="eye-button" type="button" title="显示/隐藏" data-i18n-title="provider.eye" aria-label="显示/隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
                     </div>
                   </div>
-                  <div class="setting-row col">
-                    <div class="setting-info"><h4 data-i18n="provider.userAgent">User-Agent</h4><p data-i18n="provider.userAgentDesc">部分网关需要自定义 User-Agent 绕过 WAF。</p></div>
-                    <input type="text" id="p-useragent" class="cfg-text" placeholder="curl/7.79.1" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="mc-form-row">
+                  <label data-i18n="provider.userAgent">User-Agent</label>
+                  <input type="text" id="p-useragent" class="cfg-text" placeholder="curl/7.79.1" autocomplete="off" spellcheck="false">
+                </div>
+              </div>
+              <div class="provider-actions" id="provider-actions">
+                <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
+                <span class="provider-actions-spacer"></span>
+                <span id="mc-save-note" class="save-note"></span>
+                <button id="btn-del-provider" class="secondary-button danger" type="button" data-i18n="provider.delete">删除</button>
+                <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
+              </div>
+              <div id="p-fetch-result" class="fetch-result hidden"></div>
+              <div class="mc-models">
+                <div class="mc-models-head">
+                  <h4 data-i18n="provider.models">组内模型</h4>
+                  <span id="p-models-count" class="mc-models-count"></span>
+                  <input type="text" id="mc-model-search" class="cfg-text mc-search" placeholder="搜索模型…" data-i18n-placeholder="provider.searchModel" autocomplete="off" spellcheck="false">
+                  <div class="pm-add-row">
+                    <input type="text" id="pm-name" class="cfg-text" style="width:160px" placeholder="模型名" autocomplete="off" spellcheck="false">
+                    <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
                   </div>
                 </div>
-                <div class="provider-actions" id="provider-actions">
-                  <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
-                  <span class="provider-actions-spacer"></span>
-                  <button id="btn-del-provider" class="secondary-button danger" type="button" data-i18n="provider.delete">删除</button>
-                  <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
-                </div>
-                <div id="p-fetch-result" class="fetch-result hidden"></div>
-                <div class="settings-group pm-models-group" style="margin-top:12px">
-                  <div class="setting-row col pm-sec-head">
-                    <div class="setting-info"><h4 data-i18n="provider.models">组内模型</h4><p class="p-models-sub" id="p-models-count" data-i18n="provider.modelsCount">0 个模型</p></div>
-                  </div>
-                </div>
-                <div class="pm-master-detail">
-                  <div class="pm-master">
-                    <div class="pm-add-row">
-                      <input type="text" id="pm-name" class="cfg-text" style="width:auto;flex:1" placeholder="模型名" autocomplete="off" spellcheck="false">
-                      <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
-                    </div>
-                    <div id="provider-models" class="pm-list"></div>
-                  </div>
-                  <div class="pm-detail">
-                    <div class="pm-detail-empty" id="pm-detail-empty">选择左侧模型编辑详情</div>
-                    <div id="pm-detail-form" class="pm-detail-form hidden"></div>
-                  </div>
-                </div>
+                <div id="provider-models" class="mc-tbody"></div>
               </div>
             </div>
           </div>

@@ -211,6 +211,28 @@ export function describeModelContextWindow(
   return { value: DEFAULT_FALLBACK_CONTEXT, source: 'fallback', label: `未识别，按 ${formatTokenCount(DEFAULT_FALLBACK_CONTEXT)} 兜底展示` };
 }
 
+export interface ModelCapabilities {
+  /** 查表是否命中（false = 未识别，effortOptions 为历史默认五档） */
+  found: boolean;
+  /** 上下文窗口 token 上限（查表命中；未识别 undefined） */
+  context: number | undefined;
+  /** 思考级别档位（查表推导；未识别回退历史五档，恒非空） */
+  effortOptions: string[];
+}
+
+/**
+ * 查询单个模型的上下文窗口与思考级别档位（查表；未命中回退保守值）。
+ * web 设置「模型配置」能力表联动、providerDiscover 响应共用——
+ * 保证前端下拉永不空白、context 可自动补缺。
+ */
+export function resolveModelCapabilities(model?: string | null): ModelCapabilities {
+  return {
+    found: lookupModelContext(model) !== null,
+    context: lookupModelContextWindow(model),
+    effortOptions: deriveReasoningLevels(model) ?? [...LEGACY_DEFAULT_EFFORT_OPTIONS],
+  };
+}
+
 /* ---------------- 快照状态与在线刷新（/models 命令，CLI/TUI/Web 三端共用） ---------------- */
 
 export interface ModelSnapshotInfo {
