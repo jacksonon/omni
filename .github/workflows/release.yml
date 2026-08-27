@@ -104,7 +104,13 @@ jobs:
           cp "$BIN" "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
           chmod +x "packages/npm/${{ matrix.npmPkg }}/bin/${{ matrix.binName }}"
           cd "packages/npm/${{ matrix.npmPkg }}"
-          npm publish --registry=https://registry.npmjs.org --access public
+          # 幂等：版本已存在（重复发布/重跑/先手动发过）→ 跳过不失败，避免阻断后续 Release 创建
+          PKG_NAME=$(node -p "require('./package.json').name")
+          if npm view "$PKG_NAME@$VER" version >/dev/null 2>&1; then
+            echo "✔ $PKG_NAME@$VER 已存在，跳过发布"
+          else
+            npm publish --registry=https://registry.npmjs.org --access public
+          fi
 
       - name: npm pack (omni-<version>.tgz, linux-x64 only)
         if: matrix.artifact == 'omni-linux-x64'
@@ -232,7 +238,13 @@ jobs:
             fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n');
           "
           cd packages/npm/omnicode
-          npm publish --registry=https://registry.npmjs.org --access public
+          # 幂等：版本已存在（重复发布/重跑/先手动发过）→ 跳过不失败，避免阻断后续 Release 创建
+          PKG_NAME=$(node -p "require('./package.json').name")
+          if npm view "$PKG_NAME@$VER" version >/dev/null 2>&1; then
+            echo "✔ $PKG_NAME@$VER 已存在，跳过发布"
+          else
+            npm publish --registry=https://registry.npmjs.org --access public
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
