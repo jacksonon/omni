@@ -2098,9 +2098,9 @@ function renderStatusbarSettings() {
   });
 }
 
-/** 浏览新工作区：优先系统原生文件夹选择（Electron 原生对话框；浏览器 webkitdirectory 原生目录框）。
- *  纯浏览器只能拿到所选文件夹的相对路径（无 File.path），提供不了后端 chdir 需要的绝对路径，
- *  此时回退到页面内目录浏览器（服务端列目录，可导航到任意绝对路径）。 */
+/** 浏览新工作区：Electron 原生对话框；纯浏览器 → 页面内文件夹浏览器（服务端列目录，可导航到任意绝对路径）。
+ *  浏览器 webkitdirectory 只能拿到所选文件夹的相对路径（File.path 只在 Electron 有），
+ *  打开后还得再回退页面内浏览器，是多余的两步，因此纯浏览器直接走页面内目录浏览器。 */
 function browseWorkspace() {
   if (window.omni && typeof window.omni.pickDirectory === 'function') {
     window.omni.pickDirectory()
@@ -2110,29 +2110,8 @@ function browseWorkspace() {
       .catch(() => {});
     return;
   }
-  // 浏览器：点击隐藏的 webkitdirectory input → 系统原生目录选择框（与输入区选择文件同款交互）
-  const input = $('#workspace-input');
-  input.value = '';
-  input.click();
-}
-
-/* webkitdirectory 选中目录：Electron 里 File.path 是绝对路径 → 直接切换；
-   纯浏览器无 File.path（只有 webkitRelativePath 相对路径）→ 回退页面内目录浏览器 */
-$('#workspace-input').addEventListener('change', (e) => {
-  const files = e.target.files;
-  if (!files || !files.length) return;
-  const f = files[0];
-  if (typeof f.path === 'string' && f.path && f.webkitRelativePath) {
-    // 绝对路径 = file.path 去掉相对部分（「所选文件夹/子路径/文件名」）
-    const dir = f.path.slice(0, f.path.length - f.webkitRelativePath.length).replace(/[\\/]+$/, '');
-    if (dir) {
-      switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
-      return;
-    }
-  }
-  // 纯浏览器：拿不到绝对路径 → 打开页面内目录浏览器（仍能完成切换）
   openDirPicker(state.status?.cwd || '/');
-});
+}
 
 /** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
 async function switchWorkspace(dir) {
