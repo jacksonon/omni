@@ -571,7 +571,7 @@ export async function runAgent(
         if (content) output.onAnswerEnd();
         output.onLlmLap?.(
           Date.now() - llmT0,
-          firstTokenAt !== null ? Date.now() - firstTokenAt : null,
+          firstTokenAt !== null ? firstTokenAt - llmT0 : null,
           firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
         );
         if (thinking.shown) finishThinking();
@@ -601,7 +601,7 @@ export async function runAgent(
     if (content) output.onAnswerEnd();
     output.onLlmLap?.(
       Date.now() - llmT0,
-      firstTokenAt !== null ? Date.now() - firstTokenAt : null,
+      firstTokenAt !== null ? firstTokenAt - llmT0 : null,
       firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
     );
     if (lastUsage) {
@@ -644,7 +644,7 @@ export async function runAgent(
           }
         : undefined,
       Date.now() - llmT0,
-      firstTokenAt !== null ? Date.now() - firstTokenAt : null
+      firstTokenAt !== null ? firstTokenAt - llmT0 : null
     );
 
     // 没有工具调用 → 模型给出了最终回答，循环结束（先过 Stop hook）
