@@ -93,7 +93,10 @@ function buildStreamParams(
     stream: true,
   };
   if (extra.includeUsage) params.stream_options = { include_usage: true };
-  const effort = canReason ? (overlay.reasoningEffort ?? extra.reasoningEffort) : undefined;
+  // none = 关思考、auto = 模型默认档——两者都不随请求下发 reasoning_effort 参数
+  //（数据源自动档引入后这两个开关值会出现在 /variants 档位里；网关不认枚举会拒绝）
+  const rawEffort = canReason ? (overlay.reasoningEffort ?? extra.reasoningEffort) : undefined;
+  const effort = rawEffort && rawEffort !== 'none' && rawEffort !== 'auto' ? rawEffort : undefined;
   if (effort) {
     params.reasoning_effort = effort as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming['reasoning_effort'];
   }

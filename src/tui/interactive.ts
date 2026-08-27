@@ -560,6 +560,8 @@ export async function runTuiInteractive(
       // 命名 variant（1.0 P0-3）同样随端点带出（models.<名>.variant 初始值）
       runOpts.reasoningEffort = endpoint.reasoningEffort;
       runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
+      // 压缩预算跟随新模型（数据源自动档：端点展开时 limit.context 已查表补缺；未知模型清空）
+      if (runOpts.context) runOpts.context.contextLimit = endpoint.limit?.context;
       state.reasoningEffort = endpoint.reasoningEffort ?? '';
       if (endpoint.reasoningEffortOptions) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
       runOpts.activeVariant = endpoint.variant;

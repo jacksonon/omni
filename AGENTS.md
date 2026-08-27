@@ -32,6 +32,7 @@ npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 npm run dev -- exec "<任务>" --output-format json   # Headless：stdout 只出结果、进度走 stderr（可 | jq / 管道分支）
 npm run dev -- mcp-server # Headless：作为 MCP server（omni_exec / omni_reply 工具）
 npm run dev -- preset browser # 能力一键预设：浏览器自动化双雄 MCP 写入全局配置
+npm run models:snapshot   # 模型能力快照重建（models.dev → src/config/model-context-snapshot.ts）
 npm run dev -- "spec <特性>" # /spec 规格三件套（requirements-EARS/design/tasks 落盘 .omni/specs/）
 npx tsx scripts/eval/run-headless-eval.ts # headless 结构化评测（含 token/成本/空转/失败类别报告）
 curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零依赖，含 TUI）
@@ -92,7 +93,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "allowSubagents": true,                 // 启用子代理 delegate 工具（默认 true）
   "skills": true,                          // 启用技能（SKILL.md）发现与 skill 工具（默认 true）
   "reasoningEffort": "medium",             // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
-  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 支持的思考级别选项（可自定义支持哪些）
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 思考级别选项——不写=按模型自动推导（models.dev 查表），写了则优先于查表
   "statuslineAlign": "center",             // 状态行水平对齐：left / center（默认）/ right（/settings statusline 面板 a 键切换）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
@@ -206,6 +207,10 @@ src/
     index.ts            # 配置加载：分层合并（含权限/审计/上下文/子代理/MCP 字段）
     jsonc.ts            # JSONC 解析（注释/尾逗号）
     discover.ts         # 配置发现：目录内查找 + cwd 向上查找
+    model-context.ts         # **模型能力自动识别（数据源查表，1.0 P1）**：三级匹配（精确→裸 id→后缀）、
+                             #   上下文窗口 / 思考级别档位推导 + **/models refresh 热替换**（用户级 JSON 覆盖内置）——显式配置永远优先、查表只补缺、MISS 保守回退
+    model-context-builder.ts # 快照构建纯逻辑（拉取/归一化/建表/双序列化）——scripts 生成器与运行时 /models refresh 共用一份实现
+    model-context-snapshot.ts # models.dev 离线内置快照（scripts/build-model-context-snapshot.ts 生成；进 repo）
   tui/
     state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单/轨迹面板状态）
     trace.ts            # **轨迹面板（右侧栏，/trace）**：TraceRow 投影截断成面板行（tracePanelLines，窗口滚动/选中收敛）+ refreshTrace（交互每轮刷新）
@@ -218,6 +223,9 @@ src/
   tui-entry.ts          # TUI 入口（纯 TS 无 JSX）：TTY 门控 + 回退 console
   agent/skill.ts        # **技能系统**：SKILL.md 发现（项目 .opencode/.claude/.agents/skills 向上 + 全局）+ frontmatter 解析（含扩展：disable-model-invocation/context:fork/agent/background）+ 按名加载 + 渐进披露（15 条）+ npx skills CLI 封装 + refreshSkillInjections（安装即时生效）+ createSkillTool（context:fork 子代理执行）
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单；运行时被 createSkillTool 替换以支持子代理执行）
+scripts/build-model-context-snapshot.ts # 模型能力快照生成器（npm run models:snapshot：拉 models.dev api.json →
+                                         #   白名单过滤 → 归一化 {c,r,ro} → src/config/model-context-snapshot.ts；
+                                         #   tsx 跑，复用 src/config/model-context-builder.ts 纯逻辑）
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
 scripts/tui-snapshot.ts # TUI 快照验证（47 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
@@ -278,7 +286,8 @@ for step in 1..maxSteps:
 | `/orchestrate` 命令 | **编排**：fan-out 并行 delegate（默认 3 worker）→ 汇总 → 对抗审查 → 最终报告（`/orchestrate <任务>`）
 | `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
 | `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
-| `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，选项来自配置 reasoningEffortOptions；loop 请求带该参数（网关不认自动回退） |
+| `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，选项来自配置 reasoningEffortOptions——未配置时从 models.dev 快照自动推导（effort 子集/仅开关 none·auto，未识别回退默认五档）；none/auto 不随请求下发参数 |
+| `/models` 命令 | **模型能力快照（CLI/TUI/Web 三端）**：`/models` 查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· `/models refresh` 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
 | `/model` 命令 | **切换/添加模型**（多端点）：`/model` 面板 · `/model <名称>` 切换 · `/model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]` **添加并持久化**（运行时注册进 runOpts.models + 切换，纯 JSON 配置自动追加 **providers 单模型分组**，JSONC 提示手动加）；选项来自配置 providers 分组（端点/密钥的唯一格式，缺省字段回退网关级/环境变量）；切换时用 createClient 重建客户端并更新 ModelRuntime（主循环与子代理同步） |
 | `/status` 命令 | **会话状态汇总**：模型/权限/计划模式/思考级别/token 用量/会话文件/已加载脚手架（记忆/技能/预载）；共享逻辑在 `agent/report.ts`（TUI+CLI 复用） |
 | `/context` 命令 | **上下文用量**：消息数（user/assistant/tool）+ token 估算 + 已加载脚手架 + 距自动压缩阈值建议 |

@@ -112,7 +112,7 @@
       "items": {
         "type": "string"
       },
-      "description": "/variants 支持的思考级别选项（默认 low/medium/high）"
+      "description": "/variants 支持的思考级别选项——不写（或空数组）= 按模型自动推导（models.dev 快照查表；查不到回退 low,medium,high,xhigh,max），写了则优先于查表
     },
     "architect": {
       "type": "string",

@@ -26,6 +26,7 @@ import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
+import { autoFillLimit, resolveReasoningEffortOptions } from './config/model-context.js';
 import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
@@ -259,6 +260,9 @@ export async function attachRuntime(
   // （常见于先 /model add <名> 再 /model <名> 切换——顶层与 models 表各留一份）。
   // disabled 条目不出现在列表（1.0 模型元数据）；元数据字段原样携带供 loop 消费。
   const defModel = cfg.models?.[cfg.model];
+  // 数据源自动档（1.0 P1）：用户未显式配置的思考级别选项与上下文窗口从 models.dev
+  // 快照查表补缺（显式配置永远优先，绝不覆盖）——见 src/config/model-context.ts
+  const autoNames = (name: string, e: ModelEntryConfig | undefined): (string | undefined)[] => [name, e?.apiModel];
   const expandEndpoint = (name: string, e: ModelEntryConfig | undefined): ModelEndpoint => ({
     name,
     provider: e?.provider,
@@ -266,13 +270,13 @@ export async function attachRuntime(
     apiKey: e?.apiKey ?? cfg.apiKey,
     userAgent: e?.userAgent ?? cfg.userAgent,
     headers: e?.headers,
-    reasoningEffortOptions: e?.reasoningEffortOptions ?? cfg.reasoningEffortOptions,
+    reasoningEffortOptions: resolveReasoningEffortOptions(e?.reasoningEffortOptions ?? cfg.reasoningEffortOptions, ...autoNames(name, e)),
     reasoningEffort: e?.reasoningEffort ?? cfg.reasoningEffort,
     variant: e?.variant,
     variants: e?.variants,
     apiModel: e?.apiModel,
     displayName: e?.displayName,
-    limit: e?.limit,
+    limit: autoFillLimit(e?.limit, ...autoNames(name, e)),
     modalities: e?.modalities,
     capabilities: e?.capabilities,
     disabled: e?.disabled,
@@ -322,8 +326,9 @@ export async function attachRuntime(
     hooks: ctx.runOpts.hooks, // PreCompact：长对话压缩前 fire-and-forget
     repoMap: cfg.repoMap !== false,
     repoMapMaxSymbols: cfg.repoMapMaxSymbols,
-    // 压缩 2.0（1.0 P1-4）：按模型上下文窗口占比提前触发（消息数阈值仍生效）
-    contextLimit: cfg.models?.[cfg.model]?.limit?.context,
+    // 压缩 2.0（1.0 P1-4）：按模型上下文窗口占比提前触发（消息数阈值仍生效）。
+    // 窗口 = 手动配置 > 数据源自动识别——当前模型端点展开时已查表补缺（数据源自动化）
+    contextLimit: modelEndpoints.find((m) => m.name === cfg.model)?.limit?.context,
     compressRatio: cfg.contextCompressRatio,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+

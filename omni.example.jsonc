@@ -107,7 +107,8 @@
   // 模型思考级别（reasoning_effort，OpenAI 系 low/medium/high/xhigh/max）：
   // 不配置 = 请求不带该参数（用模型默认）；/variants 命令可切换
   "reasoningEffort": "medium",
-  // /variants 支持的思考级别选项（可自行配置支持哪些）
+  // /variants 思考级别选项——删掉本行（或留空数组）= 按模型自动推导（models.dev 快照查表：
+  //   GLM 等 effort 型取档位子集、开关型只有 none/auto、查不到回退默认五档）；写了则优先于查表
   "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"],
 
   // 模型路由（architect/editor）：/plan 计划模式自动用 architect（强模型规划）、

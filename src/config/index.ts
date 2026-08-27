@@ -59,7 +59,11 @@ export interface OmniConfig {
    * /variants 命令可切换；TUI 面板选项来自 reasoningEffortOptions。
    */
   reasoningEffort?: string;
-  /** /variants 支持的思考级别选项（默认 low/medium/high，可自行配置支持哪些） */
+  /**
+   * /variants 支持的思考级别选项。**空数组 = 未配置 → 从模型数据源自动推导**
+   * （models.dev 快照查表：effort 档位子集 / 仅开关 none·auto），查表也未命中时
+   * 回退历史默认五档。用户显式写入了该字段则永远优先于查表。
+   */
   reasoningEffortOptions: string[];
   /**
    * 内部合并表（运行时唯一形态）：providers 分组展开后合并进本表，供 /model 切换、
@@ -331,7 +335,9 @@ const DEFAULTS = {
   summarizeWindow: 8,
   preloadFiles: true,
   skills: true,
-  reasoningEffortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
+  // 思考级别选项：空数组 = 未配置 → 端点展开时从模型数据源快照推导（查表未命中回退五档）
+  // 见 src/config/model-context.ts resolveReasoningEffortOptions
+  reasoningEffortOptions: [],
   preloadMaxFiles: 5,
   preloadMaxBytes: 30 * 1024,
   allowSubagents: true,

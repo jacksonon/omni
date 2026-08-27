@@ -65,6 +65,7 @@ import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
 import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
+import { describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
@@ -1126,8 +1127,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
           baseURL: parsed.baseURL ?? cfg?.baseURL,
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
-          // per-model variants 缺省回退全局（/model add 不带思考级别 flag——配置文件是配置途径）
-          reasoningEffortOptions: cfg?.reasoningEffortOptions,
+          // per-model variants：顶层显式配置优先，未配则按模型名从数据源查表推导
+          reasoningEffortOptions: resolveReasoningEffortOptions(cfg?.reasoningEffortOptions, parsed.name),
           reasoningEffort: cfg?.reasoningEffort,
         };
         const err = ctx.onAddModel?.(endpoint);
@@ -1178,7 +1179,36 @@ export const TUI_COMMANDS: TuiCommand[] = [
         trusted: ctx.runOpts?.trusted,
         memoryFiles: memoryFilesFromMessages(ctx.messages),
         globalMemory: ctx.messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
+        contextWindow: describeModelContextWindow(
+          (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model))?.limit?.context,
+          ctx.model ?? ctx.state.model,
+          (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model))?.apiModel
+        ),
       })) pushCmdLine(ctx.state, { kind: 'meta', text: line });
+    },
+  },
+  {
+    name: 'models',
+    description: '模型能力快照：/models 查看状态 · /models refresh 在线更新（models.dev → 用户配置目录）',
+    descriptionEn: 'Model snapshot: /models status · /models refresh online',
+    run: async (ctx) => {
+      const arg = (ctx.args ?? '').trim();
+      if (!arg) {
+        const info = snapshotInfo();
+        pushCmdLine(ctx.state, { kind: 'meta', text: `模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）` });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）' });
+      } else if (arg === 'refresh') {
+        pushCmdLine(ctx.state, { kind: 'meta', text: '正在拉取 models.dev 并重建快照…（无需 API Key）' });
+        const res = await refreshModelContextSnapshot();
+        if (res.ok) {
+          pushCmdLine(ctx.state, { kind: 'meta', text: `✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效` });
+          pushCmdLine(ctx.state, { kind: 'meta', text: `已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）` });
+        } else {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）` });
+        }
+      } else {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）` });
+      }
     },
   },
   {
@@ -1187,7 +1217,14 @@ export const TUI_COMMANDS: TuiCommand[] = [
     descriptionEn: 'View context usage (messages/token estimate/scaffolds)',
     run: (ctx) => {
       const summarizeAt = ctx.cfg?.summarizeAt ?? 40;
-      for (const line of contextReport(ctx.messages, summarizeAt)) pushCmdLine(ctx.state, { kind: 'meta', text: line });
+      const curEp = (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model));
+      for (const line of contextReport(
+        ctx.messages,
+        summarizeAt,
+        describeModelContextWindow(curEp?.limit?.context, ctx.model ?? ctx.state.model, curEp?.apiModel),
+        ctx.cfg?.contextCompressRatio
+      ))
+        pushCmdLine(ctx.state, { kind: 'meta', text: line });
     },
   },
   {

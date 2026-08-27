@@ -174,7 +174,7 @@ Config fields (see `omni.example.jsonc` for a full example):
   "maxSubagentSteps": 10,                // max subagent loop steps (default 10)
   "skills": true,                        // skill (SKILL.md) discovery and the skill tool (default true)
   "reasoningEffort": "medium",            // current reasoning level (reasoning_effort; unset = not sent, model default)
-  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // options supported by /variants (customizable)
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants levels — omit (or empty) to auto-derive per model from the models.dev snapshot
   "architect": "gpt-5",                  // model routing: /plan uses a strong model (falls back to current)
   "editor": "gpt-5-mini",                // model routing: execution uses a light model (falls back to current)
   // multi-model endpoints (/model switch/add) use `providers` groups only — per-model reasoning

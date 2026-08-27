@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { OmniConfig } from '../config/index.js';
+import { formatTokenCount, type ContextWindowInfo } from '../config/model-context.js';
 import type { TokenUsage } from '../output/types.js';
 
 /** /status 的输入（调用方从 state / runOpts 组装） */
@@ -32,6 +33,8 @@ export interface StatusInput {
   sandbox?: string;
   /** 工作区是否受信任（未信任 → 只读降级，显示警示） */
   trusted?: boolean;
+  /** 当前生效的上下文窗口（数据源自动档：手动配置 > models.dev 查表 > 兑底） */
+  contextWindow?: ContextWindowInfo;
 }
 
 /** 从消息里提取已加载记忆文件的路径清单（`[项目记忆 AGENTS.md：<path>]` 前缀） */
@@ -54,6 +57,7 @@ export function statusReport(s: StatusInput): string[] {
     `· 模型：${s.model}`,
     `· 权限：${s.permission}${s.planMode ? '（计划模式）' : ''}${s.trusted === false ? '（未信任目录 → 只读）' : ''}`,
     `· 思考级别：${s.reasoningEffort || '（未设置，用模型默认）'}`,
+    ...(s.contextWindow ? [`· 上下文窗口：${formatTokenCount(s.contextWindow.value)} tokens（${s.contextWindow.label}）`] : []),
     s.tokens
       ? `· token 用量：${s.tokens.total}（prompt ${s.tokens.prompt} + completion ${s.tokens.completion}）`
       : '· token 用量：（console 模式不跟踪，TUI 底部显示）',
@@ -80,10 +84,12 @@ export function statusReport(s: StatusInput): string[] {
   return lines;
 }
 
-/** /context：上下文用量（消息数 + token 估算 + 已加载脚手架 + 压缩建议） */
+/** /context：上下文用量（消息数 + token 估算 + 已加载脚手架 + 压缩建议 + 窗口占比） */
 export function contextReport(
   messages: ChatCompletionMessageParam[],
-  summarizeAt: number
+  summarizeAt: number,
+  contextWindow?: ContextWindowInfo,
+  compressRatio?: number
 ): string[] {
   const scaffold = messages.filter(
     (m): m is ChatCompletionMessageParam & { content: string } =>
@@ -103,6 +109,12 @@ export function contextReport(
     `· 文本量约 ${estTokens} token（按字符估算，含脚手架）`,
     `· 已加载脚手架：${scaffold.length > 0 ? scaffold.map((m) => m.content.split('\n')[0]).join('、') : '无'}`,
   ];
+  if (contextWindow) {
+    const pct = Math.min(100, Math.round((estTokens / contextWindow.value) * 100));
+    const budget = Math.floor(contextWindow.value * (compressRatio ?? 0.7));
+    lines.push(`· 模型窗口：${formatTokenCount(contextWindow.value)} token（${contextWindow.label}）`);
+    lines.push(`· 压缩预算：估算 ≈ ${pct}% 窗口${budget > 0 ? `，超过 ${Math.round(budget)} token（× ${(compressRatio ?? 0.7).toFixed(2)} 占比）自动压缩` : '（自动按占比触发关闭）'}`);
+  }
   if (summarizeAt > 0) {
     lines.push(
       messages.length > summarizeAt
@@ -222,7 +234,11 @@ export async function doctorReport(cfg: OmniConfig): Promise<string[]> {
     `· 配置来源：${cfg.sources.length > 0 ? cfg.sources.join(' → ') : '（仅默认值）'}`,
     `· MCP 服务器：${cfg.mcpServers ? Object.keys(cfg.mcpServers).length : 0} 个配置`,
     `· 权限档位：${cfg.permission} · 子代理：${cfg.allowSubagents ? `启用（步数上限 ${cfg.maxSubagentSteps}）` : '关闭'}`,
-    `· 思考级别：${cfg.reasoningEffort || '（未设置）'} · 支持选项：${cfg.reasoningEffortOptions.join(' / ')}`,
+    `· 思考级别：${cfg.reasoningEffort || '（未设置）'} · 支持选项：${
+      cfg.reasoningEffortOptions?.length
+        ? cfg.reasoningEffortOptions.join(' / ')
+        : '自动（按模型数据源推导）'
+    }`,
     `· 模型：${cfg.model}${cfg.models ? ` + 配置端点 ${Object.keys(cfg.models).length} 个` : ''}`
   );
   return lines;

@@ -2518,6 +2518,7 @@ const SLASH_COMMANDS = [
   { name: '/permission', desc: '切换安全权限档位（低/中/高/全量）' },
   { name: '/model', desc: '查看/切换/添加模型（/model fetch 拉取网关模型清单）' },
   { name: '/variants', desc: '切换思考级别（low/medium/high）' },
+  { name: '/models', desc: '模型能力快照：/models refresh 在线更新（models.dev）' },
   { name: '/undo', desc: '撤销最近的文件修改（all = 全部）' },
   { name: '/redo', desc: '重做上次撤销（all = 全部）' },
   { name: '/compact', desc: '手动压缩上下文为摘要' },

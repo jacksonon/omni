@@ -95,6 +95,7 @@ import type { Output } from '../output/types.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
+import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
   parseModelAddArgs,
@@ -625,6 +626,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       runOpts.reasoningEffort = ep.reasoningEffort ?? cfg.reasoningEffort;
       runOpts.reasoningEffortOptions = ep.reasoningEffortOptions ?? cfg.reasoningEffortOptions;
       runOpts.activeVariant = ep.variant; // 命名 variant 随端点带出（1.0 P0-3）
+      // 压缩预算跟随新模型（数据源自动档：未知模型清空不误压）
+      if (runOpts.context) runOpts.context.contextLimit = ep.limit?.context;
     } catch {
       return false;
     }
@@ -847,6 +850,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/status') {
+      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
       for (const l of statusReport({
         model, permission: runOpts.permission ?? 'safe',
         planMode: runOpts.planMode ?? false, reasoningEffort: runOpts.reasoningEffort,
@@ -854,15 +858,44 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         sandbox: runOpts.sandbox, trusted: runOpts.trusted,
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
+        contextWindow: describeModelContextWindow(curEp?.limit?.context, model, curEp?.apiModel),
       })) add(l);
       return { lines };
     }
 
     if (cmd === '/context') {
-      for (const l of contextReport(messages, cfg.summarizeAt ?? 40)) add(l);
+      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
+      for (const l of contextReport(
+        messages,
+        cfg.summarizeAt ?? 40,
+        describeModelContextWindow(curEp?.limit?.context, model, curEp?.apiModel),
+        cfg.contextCompressRatio
+      ))
+        add(l);
       return { lines };
     }
 
+    if (cmd === '/models' || cmd.startsWith('/models ')) {
+      // /models：模型能力快照状态；/models refresh 在线更新（默认不自动更新）
+      const arg = cmd.slice('/models'.length).trim();
+      if (!arg) {
+        const info = snapshotInfo();
+        add(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`);
+        add('/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）');
+      } else if (arg === 'refresh') {
+        add('正在拉取 models.dev 并重建快照…（无需 API Key）');
+        const res = await refreshModelContextSnapshot();
+        if (res.ok) {
+          add(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`);
+          add(`已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）`);
+        } else {
+          add(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`);
+        }
+      } else {
+        add(`未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）`);
+      }
+      return { lines };
+    }
     if (cmd === '/export') {
       const file = exportSession(messages, process.cwd());
       add(file ? `已导出会话 → ${file}（${messages.length} 条消息）` : '导出失败（无法写入 .omni/ 目录）');
@@ -1157,7 +1190,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const endpoint = {
           name: parsed.name, baseURL: parsed.baseURL ?? cfg.baseURL,
           apiKey: parsed.apiKey ?? cfg.apiKey, userAgent: parsed.userAgent ?? cfg.userAgent,
-          reasoningEffortOptions: cfg.reasoningEffortOptions, reasoningEffort: cfg.reasoningEffort,
+          // 数据源自动档：顶层显式配置优先，未配则按模型名查表推导
+          reasoningEffortOptions: resolveReasoningEffortOptions(cfg.reasoningEffortOptions?.length ? cfg.reasoningEffortOptions : undefined, parsed.name),
+          reasoningEffort: cfg.reasoningEffort,
+          limit: autoFillLimit(undefined, parsed.name),
         };
         const existing = models.find((m) => m.name === parsed.name);
         if (existing) Object.assign(existing, endpoint);

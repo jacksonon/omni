@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
+import { describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -101,6 +102,8 @@ export async function runInteractive(
     // per-model variants 联动：切换后思考级别/选项跟随该模型配置（端点展开时已回退全局缺省）
     runOpts.reasoningEffort = endpoint.reasoningEffort;
     runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
+    // 压缩预算跟随新模型：手动配置 > 数据源自动识别（端点展开时已查表补缺）；未知模型清空（不误压）
+    if (runOpts.context) runOpts.context.contextLimit = endpoint.limit?.context;
     return null;
   };
   // 会话持久化：增量追加每轮新增消息。
@@ -571,8 +574,8 @@ export async function runInteractive(
           baseURL: parsed.baseURL ?? cfg?.baseURL,
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
-          // per-model variants 缺省回退全局（/model add 不带思考级别 flag——配置文件是配置途径）
-          reasoningEffortOptions: cfg?.reasoningEffortOptions,
+          // per-model variants：用户显式配了顶层选项 → 继承；未配 → 按模型名从数据源查表推导
+          reasoningEffortOptions: resolveReasoningEffortOptions(cfg?.reasoningEffortOptions, parsed.name),
           reasoningEffort: cfg?.reasoningEffort,
         };
         // 注册进运行时模型表（同名覆盖）：子代理/主循环经 modelRuntime 用新端点
@@ -626,13 +629,47 @@ export async function runInteractive(
         trusted: runOpts.trusted,
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
+        contextWindow: describeModelContextWindow(
+          (runOpts.models ?? []).find((m) => m.name === currentModel)?.limit?.context,
+          currentModel,
+          (runOpts.models ?? []).find((m) => m.name === currentModel)?.apiModel
+        ),
       })) console.log(dim(line));
       safePrompt();
       continue;
     }
     if (cmd === '/context') {
       // /context：上下文用量（消息数/token 估算/脚手架/压缩建议）
-      for (const line of contextReport(messages, runOpts.cfg?.summarizeAt ?? 40)) console.log(dim(line));
+      const curEp = (runOpts.models ?? []).find((m) => m.name === currentModel);
+      for (const line of contextReport(
+        messages,
+        runOpts.cfg?.summarizeAt ?? 40,
+        describeModelContextWindow(curEp?.limit?.context, currentModel, curEp?.apiModel),
+        runOpts.cfg?.contextCompressRatio
+      ))
+        console.log(dim(line));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/models' || cmd.startsWith('/models ')) {
+      // /models：模型能力快照状态；/models refresh 在线更新（默认不自动更新，用户手动触发）
+      const arg = cmd.slice('/models'.length).trim();
+      if (!arg) {
+        const info = snapshotInfo();
+        console.log(dim(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`));
+        console.log(dim('/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）'));
+      } else if (arg === 'refresh') {
+        console.log(dim('正在拉取 models.dev 并重建快照…（无需 API Key）'));
+        const res = await refreshModelContextSnapshot();
+        if (res.ok) {
+          console.log(green(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`));
+          console.log(dim(`已写入 ${res.file}（下次启动自动覆盖内置；删除该文件恢复内置快照）`));
+        } else {
+          console.log(red(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`));
+        }
+      } else {
+        console.log(red(`未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）`));
+      }
       safePrompt();
       continue;
     }
