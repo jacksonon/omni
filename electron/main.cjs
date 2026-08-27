@@ -88,7 +88,9 @@ function pickDir() {
     defaultPath: workspace,
     properties: ['openDirectory', 'createDirectory'],
   });
-  return choice && choice.filePaths[0] ? choice.filePaths[0] : null;
+  // ⚠️ showOpenDialogSync 返回 string[]（取消 = undefined），不是异步版的 { canceled, filePaths }——
+  // 用 choice.filePaths[0] 会在选中后崩「Cannot read properties of undefined (reading '0')」
+  return choice && choice.length ? choice[0] : null;
 }
 
 // 页面（Web UI 设置 → 工作目录 → 浏览…）经 preload 触发原生选择

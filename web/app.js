@@ -2107,7 +2107,8 @@ function browseWorkspace() {
       .then((dir) => {
         if (dir) switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
       })
-      .catch(() => {});
+      // 原生对话框异常（IPC 崩溃 / 桥接失效）→ 回退页面内目录浏览器，而不是静默失败
+      .catch(() => openDirPicker(state.status?.cwd || '/'));
     return;
   }
   openDirPicker(state.status?.cwd || '/');
