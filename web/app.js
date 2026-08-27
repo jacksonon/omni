@@ -3833,6 +3833,7 @@ $('#set-concurrency').addEventListener('change', (e) => {
 let cfgProviderSel = null;   // 当前选中分组：null=未选、''=未分组、'name'=provider、'__new__'=新建
 let cfgProviderNewName = '';
 let cfgProviderApiKey = '';  // 当前编辑 provider 的已保存 apiKey（眼睛按钮 reveal 用）
+let cfgModelSel = null;      // 当前选中组内模型名称（二级主从：模型列表 → 详情表单）
 
 function providerModelsOf(g) { return Array.isArray(g && g.models) ? g.models : []; }
 
@@ -3890,6 +3891,7 @@ $('#providers-list')?.addEventListener('click', (e) => {
   if (!btn) return;
   cfgProviderSel = btn.dataset.provider ?? '';
   cfgProviderNewName = '';
+  cfgModelSel = null; // 切换分组：清空模型选中，详情回到空态
   const s = state.status || {};
   renderProvidersNav(s);
   renderProviderEdit(s);
@@ -4051,33 +4053,34 @@ function renderProviderEdit(s) {
   renderProviderModels(s, group, isNew);
 }
 
-/** 渲染 provider 组内模型列表 */
+/** 渲染 provider 组内模型管理区（二级主从）：左侧模型列表 + 右侧选中模型详情表单 */
 function renderProviderModels(s, group, isNew) {
   const container = $('#provider-models');
   if (!container) return;
   const models = isNew ? [] : providerModelsOf(group);
+  // 选中越界回收：选中名称不在当前组时清空（切分组已在入口清空；这里兜底删除模型后）
+  if (cfgModelSel && !models.some((m) => m.name === cfgModelSel)) cfgModelSel = null;
+  // 有模型但未选中时，默认选中第一个（开箱即选中可编辑，不必再点一次）
+  if (!cfgModelSel && models.length > 0) cfgModelSel = models[0].name;
   container.innerHTML = '';
   if (models.length === 0) container.appendChild(el('div', 'cfg-model-empty', t('provider.emptyModels')));
-  models.forEach((m) => container.appendChild(providerModelItem(s, group, m)));
+  models.forEach((m) => container.appendChild(providerModelListRow(s, group, m)));
+  renderProviderModelDetail(s, group, isNew);
 }
 
-function providerModelItem(s, group, m) {
+/** 主列：单个模型列表行（名称 + 摘要徽标 + 默认/删除动作；点击 → 右侧详情） */
+function providerModelListRow(s, group, m) {
   const isDefault = m.name === s.model || `${group.name}/${m.name}` === s.model;
-  const item = el('div', 'pm-item' + (isDefault ? ' default' : ''));
-  const head = el('div', 'pm-head');
-  // 展开箭头（▸→▾）——per-model 设置（含思考级别选项）可点击展开的可发现性提示
-  head.appendChild(el('span', 'pm-chev', '▸'));
-  head.appendChild(el('span', 'pm-name', m.name));
-  if (m.apiModel) head.appendChild(el('span', 'pm-apimodel', m.apiModel));
-  if (isDefault) head.appendChild(el('span', 'pm-def-badge', t('provider.defaultBadge')));
-  // 思考级别摘要徽标：模型级设置了思考级别/选项时在头部直接可见（用户要求模型可设支持思考级别）
-  if (m.reasoningEffort) head.appendChild(el('span', 'pm-effort', `思考 ${m.reasoningEffort}`));
-  else if (m.reasoningEffortOptions?.length) head.appendChild(el('span', 'pm-effort', `思考级别 ${m.reasoningEffortOptions.length} 档`));
-  const actions = el('div', 'pm-actions');
-  // 编辑按钮：显式展开/收起该模型的设置表单（含思考级别选项）
-  const editBtn = el('button', 'pm-edit-btn', t('provider.edit'));
-  editBtn.addEventListener('click', (e) => { e.stopPropagation(); body.classList.toggle('open'); });
-  actions.appendChild(editBtn);
+  const row = el('div', 'pm-list-row' + (m.name === cfgModelSel ? ' active' : ''));
+  row.appendChild(el('span', 'pm-name', m.name));
+  const cds = el('span', 'pm-cds');
+  if (isDefault) cds.appendChild(el('span', 'pm-badge def', t('provider.defaultBadge')));
+  // 思考级别摘要徽标：模型级设置了思考级别/选项时在列表行直接可见
+  if (m.reasoningEffort) cds.appendChild(el('span', 'pm-badge eff', `思考 ${m.reasoningEffort}`));
+  else if (m.reasoningEffortOptions?.length) cds.appendChild(el('span', 'pm-badge eff', `思考级别 ${m.reasoningEffortOptions.length} 档`));
+  if (m.overrideBaseURL || m.overrideApiKey) cds.appendChild(el('span', 'pm-badge ovr', t('provider.override')));
+  row.appendChild(cds);
+  const acts = el('span', 'pm-row-actions');
   if (!isDefault) {
     const defBtn = el('button', 'pm-btn', '★');
     defBtn.title = t('provider.setDefault');
@@ -4089,7 +4092,7 @@ function providerModelItem(s, group, m) {
       }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
         .catch((err) => alert(t('provider.errSetDefault', { msg: err.message })));
     });
-    actions.appendChild(defBtn);
+    acts.appendChild(defBtn);
   }
   const delBtn = el('button', 'pm-btn danger', '×');
   delBtn.title = t('provider.removeModel');
@@ -4099,47 +4102,78 @@ function providerModelItem(s, group, m) {
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ providerRemove: { provider: group.name, modelName: m.name } }),
-    }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
-      .catch((err) => alert(t('provider.errDelete', { msg: err.message })));
+    }).then(() => {
+      if (cfgModelSel === m.name) cfgModelSel = null; // 删的是选中项 → 落到下一个默认选中
+      refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});
+    }).catch((err) => alert(t('provider.errDelete', { msg: err.message })));
   });
-  actions.appendChild(delBtn);
-  head.appendChild(actions);
-  item.appendChild(head);
+  acts.appendChild(delBtn);
+  row.appendChild(acts);
+  // 点击整行 → 选中到右侧详情编辑
+  row.addEventListener('click', () => {
+    if (cfgModelSel === m.name) return;
+    cfgModelSel = m.name;
+    document.querySelectorAll('#provider-models .pm-list-row').forEach((r) => r.classList.toggle('active', r === row));
+    renderProviderModelDetail(s, group, false);
+  });
+  return row;
+}
 
+/** 右侧：渲染选中模型的详情表单（模型名/apiModel/显示名/思考级别选项·当前级别/上下文/继承·覆盖/保存） */
+function renderProviderModelDetail(s, group, isNew) {
+  const empty = $('#pm-detail-empty');
+  const formBox = $('#pm-detail-form');
+  if (!empty || !formBox) return;
+  const models = isNew ? [] : providerModelsOf(group);
+  const m = models.find((x) => x.name === cfgModelSel) || null;
+  if (!m) {
+    empty.classList.remove('hidden');
+    formBox.classList.add('hidden');
+    formBox.innerHTML = '';
+    return;
+  }
+  empty.classList.add('hidden');
+  formBox.classList.remove('hidden');
+  const isDefault = m.name === s.model || `${group.name}/${m.name}` === s.model;
   const hasOverride = !!(m.overrideBaseURL || m.overrideApiKey);
-  const body = el('div', 'pm-body');
-  body.innerHTML = `
+  formBox.innerHTML = `
+    <div class="pm-form-head">
+      <span class="pm-form-name">${esc(m.name)}</span>
+      ${isDefault ? `<span class="pm-badge def">${esc(t('provider.defaultBadge'))}</span>` : ''}
+      ${m.reasoningEffort ? `<span class="pm-badge eff">思考 ${esc(m.reasoningEffort)}</span>` : ''}
+      <span class="pm-form-sub">${group.name ? `${esc(group.name)}/` : ''}${esc(m.name)}</span>
+    </div>
     <div class="pm-row"><label>${t('provider.fldApiModel')}</label><input class="cfg-text" value="${esc(m.apiModel || '')}" placeholder="${esc(m.name)}"></div>
     <div class="pm-row"><label>${t('provider.fldDisplay')}</label><input class="cfg-text" value="${esc(m.displayName || '')}" placeholder="${esc(m.name)}"></div>
     <div class="pm-row"><label>${t('provider.fldEfforts')}</label><div class="pm-eff-input"><input class="cfg-text" value="${esc((m.reasoningEffortOptions || []).join(', '))}" placeholder="low,medium,high,xhigh,max" title="${esc(t('settings.variantsDesc'))}"><p class="pm-hint">${esc(t('settings.variantsDesc'))}</p></div></div>
     <div class="pm-row"><label>${t('provider.fldEffort')}</label><select class="setting-control"></select></div>
-    <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" style="width:160px" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
+    <div class="pm-row"><label>${t('provider.fldContext')}</label><input class="setting-control" type="number" value="${m.limit?.context || ''}" placeholder="128000" min="0" step="1000"></div>
     <div class="pm-row"><label></label><span class="inherit-toggle${hasOverride ? '' : ' active'}" data-mode="inherit">${t('provider.inherit')}</span>&nbsp;/&nbsp;<span class="inherit-toggle${hasOverride ? ' active' : ''}" data-mode="override">${t('provider.override')}</span></div>
-    <div class="pm-row" data-ovr><label>${t('provider.fldBaseURL')}</label><input class="cfg-text" value="${esc(m.overrideBaseURL || '')}" placeholder="${esc(group.baseURL || '')}"></div>
+    <div class="pm-row" data-ovr><label>${t('provider.fldBaseURL')}</label><input class="cfg-text" value="${esc(m.overrideBaseURL || '')}" placeholder="${esc(group ? group.baseURL || '' : '')}"></div>
     <div class="pm-row" data-ovr><label>${t('provider.fldApiKey')}</label><input type="password" class="cfg-text" placeholder="sk-…"></div>
-    <button class="primary-button" style="align-self:flex-start" type="button">${t('provider.save')}</button>
+    <div class="pm-row"><button class="primary-button" type="button">${t('provider.save')}</button></div>
   `;
   const opts = (m.reasoningEffortOptions || s.reasoningEffortOptions || ['low', 'medium', 'high', 'xhigh', 'max']).filter(Boolean);
-  const effSel = body.querySelector('select');
+  const effSel = formBox.querySelector('select');
   opts.forEach((o) => {
     const op = document.createElement('option');
     op.value = o; op.textContent = o;
     if (o === (m.reasoningEffort || s.reasoningEffort || opts[0])) op.selected = true;
     effSel.appendChild(op);
   });
-  const ovrRows = body.querySelectorAll('[data-ovr]');
+  const ovrRows = formBox.querySelectorAll('[data-ovr]');
   if (!hasOverride) ovrRows.forEach((r) => r.style.display = 'none');
-  body.querySelectorAll('.inherit-toggle').forEach((tog) => {
+  formBox.querySelectorAll('.inherit-toggle').forEach((tog) => {
     tog.addEventListener('click', () => {
-      body.querySelectorAll('.inherit-toggle').forEach((x) => x.classList.remove('active'));
+      formBox.querySelectorAll('.inherit-toggle').forEach((x) => x.classList.remove('active'));
       tog.classList.add('active');
       const isOvr = tog.dataset.mode === 'override';
       ovrRows.forEach((r) => r.style.display = isOvr ? '' : 'none');
     });
   });
-  body.querySelector('button').addEventListener('click', () => {
-    const inputs = body.querySelectorAll('input');
-    const isOverride = body.querySelector('.inherit-toggle.active')?.dataset.mode === 'override';
+  formBox.querySelector('button.primary-button').addEventListener('click', () => {
+    const inputs = formBox.querySelectorAll('input');
+    const isOverride = formBox.querySelector('.inherit-toggle.active')?.dataset.mode === 'override';
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -4149,7 +4183,7 @@ function providerModelItem(s, group, m) {
           apiModel: inputs[0].value.trim() || undefined,
           displayName: inputs[1].value.trim() || undefined,
           reasoningEffortOptions: inputs[2].value.split(',').map((s) => s.trim()).filter(Boolean) || undefined,
-          reasoningEffort: body.querySelector('select').value || undefined,
+          reasoningEffort: effSel.value || undefined,
           contextLimit: Number(inputs[3].value) > 0 ? Number(inputs[3].value) : undefined,
           overrideBaseURL: isOverride ? (inputs[4]?.value?.trim() || undefined) : undefined,
           overrideApiKey: isOverride ? (inputs[5]?.value?.trim() || undefined) : undefined,
@@ -4158,9 +4192,6 @@ function providerModelItem(s, group, m) {
     }).then(() => refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {}))
       .catch((err) => alert(t('provider.errSave', { msg: err.message })));
   });
-  head.addEventListener('click', (e) => { if (e.target.closest('.pm-btn, .pm-edit-btn')) return; body.classList.toggle('open'); });
-  item.appendChild(body);
-  return item;
 }
 
 /** 设置面板「模型配置」tab 数据刷新：左侧分组列表 + 右侧编辑区 + 底部动作按钮 */
@@ -4178,26 +4209,28 @@ function fillModelConfigForm(s) {
   }
   renderProvidersNav(s);
   renderProviderEdit(s);
-  // 添加模型（组内；新建模式下先落盘 provider 配置再添加）——onclick 覆盖注册防重复监听
+  // 添加模型（组内；新建模式下先落盘 provider 配置再添加）——onclick 覆盖注册防重复监听。
+  // apiModel 等其余字段放到右侧详情表单里编辑（添加后自动选中该模型并打开详情）。
   $('#btn-add-model').onclick = async () => {
     const nameInput = $('#pm-name');
-    const apiModelInput = $('#pm-apimodel');
     const modelName = nameInput.value.trim();
     if (!modelName) return;
     const provider = await ensureProviderName();
     if (!provider) return;
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerModel: { provider, modelName, apiModel: apiModelInput.value.trim() || undefined } }),
+      body: JSON.stringify({ providerModel: { provider, modelName } }),
     }).then(() => {
-      nameInput.value = ''; apiModelInput.value = '';
-      refreshStatus().then((s) => renderProviderEdit(s)).catch(() => {});
+      nameInput.value = '';
+      cfgModelSel = modelName; // 添加后自动选中 → 右侧详情直接可编辑 apiModel/级别/上下文
+      refreshStatus().then((s) => { renderProvidersNav(s); renderProviderEdit(s); }).catch(() => {});
     }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
   };
   // 新建 provider
   $('#btn-provider-new').onclick = () => {
     cfgProviderSel = '__new__';
     cfgProviderNewName = '';
+    cfgModelSel = null;
     renderProvidersNav(s);
     renderProviderEdit(s);
   };

@@ -608,35 +608,40 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .provider-nav-item .pni-icon { flex: none; font-size: 14px; width: 18px; text-align: center; }
 .provider-nav-item .pni-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .provider-nav-item .pni-count { flex: none; color: var(--text-caption); font-size: 11px; }
+/* 模型管理区：二级主从（方案 B）——左侧模型列表 + 右侧所选模型编辑表单 */
+.pm-models-group .setting-row.col.pm-sec-head { padding-bottom: 4px; }
+.pm-master-detail { display: flex; gap: 14px; margin-top: 12px; min-height: 220px; }
+.pm-master { flex: none; width: 46%; min-width: 200px; max-width: 320px; display: flex; flex-direction: column; gap: 8px; }
 .pm-add-row { display: flex; gap: 8px; align-items: center; }
-.provider-models { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.pm-item { border: 1px solid var(--line-1); border-radius: 12px; background: var(--surface); transition: border-color .12s var(--ease); }
-.pm-item:hover { border-color: var(--line-2); }
-.pm-item.default { border-color: color-mix(in srgb, var(--blue) 25%, var(--line-2)); }
-.pm-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; }
-.pm-head .pm-name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pm-head .pm-apimodel { color: var(--text-caption); font-size: 11px; font-family: var(--mono); }
-.pm-head .pm-def-badge { flex: none; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); font-size: 10px; font-weight: 600; line-height: 18px; }
-/* 模型项头部：展开箭头 + 思考级别摘要徽标 + 编辑按钮——per-model 设置（含思考级别选项）可发现 */
-.pm-head .pm-chev { flex: none; font-size: 10px; color: var(--text-tertiary); transition: transform .15s var(--ease); }
-.pm-item:has(.pm-body.open) .pm-chev { transform: rotate(90deg); }
-.pm-head .pm-effort { flex: none; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); font-size: 10px; font-weight: 600; line-height: 18px; }
-.pm-head .pm-edit-btn { flex: none; height: 26px; padding: 0 9px; border: 0; border-radius: 6px; background: var(--surface-hover); color: var(--text-secondary); font-size: 11px; cursor: pointer; }
-.pm-head .pm-edit-btn:hover { color: var(--blue); }
-.pm-body .pm-row .pm-eff-input { flex: 1; min-width: 0; }
+.pm-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 380px; padding-right: 2px; }
+.pm-list-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line-1); border-radius: 10px; background: var(--surface); cursor: pointer; transition: border-color .12s var(--ease), background .12s var(--ease); }
+.pm-list-row:hover { border-color: var(--line-2); }
+.pm-list-row.active { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 6%, transparent); }
+.pm-list-row .pm-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-list-row .pm-cds { flex: none; display: flex; gap: 4px; }
+.pm-list-row .pm-badge { flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 16px; }
+.pm-list-row .pm-badge.def { background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); }
+.pm-list-row .pm-badge.eff { background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); }
+.pm-list-row .pm-badge.ovr { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--amber); }
+.pm-list-row .pm-row-actions { flex: none; display: flex; gap: 2px; }
+.pm-list-row .pm-btn { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 12px; }
+.pm-list-row .pm-btn:hover { background: var(--surface-hover); color: var(--text); }
+.pm-list-row .pm-btn.danger:hover { color: var(--red); }
+.pm-detail { flex: 1; min-width: 0; border: 1px solid var(--line-1); border-radius: 12px; background: var(--surface-muted); padding: 14px; overflow-y: auto; max-height: 460px; }
+.pm-detail-empty { color: var(--text-tertiary); font-size: 12.5px; text-align: center; padding: 48px 0; }
+.pm-detail-form { display: flex; flex-direction: column; gap: 12px; }
+.pm-detail-form .pm-form-head { display: flex; align-items: center; gap: 8px; }
+.pm-detail-form .pm-form-name { font-weight: 600; font-size: 14px; }
+.pm-detail-form .pm-form-sub { color: var(--text-caption); font-size: 11px; font-family: var(--mono); }
+.pm-row { display: flex; align-items: center; gap: 10px; }
+.pm-row label { font-size: 12.5px; color: var(--text-secondary); flex: none; min-width: 84px; }
+.pm-row input, .pm-row select { flex: 1; min-width: 0; }
+.pm-row input.cfg-slim { width: 120px; flex: none; }
+.pm-eff-input { flex: 1; min-width: 0; }
 .pm-eff-input input { width: 100%; }
 .pm-eff-input .pm-hint { margin: 4px 0 0; font-size: 11px; color: var(--text-tertiary); line-height: 1.4; }
-.pm-head .pm-actions { flex: none; display: flex; gap: 4px; }
-.pm-head .pm-btn { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
-.pm-head .pm-btn:hover { background: var(--surface-hover); color: var(--text); }
-.pm-head .pm-btn.danger { color: var(--red); }
-.pm-body { display: none; padding: 0 14px 14px; }
-.pm-body.open { display: flex; flex-direction: column; gap: 10px; }
-.pm-body .pm-row { display: flex; align-items: center; gap: 10px; }
-.pm-body .pm-row label { font-size: 12.5px; color: var(--text-secondary); flex: none; min-width: 80px; }
-.pm-body .pm-row input, .pm-body .pm-row select { flex: 1; }
-.pm-body .pm-row .inherit-toggle { cursor: pointer; font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
-.pm-body .pm-row .inherit-toggle.active { color: var(--blue); }
+.pm-row .inherit-toggle { cursor: pointer; font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+.pm-row .inherit-toggle.active { color: var(--blue); }
 .fetch-result { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface-muted); font-size: 12.5px; max-height: 200px; overflow-y: auto; }
 .fetch-result label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
 .fetch-result label input { margin: 0; }

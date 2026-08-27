@@ -237,17 +237,24 @@
                   <button id="btn-save-provider" class="primary-button" type="button" data-i18n="provider.save">保存</button>
                 </div>
                 <div id="p-fetch-result" class="fetch-result hidden"></div>
-                <div class="settings-group" style="margin-top:12px">
-                  <div class="setting-row col">
+                <div class="settings-group pm-models-group" style="margin-top:12px">
+                  <div class="setting-row col pm-sec-head">
                     <div class="setting-info"><h4 data-i18n="provider.models">组内模型</h4><p class="p-models-sub" id="p-models-count" data-i18n="provider.modelsCount">0 个模型</p></div>
-                    <div class="pm-add-row">
-                      <input type="text" id="pm-name" class="cfg-text" style="width:auto;flex:1" placeholder="模型名" autocomplete="off" spellcheck="false">
-                      <input type="text" id="pm-apimodel" class="cfg-text" style="width:auto;flex:1;max-width:180px" placeholder="apiModel（可选）" autocomplete="off" spellcheck="false">
-                      <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
-                    </div>
                   </div>
                 </div>
-                <div id="provider-models" class="provider-models"></div>
+                <div class="pm-master-detail">
+                  <div class="pm-master">
+                    <div class="pm-add-row">
+                      <input type="text" id="pm-name" class="cfg-text" style="width:auto;flex:1" placeholder="模型名" autocomplete="off" spellcheck="false">
+                      <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
+                    </div>
+                    <div id="provider-models" class="pm-list"></div>
+                  </div>
+                  <div class="pm-detail">
+                    <div class="pm-detail-empty" id="pm-detail-empty">选择左侧模型编辑详情</div>
+                    <div id="pm-detail-form" class="pm-detail-form hidden"></div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
