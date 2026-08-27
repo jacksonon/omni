@@ -98,17 +98,21 @@ export {
 export { themeColor, themeFor, isLightTheme, type TuiTheme } from './theme.js';
 
 /**
- * hero 横幅：figlet Standard 字体的「Omni」ASCII 大字（纯 ASCII，判宽与 OpenTUI
- * 渲染一致——不用含 █/╗ 等块字符的字体，避免个别终端按全角渲染导致错位）。
- * 每行 26 列等宽（可整体居中）；渲染时按行号错相彩虹色（bannerHue 驱动）。
+ * hero 大号品牌字标「OMNI」：4 行高的粗体方块字（█，几何现代风格，阅读清晰且
+ * 明显比单行文字大——用户反馈单行 Omni 太小）。纯 ASCII/BLOCK 判宽与雪字符一致，
+ * 避免个别终端按全角渲染导致错位。每行固定 23 列等宽（可整体居中）；渲染时按
+ * 行号错相彩虹色渐变（bannerHue 驱动，竖向流动）。行数 = OMNI_BANNER.length
+ *（hero 垂直居中预算用）；无 subtitle（用户要求去掉）。
  */
 const OMNI_BANNER = [
-  '   ___                  _ ',
-  '  / _ \\ _ __ ___  _ __ (_)',
-  ' | | | | \'_ ` _ \\| \'_ \\| |',
-  ' | |_| | | | | | | | | | |',
-  '  \\___/|_| |_| |_|_| |_|_|',
+  ' ███  █   █ █   █ █████',
+  '█   █ ██ ██ ██  █   █  ',
+  '█   █ █ █ █ █ █ █   █  ',
+  ' ███  █   █ █  ██ █████',
 ];
+
+/** hero 品牌头行数（用于垂直居中预算） */
+const HERO_LINES = OMNI_BANNER.length;
 
 /** HSL → CSS hex（彩虹动画用）：h∈[0,360)、s/l∈[0,1]，返回 `#rrggbb` */
 export function hslToHex(h: number, s: number, l: number): string {
@@ -160,7 +164,7 @@ export interface TuiTree {
   status: TextRenderable;
   /** Omni 标题（hero 模式——未开始对话时居中显示在输入区上方；正常模式隐藏） */
   omniTitle: BoxRenderable | null;
-  /** 横幅文字行（OMNI_BANNER 每行一个 TextRenderable；彩虹色单独设 fg，alignSelf 居中） */
+  /** 横幅文字行（OMNI_BANNER 每行一个 TextRenderable；按行错相彩虹色单独设 fg） */
   omniCells: TextRenderable[];
   /** 底部固定块（ask + 待发送区 + 灰色块）：hero 模式去 marginTop:auto 让根 justifyContent 居中 */
   bottomBlock: BoxRenderable | null;
@@ -365,9 +369,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   });
   root.add(status);
 
-  // Omni 标题（hero 模式——未开始对话时居中显示在输入区上方）：5 行 ASCII 大字横幅，
-  // 每行独立 TextRenderable（彩虹色单独设 fg，alignSelf:center 在根列布局中水平居中）；
-  // 正常模式隐藏不占布局。颜色由 repaintTree 按 bannerHue 逐帧刷新（彩虹流动动画）。
+  // Omni 品牌头（hero 模式——未开始对话时居中显示在输入区上方）：品牌名行
+  //（◈ Omni，逐字符彩虹渐变）+ tagline 行（dim，i18n）。每行独立 TextRenderable（
+  // alignSelf:center 在根列布局中水平居中）；正常模式隐藏不占布局。颜色由 repaintTree
+  // 按 bannerHue 逐帧刷新（彩虹流动动画，见 hero 块）。
   const omniTitle = new BoxRenderable(ctx, {
     flexDirection: 'column',
     alignSelf: 'stretch',
@@ -375,6 +380,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     visible: false,
   });
   const omniCells: TextRenderable[] = [];
+  // 大号字标每行：整行居中、加粗。彩虹渐变在 repaintTree 的 hero 块里按行号错相设置
+  //（bannerHue 驱动竖向流动，用户要求动画）。
   for (const l of OMNI_BANNER) {
     const cell = new TextRenderable(ctx, {
       content: l,
@@ -726,7 +733,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
 
   // —— hero 模式（未开始对话，state.lines 为空）——
   // 底部输入区 + 其下的统计行**垂直居中**（不再是钉在视口底部），输入区上方显示
-  // 5 行 ASCII 大字「Omni」横幅（彩虹色流动动画，bannerHue 驱动）。
+  // 品牌头（Omni 单词标志 + tagline，彩虹色流动动画，bannerHue 驱动）。
   // 实现：根 justifyContent 改为 center、底部固定块去掉 marginTop:auto
   // （否则 auto 边距吸收全部自由空间、justifyContent 失效），横幅显示、状态栏隐藏
   // （「模型 X · 就绪」在居中 hero 布局下是冗余的——模型已在灰块内模型行展示）。
@@ -741,35 +748,49 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     !state.ask;
   let heroOffset = 0; // hero 模式下灰色块相对「底部钉住」位置上移的行数（浮层/命中区按此换算）
   if (hero && tree.omniTitle && tree.bottomBlock) {
-    // 居中组（自上而下）：横幅(OMNI_BANNER 5 行) + 横幅下间距(1) + 底部固定块[灰色块
-    // inputLines+4 + 待发送区 pendingRows + ask 面板]。**统计行在 hero 下隐藏**
-    // （未开始对话无统计可看——0 轮 · 0 步 对用户无意义，居中布局更干净）。
+    // 居中组（自上而下）：大号字标（OMNI_BANNER = HERO_LINES 行）+ 间距(1) +
+    // 底部固定块[灰色块 inputLines+4  + 待发送区 pendingRows + ask 面板]。**统计行在
+    // hero 下隐藏**（未开始对话无统计可看——0 轮 · 0 步 对用户无意义，居中布局更干净）。
     const inputLines = Math.max(1, state.inputLines);
     const askRows = state.ask ? state.ask.options.length + 4 : 0;
-    const groupH = OMNI_BANNER.length + 1 + pendingRows + askRows + (inputLines + 4);
+    const groupH = HERO_LINES + 1 + pendingRows + askRows + (inputLines + 4);
     const groupTop = Math.max(1, Math.floor(((height ?? 24) - groupH) / 2));
-    // 灰色块顶 = 组顶 + 横幅(5) + 横幅间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
-    const grayTopCentered = groupTop + OMNI_BANNER.length + 1;
+    // 灰色块顶 = 组顶 + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
+    const grayTopCentered = groupTop + HERO_LINES + 1;
     const grayTopBottom = (height ?? 24) - 7 - pendingRows - inputLines;
     heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
     if (tree.infoRow) tree.infoRow.visible = false; // hero：隐藏统计行（含其 1 行上间距）
     tree.omniTitle.visible = true;
-    // 彩虹流动：每行按行号错相（竖向渐变），bannerHue 逐帧旋转 → 颜色沿横幅流动。
-    // 亮色主题压暗（浅底上高亮色对比不足）；深色主题提亮。
+    // 彩虹流动（用户要求：按行错相渐变 + bannerHue 驱动，颜色沿字标竖向流动）。
+    // 亮色主题压暗（浅底上高亮色对比不足）；深色主题提亮。每行一个实色 fg。
     const isLight = isLightTheme(theme);
     for (let i = 0; i < tree.omniCells.length; i++) {
-      const hue = (state.bannerHue + i * 28) % 360;
-      tree.omniCells[i]!.fg = parseColor(hslToHex(hue, 0.8, isLight ? 0.4 : 0.62));
+      const hue = (state.bannerHue + i * 26) % 360;
+      tree.omniCells[i]!.fg = parseColor(hslToHex(hue, 0.85, isLight ? 0.42 : 0.64));
     }
     (tree.status as { visible?: boolean }).visible = false; // hero 下隐藏「就绪」状态栏
+    // 无对话（hero）时输入区宽度：用户要求可用宽的 0.75（不到满宽、留两侧白）。
+    // **必须用显式 width 而非 maxWidth**：alignSelf:center 下容器宽 = 内容宽，flexGrow
+    // 没有剩余空间可分 → maxWidth 设多大都不会撑开（实测盒子缩到内容宽）。显式 width
+    // 给了确定宽度供 contentCol flexGrow 填满 + 居中。退出 hero 恢复（else 分支清 width）。
+    if (tree.footerBox) {
+      const avail = Math.max(24, (width ?? 80) - CONTENT_PAD);
+      tree.footerBox.alignSelf = 'center';
+      tree.footerBox.width = Math.max(32, Math.round(avail * 0.75));
+    }
     footerTop -= heroOffset; // 浮层/菜单/命令面板/ask 全部按居中后的灰块顶钳制
   } else {
     if (tree.omniTitle) tree.omniTitle.visible = false;
     if (tree.bottomBlock) tree.bottomBlock.marginTop = 'auto';
     if (tree.infoRow) tree.infoRow.visible = true; // 退出 hero：恢复统计行
     tree.root.justifyContent = 'flex-start';
+    // 恢复输入区域为整行宽 + 左对齐（normal 模式）——与 hero 版本互斥（清掉显式 width）
+    if (tree.footerBox) {
+      tree.footerBox.alignSelf = 'stretch';
+      tree.footerBox.width = 'auto';
+    }
   }
   // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 1 + 模型）
   // = inputLines + 4 行；显式 height 钉到 inputLines + 4，marginTop/Bottom -1 使

@@ -5752,7 +5752,7 @@ async function main(): Promise<void> {
 
   // 场景 47：hero 初始界面——未开始对话时空会话显示 ASCII 大字「Omni」横幅 + 输入区
   // 垂直居中 + 统计行隐藏；首条消息进入后恢复底部钉住布局 + 统计行显示。
-  console.log('=== 场景 47：hero 初始界面（ASCII 横幅 + 居中输入区 + 隐藏统计行）===');
+  console.log('=== 场景 47：hero 初始界面（大号字标 + 75% 输入区 + 隐藏统计行）===');
   {
     // a) 空状态渲染：横幅可见、统计行隐藏、状态栏隐藏
     const s47 = createTuiState();
@@ -5762,9 +5762,18 @@ async function main(): Promise<void> {
     const tree47 = mountTree(t47.renderer, s47, { withInput: true });
     await t47.renderOnce();
     const frame47 = t47.captureCharFrame();
-    // 横幅 ASCII 首行（figlet Standard「Omni」）
-    if (!frame47.includes('_ __ ___') || !tree47.omniTitle || !tree47.omniTitle.visible) {
-      console.error(`✗ 场景 47 hero 横幅未显示:\n${frame47}`);
+    // 大号字标可见：4 行高的 █ 粗字标（含 OMNI 首行『 ███ …』），旧 5 行 figlet 已废弃
+    if (!frame47.includes('███') || !tree47.omniTitle || !tree47.omniTitle.visible || tree47.omniCells.length !== 4) {
+      console.error(`✗ 场景 47 hero 大号字标未显示（应 4 行）:\n${frame47}`);
+      process.exit(1);
+    }
+    if (frame47.includes('_ __ ___')) {
+      console.error(`✗ 场景 47 仍显示旧的 figlet ASCII 大字（已改大号字标）:\n${frame47}`);
+      process.exit(1);
+    }
+    // 无 subtitle（用户要求去掉 tagline）：帧里不应有产品定位文案
+    if (frame47.includes('编程助手') || frame47.includes('代码对话')) {
+      console.error(`✗ 场景 47 仍在字标下方显示 subtitle（用户要求去掉）:\n${frame47}`);
       process.exit(1);
     }
     // 统计行隐藏（灰色块下方的统计段不渲染）
@@ -5783,10 +5792,23 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 47 hero 输入区未居中（首行 y=${grayTopY47}）:\n${frame47}`);
       process.exit(1);
     }
-    // 彩虹色已应用（每行 fg 是转出的 hex 色，非默认色）
+    // 彩虹色已应用：字标每行 fg 是转出的 hex 色（非默认色）
     const firstFg47 = (tree47.omniCells[0] as unknown as { fg?: unknown }).fg;
     if (!firstFg47) {
-      console.error('✗ 场景 47 横幅未设置彩虹色');
+      console.error('✗ 场景 47 字标未设置彩虹色');
+      process.exit(1);
+    }
+    // hero 下无对话输入区宽度 = 可用宽 × 0.75，且水平居中（width/alignSelf 是 setter-only 无 getter，改断渲染帧）：
+    // 顶边框行（▍…╮）占 ~75% 宽（视口 64 → 可用 62 × 0.75 ≈ 47 列 → 左右各 ~8 列留白，╮ 到 ~55 列），
+    // 明显小于满宽（62 列）→ 收窄 + 居中（用户要求：未开始对话时 0.75）。
+    const topEdge47 = frame47.split('\n').find((l) => l.includes('╮'));
+    if (!topEdge47) {
+      console.error('✗ 场景 47 hero 输入区顶边框行缺失');
+      process.exit(1);
+    }
+    const lastCol47 = topEdge47.trimEnd().length - 1; // ╮ 所在列
+    if (lastCol47 >= 57) {
+      console.error(`✗ 场景 47 hero 输入区未收窄到 75%（╮ 在最后列 ${lastCol47}，期望 <57 即有左右留白）`);
       process.exit(1);
     }
     // b) 首条消息进入 → 退出 hero：横幅隐藏、统计行恢复、状态栏恢复
@@ -5799,7 +5821,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  console.log('✓ 场景 47 通过：hero 初始界面（ASCII 横幅 + 居中输入区 + 隐藏统计行）');
+  console.log('✓ 场景 47 通过：hero 初始界面（大号字标 + 75% 输入区 + 隐藏统计行）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);
