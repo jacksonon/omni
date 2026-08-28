@@ -10,6 +10,7 @@
  */
 import { readFileTool } from './read-file.js';
 import { writeFileTool } from './write-file.js';
+import { editFileTool } from './edit-file.js';
 import { listDirectoryTool } from './list-directory.js';
 import { searchCodeTool } from './search-code.js';
 import { runCommandTool } from './run-command.js';
@@ -23,6 +24,7 @@ export { TOOL_OUTPUT_LIMIT, truncate } from './util.js';
 export const tools: Tool[] = [
   readFileTool,
   writeFileTool,
+  editFileTool,
   listDirectoryTool,
   searchCodeTool,
   runCommandTool,

@@ -24,6 +24,7 @@ const SUMMARY_MAX_COLS = 120;
  * - run_command → `$ freebuff --continue ...`（shell 提示符风格；换行折叠为空格）
  * - read_file → `→ Read 路径`（对标 opencode；并行多读合并成 `→ Read N files` 在 TUI 层）
  * - write_file → `✏️ 路径`
+ * - edit_file → `✎ 路径 · +A −D 行`（Claude Code Edit 风格摘要：路径 + 改动统计）
  * - list_directory → `📁 路径`
  * - search_code → `🔍 关键词`
  * - 未知工具 → `k=v` 列表兜底
@@ -37,21 +38,33 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
   switch (name) {
     case 'run_command': {
       const cmd = argStr(args, 'command').trim().replace(/\s*\n\s*/g, ' ');
-      s = cmd ? `$ ${cmd}` : '$ (空命令)';
+      s = cmd ? `● Bash(${cmd})` : '● Bash()';
       break;
     }
     case 'read_file':
       s = `→ Read ${argStr(args, 'path')}`;
       break;
     case 'write_file':
-      s = `✏️ ${argStr(args, 'path')}`;
+      s = `← Write ${argStr(args, 'path')}`;
       break;
+    case 'edit_file': {
+      s = `← Edit ${argStr(args, 'path')}`;
+      break;
+    }
     case 'list_directory':
       s = `📁 ${argStr(args, 'path') || '.'}`;
       break;
-    case 'search_code':
-      s = `🔍 ${argStr(args, 'pattern')}`;
+    case 'search_code': {
+      const pat = argStr(args, 'pattern');
+      const p = argStr(args, 'path');
+      s = p ? `* Grep "${pat}" in ${p}` : `* Grep "${pat}"`;
       break;
+    }
+    case 'web_fetch': {
+      const url = argStr(args, 'url');
+      s = `🌐 ${url}`;
+      break;
+    }
     default:
       s = Object.entries(args)
         .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
@@ -112,6 +125,13 @@ export interface ToolCardView {
   paths?: string[];
   /** write_file 写入前后对比（新增=original null / 修改=左右对比；无对比数据为 null/undefined） */
   diff?: WriteDiff | null;
+  /** edit_file 局部替换 diff（仅替换区域；新增 edit-file.ts 时配套使用） */
+  edit?: EditDiff | null;
+  /**
+   * run_command 实时输出（live streaming）：仅 status='running' 时有效。
+   * 显示在执行中行的下方（最多 3 行，超出显示 `… N 行被隐藏`），让用户看到命令在"打字"。
+   */
+  liveLines?: string[];
   /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示 `✓ N 步 · 结果首行` */
   subagent?: { name: string; ok: boolean; steps: number; summary?: string };
 }
@@ -195,13 +215,13 @@ export type ToolCardRole = 'top' | 'cmd' | 'exec' | 'result' | 'sep' | 'out' | '
 export interface ToolCardLine {
   text: string;
   role: ToolCardRole;
-  /**
-   * 左右对比行：left/right 为已按列宽补齐的两半文本——渲染时两半分别着色
-   * （删除=左红、新增=右绿、未改动=普通深色），中间 `│` 分隔。
-   */
-  diff?: DiffRow;
-  /** 整行 diff 色（新增文件全文：逐行绿色） */
-  diffRole?: DiffHalfKind;
+/**
+ * 左右对比行：left/right 为已按列宽补齐的两半文本——渲染时两半分别着色
+ * （删除=左红、新增=右绿、未改动=普通深色），中间 `│` 分隔。
+ */
+diff?: DiffRow;
+/** 整行 diff 色（统一 diff 行：新增绿/删除红/上下文灰） */
+diffRole?: DiffHalfKind;
 }
 /**
  * 卡片内容区宽度（两侧边框之间的总列数）。
@@ -263,7 +283,20 @@ export interface WriteDiff {
   content: string;
 }
 
-/** diff 半列类型：ctx=未改动 / rem=删除（左列）/ add=新增（右列） */
+/**
+ * edit_file 的局部替换 diff（TUI 工具卡片 + Web 工具卡片共用）：
+ * 仅展示被替换区域的前后对比——比整文件 diff 视觉密度低，更聚焦。
+ * oldLines / newLines 是「old_string / new_string 按行分割」的快照。
+ */
+export interface EditDiff {
+  path: string;
+  /** 旧内容（old_string，多行） */
+  oldLines: string[];
+  /** 新内容（new_string，多行；空数组 = 删除） */
+  newLines: string[];
+}
+
+/** diff 半列类型：ctx=未改动 / rem=删除 / add=新增 */
 export type DiffHalfKind = 'ctx' | 'rem' | 'add';
 
 /** 左右对比的一行（left/right 已按列宽补齐；左空=纯新增行，右空=纯删除行） */
@@ -272,6 +305,26 @@ export interface DiffRow {
   lk: DiffHalfKind;
   right: string;
   rk: DiffHalfKind;
+}
+
+/**
+ * 统一 diff 行（Claude Code Edit 风格）：行号 gutter + `+`/`-` 标记 + 行内容。
+ * 行号缺省 = 不显示（正文 diff 围栏）；kind = 行类型。
+ */
+export interface UnifiedDiffLine {
+  kind: DiffHalfKind;
+  /** 行内容（不含 +/- 标记，已按内容宽截断） */
+  text: string;
+  /** 左侧行号（旧文件；ctx=原行号，rem=删除行原行号，add=空） */
+  oldNo?: number;
+  /** 右侧行号（新文件；ctx=新行号，add=新增行新行号，rem=空） */
+  newNo?: number;
+}
+
+/** 统一 diff 视图（write_file 前后对比 / 正文 diff 围栏共用）：行级 LCS + 行号对齐 */
+export interface UnifiedDiff {
+  lines: UnifiedDiffLine[];
+  truncated: boolean;
 }
 
 /** diff 展示行数上限（超出按行截断，防大文件把卡片撑爆） */
@@ -325,10 +378,46 @@ export function countDiffLines(original: string, content: string): { add: number
 }
 
 /**
- * 左右对比 diff（write_file 修改展示）：LCS 行对齐——未改动行左右同列、
- * 删除行在左、新增行在右，**紧邻的删除+新增块按行配对成「替换」**
- * （同一行左红右绿，对齐观感好）。每半列按列宽截断（省略号），
+ * 统一 diff（write_file 修改/新建展示 + 正文 diff 围栏）：行级 LCS 对齐，
+ * 输出 Claude Code Edit 风格行序列（行号 + `+`/`-` 标记 + 内容）。
+ *
+ * 行号：ctx 行左右都是原/新行号（行号相同）；rem 行只有左号；add 行只有右号。
+ * 新增文件（original=null）→ 全部 add 行（行号从 1 递增）。
  * 行数超 DIFF_MAX_ROWS 截断（truncated=true）。
+ */
+export function unifiedDiff(original: string | null, content: string): UnifiedDiff {
+  if (original === null) {
+    const lines: UnifiedDiffLine[] = String(content ?? '').split('\n').map((t, i) => ({
+      kind: 'add',
+      text: t,
+      newNo: i + 1,
+    }));
+    return { lines: lines.slice(0, DIFF_MAX_ROWS), truncated: lines.length > DIFF_MAX_ROWS };
+  }
+  const ops = lineOps(original, content);
+  const lines: UnifiedDiffLine[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+  for (const op of ops) {
+    if (op.t === '=') {
+      oldNo++;
+      newNo++;
+      lines.push({ kind: 'ctx', text: op.line, oldNo, newNo });
+    } else if (op.t === 'd') {
+      oldNo++;
+      lines.push({ kind: 'rem', text: op.line, oldNo });
+    } else {
+      newNo++;
+      lines.push({ kind: 'add', text: op.line, newNo });
+    }
+  }
+  return { lines: lines.slice(0, DIFF_MAX_ROWS), truncated: lines.length > DIFF_MAX_ROWS };
+}
+
+/**
+ * 左右对比 diff（write_file 修改展示，兼容旧接口）：LCS 行对齐——未改动行左右同列、
+ * 删除行在左、新增行在右，**紧邻的删除+新增块按行配对成「替换」**。
+ * 每半列按列宽截断（省略号），行数超 DIFF_MAX_ROWS 截断（truncated=true）。
  */
 export function sideBySideDiff(
   original: string,
@@ -368,99 +457,145 @@ export function sideBySideDiff(
   return { rows: rows.slice(0, DIFF_MAX_ROWS), truncated: rows.length > DIFF_MAX_ROWS };
 }
 
+/**
+ * 把 edit_file 的 oldLines / newLines 转换为 UnifiedDiff（Claude Code Edit 风格统一单列 diff）
+ */
+export function editToUnifiedDiff(oldLines: string[], newLines: string[]): UnifiedDiff {
+  const ops = lineOps(oldLines.join('\n'), newLines.join('\n'));
+  const lines: UnifiedDiffLine[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+  for (const op of ops) {
+    if (op.t === '=') {
+      oldNo++;
+      newNo++;
+      lines.push({ kind: 'ctx', text: op.line, oldNo, newNo });
+    } else if (op.t === 'd') {
+      oldNo++;
+      lines.push({ kind: 'rem', text: op.line, oldNo });
+    } else {
+      newNo++;
+      lines.push({ kind: 'add', text: op.line, newNo });
+    }
+  }
+  return { lines: lines.slice(0, DIFF_MAX_ROWS), truncated: lines.length > DIFF_MAX_ROWS };
+}
+
+/**
+ * 格式化单行 unified diff 文本（图 2 样式：行号 gutter + " - " / " + " / "   " + 内容）
+ */
+export function formatUnifiedDiffLine(
+  dl: UnifiedDiffLine,
+  digits: number,
+  contentW?: number
+): string {
+  const noStr = dl.kind === 'rem' ? (dl.oldNo != null ? String(dl.oldNo) : '') : (dl.newNo != null ? String(dl.newNo) : dl.oldNo != null ? String(dl.oldNo) : '');
+  const padNo = noStr.padStart(digits, ' ');
+  const sign = dl.kind === 'add' ? '+ ' : dl.kind === 'rem' ? '- ' : '  ';
+  const text = contentW !== undefined ? truncateToWidth(dl.text, contentW) : dl.text;
+  return `${padNo} ${sign} ${text}`;
+}
+
 export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCardLine[] {
   const inner = cardInnerWidth(contentWidth); // 块内文本区宽度（内容折行宽度）
   const lines: ToolCardLine[] = [];
-  // read_file 走 opencode 风格（一行式）；write_file 带 diff 走改动对比展示
   const isRead = card.name === 'read_file';
+  const isSearch = card.name === 'search_code';
   const isWriteDiff = card.name === 'write_file' && card.diff != null;
+  const isEditDiff = card.name === 'edit_file' && card.edit != null;
 
   // 块式卡片（无边框字符）：顶/底为空白行（撑出垂直边距），内容行补齐到内容宽度
-  // ——整块被背景色填满成「颜色背景区域块」（用户要求）。每行总宽恒为 contentWidth。
   lines.push({ text: ' '.repeat(Math.max(1, contentWidth)), role: 'top' });
 
-  // 第一行：调用了哪个命令（折行；块内文本区为 inner-1，行总宽保持 contentWidth）。
-  // 内容行统一加 1 列左侧留白（样式优化：文字不贴色块左缘，与圆角/用户消息气泡对齐）
-  for (const seg of wrapText(card.summary, inner - 1)) {
-    lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'cmd' });
+  // 第一行：调用了哪个命令（折行；块内文本区为 inner-1，行总宽保持 contentWidth）
+  const spinSuffix = card.status === 'running' ? ` ${card.spinner ?? '⏳'}` : '';
+  if (isWriteDiff || isEditDiff) {
+    const filePath = isWriteDiff ? card.diff!.path : card.edit!.path;
+    const isNew = isWriteDiff && card.diff!.original === null;
+    const prefix = isEditDiff ? '← Edit' : isNew ? '← Write' : '← Edit';
+    lines.push({
+      text: padInner(` ${prefix} ${truncateToWidth(filePath, Math.max(8, inner - 8 - spinSuffix.length))}${spinSuffix}`, contentWidth),
+      role: 'exec',
+    });
+  } else if (isRead) {
+    const paths = card.paths ?? [];
+    if (paths.length > 1) {
+      const exploredHead = `→ Explored — ${paths.length} reads`;
+      lines.push({ text: padInner(` ${exploredHead}${spinSuffix}`, contentWidth), role: 'cmd' });
+    } else {
+      lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+    }
+  } else if (isSearch || card.name === 'list_directory' || card.name === 'web_fetch') {
+    lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+  } else {
+    const segs = wrapText(card.summary, inner - 1 - spinSuffix.length);
+    if (segs.length === 0) {
+      lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+    } else {
+      lines.push({ text: padInner(` ${segs[0]}${spinSuffix}`, contentWidth), role: 'cmd' });
+      for (let i = 1; i < segs.length; i++) {
+        lines.push({ text: padInner(` ${segs[i]}`, contentWidth), role: 'cmd' });
+      }
+    }
   }
 
   if (card.status === 'running') {
-    // 执行中：命令 + 动画 loading（spinner 帧由 TUI 每 200ms 刷新；无帧时回退 ⏳）。
-    // **不显示「执行中…」文字**——loading 动画本身就是状态（用户要求「不需要显示文字，
-    // 显示一个执行中 loading 即可」）；结果未到，无结果缩略行
-    lines.push({ text: padInner(` ${card.spinner ?? '⏳'}`, contentWidth), role: 'exec' });
+    if (card.liveLines && card.liveLines.length > 0) {
+      const maxShow = 3;
+      const shown = card.liveLines.slice(-maxShow);
+      const hidden = card.liveLines.length - shown.length;
+      for (const raw of shown) {
+        for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
+      }
+      if (hidden > 0) {
+        lines.push({ text: padInner(` … ${hidden} 行已滚动`, contentWidth), role: 'out' });
+      }
+    }
   } else if (isRead) {
-    // read_file（对标 opencode）：收起态**只有一行 `→ Read 路径`**（无执行/结果缩略行，
-    // 保持一行式观感）；展开 = 分隔线 + 路径列表（并行多读合并时逐条 ⤷）+ 输出预览 + 收起提示
     if (card.expanded) {
       const paths = card.paths ?? [];
-      lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
       if (paths.length > 1) {
         for (const p of paths) {
           lines.push({ text: padInner(` ⤷ ${truncateToWidth(p, Math.max(1, inner - 4))}`, contentWidth), role: 'out' });
         }
-        lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
       }
       const out = card.output.filter((l) => !isExitCodeZeroLine(l));
       for (const raw of out.length ? out : ['（无输出）']) {
         for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
       }
-      lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
     }
-  } else if (isWriteDiff) {
-    // write_file 带 diff（opencode 风格）：**收起态也显示变更统计**（`+A −D 行` / `新增文件 · 全文 N 行`），
-    // 变更默认可见（对标 opencode 的一行统计）；展开 = 新增文件全文（逐行绿）/ 修改左右对比
-    const d = card.diff!;
-    const isNew = d.original === null;
+  } else if (isWriteDiff || isEditDiff) {
+    // write_file / edit_file 统一走 Claude Code Edit 风格统一 diff（图 2 样式：扁平单层，无分割线/提示）
+    const isNew = isWriteDiff && card.diff!.original === null;
+    const diffData = isWriteDiff
+      ? unifiedDiff(card.diff!.original, card.diff!.content)
+      : editToUnifiedDiff(card.edit!.oldLines, card.edit!.newLines);
+
     if (!card.expanded) {
-      // 收起态：命令下方一行变更统计（opencode 的 +N -M）
       if (isNew) {
-        const rows = d.content.split('\n').length;
+        const rows = card.diff!.content.split('\n').length;
         lines.push({ text: padInner(` ✓ 新增文件 · 全文 ${rows} 行`, contentWidth), role: 'exec' });
-      } else {
-        const stats = countDiffLines(d.original!, d.content);
+      } else if (isWriteDiff) {
+        const stats = countDiffLines(card.diff!.original!, card.diff!.content);
         lines.push({ text: padInner(` ✓ 修改 · +${stats.add} −${stats.rem} 行`, contentWidth), role: 'exec' });
-      }
-    }
-    if (card.expanded) {
-      lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
-      if (isNew) {
-        // 新增文件：全文展示（每行 diffRole=add 绿色——新增内容配色，对标编辑器 diff）
-        const contentLines = d.content.split('\n');
-        const shown = contentLines.slice(0, DIFF_MAX_ROWS);
-        for (const raw of shown) {
-          for (const seg of wrapText(raw, inner - 1)) {
-            lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'diff', diffRole: 'add' });
-          }
-        }
-        if (contentLines.length > DIFF_MAX_ROWS) {
-          lines.push({ text: padInner(` … 共 ${contentLines.length} 行，超出展示上限`, contentWidth), role: 'out' });
-        }
       } else {
-        // 修改：左右对比（左 原内容 / 右 新内容）——isNew=false 分支里 original 必非 null
-        const orig = d.original!;
-        const stats = countDiffLines(orig, d.content);
-        lines.push({ text: padInner(` 修改对比 · +${stats.add} −${stats.rem} 行`, contentWidth), role: 'exec' });
-        const L = Math.max(4, Math.floor(inner / 2));
-        const R = Math.max(4, inner - L);
-        const { rows, truncated } = sideBySideDiff(orig, d.content, L, R);
-        for (const r of rows) {
-          lines.push({
-            text: ` ${r.left}│${r.right}`.padEnd(Math.max(1, contentWidth), ' '),
-            role: 'diff',
-            diff: r,
-          });
-        }
-        if (truncated) {
-          lines.push({ text: padInner(` … diff 超长，仅展示前 ${DIFF_MAX_ROWS} 行`, contentWidth), role: 'out' });
-        }
+        const addCount = card.edit!.newLines.length;
+        const remCount = card.edit!.oldLines.length;
+        lines.push({ text: padInner(` ✓ 修改 · +${addCount} −${remCount} 行`, contentWidth), role: 'exec' });
       }
-      lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
+    } else {
+      const maxNo = diffData.lines.reduce((m, l) => Math.max(m, l.oldNo ?? 0, l.newNo ?? 0), 0);
+      const digits = Math.max(3, String(maxNo).length);
+      for (const dl of diffData.lines) {
+        const contentW = Math.max(4, inner - 1 - (digits + 5));
+        const formatted = formatUnifiedDiffLine(dl, digits, contentW);
+        lines.push({ text: padInner(` ${formatted}`, contentWidth), role: 'diff', diffRole: dl.kind });
+      }
+      if (diffData.truncated) {
+        lines.push({ text: padInner(` … diff 超长，仅展示前 ${DIFF_MAX_ROWS} 行`, contentWidth), role: 'out' });
+      }
     }
-    // 收起态（write_file 带 diff）：只显示命令（无 else 分支，什么都不加）
   } else if (card.expanded) {
-    // 展开态（其余工具）：分隔线 + 完整输出 + 收起提示
     lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
     const out = card.output.filter((l) => !isExitCodeZeroLine(l));
     const shown = out.length ? out : ['（无输出）'];

@@ -199,8 +199,14 @@ const I18N_ZH = {
   'provider.delete': '删除',
   'provider.userAgent': 'User-Agent',
   'provider.userAgentDesc': '部分网关需要自定义 User-Agent 绕过 WAF。',
-  'provider.models': '组内模型',
+  'provider.models': '模型列表',
   'provider.modelsCount': '{n} 个模型',
+  'provider.enableHint': '启用该模型',
+  'provider.disableHint': '停用该模型（移除配置）',
+  'provider.editHint': '点击行打开编辑（上下文/思考级别等）',
+  'provider.editTitle': '编辑模型',
+  'provider.autoFetchFail': '自动获取模型列表失败——可点「刷新模型列表」重试',
+  'provider.addPlaceholder': '自定义模型名',
   'provider.searchProvider': '搜索 provider…',
   'provider.searchModel': '搜索模型…',
   'provider.noMatch': '无匹配',
@@ -233,6 +239,11 @@ const I18N_ZH = {
   'provider.defaultSet': '已设为默认',
   'provider.needDefault': '请先设置其它默认模型',
   'provider.noBaseURL': '请先填写 baseURL',
+  'provider.refresh': '刷新模型列表',
+  'provider.catalogBadge': '目录',
+  'provider.catalogCount': '+{n} 目录',
+  'provider.add': '添加',
+  'provider.addHint': '添加到组内模型',
   'provider.emptyModels': '该分组还没有模型——点「获取模型列表」或直接输入模型名添加',
   'provider.emptyModelsFetch': '该分组还没有模型——点「获取模型列表」勾选启用',
   'provider.newName': '新建 provider 名称',
@@ -468,8 +479,14 @@ const I18N_EN = {
   'provider.delete': 'Delete',
   'provider.userAgent': 'User-Agent',
   'provider.userAgentDesc': 'Some gateways require a custom User-Agent to bypass WAF.',
-  'provider.models': 'Models in group',
+  'provider.models': 'Model list',
   'provider.modelsCount': '{n} models',
+  'provider.enableHint': 'Enable this model',
+  'provider.disableHint': 'Disable this model (remove config)',
+  'provider.editHint': 'Click a row to edit context, effort, etc.',
+  'provider.editTitle': 'Edit model',
+  'provider.autoFetchFail': 'Auto-fetch of models failed — click "Refresh models" to retry',
+  'provider.addPlaceholder': 'Custom model name',
   'provider.searchProvider': 'Search providers…',
   'provider.searchModel': 'Search models…',
   'provider.noMatch': 'No match',
@@ -502,6 +519,11 @@ const I18N_EN = {
   'provider.defaultSet': 'Set as default',
   'provider.needDefault': 'Set another default model first',
   'provider.noBaseURL': 'Fill in baseURL first',
+  'provider.refresh': 'Refresh model list',
+  'provider.catalogBadge': 'catalog',
+  'provider.catalogCount': '+{n} catalog',
+  'provider.add': 'Add',
+  'provider.addHint': 'Add to group models',
   'provider.emptyModels': 'No models yet — click "Fetch models" above or type a model name to add',
   'provider.emptyModelsFetch': 'No models yet — click "Fetch models" and check the ones to enable',
   'provider.newName': 'New provider name',
@@ -685,8 +707,18 @@ function mdInline(src) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
 }
 
-/** 逐块渲染 markdown（围栏代码块 / 表格保持原样，行内做 inline 处理） */
-function mdToHtml(text) {
+/** 逐块渲染 markdown（围栏代码块 / 表格保持原样，行内做 inline 处理）。
+ *  优先走 markstream（web/markdown-renderer.js：流式 AST + diff 围栏），
+ *  vendor.js 未加载时回退到下方手写实现，保证页面不因渲染器缺失而白屏。 */
+function mdToHtml(text, opts) {
+  if (window.OmniMarkdown && window.OmniMarkdown.render) {
+    return window.OmniMarkdown.render(text, opts || {});
+  }
+  return legacyMdToHtml(text);
+}
+
+/** 旧手写渲染器（回退路径，非主路径） */
+function legacyMdToHtml(text) {
   const lines = text.split('\n');
   const out = [];
   let inCode = false, codeLang = '', codeBuf = [];
@@ -830,7 +862,7 @@ function assistantBlock(sessionId) {
   b._body = body;
   b._dirty = false;
   b.paint = () => {
-    body.innerHTML = mdToHtml(b._text);
+    body.innerHTML = mdToHtml(b._text, { final: !b._streaming });
     if (b._streaming) appendStreamCursor(body);
     scrollBottom();
   };
@@ -1092,40 +1124,168 @@ function toolBlock(sessionId, data) {
   setEmptyState(false);
   const b = makeBlock('tool', sessionId);
   const wrap = el('div', 'msg');
+  const name = data.name || 'tool';
+  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch';
+  const isEdit = name === 'write_file' || name === 'edit_file';
+
+  if (isExplored) {
+    const block = el('div', 'explored-block running');
+    const headText = name === 'read_file' ? '→ Explored — 1 read' : name === 'web_fetch' ? '→ Explored — 1 fetch' : '→ Explored — 1 search';
+    const head = el('div', 'explored-head');
+    head.innerHTML = `<span>${esc(headText)}</span> <span class="spin">${SPIN[0]}</span>`;
+    const item = el('div', 'explored-item', data.argsPreview || name);
+    item.classList.add('hidden');
+    head.addEventListener('click', () => {
+      item.classList.toggle('hidden');
+      scrollBottom();
+    });
+    block.appendChild(head);
+    block.appendChild(item);
+    wrap.appendChild(block);
+    msgList().appendChild(wrap);
+
+    b._card = block;
+    b.appendLive = () => {};
+    b.spin = (frame) => {
+      const sp = head.querySelector('.spin');
+      if (sp) sp.textContent = frame;
+    };
+    b.result = (r) => {
+      block.classList.remove('running');
+      const sp = head.querySelector('.spin');
+      if (sp) sp.remove();
+      if (name === 'search_code') {
+        let matches = 0;
+        if (r.preview && r.preview.length) {
+          const first = r.preview[0] ?? '';
+          const m = first.match(/(\d+)\s*处/);
+          if (m) matches = parseInt(m[1], 10);
+          else matches = r.preview.filter((l) => l.trim() && !l.startsWith('…') && !l.includes('匹配结果')).length;
+        }
+        item.textContent = `${data.argsPreview || name} (${matches} match${matches > 1 ? 'es' : ''})`;
+      } else if (name === 'list_directory') {
+        let count = 0;
+        if (r.preview && r.preview.length) {
+          const first = r.preview[0] ?? '';
+          const m = first.match(/(\d+)\s*个/);
+          if (m) count = parseInt(m[1], 10);
+          else count = r.preview.filter((l) => l.trim() && !l.startsWith('…')).length;
+        }
+        item.textContent = `${data.argsPreview || name}${count > 0 ? ` (${count} items)` : ''}`;
+      } else if (name === 'read_file' || name === 'web_fetch') {
+        item.textContent = data.argsPreview || name;
+      }
+      if (!r.ok) {
+        item.classList.add('error');
+        if (r.error) item.textContent += ` [${r.error}]`;
+      }
+      scrollBottom();
+    };
+    return b;
+  }
+
+  if (isEdit) {
+    const diffWrap = el('div', 'tc-diff running');
+    const initTitle = name === 'write_file' ? `← Write ${data.args?.path || ''}` : `← Edit ${data.args?.path || ''}`;
+    diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${esc(initTitle)} <span class="spin">${SPIN[0]}</span></div></div>`;
+    wrap.appendChild(diffWrap);
+    msgList().appendChild(wrap);
+
+    b._card = diffWrap;
+    b.appendLive = () => {};
+    b.spin = (frame) => {
+      const sp = diffWrap.querySelector('.spin');
+      if (sp) sp.textContent = frame;
+    };
+    b.result = (r) => {
+      diffWrap.classList.remove('running');
+      const diff = r.detail?.diff;
+      const edit = r.detail?.edit;
+      if (r.ok && name === 'edit_file' && edit && window.OmniMarkdown?.renderEditDiff) {
+        diffWrap.innerHTML = window.OmniMarkdown.renderEditDiff(edit.path, edit.oldLines, edit.newLines);
+      } else if (r.ok && name === 'write_file' && diff && window.OmniMarkdown?.renderFileDiff) {
+        diffWrap.innerHTML = window.OmniMarkdown.renderFileDiff(diff.original, diff.content, diff.path);
+      } else {
+        const title = name === 'write_file' ? `← Write ${data.args?.path || ''}` : `← Edit ${data.args?.path || ''}`;
+        diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${esc(title)}</div><pre class="tc-output">${esc((r.preview || []).join('\n') || (r.ok ? '（无输出）' : r.error || '失败'))}</pre></div>`;
+      }
+      scrollBottom();
+    };
+    return b;
+  }
+
   const card = el('div', 'tool-card running');
   const head = el('div', 'tc-head');
-  head.appendChild(el('span', 'tc-cmd', data.name || 'tool'));
-  const st = el('span', 'tc-state');
-  st.innerHTML = `<span class="spin">${SPIN[0]}</span>${esc(data.argsPreview || t('tool.running'))}`;
-  head.appendChild(st);
+  let st = null;
+  if (name === 'run_command') {
+    const cmd = (data.args?.command || data.argsPreview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '');
+    head.innerHTML = `<span class="tool-dot">●</span> <span class="tool-name">Bash</span><span class="tool-args">(${esc(cmd)})</span> <span class="spin">${SPIN[0]}</span>`;
+  } else {
+    head.appendChild(el('span', 'tc-cmd', data.name || 'tool'));
+    st = el('span', 'tc-state');
+    st.innerHTML = `<span class="spin">${SPIN[0]}</span>${esc(data.argsPreview || t('tool.running'))}`;
+    head.appendChild(st);
+  }
   const body = el('div', 'tc-body');
   body.classList.add('hidden');
+  const live = el('div', 'tc-live');
+  live.classList.add('hidden');
   head.addEventListener('click', () => {
     document.querySelectorAll('.tool-card.selected').forEach((node) => node.classList.remove('selected'));
     card.classList.add('selected');
     if (!card.classList.contains('running')) body.classList.toggle('hidden');
     scrollBottom();
   });
-  card.appendChild(head); card.appendChild(body);
+  card.appendChild(head); card.appendChild(live); card.appendChild(body);
   wrap.appendChild(card);
   msgList().appendChild(wrap);
-  b._card = card; b._head = head; b._st = st; b._body = body; b._data = data;
+  b._card = card; b._head = head; b._st = st; b._body = body; b._live = live; b._data = data;
   b._input = data.args && Object.keys(data.args).length ? JSON.stringify(data.args, null, 2) : data.argsPreview || '';
   b._output = '运行中…';
   b._error = false;
-  b.spin = () => {};
+  b._liveBuf = [];
+  b.spin = (frame) => {
+    const sp = head.querySelector('.spin');
+    if (sp) sp.textContent = frame;
+  };
+  b.appendLive = (line) => {
+    if (!line) return;
+    b._liveBuf.push(line);
+    if (b._liveBuf.length > 16) b._liveBuf.shift();
+    const show = b._liveBuf.slice(-6);
+    const hidden = b._liveBuf.length - show.length;
+    b._live.innerHTML = '';
+    for (const ln of show) {
+      const row = el('div', 'tc-live-line');
+      row.textContent = ln;
+      b._live.appendChild(row);
+    }
+    if (hidden > 0) {
+      b._live.appendChild(el('div', 'tc-live-meta', `… ${hidden} 行被隐藏`));
+    }
+    b._live.classList.remove('hidden');
+    scrollBottom();
+  };
   b.result = (r) => {
     card.classList.remove('running');
+    const sp = head.querySelector('.spin');
+    if (sp) sp.remove();
     const ok = r.ok;
-    st.textContent = ok ? t('tool.nchars', { n: r.chars }) : t('tool.failed');
-    // 只显示结果预览前几行（与 TUI 一致）；完整结果已回传模型
+    if (st) st.textContent = ok ? t('tool.nchars', { n: r.chars }) : t('tool.failed');
     const lines = (r.preview || []).slice(0, 12).join('\n');
     const out = (r.preview && r.preview.length ? lines : ok ? t('tool.noOutput') : r.error || t('tool.noOutput'));
     b._output = out;
     b._error = !ok;
+    b._liveBuf = [];
+    b._live.innerHTML = '';
+    b._live.classList.add('hidden');
     body.innerHTML = '';
     body.appendChild(el('div', 'tc-output', out));
-    body.classList.add('hidden');
+    if (!ok) {
+      body.classList.remove('hidden');
+    } else {
+      body.classList.add('hidden');
+    }
   };
   return b;
 }
@@ -1135,7 +1295,7 @@ function renderHistoryThinking(sessionId, reasoning) {
   const b = thinkingBlock(sessionId);
   b._chars = String(reasoning || '').length;
   b._body.textContent = reasoning || '';
-  b.finish(); // 立即置为「已完成」态（- thinking · N 字符 · 耗时）
+  b.finish();
   return b;
 }
 
@@ -1144,17 +1304,60 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
   setEmptyState(false);
   const b = makeBlock('tool', sessionId);
   const wrap = el('div', 'msg');
+  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch';
+  const isEdit = name === 'write_file' || name === 'edit_file';
+
+  let parsedArgs = {};
+  try { parsedArgs = JSON.parse(argsJson || '{}'); } catch {}
+  const preview = formatToolArgs(name, parsedArgs);
+
+  if (isExplored) {
+    const block = el('div', 'explored-block');
+    const headText = name === 'read_file' ? '→ Explored — 1 read' : name === 'web_fetch' ? '→ Explored — 1 fetch' : '→ Explored — 1 search';
+    const head = el('div', 'explored-head', headText);
+    const item = el('div', 'explored-item', preview || name);
+    item.classList.add('hidden');
+    head.addEventListener('click', () => {
+      item.classList.toggle('hidden');
+      scrollBottom();
+    });
+    block.appendChild(head);
+    block.appendChild(item);
+    wrap.appendChild(block);
+    msgList().appendChild(wrap);
+    b._card = block;
+    return b;
+  }
+
+  if (isEdit) {
+    const diffWrap = el('div', 'tc-diff');
+    const path = parsedArgs.path || '';
+    const isNew = parsedArgs.original == null && parsedArgs.content != null;
+    const headPrefix = isNew ? '← Write' : '← Edit';
+    if (window.OmniMarkdown?.renderFileDiff && parsedArgs.content != null) {
+      diffWrap.innerHTML = window.OmniMarkdown.renderFileDiff(parsedArgs.original, parsedArgs.content, path);
+    } else {
+      diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${headPrefix} ${esc(path)}</div><pre class="tc-output">${esc(output || '')}</pre></div>`;
+    }
+    wrap.appendChild(diffWrap);
+    msgList().appendChild(wrap);
+    b._card = diffWrap;
+    return b;
+  }
+
   const card = el('div', 'tool-card');
   const head = el('div', 'tc-head');
-  head.appendChild(el('span', 'tc-cmd', name || 'tool'));
-  const st = el('span', 'tc-state');
-  // 显示格式化后的命令预览（$ echo mock-ok / 文件路径）——刷新恢复后仍能认出「执行了哪条命令」
-  let preview = argsJson || '';
-  try { const a = JSON.parse(argsJson || '{}'); preview = formatToolArgs(name, a); } catch {}
-  const chars = output ? output.length : 0;
-  const charsTxt = chars ? t('tool.nchars', { n: chars }) : t('tool.noOutput');
-  st.textContent = preview ? `${preview} · ${charsTxt}` : charsTxt;
-  head.appendChild(st);
+  if (name === 'run_command') {
+    const cmd = (parsedArgs.command || preview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '');
+    head.innerHTML = `<span class="tool-dot">●</span> <span class="tool-name">Bash</span><span class="tool-args">(${esc(cmd)})</span>`;
+  } else {
+    head.appendChild(el('span', 'tc-cmd', name || 'tool'));
+    const st = el('span', 'tc-state');
+    const chars = output ? output.length : 0;
+    const charsTxt = chars ? t('tool.nchars', { n: chars }) : t('tool.noOutput');
+    st.textContent = preview ? `${preview} · ${charsTxt}` : charsTxt;
+    head.appendChild(st);
+  }
   const body = el('div', 'tc-body');
   body.classList.add('hidden');
   head.addEventListener('click', () => {
@@ -1163,7 +1366,6 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
     body.classList.toggle('hidden');
     scrollBottom();
   });
-  // 输出预览（前几行）
   if (output) {
     const lines = output.split('\n').slice(0, 12).join('\n');
     body.appendChild(el('div', 'tc-output', lines));
@@ -1178,7 +1380,7 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
 /* 工具参数预览（与实时 formatToolCall 一致） */
 function formatToolArgs(name, a) {
   if (name === 'run_command' && a.command) return '$ ' + a.command.slice(0, 120);
-  if ((name === 'read_file' || name === 'write_file') && a.path) return a.path;
+  if ((name === 'read_file' || name === 'write_file' || name === 'edit_file') && a.path) return a.path;
   if (name === 'list_directory' && a.path) return a.path;
   if (name === 'search_code' && a.pattern) return a.pattern;
   return JSON.stringify(a).slice(0, 120);
@@ -2174,7 +2376,7 @@ function connectSSE() {
   });
   [
     'status', 'session.created', 'user.message', 'thinking.start', 'thinking.chunk',
-    'thinking.end', 'tool.start', 'tool.result', 'answer.chunk', 'answer.end',
+    'thinking.end', 'tool.start', 'tool.result', 'tool.output', 'answer.chunk', 'answer.end',
     'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
@@ -2323,6 +2525,16 @@ bus.on('tool.start', (ev) => {
   currentTools.set(ev.seq ?? `f${currentTools.size}`, block);
   state.inFlight++;
   updateComposerStatus();
+});
+/* run_command 实时输出（live streaming）：按 seq 配对追加到卡片的 live 容器 */
+bus.on('tool.output', (ev) => {
+  if (ev.sessionId !== state.session) return;
+  const key = ev.seq;
+  const tool = key !== undefined ? currentTools.get(key) : null;
+  if (tool && tool.appendLive) {
+    // chunk 可能含多行（防御性 split：run_command 端已按 \n 拆过）
+    for (const line of String(ev.chunk || '').split('\n')) tool.appendLive(line);
+  }
 });
 bus.on('tool.result', (ev) => {
   if (ev.sessionId !== state.session) return;
@@ -3281,7 +3493,8 @@ document.addEventListener('keydown', (e) => {
     const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
     let escConsumed = false;
-    if (!$('#session-switch-modal').classList.contains('hidden')) { closeSessionSwitch(); escConsumed = true; }
+    if (!$('#mc-model-edit').classList.contains('hidden')) { closeMcModelEdit(); escConsumed = true; }
+    else if (!$('#session-switch-modal').classList.contains('hidden')) { closeSessionSwitch(); escConsumed = true; }
     else if (!$('#shortcuts-modal').classList.contains('hidden')) { $('#shortcuts-modal').classList.add('hidden'); escConsumed = true; }
     if (!$('#rewind-modal').classList.contains('hidden')) { $('#rewind-modal').classList.add('hidden'); escConsumed = true; }
     if (!$('#dirpicker-modal').classList.contains('hidden')) { closeDirPicker(); escConsumed = true; }
@@ -3597,6 +3810,7 @@ function openSettings() {
 function closeSettings() {
   $('#settings-modal').classList.add('hidden');
   document.body.classList.remove('settings-open');
+  closeMcModelEdit(); // 关闭可能打开的模型编辑弹窗
 }
 
 $('#btn-new').addEventListener('click', () => newSession().catch((e) => console.error(e)));
@@ -3853,7 +4067,10 @@ $('#set-concurrency').addEventListener('change', (e) => {
 let cfgProviderSel = null;   // 当前选中分组：null=未选、'name'=provider、'__new__'=新建
 let cfgProviderNewName = '';
 let cfgProviderApiKey = '';  // 当前编辑 provider 的已保存 apiKey（眼睛按钮 reveal 用）
-let cfgModelSel = null;      // 当前展开（选中）的组内模型名称（表格行展开态）
+let mcNewCatalog = null;     // 新建 provider 模式下「获取模型列表」的临时目录（建组前缓存，勾选即建组）
+let mcFetching = null;       // 正在获取模型列表的 provider 名（列表内 loading 态）
+const mcAutoFetched = new Set(); // 本会话已自动获取过目录的 provider 名（避免每次刷新都重拉）
+let mcEditModel = null;      // 模型编辑弹窗当前目标 { provider, model }
 
 // 模型能力表缓存（models.dev 快照 → /api/settings/model-capabilities；name → {found, context, effortOptions}）
 const mcCaps = new Map();
@@ -3881,12 +4098,13 @@ async function fillModelCapabilities(names) {
   }));
 }
 
-/** 思考级别选项解析：模型自定义 → 全局 → 能力表 → 默认五档（保证下拉永不空白） */
-function effortOptionsOf(s, group, m) {
+/** 思考级别选项解析：模型自定义 → 全局 → 能力表 → 目录缓存提示 → 默认五档（保证下拉永不空白） */
+function effortOptionsOf(s, group, m, catHint) {
   if (m && Array.isArray(m.reasoningEffortOptions) && m.reasoningEffortOptions.length) return m.reasoningEffortOptions;
   if (Array.isArray(s.reasoningEffortOptions) && s.reasoningEffortOptions.length) return s.reasoningEffortOptions;
   const cap = m ? mcCaps.get(m.name) : null;
   if (cap && Array.isArray(cap.effortOptions) && cap.effortOptions.length) return cap.effortOptions;
+  if (Array.isArray(catHint) && catHint.length) return catHint;
   return ['low', 'medium', 'high', 'xhigh', 'max'];
 }
 
@@ -3967,7 +4185,7 @@ $('#mc-provider-chips')?.addEventListener('click', (e) => {
   if (!chip) return;
   cfgProviderSel = chip.dataset.provider ?? '';
   cfgProviderNewName = '';
-  cfgModelSel = null; // 切换分组：清空模型展开态
+  closeMcModelEdit(); // 切换分组：关闭可能打开的编辑弹窗
   const s = state.status || {};
   renderProviderBar(s);
   renderProviderPanel(s);
@@ -4075,252 +4293,365 @@ function renderProviderPanel(s) {
       }).catch((err) => alert(t('provider.errSave', { msg: err.message })));
     };
   }
-  // 获取模型列表（GET {baseURL}/models → 勾选启用；每个模型附带能力表信息）
+  // 获取模型列表 / 刷新缓存（GET {baseURL}/models）：
+  //  · provider 已保存 → 目录落盘缓存（providers.<name>.modelCatalog），刷新模型列表合并展示
+  //  · provider 未保存（新建流程）→ 临时目录 mcNewCatalog，勾选行时先建 provider 再添加
   const fetchBtn = $('#btn-p-fetch');
   if (fetchBtn) {
-    fetchBtn.onclick = async () => {
+    const hasCatalog = Array.isArray(group?.modelCatalog) && group.modelCatalog.length > 0;
+    fetchBtn.textContent = hasCatalog ? t('provider.refresh') : t('provider.fetch');
+    fetchBtn.onclick = () => {
       const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
       if (!b) { alert(t('provider.noBaseURL')); return; }
-      if (fetchResult) {
-        fetchResult.classList.remove('hidden');
-        fetchResult.innerHTML = `<div class="spin">${t('provider.fetching')}</div>`;
-      }
-      try {
-        const data = await api('/api/settings', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            providerDiscover: { baseURL: b, apiKey: $('#p-apikey').value.trim() || (group ? group.apiKey : undefined) || undefined },
-          }),
-        });
-        const items = Array.isArray(data.models) ? data.models : [];
-        if (!fetchResult) return;
-        if (items.length === 0) {
-          fetchResult.innerHTML = `<div>${t('provider.fetchEmpty')}</div>`;
-          return;
-        }
-        const labelOf = (mm) => {
-          const id = typeof mm === 'string' ? mm : (mm && mm.id) || '';
-          const cap = (typeof mm === 'object' && mm)
-            ? [mm.context ? formatCtx(mm.context) : null, Array.isArray(mm.effortOptions) && mm.effortOptions.length > 1 ? mm.effortOptions.join('/') : null].filter(Boolean).join(' · ')
-            : '';
-          return cap ? `${esc(id)} <span class="fetch-item-cap">${esc(cap)}</span>` : esc(id);
-        };
-        fetchResult.innerHTML = `<div>${t('provider.fetched', { n: items.length })}</div>` +
-          `<div class="fetch-hint">${t('provider.selectHint')}</div>` +
-          items.map((mm) => `<label><input type="checkbox" value="${esc(typeof mm === 'string' ? mm : mm.id)}"> ${labelOf(mm)}</label>`).join('') +
-          `<button id="btn-add-selected" class="primary-button" style="margin-top:6px" type="button">${t('provider.addSelected')}</button>`;
-        const refreshAddBtn = () => {
-          const btn = $('#btn-add-selected');
-          const n = fetchResult.querySelectorAll('input:checked').length;
-          if (btn) { btn.disabled = n === 0; btn.textContent = n > 0 ? `${t('provider.addSelected')}（${n}）` : t('provider.addSelected'); }
-        };
-        fetchResult.querySelectorAll('input[type="checkbox"]').forEach((c) => c.addEventListener('change', refreshAddBtn));
-        refreshAddBtn();
-        $('#btn-add-selected')?.addEventListener('click', async () => {
-          const checked = [...fetchResult.querySelectorAll('input:checked')].map((c) => c.value);
-          if (!checked.length) return;
-          const provider = await ensureProviderName();
-          if (!provider) return;
-          // 勾选添加：能力表命中的自动预填 context / 思考级别选项（未自定义部分）
-          Promise.all(checked.map((mid) => {
-            const mm = items.find((x) => (typeof x === 'string' ? x : x.id) === mid);
-            const cap = (typeof mm === 'object' && mm) ? mm : null;
-            return api('/api/settings', {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                providerModel: {
-                  provider,
-                  modelName: mid,
-                  contextLimit: cap && cap.context ? cap.context : undefined,
-                  reasoningEffortOptions: cap && Array.isArray(cap.effortOptions) && cap.effortOptions.length > 1 ? cap.effortOptions : undefined,
-                },
-              }),
-            });
-          })).then(() => {
-            if (fetchResult) fetchResult.classList.add('hidden');
-            cfgModelSel = checked[0] || null; // 添加完成后自动选中第一个新模型并展开
-            refreshStatus().catch(() => {});
-          }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
-        });
-      } catch (err) {
-        if (fetchResult) fetchResult.innerHTML = `<div>${t('provider.errFetch', { msg: esc(err.message) })}</div>`;
+      if (isNew) {
+        doFetchNewCatalog();
+      } else {
+        mcAutoFetched.add(group.name); // 手动刷新后不再自动拉取
+        doFetchModels(group);
       }
     };
   }
-  // 组内模型区
+  // 组内模型区（预览列表）：目录 + 已配置合并，勾选即启用、行点击弹窗编辑
   const models = group ? providerModelsOf(group) : [];
-  const countEl = $('#p-models-count');
-  if (countEl) countEl.textContent = t('provider.modelsCount', { n: models.length });
-  // 能力表补缺后渲染表格（并发守卫：只渲染最后一次请求的表格）
+  const catalog = isNew ? (mcNewCatalog || []) : (group && Array.isArray(group.modelCatalog) ? group.modelCatalog : []);
+  // 能力表补缺后渲染列表（并发守卫：只渲染最后一次请求的列表；渲染前重新定位 group——
+  // 自动获取可能在等待期间把目录挂到 group 上，用旧引用会覆盖掉新目录）
   const seq = ++mcRenderSeq;
   const modelNames = isNew ? [] : models.map((m) => m.name);
   fillModelCapabilities(modelNames).then(() => {
-    if (seq === mcRenderSeq) renderModelTable(s, group, isNew);
+    if (seq !== mcRenderSeq) return;
+    const groups2 = Array.isArray(s.providers) ? s.providers : [];
+    const live2 = !group ? null : (groups2.find((g) => g.name === group.name) || group);
+    renderModelList(s, live2, isNew);
   }).catch(() => {
-    if (seq === mcRenderSeq) renderModelTable(s, group, isNew);
+    if (seq !== mcRenderSeq) return;
+    const groups2 = Array.isArray(s.providers) ? s.providers : [];
+    const live2 = !group ? null : (groups2.find((g) => g.name === group.name) || group);
+    renderModelList(s, live2, isNew);
   });
+  // 模型列表默认获取：已保存 provider 且从未拉取过目录 → 自动拉取（loading 态在列表内展示）
+  if (group && !isNew && !Array.isArray(group.modelCatalog) && !mcAutoFetched.has(group.name)) {
+    mcAutoFetched.add(group.name);
+    doFetchModels(group);
+  }
 }
 
-/** 渲染组内模型表格（表头 + 行内编辑 + 展开行高级项；支持搜索过滤） */
-function renderModelTable(s, group, isNew) {
+/** 拉取已保存 provider 的模型目录（providerDiscover → 服务端落盘缓存），完成后刷新列表 */
+async function doFetchModels(group) {
+  mcFetching = group.name;
+  ++mcRenderSeq; // 使挂起的能力表渲染失效（避免旧 group 引用覆盖新目录）
+  const s0 = state.status || {};
+  renderModelList(s0, group, false); // 立即显示 loading 行
+  const items = await fetchProviderModels(group, true);
+  mcFetching = null;
+  const s = state.status || {};
+  const groups = Array.isArray(s.providers) ? s.providers : [];
+  const live = groups.find((g) => g.name === group.name) || group;
+  if (items === null) {
+    // 失败：列表内联提示（不阻塞已配置模型展示），可点「刷新」重试
+    const note = $('#mc-fetch-note');
+    if (note) { note.textContent = t('provider.autoFetchFail'); note.classList.remove('hidden'); }
+    renderModelList(s, live, false);
+    return;
+  }
+  if (live) live.modelCatalog = items; // 内存即时更新（服务端已落盘，refreshStatus 后同样生效）
+  const note = $('#mc-fetch-note');
+  if (note) note.classList.add('hidden');
+  renderModelList(s, live, false);
+}
+
+/** 新建 provider 模式：拉取临时目录（mcNewCatalog），勾选行时先建 provider 再添加 */
+async function doFetchNewCatalog() {
+  mcFetching = '__new__';
+  const s = state.status || {};
+  renderModelList(s, null, true);
+  const items = await fetchProviderModels(null, false);
+  mcFetching = null;
+  if (items !== null) mcNewCatalog = items;
+  renderModelList(state.status || {}, null, true);
+}
+
+/** 调用 providerDiscover（共用获取逻辑）；返回模型条目数组，失败返回 null（错误已内联展示） */
+async function fetchProviderModels(group, silent) {
+  const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
+  if (!b) { if (!silent) alert(t('provider.noBaseURL')); return null; }
+  const fetchResult = $('#p-fetch-result');
+  if (fetchResult) {
+    fetchResult.classList.remove('hidden');
+    fetchResult.innerHTML = `<div class="spin">${t('provider.fetching')}</div>`;
+  }
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providerDiscover: {
+          baseURL: b,
+          apiKey: $('#p-apikey').value.trim() || (group ? group.apiKey : undefined) || undefined,
+          provider: group ? group.name : undefined, // 已保存 provider → 目录落盘缓存
+        },
+      }),
+    });
+    const items = Array.isArray(data.models) ? data.models : [];
+    if (fetchResult) fetchResult.classList.add('hidden');
+    if (items.length === 0 && !silent) {
+      if (fetchResult) { fetchResult.classList.remove('hidden'); fetchResult.innerHTML = `<div>${t('provider.fetchEmpty')}</div>`; }
+    }
+    return items;
+  } catch (err) {
+    if (fetchResult) fetchResult.innerHTML = `<div>${t('provider.errFetch', { msg: esc(err.message) })}</div>`;
+    return null;
+  }
+}
+
+/**
+ * 渲染组内模型预览列表（勾选启用 + 点击行弹窗编辑）。
+ * **统一模型列表** = 缓存目录（modelCatalog）+ 已配置模型（models）+ 当前选中模型 + 自定义模型。
+ * 勾选 = 启用/停用（勾选态始终反映已配置模型，refreshStatus 后保持）；行点击打开编辑弹窗。
+ * group 参数只用于定位（内部按 name 从 s.providers 重新读取，避免调用方传入旧引用）。
+ */
+function renderModelList(s, group, isNew) {
   const box = $('#provider-models');
   if (!box) return;
-  const models = isNew ? [] : providerModelsOf(group);
+  const groups = Array.isArray(s.providers) ? s.providers : [];
+  const liveGroup = !group ? null : (groups.find((g) => g.name === group.name) || group);
+  const models = isNew || !liveGroup ? [] : providerModelsOf(liveGroup);
+  const catalog = isNew ? (mcNewCatalog || []) : (liveGroup && Array.isArray(liveGroup.modelCatalog) ? liveGroup.modelCatalog : []);
+  // 计数 = 已配置 + 目录未启用（随列表渲染同步，自动获取后即时更新）
+  const countEl = $('#p-models-count');
+  if (countEl) {
+    const configured = models.length;
+    const pending = catalog.filter((c) => c && c.id && !models.some((m) => m.name === c.id)).length;
+    countEl.textContent = pending > 0 ? `${t('provider.modelsCount', { n: configured })} · ${t('provider.catalogCount', { n: pending })}` : t('provider.modelsCount', { n: configured });
+  }
+  // 合并：catalog 条目 → 目录态（未勾选）；models 条目 → 已配置态（勾选，catalog 命中补充能力元数据）
+  const merged = [];
+  const seen = new Set();
+  for (const m of models) {
+    const cat = catalog.find((c) => c && c.id === m.name);
+    merged.push({ ...m, name: m.name, _fromCatalog: false, _ctxHint: cat && cat.context ? cat.context : null });
+    seen.add(m.name);
+  }
+  for (const c of catalog) {
+    if (!c || !c.id || seen.has(c.id)) continue;
+    merged.push({ name: c.id, _fromCatalog: true, _ctxHint: c.context || null, _effortHint: Array.isArray(c.effortOptions) ? c.effortOptions : null });
+  }
+  // 当前选中（默认）模型归属本组但不在列表 → 附加（已配置态）
+  const cur = s.model || '';
+  if (liveGroup && cur && (cur === liveGroup.name || `${liveGroup.name}/${cur}`.includes('/'))) {
+    const curName = cur.startsWith(`${liveGroup.name}/`) ? cur.slice(liveGroup.name.length + 1) : cur;
+    if (curName && !seen.has(curName) && !isNew) {
+      merged.push({ name: curName, _fromCatalog: false, _selected: true, _ctxHint: null });
+      seen.add(curName);
+    }
+  }
   const q = ($('#mc-model-search').value || '').trim().toLowerCase();
-  const filtered = models.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.apiModel || '').toLowerCase().includes(q));
-  // 选中越界回收：选中名称不在当前组/过滤结果中时清空（删除模型/切换分组后兜底）
-  if (cfgModelSel && !models.some((m) => m.name === cfgModelSel)) cfgModelSel = null;
-  if (cfgModelSel && !filtered.some((m) => m.name === cfgModelSel)) cfgModelSel = null;
+  const filtered = merged.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.apiModel || '').toLowerCase().includes(q));
   box.innerHTML = '';
-  // 表头（吸顶）
+  // 表头（吸顶）：勾选 | 模型名 | apiModel | 思考级别 | context | 默认
   const thead = el('div', 'mc-thead');
   const th = (txt, cls) => { const c = el('span', 'mc-th' + (cls ? ' ' + cls : ''), txt); thead.appendChild(c); };
   thead.appendChild(el('span', 'mc-th'));
   th(t('provider.colName'));
   th(t('provider.colApiModel'));
-  th(t('provider.colDefault'));
   th(t('provider.colEffort'));
   th(t('provider.colContext'));
-  th(t('provider.colOps'));
+  th(t('provider.colDefault'));
   box.appendChild(thead);
   if (filtered.length === 0) {
-    box.appendChild(el('div', 'mc-empty-models', models.length === 0 ? t('provider.emptyModels') : t('provider.noMatch')));
-    return;
+    box.appendChild(el('div', 'mc-empty-models', merged.length === 0 ? t('provider.emptyModels') : t('provider.noMatch')));
+  } else {
+    filtered.forEach((m) => box.appendChild(modelListRow(s, liveGroup, m, isNew)));
   }
-  filtered.forEach((m) => {
-    box.appendChild(modelTableRow(s, group, m));
-    if (cfgModelSel === m.name) box.appendChild(modelDetailRow(s, group, m));
-  });
+  if (mcFetching === (liveGroup ? liveGroup.name : '__new__')) {
+    const load = el('div', 'mc-loading');
+    load.appendChild(el('span', 'spin'));
+    load.appendChild(el('span', null, t('provider.fetching')));
+    box.appendChild(load);
+  }
 }
 
-/** 表格行：模型名 + 行内字段（apiModel/思考级别/context）+ 默认/删除动作 + 展开按钮 */
-function modelTableRow(s, group, m) {
-  const expanded = cfgModelSel === m.name;
-  const isDefault = m.name === s.model || `${group.name}/${m.name}` === s.model;
+/** 列表行：勾选 = 启用/停用；行点击 = 弹窗编辑（列表仅预览，无行内编辑） */
+function modelListRow(s, group, m, isNew) {
+  const configured = !m._fromCatalog;
+  const isDefault = m.name === s.model || (group && `${group.name}/${m.name}` === s.model) || !!m._selected;
   const cap = mcCaps.get(m.name) || null;
-  const opts = effortOptionsOf(s, group, m);
-  const curEff = currentEffortOf(s, m, opts);
-  const ctxVal = (m.limit && m.limit.context) || '';
-  const row = el('div', 'mc-tr' + (expanded ? ' active' : ''));
+  const effHint = m._effortHint || (cap && Array.isArray(cap.effortOptions) ? cap.effortOptions : null);
+  const ctxHint = m._ctxHint || (cap && cap.context ? cap.context : null);
+  const row = el('div', 'mc-tr mc-list-tr' + (configured ? '' : ' cat'));
   row.dataset.model = m.name;
-  // 展开按钮
-  const expBtn = el('button', 'mc-exp-btn', expanded ? '▾' : '▸');
-  expBtn.type = 'button';
-  expBtn.title = t('provider.edit');
-  const expCell = el('div', 'mc-cell mc-cell-exp');
-  expCell.appendChild(expBtn);
-  row.appendChild(expCell);
-  // 模型名
+  row.title = t('provider.editHint');
+  // 勾选列：已配置始终勾选（refreshStatus 后回显真实状态）
+  const chkCell = el('div', 'mc-cell mc-cell-chk');
+  const chk = el('input', 'mc-check');
+  chk.type = 'checkbox';
+  chk.checked = configured;
+  chk.title = configured ? t('provider.disableHint') : t('provider.enableHint');
+  chk.addEventListener('change', () => toggleModelEnable(s, group, m, chk.checked, isNew));
+  chkCell.appendChild(chk);
+  row.appendChild(chkCell);
+  // 模型名 + 状态徽标（默认 / 目录）
   const nameCell = el('div', 'mc-cell mc-model-name');
   nameCell.appendChild(el('span', 'mc-name', m.name));
   if (isDefault) nameCell.appendChild(el('span', 'mc-badge def', t('provider.defaultBadge')));
+  if (m._fromCatalog) nameCell.appendChild(el('span', 'mc-badge cat', t('provider.catalogBadge')));
   row.appendChild(nameCell);
-  // apiModel（行内输入）
-  const apiCell = el('div', 'mc-cell');
-  const apiIn = el('input', 'mc-cell-input mc-api');
-  apiIn.type = 'text';
-  apiIn.value = m.apiModel || '';
-  apiIn.placeholder = m.name;
-  apiCell.appendChild(apiIn);
+  // apiModel 预览
+  const apiCell = el('div', 'mc-cell mc-prev');
+  apiCell.appendChild(el('span', 'mc-prev-text', m.apiModel || m.name));
   row.appendChild(apiCell);
-  // 默认（★）
-  const defCell = el('div', 'mc-cell mc-cell-center');
-  const defBtn = el('button', 'mc-def-btn' + (isDefault ? ' on' : ''), isDefault ? '★' : '☆');
-  defBtn.type = 'button';
-  defBtn.title = isDefault ? t('provider.defaultSet') : t('provider.setDefault');
-  if (!isDefault) {
-    defBtn.addEventListener('click', () => {
-      api('/api/settings', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ setDefaultModel: { model: `${group.name}/${m.name}` } }),
-      }).then(() => refreshStatus().catch(() => {}))
-        .catch((err) => alert(t('provider.errSetDefault', { msg: err.message })));
-    });
-  }
-  defCell.appendChild(defBtn);
-  row.appendChild(defCell);
-  // 思考级别（行内下拉；选项恒非空）
-  const effCell = el('div', 'mc-cell');
-  const effSel = el('select', 'mc-cell-select');
-  opts.forEach((o) => {
-    const op = document.createElement('option');
-    op.value = o; op.textContent = o;
-    if (o === curEff) op.selected = true;
-    effSel.appendChild(op);
-  });
-  if (!curEff || !opts.includes(curEff)) effSel.selectedIndex = 0;
-  effCell.appendChild(effSel);
+  // 思考级别预览（目录/能力表档位提示）
+  const effCell = el('div', 'mc-cell mc-prev');
+  effCell.appendChild(el('span', 'mc-prev-text', effHint && effHint.length ? effHint.join('/') : '—'));
   row.appendChild(effCell);
-  // context（行内数字输入；placeholder 显示能力表值）
-  const ctxCell = el('div', 'mc-cell');
-  const ctxIn = el('input', 'mc-cell-input mc-ctx');
-  ctxIn.type = 'number';
-  ctxIn.value = ctxVal;
-  ctxIn.placeholder = cap && cap.context ? formatCtx(cap.context) : '';
-  ctxIn.min = '0'; ctxIn.step = '1000';
-  ctxCell.appendChild(ctxIn);
+  // context 预览（目录/能力表提示）
+  const ctxCell = el('div', 'mc-cell mc-prev');
+  const ctxVal = (m.limit && m.limit.context) || ctxHint || '';
+  ctxCell.appendChild(el('span', 'mc-prev-text' + (ctxVal ? '' : ' muted'), ctxVal ? formatCtx(ctxVal) : '—'));
   row.appendChild(ctxCell);
-  // 操作（删除）
-  const opsCell = el('div', 'mc-cell mc-cell-ops');
-  const delBtn = el('button', 'mc-del-btn', '×');
-  delBtn.type = 'button';
-  delBtn.title = t('provider.removeModel');
-  delBtn.addEventListener('click', () => {
-    if (!confirm(t('provider.removeConfirm', { name: m.name }))) return;
-    api('/api/settings', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerRemove: { provider: group.name, modelName: m.name } }),
-    }).then(() => {
-      if (cfgModelSel === m.name) cfgModelSel = null;
-      refreshStatus().catch(() => {});
-    }).catch((err) => alert(t('provider.errDelete', { msg: err.message })));
-  });
-  opsCell.appendChild(delBtn);
-  row.appendChild(opsCell);
-  // 展开/收起
-  expBtn.addEventListener('click', () => {
-    cfgModelSel = expanded ? null : m.name;
-    const s = state.status || {};
-    renderModelTable(s, group, false);
+  // 默认（★）快捷动作
+  const defCell = el('div', 'mc-cell mc-cell-center');
+  if (configured) {
+    const defBtn = el('button', 'mc-def-btn' + (isDefault ? ' on' : ''), isDefault ? '★' : '☆');
+    defBtn.type = 'button';
+    defBtn.title = isDefault ? t('provider.defaultSet') : t('provider.setDefault');
+    if (!isDefault) {
+      defBtn.addEventListener('click', () => {
+        api('/api/settings', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ setDefaultModel: { model: `${group.name}/${m.name}` } }),
+        }).then(() => refreshStatus().catch(() => {}))
+          .catch((err) => alert(t('provider.errSetDefault', { msg: err.message })));
+      });
+    }
+    defCell.appendChild(defBtn);
+  } else {
+    defCell.appendChild(el('span', 'mc-cat-dash', '—'));
+  }
+  row.appendChild(defCell);
+  // 点击行（非勾选/按钮区域）→ 打开编辑弹窗
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('input, button')) return;
+    openMcModelEdit(s, group, m, isNew);
   });
   return row;
 }
 
-/** 展开行：高级字段（显示名/思考级别选项 + 能力表来源标注 + 继承·覆盖 + 保存） */
-function modelDetailRow(s, group, m) {
-  const hasOverride = !!(m.overrideBaseURL || m.overrideApiKey);
+/** 勾选切换：启用 = 添加（能力表/目录自动预填默认值）；停用 = 移除模型 */
+async function toggleModelEnable(s, group, m, on, isNew) {
+  let provider = group ? group.name : null;
+  if (!provider) {
+    provider = await ensureProviderName(); // 新建模式：先落盘 provider 再添加
+    if (!provider) return;
+  }
+  if (on) {
+    await fillModelCapabilities([m.name]);
+    const cap = mcCaps.get(m.name) || null;
+    try {
+      await api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providerModel: {
+            provider,
+            modelName: m.name,
+            contextLimit: m._ctxHint || (cap && cap.context ? cap.context : undefined),
+            reasoningEffortOptions: m._effortHint && m._effortHint.length > 1 ? m._effortHint : (cap && Array.isArray(cap.effortOptions) && cap.effortOptions.length > 1 ? cap.effortOptions : undefined),
+          },
+        }),
+      });
+    } catch (err) {
+      alert(t('provider.errAdd', { msg: err.message }));
+    }
+  } else {
+    if (!confirm(t('provider.removeConfirm', { name: m.name }))) return;
+    try {
+      await api('/api/settings', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerRemove: { provider, modelName: m.name } }),
+      });
+      if (mcEditModel && mcEditModel.provider === provider && mcEditModel.model.name === m.name) closeMcModelEdit();
+    } catch (err) {
+      alert(t('provider.errDelete', { msg: err.message }));
+    }
+  }
+  refreshStatus().catch(() => {}); // 勾选态始终回显真实状态
+}
+
+/** 打开模型编辑弹窗（列表行点击；新建模式下先落盘 provider 再打开） */
+function openMcModelEdit(s, group, m, isNew) {
+  const doOpen = (provider, g) => {
+    mcEditModel = { provider, model: m };
+    renderMcModelEdit(state.status || {}, g, m);
+    $('#mc-model-edit').classList.remove('hidden');
+    const first = $('#mc-edit-body input, #mc-edit-body select');
+    if (first) first.focus();
+  };
+  if (isNew || !group) {
+    ensureProviderName().then((provider) => {
+      if (!provider) return;
+      const s2 = state.status || {};
+      const groups = Array.isArray(s2.providers) ? s2.providers : [];
+      const g = groups.find((x) => x.name === provider) || null;
+      doOpen(provider, g);
+    });
+    return;
+  }
+  doOpen(group.name, group);
+}
+
+/** 渲染编辑弹窗表单：上下文/思考级别等默认值取自目录/能力表（models.dev），列表仅预览 */
+function renderMcModelEdit(s, group, m) {
+  const body = $('#mc-edit-body');
+  if (!body) return;
+  body.innerHTML = '';
   const cap = mcCaps.get(m.name) || null;
-  const opts = effortOptionsOf(s, group, m);
+  const opts = effortOptionsOf(s, group, m, m._effortHint);
   const curEff = currentEffortOf(s, m, opts);
-  const det = el('div', 'mc-tr-detail open');
-  det.dataset.model = m.name;
-  const inner = el('div', 'mc-tr-detail-inner');
+  const ctxHint = m._ctxHint || (cap && cap.context ? cap.context : null);
+  const hasOverride = !!(m.overrideBaseURL || m.overrideApiKey);
+  // 模型名（静态）
+  const nameRow = el('div', 'pm-row mc-edit-row');
+  nameRow.appendChild(el('label', null, t('provider.colName')));
+  nameRow.appendChild(el('span', 'mc-edit-name', m.name));
+  body.appendChild(nameRow);
+  // apiModel（API 名）
+  const apiIn = el('input', 'cfg-text mc-e-api');
+  apiIn.value = m.apiModel || '';
+  apiIn.placeholder = m.name;
+  const apiRow = el('div', 'pm-row mc-edit-row');
+  apiRow.appendChild(el('label', null, t('provider.fldApiModel')));
+  apiRow.appendChild(apiIn);
+  body.appendChild(apiRow);
   // 显示名
-  const dispRow = el('div', 'pm-row');
-  dispRow.appendChild(el('label', null, t('provider.fldDisplay')));
-  const dispIn = el('input', 'cfg-text mc-display');
+  const dispIn = el('input', 'cfg-text mc-e-display');
   dispIn.value = m.displayName || '';
   dispIn.placeholder = m.name;
-  dispIn.style.width = '150px';
+  const dispRow = el('div', 'pm-row mc-edit-row');
+  dispRow.appendChild(el('label', null, t('provider.fldDisplay')));
   dispRow.appendChild(dispIn);
-  inner.appendChild(dispRow);
-  // 思考级别选项 + 来源标注
-  const effRow = el('div', 'pm-row');
-  effRow.appendChild(el('label', null, t('provider.fldEfforts')));
-  const effBox = el('div', 'pm-eff-input');
-  const effIn = el('input', 'cfg-text mc-efforts');
+  body.appendChild(dispRow);
+  // 上下文长度（默认取目录/能力表）
+  const ctxIn = el('input', 'cfg-text mc-e-ctx');
+  ctxIn.type = 'number'; ctxIn.min = '0'; ctxIn.step = '1000';
+  ctxIn.value = (m.limit && m.limit.context) || '';
+  ctxIn.placeholder = ctxHint ? formatCtx(ctxHint) : '128000';
+  const ctxRow = el('div', 'pm-row mc-edit-row');
+  ctxRow.appendChild(el('label', null, t('provider.fldContext')));
+  ctxRow.appendChild(ctxIn);
+  body.appendChild(ctxRow);
+  // 思考级别选项（默认取目录/能力表）
+  const effIn = el('input', 'cfg-text mc-e-efforts');
   effIn.value = (m.reasoningEffortOptions || []).join(', ');
   effIn.placeholder = (cap && cap.effortOptions) ? cap.effortOptions.join(', ') : 'low,medium,high,xhigh,max';
-  effIn.style.width = '220px';
+  const effBox = el('div', 'pm-eff-input');
   effBox.appendChild(effIn);
   if (cap && cap.found) effBox.appendChild(el('p', 'pm-hint mc-caps-src', `· ${t('provider.fromModelsDev')}`));
   else effBox.appendChild(el('p', 'pm-hint', t('settings.variantsDesc')));
+  const effRow = el('div', 'pm-row mc-edit-row');
+  effRow.appendChild(el('label', null, t('provider.fldEfforts')));
   effRow.appendChild(effBox);
-  inner.appendChild(effRow);
+  body.appendChild(effRow);
   // 当前级别
-  const curRow = el('div', 'pm-row');
-  curRow.appendChild(el('label', null, t('provider.fldEffort')));
-  const curSel = el('select', 'setting-control mc-effort-sel');
+  const curSel = el('select', 'setting-control mc-e-effort');
   opts.forEach((o) => {
     const op = document.createElement('option');
     op.value = o; op.textContent = o;
@@ -4328,10 +4659,12 @@ function modelDetailRow(s, group, m) {
     curSel.appendChild(op);
   });
   if (!curEff || !opts.includes(curEff)) curSel.selectedIndex = 0;
+  const curRow = el('div', 'pm-row mc-edit-row');
+  curRow.appendChild(el('label', null, t('provider.fldEffort')));
   curRow.appendChild(curSel);
-  inner.appendChild(curRow);
-  // 继承 / 覆盖
-  const ovrRow = el('div', 'pm-row');
+  body.appendChild(curRow);
+  // 继承 / 覆盖（模型级自定义端点）
+  const ovrRow = el('div', 'pm-row mc-edit-row');
   ovrRow.appendChild(el('label', null, ''));
   const inheritTog = el('span', 'inherit-toggle' + (hasOverride ? '' : ' active'), t('provider.inherit'));
   inheritTog.dataset.mode = 'inherit';
@@ -4340,28 +4673,16 @@ function modelDetailRow(s, group, m) {
   ovrRow.appendChild(inheritTog);
   ovrRow.appendChild(el('span', null, '/'));
   ovrRow.appendChild(overrideTog);
-  const ovrUrl = el('input', 'cfg-text mc-ovr-url');
+  const ovrUrl = el('input', 'cfg-text mc-e-ovr-url');
   ovrUrl.placeholder = group ? (group.baseURL || 'baseURL') : 'baseURL';
-  ovrUrl.style.width = '170px';
   ovrUrl.style.display = hasOverride ? '' : 'none';
-  const ovrKey = el('input', 'cfg-text mc-ovr-key');
+  const ovrKey = el('input', 'cfg-text mc-e-ovr-key');
   ovrKey.type = 'password';
   ovrKey.placeholder = 'sk-…';
-  ovrKey.style.width = '150px';
   ovrKey.style.display = hasOverride ? '' : 'none';
   ovrRow.appendChild(ovrUrl);
   ovrRow.appendChild(ovrKey);
-  inner.appendChild(ovrRow);
-  // 保存
-  const saveRow = el('div', 'pm-row');
-  const saveBtn = el('button', 'primary-button', t('provider.save'));
-  saveBtn.type = 'button';
-  saveRow.appendChild(saveBtn);
-  const saveNote = el('span', 'save-note');
-  saveRow.appendChild(saveNote);
-  inner.appendChild(saveRow);
-  det.appendChild(inner);
-  // 继承/覆盖切换
+  body.appendChild(ovrRow);
   [inheritTog, overrideTog].forEach((tog) => {
     tog.addEventListener('click', () => {
       inheritTog.classList.toggle('active', tog === inheritTog);
@@ -4371,33 +4692,52 @@ function modelDetailRow(s, group, m) {
       ovrKey.style.display = isOvr ? '' : 'none';
     });
   });
-  // 保存：收集行内字段 + 高级字段（显式保存）
+  // 保存 / 取消
+  const actRow = el('div', 'pm-row mc-edit-actions');
+  const saveNote = el('span', 'save-note');
+  const cancelBtn = el('button', 'secondary-button', t('modal.cancel'));
+  cancelBtn.type = 'button';
+  cancelBtn.addEventListener('click', closeMcModelEdit);
+  const saveBtn = el('button', 'primary-button', t('provider.save'));
+  saveBtn.type = 'button';
   saveBtn.addEventListener('click', () => {
-    const row = det.previousElementSibling;
     const isOverride = overrideTog.classList.contains('active');
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         providerModel: {
-          provider: group.name,
+          provider: mcEditModel.provider,
           modelName: m.name,
-          apiModel: (row.querySelector('.mc-api').value.trim()) || undefined,
+          apiModel: apiIn.value.trim() || undefined,
           displayName: dispIn.value.trim() || undefined,
           reasoningEffortOptions: effIn.value.split(',').map((x) => x.trim()).filter(Boolean) || undefined,
           reasoningEffort: curSel.value || undefined,
-          contextLimit: Number(row.querySelector('.mc-ctx').value) > 0 ? Number(row.querySelector('.mc-ctx').value) : undefined,
+          contextLimit: Number(ctxIn.value) > 0 ? Number(ctxIn.value) : undefined,
           overrideBaseURL: isOverride ? (ovrUrl.value.trim() || undefined) : undefined,
           overrideApiKey: isOverride ? (ovrKey.value.trim() || undefined) : undefined,
         },
       }),
     }).then(() => {
       saveNote.textContent = t('provider.saved');
-      setTimeout(() => { if (saveNote.textContent === t('provider.saved')) saveNote.textContent = ''; }, 2200);
-      refreshStatus().catch(() => {});
+      setTimeout(() => {
+        closeMcModelEdit();
+        refreshStatus().catch(() => {});
+      }, 350);
     }).catch((err) => alert(t('provider.errSave', { msg: err.message })));
   });
-  return det;
+  actRow.appendChild(saveNote);
+  actRow.appendChild(cancelBtn);
+  actRow.appendChild(saveBtn);
+  body.appendChild(actRow);
 }
+
+function closeMcModelEdit() {
+  $('#mc-model-edit').classList.add('hidden');
+  mcEditModel = null;
+}
+// 弹窗关闭：✕ / 点击遮罩 / Esc（Esc 链在全局 keydown 中优先处理）
+$('#btn-close-mc-edit')?.addEventListener('click', closeMcModelEdit);
+$('#mc-model-edit')?.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeMcModelEdit(); });
 
 /** 设置面板「模型配置」tab 数据刷新：Provider 条 + 面板 + 模型表格 */
 function fillModelConfigForm(s) {
@@ -4434,17 +4774,24 @@ function fillModelConfigForm(s) {
           reasoningEffortOptions: cap && Array.isArray(cap.effortOptions) && cap.effortOptions.length > 1 ? cap.effortOptions : undefined,
         },
       }),
-    }).then(() => {
+    }).then(async () => {
       nameInput.value = '';
-      cfgModelSel = modelName; // 添加后自动展开新行
-      refreshStatus().catch(() => {});
+      await refreshStatus();
+      // 添加后直接打开编辑弹窗（填写 apiModel/上下文/思考级别等）
+      const s2 = state.status || {};
+      const groups = Array.isArray(s2.providers) ? s2.providers : [];
+      const g = groups.find((x) => x.name === provider) || null;
+      const mm = g ? providerModelsOf(g).find((x) => x.name === modelName) : null;
+      if (mm) openMcModelEdit(s2, g, mm, false);
+      else { cfgProviderSel = provider; renderProviderBar(s2); renderProviderPanel(s2); }
     }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
   };
   // 新建 provider
   $('#btn-provider-new').onclick = () => {
     cfgProviderSel = '__new__';
     cfgProviderNewName = '';
-    cfgModelSel = null;
+    mcNewCatalog = null;
+    closeMcModelEdit();
     renderProviderBar(s);
     renderProviderPanel(s);
   };
@@ -4459,7 +4806,7 @@ $('#mc-model-search')?.addEventListener('input', () => {
   const groups = Array.isArray(s.providers) ? s.providers : [];
   const isNew = cfgProviderSel === '__new__' || cfgProviderNewName;
   const group = !isNew ? groups.find((g) => g.name === cfgProviderSel) || null : null;
-  if (group) renderModelTable(s, group, false);
+  renderModelList(s, group, isNew);
 });
 $('#plan-mode').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));

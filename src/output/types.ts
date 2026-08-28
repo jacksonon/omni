@@ -12,7 +12,7 @@ import type { OmniConfig } from '../config/index.js';
 import type { HookEventName } from '../hooks/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
-import type { WriteDiff } from './format.js';
+import type { EditDiff, WriteDiff } from './format.js';
 
 /** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
 export interface TokenUsage {
@@ -27,6 +27,8 @@ export interface TokenUsage {
 export interface ToolResultDetail {
   /** write_file 写入前后对比（original=null = 本次会话新建文件） */
   diff?: WriteDiff | null;
+  /** edit_file 局部替换 diff（仅替换区域；oldLines / newLines 来自 old_string / new_string） */
+  edit?: import('./format.js').EditDiff | null;
 }
 
 export interface Output {
@@ -90,6 +92,12 @@ export interface Output {
    * 非交互（管道）自动拒绝（fail-safe）。可选：缺省时 loop 直接拒绝。
    */
   requestApproval?(req: ApprovalRequest): Promise<boolean>;
+  /**
+   * run_command 实时输出增量（live streaming）。每收到一行 stdout/stderr 推一次。
+   * TUI 用 ANSI 原地刷新；Web 用流式追加；console 用 last-N 行滚动。
+   * 可选：缺省时静默（仅依赖 onToolResult 的最终输出）。
+   */
+  onCommandOutput?(chunk: string, isError: boolean, toolSeq?: number): void;
   /**
    * 向用户提问（ask_user 工具）：返回用户选择（选项文本列表/自定义内容），null = 取消。
    * multiple = 是否允许多选（TUI 竖向勾选列表、console readline 序号输入）。

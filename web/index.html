@@ -202,9 +202,9 @@
           <div class="mc-layout">
             <div class="mc-provider-bar">
               <input type="text" id="mc-provider-search" class="cfg-text mc-search" placeholder="搜索 provider…" data-i18n-placeholder="provider.searchProvider" autocomplete="off" spellcheck="false">
-              <div id="mc-provider-chips" class="mc-chips"></div>
               <button id="btn-provider-new" class="secondary-button mc-new-btn" type="button" data-i18n="provider.new">+ 新建 provider</button>
             </div>
+            <div id="mc-provider-chips" class="mc-chips"></div>
             <div id="mc-empty" class="mc-empty hidden" data-i18n="provider.empty">还没有 provider——点「+ 新建 provider」添加</div>
             <div id="mc-provider-panel" class="mc-provider-panel hidden">
               <div class="mc-provider-head">
@@ -241,15 +241,16 @@
               <div id="p-fetch-result" class="fetch-result hidden"></div>
               <div class="mc-models">
                 <div class="mc-models-head">
-                  <h4 data-i18n="provider.models">组内模型</h4>
+                  <h4 data-i18n="provider.models">模型列表</h4>
                   <span id="p-models-count" class="mc-models-count"></span>
                   <input type="text" id="mc-model-search" class="cfg-text mc-search" placeholder="搜索模型…" data-i18n-placeholder="provider.searchModel" autocomplete="off" spellcheck="false">
-                  <div class="pm-add-row">
-                    <input type="text" id="pm-name" class="cfg-text" style="width:160px" placeholder="模型名" autocomplete="off" spellcheck="false">
-                    <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
-                  </div>
                 </div>
+                <div id="mc-fetch-note" class="mc-fetch-note hidden"></div>
                 <div id="provider-models" class="mc-tbody"></div>
+                <div class="mc-model-add-row">
+                  <input type="text" id="pm-name" class="cfg-text" placeholder="自定义模型名" data-i18n-placeholder="provider.addPlaceholder" autocomplete="off" spellcheck="false">
+                  <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
+                </div>
               </div>
             </div>
           </div>
@@ -275,6 +276,13 @@
     </div>
   </div>
 </div>
+<div id="mc-model-edit" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="mc-edit-title">
+  <div class="modal-card mc-edit-card">
+    <div class="modal-head"><h2 id="mc-edit-title" data-i18n="provider.editTitle">编辑模型</h2><button class="icon-button" id="btn-close-mc-edit" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-body mc-edit-body" id="mc-edit-body"></div>
+  </div>
+</div>
+
 <div id="session-switch-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sw-title">
   <div class="modal-card sw-card">
     <div class="modal-head"><h2 id="sw-title" data-i18n="shortcut.switchTitle">切换会话</h2><button class="icon-button" id="btn-close-sw" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
@@ -307,6 +315,8 @@
     </div>
   </div>
 </div>
+<script src="/vendor.js"></script>
+<script src="/markdown-renderer.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

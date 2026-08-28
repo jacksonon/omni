@@ -75,10 +75,16 @@ export interface TuiTheme {
   cardErrBg: string;
   /** 失败卡片文字色：红底上统一深红（red-900）——淡红底上浅色字不可读 */
   cardErrDim: string;
-  /** diff 新增行文字色（write_file 左右对比右列 / 新增文件全文）：深绿（green-700，两主题统一，淡底上可读） */
+  /** diff 新增行文字色（write_file 统一 diff 新增行）：深绿（green-700，两主题统一，淡底上可读） */
   diffAdd: string;
-  /** diff 删除行文字色（write_file 左右对比左列）：深红（red-700，两主题统一，淡底上可读） */
+  /** diff 删除行文字色（write_file 统一 diff 删除行）：深红（red-700，两主题统一，淡底上可读） */
   diffRem: string;
+  /** diff 新增行背景色（淡绿，green-100/50——Claude Code Edit 风格行级底色） */
+  diffAddBg: string;
+  /** diff 删除行背景色（淡红，red-100/50） */
+  diffRemBg: string;
+  /** diff 上下文行背景色（未改动行：极淡灰，与卡片底色区分） */
+  diffCtxBg: string;
 }
 
 const DARK_THEME: TuiTheme = {
@@ -97,15 +103,18 @@ const DARK_THEME: TuiTheme = {
   suggestBg: '#27272a', // 比 footer 深一档（zinc-800），浮层从灰块中浮出
   suggestBorder: '#52525b', // zinc-600：圆角边框略亮于面板底，勾出圆角轮廓
   suggestText: '#e2e8f0',
-  cardBg: '#fefce8', // 工具卡片块底色（执行中）：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
-  cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——淡黄底上浅色字不可读，统一深色
-  cardOkBg: '#dcfce7', // 执行成功：**淡绿**（green-100）——用户要求「执行成功使用淡绿色背景」，两主题统一
-  cardOkDim: '#14532d', // 绿底上的文字：深绿（green-900）——淡绿底上浅色字不可读
-  cardErrBg: '#fee2e2', // 执行失败：**淡红**（red-100）——用户要求「执行异常显示淡红色背景」，两主题统一
-  cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——淡红底上浅色字不可读
-  diffAdd: '#15803d', // diff 新增（green-700）：淡绿/淡黄/淡红底上都可读，两主题统一
-  diffRem: '#b91c1c', // diff 删除（red-700）：淡绿/淡黄/淡红底上都可读，两主题统一
-  // 思考级别颜色（深色主题，400 档）：绿→琥珀→橙→红→紫 强度递进
+  cardBg: '#3f3f46', // 工具卡片块底色（执行中）：**淡灰**（zinc-700）——用户要求「淡灰色背景，不要高对比的彩色」
+  cardDim: '#e4e4e7', // 灰底上的文字：浅灰（zinc-200）——深底配浅字统一感
+  cardOkBg: '#3f3f46', // 执行成功：**淡灰**（与执行中同色）——成功/执行中/失败统一灰底，靠状态色/标记区分
+  cardOkDim: '#e4e4e7', // 灰底上的文字：浅灰（同 cardDim）
+  cardErrBg: '#3f3f46', // 执行失败：**淡灰**（同上）——失败靠 ✗ 标记和 diff 红字传达，不靠底色
+  cardErrDim: '#e4e4e7', // 灰底上的文字：浅灰（同 cardDim）
+  diffAdd: '#4ade80', // diff 新增（green-400）——深灰底上浅绿字清晰
+  diffRem: '#f87171', // diff 删除（red-400）——深灰底上浅红字清晰
+  diffAddBg: '#14532d', // diff 新增行底：深绿（green-900）——灰块里再用深绿背景给"新增"行
+  diffRemBg: '#7f1d1d', // diff 删除行底：深红（red-900）——深灰底上深红块
+  diffCtxBg: '#52525b', // diff 上下文行底：略深灰（zinc-600）——比卡片底色稍亮一行做视觉分隔
+  // 思考级别颜色（亮色主题，60 档）：绿→琥珀→橙→红→紫 强度递进
   effortColors: {
     low: '#4ade80', // green-400
     medium: '#fbbf24', // amber-400
@@ -132,14 +141,17 @@ const LIGHT_THEME: TuiTheme = {
   suggestBg: '#ffffff', // 亮色下浮层用白底，与淡灰 footer 区分
   suggestBorder: '#a1a1aa', // zinc-400：亮色下圆角边框用中灰
   suggestText: '#27272a',
-  cardBg: '#fefce8', // 工具卡片块底色（执行中）：**超淡黄**（amber-50）——用户要求「超淡黄色背景」，两主题统一
-  cardDim: '#713f12', // 黄底上的文字：深棕（amber-900）——与暗色一致
-  cardOkBg: '#dcfce7', // 执行成功：**淡绿**（green-100）——两主题统一
-  cardOkDim: '#14532d', // 绿底上的文字：深绿（green-900）——与暗色一致
-  cardErrBg: '#fee2e2', // 执行失败：**淡红**（red-100）——两主题统一
-  cardErrDim: '#7f1d1d', // 红底上的文字：深红（red-900）——与暗色一致
+  cardBg: '#e4e4e7', // 工具卡片块底色：**淡灰**（zinc-200）——用户要求「淡灰色背景，不要高对比的彩色」
+  cardDim: '#27272a', // 灰底上的文字：深灰（zinc-800）——浅底配深字统一感
+  cardOkBg: '#e4e4e7', // 执行成功：**淡灰**（与执行中同色）——统一灰底，靠状态/标记区分
+  cardOkDim: '#27272a', // 灰底上的文字：深灰（同 cardDim）
+  cardErrBg: '#e4e4e7', // 执行失败：**淡灰**（同上）——失败靠 ✗ 标记和 diff 红字传达
+  cardErrDim: '#27272a', // 灰底上的文字：深灰（同 cardDim）
   diffAdd: '#15803d', // diff 新增（green-700）——两主题统一
   diffRem: '#b91c1c', // diff 删除（red-700）——两主题统一
+  diffAddBg: '#dcfce7', // diff 新增行底：淡绿（green-100）——两主题统一
+  diffRemBg: '#fee2e2', // diff 删除行底：淡红（red-100）——两主题统一
+  diffCtxBg: '#f4f4f5', // diff 上下文行底：极淡灰（zinc-100）——两主题统一
   // 思考级别颜色（亮色主题，600 档）：绿→琥珀→橙→红→紫 强度递进（浅底上对比足够）
   effortColors: {
     low: '#16a34a', // green-600

@@ -177,6 +177,14 @@ export class WebOutput implements Output {
     this.announce('tool.result', { ok, chars, preview: preview ?? [], detail, seq: toolSeq ?? this._nextToolSeq++ });
   }
 
+  /**
+   * run_command 实时输出（live streaming）：广播 tool.output，前端按 seq 配对追加。
+   * 缺省 noop（与 Output 接口一致）——未实现实时流的前端走「等最终 result」模式。
+   */
+  onCommandOutput(chunk: string, isError: boolean, toolSeq?: number): void {
+    this.announce('tool.output', { chunk, isError, seq: toolSeq ?? this._nextToolSeq++ });
+  }
+
   requestApproval(req: ApprovalRequest): Promise<boolean> {
     return this.pending.addApproval(this.sessionId, req);
   }

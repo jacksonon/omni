@@ -13,6 +13,12 @@ export type ToolApprovalMode = 'auto' | 'prompt' | 'writes' | 'approve';
  */
 export interface ToolContext {
   cwd?: string;
+  /**
+   * run_command 实时输出回调（每凑到一行 stdout/stderr 触发一次；live streaming 用）。
+   * 缺省 = 走 buffer 模式（与旧实现一致，命令结束后一次性返回）。
+   * 仅 run_command 工具会读取，其它工具忽略。
+   */
+  onCommandOutput?: (line: string, isError: boolean) => void;
 }
 
 export interface Tool {

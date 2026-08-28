@@ -162,6 +162,15 @@ async function main(): Promise<void> {
     check('A2 style.css 可访问', css.status === 200 && (await css.text()).includes('tool-card'), 'status=' + css.status);
     const js = await fetch(`${BASE}/app.js`);
     check('A3 app.js 可访问', js.status === 200 && (await js.text()).includes('EventSource'), 'status=' + js.status);
+    const vendor = await fetch(`${BASE}/vendor.js`);
+    const vendorTxt = vendor.status === 200 ? await vendor.text() : '';
+    check('A6 vendor.js 可访问（markstream 打包）', vendor.status === 200 && vendorTxt.includes('__markstream'), 'status=' + vendor.status);
+    const rdr = await fetch(`${BASE}/markdown-renderer.js`);
+    const rdrTxt = rdr.status === 200 ? await rdr.text() : '';
+    check('A7 markdown-renderer.js 可访问（OmniMarkdown 接口）', rdr.status === 200 && rdrTxt.includes('OmniMarkdown'), 'status=' + rdr.status);
+    const home2 = await fetch(`${BASE}/`);
+    const home2Txt = await home2.text();
+    check('A8 index.html 按序加载 vendor → renderer → app', home2Txt.indexOf('/vendor.js') < home2Txt.indexOf('/markdown-renderer.js') && home2Txt.indexOf('/markdown-renderer.js') < home2Txt.indexOf('/app.js'));
     const st = await (await fetch(`${BASE}/api/status`)).json();
     check('A4 status：模型/权限/工具', !!st.model && !!st.tools?.length && st.permission === 'safe', JSON.stringify(st).slice(0, 120));
     const sessions0 = await (await fetch(`${BASE}/api/sessions`)).json();

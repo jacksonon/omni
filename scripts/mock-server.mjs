@@ -46,7 +46,7 @@ const REASONING_1 = process.env.MOCK_REASONING === 'long' ? LONG_REASONING : '�
 // MOCK_MARKDOWN=1 时最终回答包含 Markdown（加粗/表格/代码块/列表/任务清单/标题），用于验证 TUI 行式渲染
 const MARKDOWN_BASE =
   process.env.MOCK_MARKDOWN === '1'
-    ? '任务完成 ✅ **mock 端到端验证通过**。\n\n## 验证点\n- 工具调用成功\n- 流式输出正常\n\n| 项目 | 状态 | 说明 |\n| --- | :---: | --- |\n| 工具调用 | ✅ | 执行成功 |\n| 流式输出 | ✅ | 逐字渲染 |\n| ~~废弃项~~ | ❌ | 已移除 |\n\n- [x] 已完成事项\n- [ ] 待办事项\n\n示例代码：\n```js\nconst result = await runCommand("echo mock-ok");\nconsole.log(result);\n```\n\n行内代码 `mock-ok` 与 **加粗** 均应正确渲染。'
+    ? '任务完成 ✅ **mock 端到端验证通过**。\n\n## 验证点\n- 工具调用成功\n- 流式输出正常\n\n| 项目 | 状态 | 说明 |\n| --- | :---: | --- |\n| 工具调用 | ✅ | 执行成功 |\n| 流式输出 | ✅ | 逐字渲染 |\n| ~~废弃项~~ | ❌ | 已移除 |\n\n- [x] 已完成事项\n- [ ] 待办事项\n\n示例代码：\n```js\nconst result = await runCommand("echo mock-ok");\nconsole.log(result);\n```\n\n文件改动示例（diff 围栏）：\n```diff\n@@ -1,2 +1,3 @@\n const greeting = "hello";\n-old line\n+new line\n+another line\n```\n\n行内代码 `mock-ok` 与 **加粗** 均应正确渲染。'
     : '任务完成 ✅ mock 端到端验证通过。';
 // MOCK_LONGLINE=1 时追加一长段无换行的散文（验证长消息自动折行而非截断）
 const LONG_LINE =

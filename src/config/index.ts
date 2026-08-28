@@ -90,6 +90,12 @@ export interface OmniConfig {
       headers?: Record<string, string>;
       /** 组内模型：允许模型级 baseURL/apiKey 覆盖（继承/覆盖开关，D8）——缺省继承 provider */
       models?: Record<string, Omit<ModelEntryConfig, 'userAgent' | 'headers'>>;
+      /**
+       * 远端模型目录缓存（web 设置「获取模型列表」结果落盘）：只存展示用元数据
+       * （id/context/effortOptions），不参与运行时展开——与 models（已启用模型）解耦；
+       * 未拉取过 = undefined，前端据此显示「获取/刷新模型列表」。
+       */
+      modelCatalog?: Array<{ id: string; context?: number; effortOptions?: string[] }>;
     }
   >;
   /** 最多预载文件数（默认 5） */
@@ -488,6 +494,24 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
         ...(typeof p.userAgent === 'string' ? { userAgent: p.userAgent } : {}),
         ...(p.headers && typeof p.headers === 'object' && !Array.isArray(p.headers)
           ? { headers: p.headers as Record<string, string> }
+          : {}),
+        ...(p.modelCatalog && Array.isArray(p.modelCatalog)
+          ? {
+              modelCatalog: (p.modelCatalog as unknown[])
+                .map((c) => {
+                  const cc = (c ?? {}) as Record<string, unknown>;
+                  const id = typeof cc.id === 'string' ? cc.id.trim() : '';
+                  if (!id) return null;
+                  const out: { id: string; context?: number; effortOptions?: string[] } = { id };
+                  if (typeof cc.context === 'number' && cc.context > 0) out.context = Math.floor(cc.context);
+                  if (Array.isArray(cc.effortOptions)) {
+                    const eo = (cc.effortOptions as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim());
+                    if (eo.length) out.effortOptions = eo;
+                  }
+                  return out;
+                })
+                .filter((x): x is { id: string; context?: number; effortOptions?: string[] } => x !== null),
+            }
           : {}),
       };
       if (p.models && typeof p.models === 'object' && !Array.isArray(p.models)) {

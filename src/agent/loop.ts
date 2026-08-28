@@ -147,6 +147,7 @@ export function buildSystemPrompt(
 6. 自我纠错：工具执行失败或被拦截时，错误信息会作为工具结果回传——据此修正参数或换用其它方案，不要放弃；
 7. 定向读取：工具结果超过 8000 字符会被截断并提示——需要完整内容时用 read_file 按 offset/limit 定向获取；
 8. 收尾总结：任务完成后，用简洁的中文总结你做了什么、结果如何、还有什么没做。
+9. 展示文件改动：需要向用户展示你对文件做了什么修改时，用 \`\`\`diff 代码块（围栏语言为 diff），前后对比一目了然。
 
 身份回答：当用户问“你是谁”或类似问题时，用一两句话自然介绍自己，
 例如“我是 Omni，运行在终端里的编程 Agent，可以帮你读写文件、搜索代码、执行命令。”
@@ -719,7 +720,18 @@ export async function runAgent(
               result = `已拦截：${gate!.reason}\n请向用户说明情况，由其决定如何继续。`;
             } else {
               try {
-                result = await tool.execute(args, { cwd: process.cwd() });
+                // run_command 实时输出：通过 ToolContext.onCommandOutput 注入回调，
+                // 渲染端（TUI/Web/console）订阅后做原地刷新 / DOM 追加
+                const toolCtx: import('../tools/types.js').ToolContext = {
+                  cwd: process.cwd(),
+                  ...(tool.name === 'run_command' && output.onCommandOutput
+                    ? {
+                        onCommandOutput: (line: string, isErr: boolean) =>
+                          output.onCommandOutput!(line, isErr, seq),
+                      }
+                    : {}),
+                };
+                result = await tool.execute(args, toolCtx);
               } catch (err: any) {
                 // 自我纠错：把错误信息喂回模型，让它自己修正
                 result = `执行失败：${err?.message ?? err}`;
@@ -757,6 +769,8 @@ export async function runAgent(
             // 预览只取前几行（终端展示用），完整结果仍回传给模型；
             // write_file 附带写入前后对比（original 取自 UndoStack 执行前快照——execute
             // 前已 snapshotWrite，此处读栈取「写入前」内容；新建文件 original=null）
+            // edit_file 附带局部替换 diff（old_string / new_string 直接来自 args——execute
+            // 已成功证明二者与文件实际内容匹配，无需读 UndoStack 重建 diff）
             let detail: ToolResultDetail | undefined;
             if (tool.name === 'write_file') {
               const snap = opts.undoStack?.latestFor(String(args.path ?? ''));
@@ -769,6 +783,16 @@ export async function runAgent(
                   },
                 };
               }
+            } else if (tool.name === 'edit_file') {
+              const oldStr = String(args.old_string ?? '');
+              const newStr = args.new_string === undefined ? '' : String(args.new_string ?? '');
+              detail = {
+                edit: {
+                  path: String(args.path ?? ''),
+                  oldLines: oldStr ? oldStr.split('\n') : [],
+                  newLines: newStr ? newStr.split('\n') : [],
+                },
+              };
             }
             output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail, seq);
             // 轨迹：工具结果（与 tool/call 按 callId 配对；耗时 = result - call）

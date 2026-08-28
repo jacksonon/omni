@@ -425,6 +425,29 @@ export function removeProviderModelFromGlobal(provider: string, modelName: strin
   return persistGlobalJson(file, load.obj, ' providers 字段');
 }
 
+/** 缓存远端模型目录（"获取模型列表" 结果，modelCatalog 字段）：
+ *  首次配置时拉取并落盘，之后打开设置始终展示缓存列表；点「刷新」重新拉取覆盖缓存。
+ *  模型目录只存展示用元数据（id/能力），不参与运行时模型展开——与 providers.models（已启用模型）解耦。 */
+export function persistProviderCatalogToGlobal(
+  provider: string,
+  catalog: Array<{ id: string; context?: number; effortOptions?: string[] }>,
+  _cfg: OmniConfig
+): PersistModelResult {
+  const pname = provider.trim();
+  if (!pname) return { ok: false, file: null, message: '缺少 provider 名称' };
+  const file = globalConfigFile();
+  const load = loadGlobalConfigObject(file, ` providers.${pname}.modelCatalog`);
+  if (!load.ok) return load;
+  const providers = providersOf(load.obj);
+  const p = (providers[pname] && typeof providers[pname] === 'object' && !Array.isArray(providers[pname])
+    ? { ...(providers[pname] as Record<string, unknown>) }
+    : {}) as Record<string, unknown>;
+  p.modelCatalog = catalog;
+  providers[pname] = p;
+  load.obj.providers = providers;
+  return persistGlobalJson(file, load.obj, ` providers.${pname}.modelCatalog`);
+}
+
 /**
  * 把默认模型名写入**全局配置**顶层 model 字段（Web 设置面板「设为默认」——面板只写全局，
  * 不依赖 loadConfigObject 的层叠目标，避免无配置文件时落到 cwd）。

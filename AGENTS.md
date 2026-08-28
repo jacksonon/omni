@@ -23,7 +23,7 @@ npm run mock              # 启动本地 mock API 服务器（无 Key 端到端�
 npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 npm run dev:web           # Web 服务（本地后端 + 网页界面，默认 3080 端口，不自动开浏览器）
-npm run web:sync          # 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本）
+npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
 npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
 npm run electron:build    # Electron 桌面应用打包（npm run web:sync + bundle + electron-builder）
@@ -263,7 +263,7 @@ for step in 1..maxSteps:
 - **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行/loading/统计行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别`（模式前缀 + provider 组名 + 级别按强度着色）；**loading+esc 在灰色块外部**——统计行最左侧（左下侧，与 statusLine 一行；用户要求）；统计行水平位置可配（`statuslineAlign`：左/中/右，/settings statusline 面板 `a` 键切换）；内容行预算 = 高度 - 10 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
 - **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送列表（steer 插最前、可排序/编辑/删除）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
 - **浮层体系**：`/` 命令联想与 `@` 提及文件选择（圆角方框、窗口滚动、鼠标点击）、命令面板（alert 居中）、命令输出面板、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
-- **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 diff 左右对比（write_file）与多读合并（read_file）；
+- **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；
 - **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
 - **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 47 场景，与 CLI 共用同一渲染路径。
 ### 工具列表（src/tools/）

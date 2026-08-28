@@ -122,7 +122,47 @@ function toolRowStyle(role: ToolCardRole, status: ToolStatus, theme: TuiTheme): 
  * ——删除半列红、新增半列绿、未改动半列状态深字，中间 `│` 分隔；整行色（新增
  * 文件全文，diffRole='add'）整行绿色。
  */
-function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme): Row {
+function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, toolName?: string): Row {
+  if (line.diffRole) {
+    // 整行 diff 色（统一 diff 行：新增绿/删除红/上下文灰）——行级背景色 + 文字色
+    const fg = line.diffRole === 'add' ? theme.diffAdd : line.diffRole === 'rem' ? theme.diffRem : theme.cardDim;
+    const lineBg = line.diffRole === 'add' ? theme.diffAddBg : line.diffRole === 'rem' ? theme.diffRemBg : theme.diffCtxBg;
+    const chunks: MdChunk[] = [{ text: line.text, fg, bg: lineBg }];
+    return { text: line.text, style: {}, chunks };
+  }
+
+  const isNoBg =
+    status === 'running' ||
+    toolName === 'read_file' ||
+    toolName === 'search_code' ||
+    toolName === 'list_directory' ||
+    toolName === 'run_command' ||
+    toolName === 'web_fetch' ||
+    toolName === 'write_file' ||
+    toolName === 'edit_file';
+  if (isNoBg) {
+    if (line.role === 'top' || line.role === 'bottom') {
+      return { text: '', style: {} };
+    }
+    const contentStyle = toolRowStyle(line.role, status, theme);
+    if (line.text.includes('● Bash')) {
+      const match = line.text.match(/^(\s*)(●)(\s*)(Bash)(\(.*\))(.*)$/);
+      if (match) {
+        const [, sp1, dot, sp2, bashName, args, rest] = match;
+        const chunks: MdChunk[] = [
+          { text: sp1 },
+          { text: dot, fg: theme.modeBuild }, // 绿点
+          { text: sp2 },
+          { text: bashName, fg: theme.diffAdd, bold: true }, // Bash 强调
+          { text: args, fg: theme.cardDim },
+        ];
+        if (rest) chunks.push({ text: rest, fg: theme.cardDim });
+        return { text: line.text, style: {}, chunks };
+      }
+    }
+    return { text: line.text, style: contentStyle, chunks: [{ text: line.text, ...contentStyle }] };
+  }
+
   const { bg } = toolCardColors(status, theme);
   if (line.role === 'top' || line.role === 'bottom') {
     // 完整长方形：整行状态底色填满（text 为全空格，长度 == 列数），无透明角
@@ -145,9 +185,11 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme): R
     return { text: line.text, style: {}, chunks };
   }
   if (line.diffRole) {
-    // 整行 diff 色（新增文件全文：绿色）
-    const fg = line.diffRole === 'add' ? theme.diffAdd : theme.diffRem;
-    const chunks: MdChunk[] = [{ text: line.text, fg, bg }];
+    // 整行 diff 色（统一 diff 行：新增绿/删除红/上下文灰）——行级背景色 + 文字色，
+    // Claude Code Edit 风格：新增行淡绿底深绿字、删除行淡红底深红字、上下文行淡灰底深字
+    const fg = line.diffRole === 'add' ? theme.diffAdd : line.diffRole === 'rem' ? theme.diffRem : theme.cardDim;
+    const lineBg = line.diffRole === 'add' ? theme.diffAddBg : line.diffRole === 'rem' ? theme.diffRemBg : theme.diffCtxBg;
+    const chunks: MdChunk[] = [{ text: line.text, fg, bg: lineBg }];
     return { text: line.text, style: {}, chunks };
   }
   const contentStyle = toolRowStyle(line.role, status, theme);
@@ -435,7 +477,10 @@ export function buildBody(state: TuiState, width: number): Row[] {
         state.spinnerIndex >= 0 ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length] : undefined;
       const lines = toolCardLines({ ...line.card, spinner }, width);
       for (const l of lines) {
-        body.push({ ...toolCardRow(l, line.card.status, theme), cardId: line.card.id });
+        const row = toolCardRow(l, line.card.status, theme, line.card.name);
+        if (row.text || (row.chunks && row.chunks.length > 0)) {
+          body.push({ ...row, cardId: line.card.id });
+        }
       }
       continue;
     }

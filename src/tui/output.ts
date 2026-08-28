@@ -358,7 +358,42 @@ export class TuiOutput implements Output {
         l.card.status = ok ? 'ok' : 'err';
         l.card.output = preview ?? [];
         l.card.chars = chars;
+        if (l.card.name === 'list_directory' && preview && preview.length && !l.card.summary.includes('(')) {
+          let count = 0;
+          const first = preview[0] ?? '';
+          const m = first.match(/(\d+)\s*个/);
+          if (m) count = parseInt(m[1], 10);
+          else count = preview.filter((line) => line.trim() && !line.startsWith('…')).length;
+          if (count > 0) l.card.summary = `${l.card.summary} (${count} items)`;
+        }
+        if (l.card.name === 'search_code' && preview && preview.length && !l.card.summary.includes('(')) {
+          let matches = 0;
+          const first = preview[0] ?? '';
+          const m = first.match(/(\d+)\s*处/);
+          if (m) matches = parseInt(m[1], 10);
+          else matches = preview.filter((line) => line.trim() && !line.startsWith('…') && !line.includes('匹配结果')).length;
+          l.card.summary = `${l.card.summary} (${matches} match${matches > 1 ? 'es' : ''})`;
+        }
         if (detail) l.card.diff = detail.diff ?? null;
+        if (detail?.edit !== undefined) l.card.edit = detail.edit;
+        // run_command 实时输出已并入 final output——清空 liveLines 避免重复渲染
+        if (l.card.liveLines) l.card.liveLines = undefined;
+        // 智能默认展开规则（用户拍板）：
+        // · write_file / edit_file → 永远默认展开（写操作的 diff 必须第一时间可见，建立信任）
+        // · run_command 失败 → 强制展开（错误是排错入口）
+        // · read_file / search_code / list_directory → 始终默认收起（信息量大但通常不是当下决策点）
+        // · run_command 成功 → 收起（成功只是确认，符合预期）
+        if (!ok) {
+          // 失败强制展开：所有工具失败都展开，让用户第一时间看到错误
+          l.card.expanded = true;
+        } else if (l.card.name === 'write_file' && l.card.diff) {
+          // write_file 永远展开：新建/修改/全文重写，diff 是用户 review 的核心
+          l.card.expanded = true;
+        } else if (l.card.name === 'edit_file' && l.card.edit) {
+          // edit_file 永远展开：精确替换的 before/after 必须看到
+          l.card.expanded = true;
+        }
+        // run_command 成功、read_file、search_code、list_directory → 保持默认收起
         break;
       }
     }
@@ -370,6 +405,29 @@ export class TuiOutput implements Output {
       this.state.status = '';
     }
     this.schedulePaint();
+  }
+
+  /**
+   * run_command 实时输出：找到对应 seq 的执行中卡片，追加到 liveLines（ring 8 行），
+   * 触发 schedulePaint —— TUI rows 会用 `tail` 风格显示（最近几行 + `…` 折叠提示）。
+   * onToolResult 到达时清空 liveLines，由 final preview 接管。
+   */
+  onCommandOutput(chunk: string, _isError: boolean, toolSeq?: number): void {
+    if (toolSeq == null) return;
+    // 倒序找 seq 对应的卡片（toolSeq 是该次响应的配对序号）
+    for (let i = this.state.lines.length - 1; i >= 0; i--) {
+      const l = this.state.lines[i];
+      if (l.kind === 'tool' && l.card?.status === 'running' && l.card.id === toolSeq) {
+        if (!l.card.liveLines) l.card.liveLines = [];
+        for (const line of chunk.split('\n')) {
+          if (!line) continue;
+          l.card.liveLines.push(line);
+          if (l.card.liveLines.length > 8) l.card.liveLines.shift();
+        }
+        this.schedulePaint();
+        return;
+      }
+    }
   }
 
   onMaxSteps(max: number): void {

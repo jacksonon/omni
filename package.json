@@ -71,7 +71,8 @@
     "dev": "tsx src/index.ts",
     "dev:tui": "bun run ./src/tui-entry.ts",
     "dev:web": "tsx src/index.ts web --no-open",
-    "web:sync": "node scripts/web-sync.mjs",
+    "web:vendor": "bun build ./web/vendor-entry.mjs --target=browser --outfile=web/vendor.js --minify",
+    "web:sync": "npm run web:vendor && node scripts/web-sync.mjs",
     "probe:web": "tsx scripts/probe-web.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && tsc && npm run bundle",
@@ -96,7 +97,10 @@
     "node": ">=18"
   },
   "dependencies": {
-    "openai": "^4.0.0"
+    "markstream-core": "^2.0.6",
+    "openai": "^4.0.0",
+    "stream-diffs": "^0.0.2",
+    "stream-markdown-parser": "^1.2.12"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",

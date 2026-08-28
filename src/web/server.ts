@@ -105,6 +105,7 @@ import {
   persistModelDefaultToGlobal,
   persistProviderConfigToGlobal,
   persistProviderModelToGlobal,
+  persistProviderCatalogToGlobal,
   removeProviderFromGlobal,
   removeProviderModelFromGlobal,
   persistReasoningEffortToConfig,
@@ -351,6 +352,8 @@ function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
       baseURL: p.baseURL,
       apiKey: p.apiKey,
       userAgent: p.userAgent,
+      // 远端模型目录缓存（"获取模型列表" 结果；未拉取过 = undefined，前端据此显示「获取/刷新」）
+      modelCatalog: p.modelCatalog,
       models: Object.entries(p.models ?? {}).map(([mid, m]) => ({
         name: mid,
         apiModel: m.apiModel,
@@ -1509,7 +1512,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       // ---------- 静态页面 ----------
-      if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/style.css' || p === '/app.js')) {
+      if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js')) {
         const name = p === '/' ? 'index.html' : p.replace(/^\//, '');
         const asset = getAsset(name);
         if (asset === null) {
@@ -1894,16 +1897,27 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         // 获取远端可用模型列表（GET {baseURL}/models；配置完 baseURL+key 后点「获取模型列表」）——
         // 每个模型附带 models.dev 能力表（context/思考级别档位），前端勾选添加时直接预填。
+        // provider 已存在时把目录**持久化缓存**到 config（providers.<name>.modelCatalog）——
+        // 之后打开设置始终展示缓存列表；点「刷新」重新拉取覆盖缓存（首次配置流程也走这里）。
         if (body.providerDiscover && typeof body.providerDiscover === 'object') {
           const pd = body.providerDiscover as Record<string, unknown>;
           const baseURL = typeof pd.baseURL === 'string' && pd.baseURL.trim() ? pd.baseURL.trim() : undefined;
           const apiKey = typeof pd.apiKey === 'string' && pd.apiKey.trim() ? pd.apiKey.trim() : undefined;
+          const provider = typeof pd.provider === 'string' && pd.provider.trim() ? pd.provider.trim() : undefined;
           if (!baseURL) { json(res, 400, { error: '缺少 baseURL' }); return; }
           try {
             const { discoverModels } = await import('../client.js');
             const ids = await discoverModels({ baseURL, apiKey });
-            const models = ids.map((id) => ({ id, ...resolveModelCapabilities(id) }));
-            json(res, 200, { models });
+            const catalog = ids.map((id) => {
+              const cap = resolveModelCapabilities(id);
+              return { id, ...(cap.context ? { context: cap.context } : {}), ...(cap.effortOptions?.length ? { effortOptions: cap.effortOptions } : {}) };
+            });
+            // provider 已保存 → 目录落盘缓存；未保存（新建流程）→ 只返回，前端先建 provider 再添加
+            if (provider && (runOpts.cfg?.providers?.[provider])) {
+              const pr = persistProviderCatalogToGlobal(provider, catalog, cfg);
+              if (pr.ok) syncCfgProvider(provider, (p) => ({ ...(p ?? {}), modelCatalog: catalog }));
+            }
+            json(res, 200, { models: catalog });
             return;
           } catch (err) {
             json(res, 400, { error: `获取模型列表失败：${(err as Error)?.message ?? err}` });

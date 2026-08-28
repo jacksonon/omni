@@ -17,8 +17,8 @@ import type { ThinkingDisplay } from '../agent/types.js';
 import { createThinkingDisplay } from '../agent/thinking.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
-import { createSpinner, cyan, dim, isTTY, red, yellow, type Spinner } from '../ui.js';
-import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, isExitCodeZeroLine, wrapText } from './format.js';
+import { bold, createSpinner, cyan, dim, green, isTTY, red, yellow, type Spinner } from '../ui.js';
+import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, editToUnifiedDiff, isExitCodeZeroLine, unifiedDiff, wrapText } from './format.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
 export interface ConsoleOutputOptions {
@@ -91,12 +91,42 @@ export class ConsoleOutput implements Output {
     return Math.max(2, cols - 6); // 左缩进 2 + 两侧边框 2×2
   }
 
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, _args?: Record<string, unknown>): void {
+  /** 当前工具调用类型与参数，用于差异化渲染 */
+  private currentTool: { name: string; preview: string; args?: Record<string, unknown> } | null = null;
+
+  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>): void {
     if (!this.opts.stream) return;
+    this.currentTool = { name, preview: argsPreview, args };
     const inner = this.termInner();
     this.boxInner = inner;
+
+    if (name === 'read_file') {
+      console.log(`\n  ${dim('→ Explored — 1 read')}`);
+      return;
+    }
+
+    if (name === 'search_code' || name === 'list_directory') {
+      console.log(`\n  ${dim('→ Explored — 1 search')}`);
+      return;
+    }
+
+    if (name === 'web_fetch') {
+      console.log(`\n  ${dim('→ Explored — 1 fetch')}`);
+      return;
+    }
+
+    if (name === 'write_file' || name === 'edit_file') {
+      console.log(`\n  ${bold(argsPreview)}\n`);
+      return;
+    }
+
+    if (name === 'run_command') {
+      console.log(`\n  ${green('●')} ${bold('Bash')}${dim(argsPreview.replace(/^●\s*Bash/, ''))}`);
+      return;
+    }
+
     if (isTTY) {
-      // TTY：先开框（顶边 + 命令 + ⏳ 执行中），结果到达时原位收口（见 onToolResult）
+      // TTY：常规工具开框（顶边 + 命令 + ⏳ 执行中），结果到达时原位收口
       console.log(`\n  ${`╭${'─'.repeat(inner)}╮`}`);
       for (const seg of wrapText(argsPreview, inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
       console.log(`  ${dim(cardContentLine('⏳ 执行中…', inner))}`);
@@ -108,6 +138,74 @@ export class ConsoleOutput implements Output {
 
   onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
     if (!this.opts.stream) return;
+    const tool = this.currentTool;
+    this.currentTool = null;
+
+    if (tool?.name === 'read_file') {
+      // 图 1 风格：read 工具执行后无需额外方框
+      return;
+    }
+
+    if (tool?.name === 'search_code') {
+      // 图 1 风格：输出 * Grep "..." in ... (N matches)
+      let matches = 0;
+      if (preview && preview.length) {
+        const first = preview[0] ?? '';
+        const m = first.match(/(\d+)\s*处/);
+        if (m) matches = parseInt(m[1], 10);
+        else matches = preview.filter((l) => l.trim() && !l.startsWith('…') && !l.includes('匹配结果')).length;
+      }
+      const matchSuffix = matches > 0 ? ` (${matches} match${matches > 1 ? 'es' : ''})` : ' (0 matches)';
+      console.log(`  ${dim(tool.preview + matchSuffix)}`);
+      return;
+    }
+
+    if (tool?.name === 'list_directory') {
+      // 图 1 风格：输出 📁 path (N items)
+      let count = 0;
+      if (preview && preview.length) {
+        const first = preview[0] ?? '';
+        const m = first.match(/(\d+)\s*个/);
+        if (m) count = parseInt(m[1], 10);
+        else count = preview.filter((l) => l.trim() && !l.startsWith('…')).length;
+      }
+      const countSuffix = count > 0 ? ` (${count} item${count > 1 ? 's' : ''})` : '';
+      console.log(`  ${dim(tool.preview + countSuffix)}`);
+      return;
+    }
+
+    if (tool?.name === 'write_file' || tool?.name === 'edit_file') {
+      // 图 2 风格：输出带行号和红绿背景的高亮 unified diff
+      const diffData = detail?.diff
+        ? unifiedDiff(detail.diff.original, detail.diff.content)
+        : detail?.edit
+          ? editToUnifiedDiff(detail.edit.oldLines, detail.edit.newLines)
+          : null;
+
+      if (diffData && diffData.lines.length > 0) {
+        const maxNo = diffData.lines.reduce((m, l) => Math.max(m, l.oldNo ?? 0, l.newNo ?? 0), 0);
+        const digits = Math.max(3, String(maxNo).length);
+        for (const dl of diffData.lines) {
+          const noStr = dl.kind === 'rem' ? (dl.oldNo != null ? String(dl.oldNo) : '') : (dl.newNo != null ? String(dl.newNo) : dl.oldNo != null ? String(dl.oldNo) : '');
+          const padNo = noStr.padStart(digits, ' ');
+          if (dl.kind === 'rem') {
+            const line = `  ${padNo} -  ${dl.text}`;
+            console.log(isTTY ? `\x1b[48;5;52m\x1b[38;5;203m${line}\x1b[0m` : line);
+          } else if (dl.kind === 'add') {
+            const line = `  ${padNo} +  ${dl.text}`;
+            console.log(isTTY ? `\x1b[48;5;22m\x1b[38;5;120m${line}\x1b[0m` : line);
+          } else {
+            const line = `  ${dim(padNo)}     ${dl.text}`;
+            console.log(line);
+          }
+        }
+        if (diffData.truncated) {
+          console.log(`  ${dim('…（diff 超长，已截断）')}`);
+        }
+      }
+      return;
+    }
+
     const inner = this.boxInner ?? this.termInner();
     this.boxInner = null;
     const stepCmd = this.boxStep;
@@ -121,18 +219,6 @@ export class ConsoleOutput implements Output {
       for (const seg of wrapText(stepCmd, inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
     }
     console.log(`  ${dim(cardContentLine(ok ? `✓ 执行成功 · ${chars} 字符` : '✗ 执行失败', inner))}`);
-    // write_file：改动摘要行（新增 N 行 / 修改 +A −D 行；细节对比见 TUI 卡片展开）
-    if (detail?.diff) {
-      const d = detail.diff;
-      const line =
-        d.original === null
-          ? `新增文件 · 全文 ${d.content.split('\n').length} 行`
-          : (() => {
-              const st = countDiffLines(d.original, d.content);
-              return `修改 · +${st.add} −${st.rem} 行`;
-            })();
-      console.log(`  ${dim(cardContentLine(line, inner))}`);
-    }
     console.log(`  ${dim(cardSepLine(inner))}`);
     // 展示层过滤「退出码: 0」行（成功已由 ✓ 传达，用户要求不显示；完整结果仍回传模型）
     for (const line of (preview ?? []).filter((l) => !isExitCodeZeroLine(l))) {
@@ -143,6 +229,25 @@ export class ConsoleOutput implements Output {
 
   onMaxSteps(max: number): void {
     console.log(`\n${yellow('⚠️ 已达到最大步数')}（${max}），任务可能未完成。可增大 OMNI_MAX_STEPS 重试。`);
+  }
+
+  /**
+   * run_command 实时输出：dim 行写到 stderr（不污染 stdout 管道结果）。
+   * 累积一个 ring buffer（最多 8 行）写到卡片框下；新行超出时把最早的顶出。
+   * 不在卡片上原地刷新（console 终端控制能力有限），改用"持续 dim 行追加"——
+   * 用户感受是命令在持续输出（远比"卡半天不出"好）；最终结果由 onToolResult 收尾。
+   */
+  private liveOutLines: string[] = [];
+  onCommandOutput(chunk: string, isError: boolean, _toolSeq?: number): void {
+    if (!this.opts.stream || !isTTY) return; // 管道模式：忽略实时（最终结果仍回传）
+    // chunk 已经是单行（run_command 内部按 \n 拆好）；按 \n 再切一次防御
+    for (const line of chunk.split('\n')) {
+      if (!line) continue;
+      this.liveOutLines.push(line);
+      if (this.liveOutLines.length > 8) this.liveOutLines.shift();
+      // 写到 stderr：dim 灰，前缀 `│` 与卡片右边框呼应
+      process.stderr.write(`  ${dim('│ ' + line)}\n`);
+    }
   }
 
   onUserMessage(text: string): void {

@@ -103,19 +103,19 @@ async function main(): Promise<void> {
   }
   console.log('[4] ✓ write_file 卡片带 diff：收起态命令 + 变更统计（+A −D 行）');
 
-  // ⑤ 展开 write 卡 → diff 行（│ 分隔 + 行宽）渲染
-  const rectW = tree.cardRects.get(writeCard.id);
-  if (!rectW) throw new Error('write 卡 rect 缺失');
-  hitTestCard(state, tree.cardRects, rectW.top);
+  // ⑤ 展开 write 卡 → 统一 diff（文件头 + 行号 gutter + 红绿灰行）渲染
+  const rectCard = tree.cardRects.get(writeCard.id);
+  if (!rectCard) throw new Error('write 卡 rect 缺失');
+  hitTestCard(state, tree.cardRects, rectCard.top);
   await session.paint();
   await wait(60);
   frame = grab();
-  if (!frame.includes('│') || !frame.includes('修改对比')) {
-    console.error('--- 帧内容（diff 行缺失）---');
+  if (!frame.includes('✦ old.txt') || !frame.includes('+') || !frame.includes('-')) {
+    console.error('--- 帧内容（统一 diff 缺失）---');
     console.error(frame);
-    throw new Error('展开态缺 diff 行/│ 分隔');
+    throw new Error('展开态缺文件头 ✦ / +/- 标记');
   }
-  console.log('[5] ✓ 展开 write 卡：修改对比行 + │ 分隔 diff 行渲染');
+  console.log('[5] ✓ 展开 write 卡：文件头 ✦ + 统一 diff（行号 gutter + 红绿灰行）渲染');
 
   // ⑥ 新建文件 write → 全文逐行绿（diffRole=add），收起态「新增文件 · 全文 N 行」
   out.onToolStep(5, 10, 'write_file', '✏️ new.txt', { path: 'new.txt', content: 'l1\nl2\nl3' });
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
   }
   console.log('[6] ✓ 新建文件：收起态「新增文件 · 全文 3 行」→ 展开显示全文');
 
-  console.log('\n== 全部通过：并行多读合并 / write diff 展示（摘要 + 左右对比 + 新建全文）==');
+  console.log('\n== 全部通过：并行多读合并 / write diff 展示（摘要 + 统一 diff 行号 gutter + 新建全文）==');
   process.exit(0);
 }
 

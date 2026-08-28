@@ -189,11 +189,11 @@ export async function applyUndo(entry: UndoEntry): Promise<string> {
 }
 
 /**
- * 包装工具：write_file 执行前先快照（/undo 的数据来源）；其它工具原样返回。
+ * 包装工具：write_file / edit_file 执行前先快照（/undo 的数据来源）；其它工具原样返回。
  * 包装发生在入口层（attachRuntime），主循环与子代理共用的都是包装后的工具表。
  */
 export function withUndoSnapshot(tool: Tool, stack: UndoStack): Tool {
-  if (tool.name !== 'write_file') return tool;
+  if (tool.name !== 'write_file' && tool.name !== 'edit_file') return tool;
   return {
     ...tool,
     async execute(args, ctx) {
