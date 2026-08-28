@@ -52,9 +52,10 @@ const ZH: Record<string, string> = {
   'statusline.align.center': '居中',
   'statusline.align.right': '右侧',
 
-  // 输入区 / footer（render.ts）
+  // 输入区 / footer（render.ts）——模型行 = footerMode（模式前缀独立着色 Build/Plan）
+  // + footerModel（模型名+provider，'{model}{provider}'）拼接；mode 前缀走 footer.mode.*
   'input.placeholder': '输入消息，Enter 发送；Shift+Enter 换行',
-  'footer.model': '{mode} · {model}{provider}',
+  'footer.model': '{model}{provider}',
   'footer.mode.build': 'Build',
   'footer.mode.plan': 'Plan',
   'footer.effort': ' · {effort}',
@@ -147,7 +148,7 @@ const EN: Record<string, string> = {
   'statusline.align.right': 'Right',
 
   'input.placeholder': 'Type a message, Enter to send; Shift+Enter for newline',
-  'footer.model': '{mode} · {model}{provider}',
+  'footer.model': '{model}{provider}',
   'footer.mode.build': 'Build',
   'footer.mode.plan': 'Plan',
   'footer.effort': ' · {effort}',
