@@ -270,7 +270,12 @@ export async function attachRuntime(
     apiKey: e?.apiKey ?? cfg.apiKey,
     userAgent: e?.userAgent ?? cfg.userAgent,
     headers: e?.headers,
-    reasoningEffortOptions: resolveReasoningEffortOptions(e?.reasoningEffortOptions ?? cfg.reasoningEffortOptions, ...autoNames(name, e)),
+    reasoningEffortOptions: resolveReasoningEffortOptions(
+      // 显式配置优先：per-model > 顶层（非空才算显式——cfg 默认 [] 是「未配置」语义，
+      // 直接透传会被当成「明确关闭」跳过查表，models.dev 自动档整体失效）
+      e?.reasoningEffortOptions ?? (cfg.reasoningEffortOptions.length > 0 ? cfg.reasoningEffortOptions : undefined),
+      ...autoNames(name, e)
+    ),
     reasoningEffort: e?.reasoningEffort ?? cfg.reasoningEffort,
     variant: e?.variant,
     variants: e?.variants,
@@ -281,12 +286,14 @@ export async function attachRuntime(
     capabilities: e?.capabilities,
     disabled: e?.disabled,
   });
+  const providerForModel = (name: string, entry: ModelEntryConfig | undefined): string | undefined =>
+    entry?.provider ?? Object.entries(cfg.providers ?? {}).find(([, provider]) => provider.models?.[name])?.[0];
   const modelEndpoints: ModelEndpoint[] = [
-    expandEndpoint(cfg.model, defModel),
+    { ...expandEndpoint(cfg.model, defModel), provider: providerForModel(cfg.model, defModel) },
     ...Object.entries(cfg.models ?? {})
       .filter(([name]) => name !== cfg.model)
       .filter(([, e]) => !e.disabled)
-      .map(([name, e]) => expandEndpoint(name, e)),
+      .map(([name, e]) => ({ ...expandEndpoint(name, e), provider: providerForModel(name, e) })),
   ];
   ctx.runOpts.models = modelEndpoints;
   ctx.runOpts.fallbackApiKey = cfg.apiKey;
@@ -412,9 +419,14 @@ export async function attachRuntime(
   toolchain.push(createWebFetchTool(cfg.webFetchDomains));
   // diagnose 诊断工具（P1）：运行 typecheck/lint 返回诊断摘要
   toolchain.push(createDiagnoseTool(process.cwd()));
-  // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令
-  if (cfg.reasoningEffort) ctx.runOpts.reasoningEffort = cfg.reasoningEffort;
-  ctx.runOpts.reasoningEffortOptions = cfg.reasoningEffortOptions;
+  // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令。
+  // 初始值取**默认模型端点**（首位 = cfg.model 展开）：per-model reasoningEffort 与
+  // 端点展开时已查表推导的档位选项随模型带出——cfg.reasoningEffortOptions 默认 []
+  //（未配置语义），直接透传会让 TUI/CLI/Web 的 /variants 首屏显示「无可切换」
+  // 而不是当前模型按数据源推导的正确档位
+  const defaultEndpoint = modelEndpoints[0];
+  if (defaultEndpoint?.reasoningEffort) ctx.runOpts.reasoningEffort = defaultEndpoint.reasoningEffort;
+  ctx.runOpts.reasoningEffortOptions = defaultEndpoint?.reasoningEffortOptions ?? cfg.reasoningEffortOptions;
   ctx.runOpts.maxSubagentSteps = cfg.maxSubagentSteps;
   // 第六节「子代理与编排」配置：architect/editor 模型路由（/plan 用 architect、执行用
   // editor，缺省 = 当前模型）+ 嵌套深度上限 + 已发现子代理定义（delegate 的 agent 参数）

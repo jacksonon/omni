@@ -500,6 +500,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
             continue;
           }
           pmodels[mid] = {
+            provider: name,
             ...(typeof e.baseURL === 'string' && e.baseURL.trim() ? { baseURL: e.baseURL.trim() } : {}),
             ...(typeof e.apiKey === 'string' && e.apiKey.trim() ? { apiKey: e.apiKey.trim() } : {}),
             ...(Array.isArray(e.reasoningEffortOptions)

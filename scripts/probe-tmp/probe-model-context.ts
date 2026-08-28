@@ -29,7 +29,6 @@ const {
   snapshotInfo,
   refreshModelContextSnapshot,
   userSnapshotFile,
-  LEGACY_DEFAULT_EFFORT_OPTIONS,
 } = mc;
 
 let failed = 0;
@@ -67,17 +66,29 @@ const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.strin
     `B② GPT-5 无 xhigh/max（minimal 被 Omni 滑条池丢弃）: ${JSON.stringify(gpt)}`
   );
   ok(eq(deriveReasoningLevels('glm-4.6'), ['none', 'auto']), `B③ toggle 型只有开关两档: ${JSON.stringify(deriveReasoningLevels('glm-4.6'))}`);
-  // DeepSeek 特判：即便快照标了 effort 也收敛为开关两档（reasoning_content 回传链路限制）
+  // DeepSeek：以快照数据为准（优先级 ②）——表内带 effort 的 V4 系列按表推导；
+  // 表内无 effort（如 deepseek-chat 仅 toggle）仍只有开关两档；未命中表 → undefined
   const dsKeys = ['deepseek-v4-flash-0731', 'deepseek/my-model', 'deepseek-chat'];
   const ds = dsKeys.map((k) => deriveReasoningLevels(k));
-  ok(ds.every((v) => v === undefined || eq(v, ['none', 'auto'])), `B④ DeepSeek 特判 ≤ 开关两档: ${JSON.stringify({ keys: dsKeys, res: ds })}`);
+  ok(
+    ds[0] !== undefined && eq(ds[0], ['none', 'auto', 'high', 'max']) && ds[1] === undefined && ds[2] !== undefined && eq(ds[2], ['none', 'auto']),
+    `B④ DeepSeek 表内 effort 按表推导 / 无 effort 仅开关 / 未命中 undefined: ${JSON.stringify({ keys: dsKeys, res: ds })}`
+  );
+  ok(
+    eq(deriveReasoningLevels('deepseek-v4-flash'), ['none', 'auto', 'low', 'high', 'max']),
+    `B⑭ deepseek-v4-flash 裸 id 查表 → none/auto/low/high/max: ${JSON.stringify(deriveReasoningLevels('deepseek-v4-flash'))}`
+  );
   ok(deriveReasoningLevels('totally-unknown-omni-probe-42') === undefined, 'B⑤ 未命中返回 undefined');
 
   ok(eq(resolveReasoningEffortOptions(['low'], 'glm-5.3'), ['low']), 'B⑥ 显式配置原样优先');
-  ok(eq(resolveReasoningEffortOptions([], 'glm-5.3'), ['none', 'auto', 'low', 'high', 'max']), 'B⑦ 空数组=未配置 → 查表推导');
+  ok(eq(resolveReasoningEffortOptions([], 'glm-5.3'), []), 'B⑦ 显式空数组 = 明确关闭级别切换（不查表不猜档）');
   ok(
-    eq(resolveReasoningEffortOptions(undefined, 'totally-unknown-omni-probe-42'), LEGACY_DEFAULT_EFFORT_OPTIONS),
-    'B⑧ 全部未命中回退历史默认五档'
+    eq(resolveReasoningEffortOptions(undefined, 'totally-unknown-omni-probe-42'), ['none', 'auto', 'low', 'medium', 'high', 'xhigh', 'max']),
+    'B⑧ 全部未命中 → 默认档位（low/medium/high/xhigh/max + none/auto）'
+  );
+  ok(
+    eq(resolveReasoningEffortOptions(undefined, 'glm-5.3'), ['none', 'auto', 'low', 'high', 'max']),
+    'B⑬ 未配置（undefined）→ 查表推导'
   );
   const l1 = autoFillLimit({ context: 12345 }, 'glm-5.3');
   const l2 = autoFillLimit({ output: 8192 }, 'glm-5.3');
@@ -128,8 +139,12 @@ const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.strin
     ok(glm?.limit?.context === 1_000_000, `C② 自动档 limit.context 从数据源补缺: ${JSON.stringify(glm?.limit)}`);
     ok(eq(glm?.reasoningEffortOptions, ['none', 'auto', 'low', 'high', 'max']), `C③ 自动档思考级别选项: ${JSON.stringify(glm?.reasoningEffortOptions)}`);
     ok(tuned?.limit?.context === 12345 && eq(tuned?.reasoningEffortOptions, ['low']), `C④ 显式配置不被覆盖: ${JSON.stringify({ limit: tuned?.limit, opts: tuned?.reasoningEffortOptions })}`);
-    ok(!unk?.limit && eq(unk?.reasoningEffortOptions, LEGACY_DEFAULT_EFFORT_OPTIONS), `C⑤ 未知模型保守回退默认五档、无 limit`);
+    ok(!unk?.limit && eq(unk?.reasoningEffortOptions, ['none', 'auto', 'low', 'medium', 'high', 'xhigh', 'max']), `C⑤ 未知模型回退默认档位、无 limit`);
     ok(ctx.runOpts.context?.contextLimit === 1_000_000, `C⑥ attachRuntime 注入压缩预算（当前模型窗口）: ${ctx.runOpts.context?.contextLimit}`);
+    ok(
+      eq(ctx.runOpts.reasoningEffortOptions, ['none', 'auto', 'low', 'high', 'max']),
+      `C⑧ 默认模型端点档位透传 runOpts（/variants 首屏）: ${JSON.stringify(ctx.runOpts.reasoningEffortOptions)}`
+    );
     const info = describeModelContextWindow(models.find((m) => m.name === 'glm-5.3')?.limit?.context, 'glm-5.3');
     ok(info.source === 'manual' && info.value === 1_000_000, 'C⑦ /status 窗口描述（手动标记来自补缺后的生效值）');
   } finally {

@@ -408,6 +408,15 @@ export interface TuiState {
    * 消费并写入配置文件顶层 model 字段——下次启动默认就是切换后的模型）。
    */
   modelSave: string | null;
+  /** 模型选择时携带的明确 provider 组，避免同名模型产生歧义 */
+  modelProvider: string | null;
+  /**
+   * /model 面板确认后的**即时应用**回调（runTuiInteractive 注入 syncModel）。
+   * confirmMenu 是纯 state 操作拿不到运行时（键盘 Enter/数字与鼠标点选两条确认
+   * 路径都经它）——记录切换意图后即刻调用：重建 client + footer 组名/思考级别/
+   * 上下文上限随新模型刷新，不再等下一次提交（同 cancelRun 的 state 回调模式）。
+   */
+  applyModelSwitch?: () => void;
   /**
    * 待持久化的思考级别（/variants 面板确认时写入，interactive 每轮消费并写入
    * 配置文件顶层 reasoningEffort 字段——下次启动仍是切换后的思考级别）。
@@ -587,6 +596,7 @@ export function createTuiState(): TuiState {
     language: 'zh',
     languageSave: null,
     modelSave: null,
+    modelProvider: null,
     variantsSave: null,
     cmdPanel: null,
     cmdSuggest: null,

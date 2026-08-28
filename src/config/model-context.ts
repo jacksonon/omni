@@ -15,6 +15,11 @@
  *   ① 精确 —— 输入小写全串命中表键（如 z-ai/glm-5.3、deepseek-chat）
  *   ② 裸 id —— 剥掉网关前缀后命中无前缀键（my-gateway/deepseek-v4-flash）
  *   ③ 后缀 —— 输入末段 == 表内 qualified 键的 model 段（glm-5.3 → zai/glm-5.3）
+ *
+ * 级别来源优先级（用户定义）：
+ *   ① omni.json 显式配置（per-model 或顶层 reasoningEffortOptions；显式空数组 = 明确不提供切换）
+ *   ② models.dev 查表（快照内该模型声明的 effort 选项）
+ *   ③ 默认档位：low/medium/high/xhigh/max + none/auto（未配置且查表未命中时兜底）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -42,8 +47,11 @@ export const DEFAULT_FALLBACK_CONTEXT = 262_144;
 /** 思考级别滑条池（Omni 支持的全部级别，含开关语义的 none/auto） */
 export const SLIDER_EFFORT_POOL = ['none', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-/** 未配置 reasoningEffortOptions 且查表也未命中时回退的历史默认档位 */
-export const LEGACY_DEFAULT_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
+/**
+ * 未配置且查表未命中时的默认档位（优先级 ③）：
+ * 默认五档 low/medium/high/xhigh/max + 开关语义 none/auto（用户定义）。
+ */
+export const DEFAULT_FALLBACK_EFFORT_OPTIONS: string[] = [...SLIDER_EFFORT_POOL];
 
 /** 快照表（key 小写）；Map 保序 = 快照文件字母序 → 冲突时结果确定。
  *  可变：/models refresh 热替换（用户级更新优先于内置，不重启即生效）。 */
@@ -114,49 +122,44 @@ export function lookupModelContextWindow(model?: string | null): number | undefi
 const MIN_VALID_CONTEXT = 4096;
 
 /**
- * DeepSeek 特判（历史结论保留）：DeepSeek 家族经 reasoning_content 字段回传思考、
- * 工具调用链路上不认 reasoning_effort 强度参数 → 只保留 开/关 两档。
- * 匹配覆盖 deepseek 官方与 deepseek-ai/ 托管变体。
- */
-function isDeepSeekFamily(key: string): boolean {
-  return /(^|\/)(deepseek|deepseek-ai)\b/.test(key);
-}
-
-/**
- * 由快照推导该模型的思考级别选项（用于 /variants 面板自动档）：
+ * 由快照推导该模型的思考级别选项（用于 /variants 面板自动档，优先级 ②）：
  * · effort 型 → values ∩ 滑条池（映射到 Omni 认识的档位子集，前置 none/auto 开关档）
  * · toggle / budget_tokens / 无 ro / r=false → 只有 none / auto（仅有开关或不可调强度）
- * · 未命中表 → undefined（调用方回退 LEGACY_DEFAULT_EFFORT_OPTIONS）
+ * · 未命中表 → undefined（调用方回退默认档位）
+ * 注意：以快照数据为准——表内带 effort 声明的模型（含 DeepSeek V4 系列）按表推导，
+ * 不再硬编码厂商特判（历史 DeepSeek 特判已移除：其官方 reasoning_effort 能力随
+ * models.dev 数据源逐模型演进）。
  */
 export function deriveReasoningLevels(model?: string | null): string[] | undefined {
   const hit = lookupModelContext(model);
   if (!hit) return undefined;
-  const { key, entry } = hit;
-  if (!isDeepSeekFamily(key)) {
-    const eff = entry.ro?.find((o) => o.t === 'effort' && Array.isArray(o.v) && o.v.length > 0);
-    if (eff?.v?.length) {
-      const chosen = new Set<string>(['none', 'auto', ...SLIDER_EFFORT_POOL.filter((l) => eff.v!.includes(l))]);
-      return SLIDER_EFFORT_POOL.filter((l) => chosen.has(l));
-    }
+  const { entry } = hit;
+  const eff = entry.ro?.find((o) => o.t === 'effort' && Array.isArray(o.v) && o.v.length > 0);
+  if (eff?.v?.length) {
+    const chosen = new Set<string>(['none', 'auto', ...SLIDER_EFFORT_POOL.filter((l) => eff.v!.includes(l))]);
+    return SLIDER_EFFORT_POOL.filter((l) => chosen.has(l));
   }
   return ['none', 'auto'];
 }
 
 /**
- * 解析某模型的 /variants 档位选项（端点展开统一入口）：
- * 显式配置（per-model 或顶层 reasoningEffortOptions）> 查表推导 > 历史默认五档。
+ * 解析某模型的 /variants 档位选项（端点展开统一入口），优先级（用户定义）：
+ *   ① 显式配置（per-model 或顶层 reasoningEffortOptions）> ② 查表推导 > ③ 默认档位。
  * names 依次尝试（[目录友好名, apiModel 真实名]，任一命中即可）。
  */
 export function resolveReasoningEffortOptions(
   explicit: readonly string[] | undefined,
   ...names: (string | undefined)[]
 ): string[] {
-  if (Array.isArray(explicit) && explicit.length > 0) return [...explicit];
+  // ① undefined = 未配置，允许查表；空数组 = 用户明确关闭级别切换（原样返回）。
+  if (Array.isArray(explicit)) return [...explicit];
+  // ② 查表推导
   for (const n of names) {
     const derived = deriveReasoningLevels(n);
     if (derived) return derived;
   }
-  return [...LEGACY_DEFAULT_EFFORT_OPTIONS];
+  // ③ 默认档位兜底（low/medium/high/xhigh/max + none/auto）
+  return [...DEFAULT_FALLBACK_EFFORT_OPTIONS];
 }
 
 /** token 数人性化显示：1048576 → 1M、204800 → 200k、8192 → 8192 */
@@ -212,16 +215,16 @@ export function describeModelContextWindow(
 }
 
 export interface ModelCapabilities {
-  /** 查表是否命中（false = 未识别，effortOptions 为历史默认五档） */
+  /** 查表是否命中（false = 未识别，effortOptions 为默认档位） */
   found: boolean;
   /** 上下文窗口 token 上限（查表命中；未识别 undefined） */
   context: number | undefined;
-  /** 思考级别档位（查表推导；未识别回退历史五档，恒非空） */
+  /** 思考级别档位（查表推导；未识别回退默认档位，恒非空） */
   effortOptions: string[];
 }
 
 /**
- * 查询单个模型的上下文窗口与思考级别档位（查表；未命中回退保守值）。
+ * 查询单个模型的上下文窗口与思考级别档位（查表；未命中回退默认档位）。
  * web 设置「模型配置」能力表联动、providerDiscover 响应共用——
  * 保证前端下拉永不空白、context 可自动补缺。
  */
@@ -229,7 +232,7 @@ export function resolveModelCapabilities(model?: string | null): ModelCapabiliti
   return {
     found: lookupModelContext(model) !== null,
     context: lookupModelContextWindow(model),
-    effortOptions: deriveReasoningLevels(model) ?? [...LEGACY_DEFAULT_EFFORT_OPTIONS],
+    effortOptions: deriveReasoningLevels(model) ?? [...DEFAULT_FALLBACK_EFFORT_OPTIONS],
   };
 }
 

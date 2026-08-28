@@ -93,7 +93,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "allowSubagents": true,                 // 启用子代理 delegate 工具（默认 true）
   "skills": true,                          // 启用技能（SKILL.md）发现与 skill 工具（默认 true）
   "reasoningEffort": "medium",             // 当前模型思考级别（reasoning_effort；不配置 = 不带该参数，用模型默认）
-  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 思考级别选项——不写=按模型自动推导（models.dev 查表），写了则优先于查表
+  "reasoningEffortOptions": ["low", "medium", "high", "xhigh", "max"], // /variants 思考级别选项——优先级：不写=查表（models.dev）→ 未命中回退默认档位（low/medium/high/xhigh/max + none/auto）；写了（含空数组=明确关闭）则最高优先
   "statuslineAlign": "center",             // 状态行水平对齐：left / center（默认）/ right（/settings statusline 面板 a 键切换）
   "architect": "gpt-5",                  // 模型路由：/plan 计划模式用强模型（缺省回退当前模型）
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
@@ -286,7 +286,7 @@ for step in 1..maxSteps:
 | `/orchestrate` 命令 | **编排**：fan-out 并行 delegate（默认 3 worker）→ 汇总 → 对抗审查 → 最终报告（`/orchestrate <任务>`）
 | `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
 | `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
-| `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，选项来自配置 reasoningEffortOptions——未配置时从 models.dev 快照自动推导（effort 子集/仅开关 none·auto，未识别回退默认五档）；none/auto 不随请求下发参数 |
+| `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，优先级 = 配置 reasoningEffortOptions（omni.json，显式空数组=明确关闭）> models.dev 快照查表（effort 子集/仅开关 none·auto）> 默认档位（low/medium/high/xhigh/max + none/auto）；none/auto 不随请求下发参数 |
 | `/models` 命令 | **模型能力快照（CLI/TUI/Web 三端）**：`/models` 查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· `/models refresh` 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
 | `/model` 命令 | **切换/添加模型**（多端点）：`/model` 面板 · `/model <名称>` 切换 · `/model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]` **添加并持久化**（运行时注册进 runOpts.models + 切换，纯 JSON 配置自动追加 **providers 单模型分组**，JSONC 提示手动加）；选项来自配置 providers 分组（端点/密钥的唯一格式，缺省字段回退网关级/环境变量）；切换时用 createClient 重建客户端并更新 ModelRuntime（主循环与子代理同步） |
 | `/status` 命令 | **会话状态汇总**：模型/权限/计划模式/思考级别/token 用量/会话文件/已加载脚手架（记忆/技能/预载）；共享逻辑在 `agent/report.ts`（TUI+CLI 复用） |

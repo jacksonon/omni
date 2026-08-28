@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
-import { describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -484,11 +484,16 @@ export async function runInteractive(
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
       // /variants：显示当前思考级别/命名变体；<级别> 切字符串级别；<id> 命中当前模型
       // 的命名 variants 表时切换叠加层（1.0 P0-3，未知报错列可用项）
-      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max'];
+      const opts = runOpts.reasoningEffortOptions ?? [];
       const ep = (runOpts.models ?? []).find((m) => m.name === currentModel);
       const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();
       if (!want) {
+        if (opts.length === 0 && namedIds.length === 0) {
+          console.log(dim('当前模型没有可切换的思考级别。'));
+          safePrompt();
+          continue;
+        }
         const cur = runOpts.activeVariant
           ? `命名变体 ${runOpts.activeVariant}`
           : (runOpts.reasoningEffort ?? '（未设置，用模型默认）');
@@ -575,8 +580,14 @@ export async function runInteractive(
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
           // per-model variants：用户显式配了顶层选项 → 继承；未配 → 按模型名从数据源查表推导
-          reasoningEffortOptions: resolveReasoningEffortOptions(cfg?.reasoningEffortOptions, parsed.name),
+          //（cfg.reasoningEffortOptions 默认 [] 是「未配置」语义——传 undefined 才走查表）
+          reasoningEffortOptions: resolveReasoningEffortOptions(
+            cfg?.reasoningEffortOptions?.length ? cfg.reasoningEffortOptions : undefined,
+            parsed.name
+          ),
           reasoningEffort: cfg?.reasoningEffort,
+          // context 上限立即查表补缺（footer/status 当次会话即可见，不必等重启）
+          limit: autoFillLimit(undefined, parsed.name),
         };
         // 注册进运行时模型表（同名覆盖）：子代理/主循环经 modelRuntime 用新端点
         const existing = models.find((m) => m.name === parsed.name);

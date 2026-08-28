@@ -3261,6 +3261,28 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 /model Esc 取消未生效: ${JSON.stringify(s34)}`);
     process.exit(1);
   }
+  // d2) 分组菜单（带 endpoints）：组头行 + value 编码 provider\0model + 确认即时应用
+  //     （confirmMenu 记录意图后调用 state.applyModelSwitch——footer 组名/级别不再等下一次提交）
+  const s34g = createTuiState();
+  s34g.model = 'deepseek-chat';
+  openModelMenu(s34g, s34.models, models34);
+  if (!s34g.menu || s34g.menu.options.filter((o) => o.group).length !== 3) {
+    console.error(`✗ 场景 34 分组菜单组头缺失: ${JSON.stringify(s34g.menu?.options.map((o) => o.label))}`);
+    process.exit(1);
+  }
+  let applied34 = 0;
+  s34g.applyModelSwitch = () => { applied34++; };
+  const glmIdx34 = s34g.menu.options.findIndex((o) => !o.group && o.value === 'bigmodel\0glm-4-flash');
+  s34g.menu.selectedIndex = glmIdx34;
+  handleMenuKey34({ name: 'return', ...key34 }, s34g);
+  if (s34g.menu !== null || s34g.model !== 'glm-4-flash' || s34g.modelProvider !== 'bigmodel' || s34g.modelSave !== 'glm-4-flash') {
+    console.error(`✗ 场景 34 分组菜单确认未记录意图: ${JSON.stringify({ model: s34g.model, provider: s34g.modelProvider, save: s34g.modelSave })}`);
+    process.exit(1);
+  }
+  if (applied34 !== 1) {
+    console.error(`✗ 场景 34 确认未即时调用 applyModelSwitch（count=${applied34}）`);
+    process.exit(1);
+  }
   // 无 models 时回退到当前模型单选项
   const s34b = createTuiState();
   s34b.model = 'gpt-4o-mini';

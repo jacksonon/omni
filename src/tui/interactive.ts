@@ -31,6 +31,10 @@ import { setTerminalTitle } from '../ui.js';
 import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig, persistVariantToConfig } from '../config/write.js';
+
+function findProviderForModel(endpoints: ModelEndpoint[], model: string): string | undefined {
+  return endpoints.find((endpoint) => endpoint.name === model)?.provider;
+}
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import { t } from './i18n.js';
@@ -536,7 +540,9 @@ export async function runTuiInteractive(
     state.models = (runOpts.models ?? []).map((m) => m.name);
     state.model = runOpts.modelRuntime?.model ?? model;
     // 当前模型所属 provider 组（footer 模型行显示 `模型名 组名`；不在分组内为空）
-    state.provider = (runOpts.models ?? []).find((m) => m.name === state.model)?.provider ?? '';
+    state.provider = (runOpts.models ?? []).find((m) => m.name === state.model)?.provider
+      ?? findProviderForModel(runOpts.models ?? [], state.model)
+      ?? '';
     // 当前模型 context 上限（footer context 段显示 `上下文 已用/上限`；未知为 0）
     state.contextLimit = (runOpts.models ?? []).find((m) => m.name === state.model)?.limit?.context ?? 0;
     // 当前模型运行时（可变）：/model 切换时重建 client 并更新共享引用（子代理同步）
@@ -548,7 +554,7 @@ export async function runTuiInteractive(
       currentClient = createClient(endpoint, endpoint.apiKey ?? '');
       currentModel = endpoint.name;
       state.model = endpoint.name;
-      state.provider = endpoint.provider ?? ''; // footer 模型行显示所属 provider 组
+      state.provider = endpoint.provider ?? findProviderForModel(runOpts.models ?? [], endpoint.name) ?? ''; // footer 模型行显示所属 provider 组
       state.contextLimit = endpoint.limit?.context ?? 0; // footer context 段上限（未知 0）
       if (runOpts.modelRuntime) {
         runOpts.modelRuntime.client = currentClient;
@@ -563,7 +569,7 @@ export async function runTuiInteractive(
       // 压缩预算跟随新模型（数据源自动档：端点展开时 limit.context 已查表补缺；未知模型清空）
       if (runOpts.context) runOpts.context.contextLimit = endpoint.limit?.context;
       state.reasoningEffort = endpoint.reasoningEffort ?? '';
-      if (endpoint.reasoningEffortOptions) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
+      if (endpoint.reasoningEffortOptions !== undefined) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
       runOpts.activeVariant = endpoint.variant;
       state.activeVariant = endpoint.variant ?? null;
     };
@@ -572,15 +578,21 @@ export async function runTuiInteractive(
       // 从 runOpts.models 找目标端点（baseURL/apiKey/userAgent 已按配置展开），重建 client
       // 并更新 runOpts.modelRuntime——主循环（每轮读它）与 delegate 子代理（闭包持有）同步生效
       const target = state.model;
-      if (!target || target === currentModel) return;
-      const endpoint = (runOpts.models ?? []).find((m) => m.name === target);
+      if (!target || (target === currentModel && !state.modelProvider)) return;
+      const endpoint = (runOpts.models ?? []).find((m) =>
+        m.name === target && (!state.modelProvider || m.provider === state.modelProvider)
+      );
       if (!endpoint) {
         pushLine(state, { kind: 'warn', text: `模型「${target}」不在可用列表（config models 未配置该端点）` });
         state.model = currentModel; // 还原面板高亮，避免每轮重复告警
         return;
       }
       applyEndpoint(endpoint);
+      state.modelProvider = null;
     };
+    // /model 面板确认的即时应用回调：confirmMenu（纯 state）记录意图后调用
+    // syncModel——键盘 Enter/数字与鼠标点选两条确认路径共用（见 state.applyModelSwitch）
+    state.applyModelSwitch = syncModel;
     let turn = 0; // 真实对话轮次（斜杠命令/空输入不计）
     // 运行中输入 /exit：runCommand 返回 'exit' 后标记，当前回合结束即统一清理退出
     let exitRequested = false;

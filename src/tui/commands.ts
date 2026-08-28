@@ -65,7 +65,7 @@ import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
 import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
-import { describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
@@ -1127,9 +1127,16 @@ export const TUI_COMMANDS: TuiCommand[] = [
           baseURL: parsed.baseURL ?? cfg?.baseURL,
           apiKey: parsed.apiKey ?? cfg?.apiKey,
           userAgent: parsed.userAgent ?? cfg?.userAgent,
-          // per-model variants：顶层显式配置优先，未配则按模型名从数据源查表推导
-          reasoningEffortOptions: resolveReasoningEffortOptions(cfg?.reasoningEffortOptions, parsed.name),
+          // per-model variants：显式配置优先，未配则按模型名从数据源查表推导
+          //（cfg.reasoningEffortOptions 默认 [] 是「未配置」语义——传 undefined 才走查表）
+          reasoningEffortOptions: resolveReasoningEffortOptions(
+            cfg?.reasoningEffortOptions?.length ? cfg.reasoningEffortOptions : undefined,
+            parsed.name
+          ),
           reasoningEffort: cfg?.reasoningEffort,
+          // context 上限立即从数据源查表补缺（不配置则重启后由端点展开再补——这里让
+          // footer 上下文段与 /model 菜单元数据当次会话即可见）
+          limit: autoFillLimit(undefined, parsed.name),
         };
         const err = ctx.onAddModel?.(endpoint);
         if (err) {
@@ -1861,7 +1868,7 @@ export function openModelMenu(
         options.push({ label: g ? `[${g}]` : t(state.language, 'menu.model.ungrouped'), value: '__group__', group: true });
         prev = g;
       }
-      options.push(m);
+      options.push({ ...m, value: g ? `${g}\u0000${m.value}` : m.value });
     }
   } else {
     options.push(...base);
@@ -1887,7 +1894,7 @@ export function openVariantsMenu(
   endpoints?: import('../client.js').ModelEndpoint[]
 ): void {
   const ep = endpoints?.find((m) => m.name === state.model);
-  const efforts = (state.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max']).map((v) => ({
+  const efforts = (state.reasoningEffortOptions ?? []).map((v) => ({
     label: v,
     value: v,
   }));
@@ -1895,6 +1902,17 @@ export function openVariantsMenu(
     label: `${id}（命名${def.description ? ` · ${def.description}` : ''}${def.reasoningEffort ? ` · ${def.reasoningEffort}` : ''}）`,
     value: `variant:${id}`,
   }));
+  // 档位与命名 variants 都没有才提示无可切换（有命名项时仍应列出——与 CLI /variants 同语义）
+  if (efforts.length === 0 && named.length === 0) {
+    state.menu = null;
+    state.status = '';
+    state.cmdPanel = {
+      title: t(state.language, 'menu.variants.title'),
+      lines: ['当前模型没有可切换的思考级别。'],
+      scroll: 0,
+    };
+    return;
+  }
   const options = [...efforts, ...named];
   const current = state.activeVariant ? `variant:${state.activeVariant}` : (state.reasoningEffort || '');
   const idx = Math.max(0, options.findIndex((o) => o.value === current));
@@ -2090,8 +2108,15 @@ export function confirmMenu(state: TuiState): void {
     // 对比 state.model 与运行时模型，变了才真正切换（见 interactive.ts syncModel）。
     // 持久化：记录待落盘意图（interactive 每轮写入配置文件顶层 model 字段——
     // 用户要求切换后下次启动默认就是新模型）；只生效不弹提示面板
-    state.model = opt.value;
-    state.modelSave = opt.value;
+    const sep = opt.value.indexOf('\u0000');
+    const provider = sep >= 0 ? opt.value.slice(0, sep) : '';
+    const model = sep >= 0 ? opt.value.slice(sep + 1) : opt.value;
+    state.model = model;
+    state.modelProvider = provider || null;
+    state.modelSave = model;
+    // 即时应用（interactive 注入的 syncModel）：重建 client + footer 组名/思考级别/
+    // 上下文上限/压缩预算随新模型刷新——此前只记录意图，要等下一次提交才生效
+    state.applyModelSwitch?.();
   } else if (menu.id === 'session') {
     // 恢复会话：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
     // （state.sessionPick = 会话 id），interactive 每轮异步加载并恢复（见 interactive.ts）。
