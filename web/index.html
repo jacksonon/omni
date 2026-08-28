@@ -232,7 +232,6 @@
                 </div>
               </div>
               <div class="provider-actions" id="provider-actions">
-                <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">获取模型列表</button>
                 <span class="provider-actions-spacer"></span>
                 <span id="mc-save-note" class="save-note"></span>
                 <button id="btn-del-provider" class="secondary-button danger" type="button" data-i18n="provider.delete">删除</button>
@@ -241,16 +240,21 @@
               <div id="p-fetch-result" class="fetch-result hidden"></div>
               <div class="mc-models">
                 <div class="mc-models-head">
-                  <h4 data-i18n="provider.models">模型列表</h4>
-                  <span id="p-models-count" class="mc-models-count"></span>
-                  <input type="text" id="mc-model-search" class="cfg-text mc-search" placeholder="搜索模型…" data-i18n-placeholder="provider.searchModel" autocomplete="off" spellcheck="false">
+                  <div class="mc-models-title-wrap">
+                    <h4 data-i18n="provider.models">模型列表</h4>
+                    <span id="p-models-count" class="mc-models-count"></span>
+                  </div>
+                  <div class="mc-head-actions">
+                    <input type="text" id="mc-model-search" class="cfg-text mc-search" placeholder="搜索模型…" data-i18n-placeholder="provider.searchModel" autocomplete="off" spellcheck="false">
+                    <button id="btn-p-fetch" class="secondary-button" type="button" data-i18n="provider.fetch">刷新模型列表</button>
+                    <div class="mc-add-wrap">
+                      <input type="text" id="pm-name" class="cfg-text mc-add-input" placeholder="自定义模型名" data-i18n-placeholder="provider.addPlaceholder" autocomplete="off" spellcheck="false">
+                      <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
+                    </div>
+                  </div>
                 </div>
                 <div id="mc-fetch-note" class="mc-fetch-note hidden"></div>
                 <div id="provider-models" class="mc-tbody"></div>
-                <div class="mc-model-add-row">
-                  <input type="text" id="pm-name" class="cfg-text" placeholder="自定义模型名" data-i18n-placeholder="provider.addPlaceholder" autocomplete="off" spellcheck="false">
-                  <button id="btn-add-model" class="primary-button" type="button" data-i18n="provider.addModel">添加</button>
-                </div>
               </div>
             </div>
           </div>

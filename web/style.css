@@ -680,12 +680,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mc-form-row .cfg-text { width: auto; }
 /* —— 模型管理区（表格 + 行内编辑 + 展开高级项） —— */
 .mc-models { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-.mc-models-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.mc-models-head h4 { margin: 0; font-size: 14px; font-weight: 600; flex: none; }
-.mc-models-count { color: var(--text-caption); font-size: 12px; flex: none; }
-.mc-models-head .mc-search { width: 150px; margin-left: auto; }
-.mc-models-head .pm-add-row { flex: none; }
-.mc-tbody { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; border: 1px solid var(--line-1); border-radius: 12px; background: var(--surface); }
+.mc-models-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
+.mc-models-title-wrap { display: flex; align-items: center; gap: 8px; flex: none; }
+.mc-models-title-wrap h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.mc-models-count { color: var(--text-caption); font-size: 12px; }
+.mc-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.mc-head-actions .mc-search { width: 130px; height: 32px; font-size: 12.5px; }
+.mc-head-actions #btn-p-fetch { height: 32px; padding: 0 10px; font-size: 12.5px; white-space: nowrap; }
+.mc-add-wrap { display: flex; align-items: center; gap: 6px; }
+.mc-add-wrap .mc-add-input { width: 140px; height: 32px; font-size: 12.5px; }
+.mc-add-wrap #btn-add-model { height: 32px; padding: 0 12px; font-size: 12.5px; white-space: nowrap; }
+.mc-tbody { min-height: 220px; max-height: 420px; display: flex; flex-direction: column; overflow-y: auto; border: 1px solid var(--line-1); border-radius: 12px; background: var(--surface); }
 .mc-thead, .mc-tr { display: grid; grid-template-columns: 34px minmax(120px, 1.6fr) minmax(100px, 1.2fr) minmax(92px, 1fr) minmax(80px, 1fr) 40px; align-items: center; }
 .mc-thead { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--line-1); border-radius: 11px 11px 0 0; }
 .mc-th { padding: 7px 8px; font-size: 11px; font-weight: 600; color: var(--text-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1676,6 +1681,9 @@ body.cmd-open::before {
 
 
 /* ===== 1.0 新增：侧栏底部行 / 检查点面板 ===== */
+.pm-ctx-presets { display: flex; gap: 6px; margin-top: 6px; }
+.ctx-preset-btn { padding: 2px 8px; font-size: 11px; font-family: var(--mono); border: 1px solid var(--line-2); border-radius: 4px; background: var(--surface-muted); color: var(--text-secondary); cursor: pointer; transition: all .15s ease; }
+.ctx-preset-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--blue); }
 .sidebar-foot-row { display: flex; gap: 8px; padding: 0 12px 0 0; }
 .sidebar-foot-row .settings-button { flex: 1; }
 .rewind-list { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }

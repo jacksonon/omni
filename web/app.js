@@ -4313,9 +4313,9 @@ function renderProviderPanel(s) {
   }
   // 组内模型区（预览列表）：目录 + 已配置合并，勾选即启用、行点击弹窗编辑
   const models = group ? providerModelsOf(group) : [];
-  const catalog = isNew ? (mcNewCatalog || []) : (group && Array.isArray(group.modelCatalog) ? group.modelCatalog : []);
-  // 能力表补缺后渲染列表（并发守卫：只渲染最后一次请求的列表；渲染前重新定位 group——
-  // 自动获取可能在等待期间把目录挂到 group 上，用旧引用会覆盖掉新目录）
+  // 先立即同步渲染列表，保证目录与已配置模型立即可见
+  renderModelList(s, group, isNew);
+  // 能力表补缺后异步刷新列表（补充 context / 思考级别档位提示）
   const seq = ++mcRenderSeq;
   const modelNames = isNew ? [] : models.map((m) => m.name);
   fillModelCapabilities(modelNames).then(() => {
@@ -4323,12 +4323,7 @@ function renderProviderPanel(s) {
     const groups2 = Array.isArray(s.providers) ? s.providers : [];
     const live2 = !group ? null : (groups2.find((g) => g.name === group.name) || group);
     renderModelList(s, live2, isNew);
-  }).catch(() => {
-    if (seq !== mcRenderSeq) return;
-    const groups2 = Array.isArray(s.providers) ? s.providers : [];
-    const live2 = !group ? null : (groups2.find((g) => g.name === group.name) || group);
-    renderModelList(s, live2, isNew);
-  });
+  }).catch(() => {});
   // 模型列表默认获取：已保存 provider 且从未拉取过目录 → 自动拉取（loading 态在列表内展示）
   if (group && !isNew && !Array.isArray(group.modelCatalog) && !mcAutoFetched.has(group.name)) {
     mcAutoFetched.add(group.name);
@@ -4634,14 +4629,24 @@ function renderMcModelEdit(s, group, m) {
   ctxIn.type = 'number'; ctxIn.min = '0'; ctxIn.step = '1000';
   ctxIn.value = (m.limit && m.limit.context) || '';
   ctxIn.placeholder = ctxHint ? formatCtx(ctxHint) : '128000';
+  const ctxBox = el('div', 'pm-ctx-input');
+  ctxBox.appendChild(ctxIn);
+  const ctxPresets = el('div', 'pm-ctx-presets');
+  [['128K', 128000], ['200K', 200000], ['1M', 1000000], ['2M', 2000000]].forEach(([lbl, val]) => {
+    const btn = el('button', 'ctx-preset-btn', lbl);
+    btn.type = 'button';
+    btn.onclick = () => { ctxIn.value = val; };
+    ctxPresets.appendChild(btn);
+  });
+  ctxBox.appendChild(ctxPresets);
   const ctxRow = el('div', 'pm-row mc-edit-row');
   ctxRow.appendChild(el('label', null, t('provider.fldContext')));
-  ctxRow.appendChild(ctxIn);
+  ctxRow.appendChild(ctxBox);
   body.appendChild(ctxRow);
   // 思考级别选项（默认取目录/能力表）
   const effIn = el('input', 'cfg-text mc-e-efforts');
   effIn.value = (m.reasoningEffortOptions || []).join(', ');
-  effIn.placeholder = (cap && cap.effortOptions) ? cap.effortOptions.join(', ') : 'low,medium,high,xhigh,max';
+  effIn.placeholder = (cap && cap.effortOptions) ? cap.effortOptions.join(', ') : 'low, medium, high, xhigh, max';
   const effBox = el('div', 'pm-eff-input');
   effBox.appendChild(effIn);
   if (cap && cap.found) effBox.appendChild(el('p', 'pm-hint mc-caps-src', `· ${t('provider.fromModelsDev')}`));
@@ -4650,15 +4655,16 @@ function renderMcModelEdit(s, group, m) {
   effRow.appendChild(el('label', null, t('provider.fldEfforts')));
   effRow.appendChild(effBox);
   body.appendChild(effRow);
-  // 当前级别
+  // 当前思考级别（Think Level）
+  const allEfforts = Array.from(new Set([...opts, 'none', 'auto', 'low', 'medium', 'high', 'xhigh', 'max']));
   const curSel = el('select', 'setting-control mc-e-effort');
-  opts.forEach((o) => {
+  allEfforts.forEach((o) => {
     const op = document.createElement('option');
     op.value = o; op.textContent = o;
     if (o === curEff) op.selected = true;
     curSel.appendChild(op);
   });
-  if (!curEff || !opts.includes(curEff)) curSel.selectedIndex = 0;
+  if (!curEff || !allEfforts.includes(curEff)) curSel.selectedIndex = 0;
   const curRow = el('div', 'pm-row mc-edit-row');
   curRow.appendChild(el('label', null, t('provider.fldEffort')));
   curRow.appendChild(curSel);
@@ -4756,8 +4762,16 @@ function fillModelConfigForm(s) {
   renderProviderPanel(s);
   // 添加模型（组内；新建模式下先落盘 provider 配置再添加）——onclick 覆盖注册防重复监听。
   // 能力表命中的自动预填 context / 思考级别选项；添加后自动展开新行编辑其余字段。
+  const nameInput = $('#pm-name');
+  if (nameInput) {
+    nameInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        $('#btn-add-model')?.click();
+      }
+    };
+  }
   $('#btn-add-model').onclick = async () => {
-    const nameInput = $('#pm-name');
     const modelName = nameInput.value.trim();
     if (!modelName) return;
     const provider = await ensureProviderName();
