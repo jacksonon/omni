@@ -179,6 +179,8 @@ export interface TuiTree {
   input: TextareaRenderable | null;
   /** 模型行 / 思考强度 / 统计行（repaintTree 每次刷新内容） */
   footerModel: TextRenderable | null;
+  /** 模式前缀（Build/Plan，独立着色：Build 绿 / Plan 蓝；repaintTree 每次按 planMode 刷新） */
+  footerMode: TextRenderable | null;
   /** 思考级别（`· medium`，按级别强度着色 effortColor；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
   footerTokens: TextRenderable | null;
@@ -247,6 +249,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let blueLine: TextRenderable | null = null;
   let input: TextareaRenderable | null = null;
   let footerModel: TextRenderable | null = null;
+  let footerMode: TextRenderable | null = null;
   let footerEffort: TextRenderable | null = null;
   let footerTokens: TextRenderable | null = null;
   let statsWrap: BoxRenderable | null = null;
@@ -335,8 +338,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     contentCol.add(input);
 
     // 模型行（输入框下方，灰色块内，**左对齐**）：模式 + 模型 + provider + 思考级别
-    // `Build/Plan · 模型名 组 · 级别`（模式前缀：/plan 计划模式显示 Plan，普通 Build；
-    // 级别按强度着色）。**loading + esc 已移出灰色块**——用户要求「显示在输入区域外部、
+    // `Build/Plan · 模型名 组 · 级别`（模式前缀独立着色：Build 绿 / Plan 蓝；级别按强度
+    // 着色）。**loading + esc 已移出灰色块**——用户要求「显示在输入区域外部、
     // 左下侧、和 statusLine 一行」（见下方 infoRow：统计行最左侧）。
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
@@ -344,7 +347,11 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
       alignItems: 'center',
       gap: 1,
     });
-    // 模型文本（模式 + 模型名 + provider 组名）：`Build · mock demo`
+    // 模式前缀（`Build` / `Plan` + 分隔符 ` ·`）：独立 TextRenderable 按模式着色
+    footerMode = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerMode.fg = parseColor(theme.footerText);
+    modelRow.add(footerMode);
+    // 模型文本（模型名 + provider 组名）：`mock demo`（前缀在 footerMode，这里是纯模型名）
     footerModel = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerModel.fg = parseColor(theme.footerText);
     modelRow.add(footerModel);
@@ -582,6 +589,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     blueLine,
     input,
     footerModel,
+    footerMode,
     footerEffort,
     footerTokens,
     footerLoading,
@@ -872,13 +880,18 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
   // 模型行（输入框下方，灰色块内，左对齐）：`Build/Plan · 模型名 组名 · 思考级别`
-  // ——模式前缀（/plan 计划模式 = Plan，普通 = Build）+ 模型名 + provider 组名 +
-  // 思考级别（淡色；按强度着色在下方 footerEffort 单独设置）。loading/esc 已排最左。
-  if (tree.footerModel) {
+  // ——模式前缀（/plan 计划模式 = Plan，普通 = Build）**独立着色**（Build 绿 / Plan 蓝），
+  // 模型名 + provider 组名跟随，思考级别（淡色；按强度着色在 footerEffort 单独设置）。
+  // loading/esc 已排最左。
+  if (tree.footerModel && tree.footerMode) {
     const lang = state.language;
     const mode = t(lang, state.planMode ? 'footer.mode.plan' : 'footer.mode.build');
+    // 模式前缀 + 分隔符，按模式着色（Build 绿 / Plan 蓝，与主题强调色一致）
+    tree.footerMode.content = `${mode} ·`;
+    tree.footerMode.fg = parseColor(state.planMode ? themeFor(state).modePlan : themeFor(state).modeBuild);
+    // 模型名 + provider 组名（纯名称，不含模式前缀）
     const provider = state.provider ? ` ${state.provider}` : '';
-    tree.footerModel.content = tf(lang, 'footer.model', { mode, model: state.model, provider });
+    tree.footerModel.content = `${state.model}${provider}`;
   }
   if (tree.footerEffort) {
     tree.footerEffort.content = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';

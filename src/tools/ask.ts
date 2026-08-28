@@ -16,6 +16,31 @@
  */
 import type { Tool } from './types.js';
 
+/**
+ * 选项 → 展示文本（健壮归一化）：
+ * 字符串原样；对象（模型偶发违反 schema 传 {label,value} 等）按常见字段提取，
+ * 均不是纯字符串时兜底 JSON 序列化——绝不回退成 `[object Object]`（此前 TUI/Web
+ * 选项面板 A/B/C 全显示 [object Object] 的根因）。
+ */
+export function optionToText(o: unknown): string {
+  if (typeof o === 'string') return o;
+  if (typeof o === 'number' || typeof o === 'boolean') return String(o);
+  if (o && typeof o === 'object') {
+    const obj = o as Record<string, unknown>;
+    for (const key of ['label', 'title', 'text', 'name', 'value', 'content', 'option']) {
+      const v = obj[key];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (typeof v === 'number') return String(v);
+    }
+    try {
+      return JSON.stringify(obj); // 兜底：至少展示内容而非 [object Object]
+    } catch {
+      /* 序列化失败走下方 String */
+    }
+  }
+  return String(o);
+}
+
 export interface AskResult {
   /** 用户的选择（多选时 = choices 的文本连接，如「A、B」；单选 = 单个文本） */
   choice: string;
@@ -65,9 +90,7 @@ export function createAskUserTool(askUser: AskUserFn | undefined): Tool {
     },
     async execute(args) {
       const question = String(args.question ?? '');
-      const options = Array.isArray(args.options)
-        ? args.options.map((o) => String(o)).filter(Boolean)
-        : [];
+      const options = Array.isArray(args.options) ? args.options.map(optionToText).filter(Boolean) : [];
       const multiple = args.multiple === true;
       if (!question || options.length < 2) {
         return '错误：ask_user 需要 question（非空）与至少 2 个 options';
