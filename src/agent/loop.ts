@@ -384,6 +384,10 @@ export async function runAgent(
     opts.events?.requestHeader(step, routedModelRuntime, toolSchemas.map((s) => s.function.name), requestMessages.length);
 
     output.onRound(step, maxSteps);
+    // 思考计时起点：与 TUI onRound 预建 think 模块的时刻对齐（首 chunk 前等待也计入）。
+    // reasoningMs 只对**真正有思考内容**的轮次设置（reasoning 非空才在 finishThinking 结算）。
+    const thinkT0 = Date.now();
+    let reasoningMs: number | undefined;
     // LLM 请求计时：墙钟（含重试回退）与首 token 延迟（footer 统计用）
     const llmT0 = Date.now();
     let firstTokenAt: number | null = null; // 首个有意义内容（reasoning/content/tool_call）的到达时间
@@ -514,6 +518,9 @@ export async function runAgent(
     const thinking = output.thinking;
     const finishThinking = () => {
       if (thinking.shown) thinking.finish(); // 思考区结束：补换行，后续内容从新行开始（思考内容保留在屏幕上）
+      // 思考耗时结算（供持久化）：仅在**确有思考内容**时记录=input（从 onRound 到首段
+      // reasoning 停止的时间）。多次调用只取第一次（Reasoning 区结束即定格）。
+      if (reasoning && reasoningMs === undefined) reasoningMs = Date.now() - thinkT0;
     };
 
     try {
@@ -625,8 +632,9 @@ export async function runAgent(
       output.onThinkingSaved(reasoning.length, saved);
     }
 
-    // 组装 assistant 消息并追加进历史（reasoning 一并持久化——web 刷新后恢复 thinking）
-    const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning);
+    // 组装 assistant 消息并追加进历史（reasoning + reasoningMs 一并持久化——
+    // web/TUI/console 恢复后回放 thinking 块，含「- thinking · 耗时」头行）
+    const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning, reasoningMs);
     messages.push(assistantMsg);
 
     // 轨迹：assistant 消息（正文 + 用量 + LLM 墙钟/首 token 延迟）

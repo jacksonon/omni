@@ -102,15 +102,20 @@ async function run(): Promise<void> {
   await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
   if (!trust && !singleTask) output.onUserMessage('⚠️ 当前目录未受信任——以只读模式运行（/status 查看；/permission 无法提升）');
   output.banner(cfg, runOpts.tools.map((t) => t.name));
-  // 恢复的会话：把历史消息回放到 TUI（用户消息/纯文本回答；工具调用历史不重建卡片），
-  // 让对话流与消息上下文一致——新一轮在历史之后继续
+  // 恢复的会话：把历史消息回放到 TUI（用户消息/思考块/纯文本回答；工具调用历史不重建卡片），
+  // 让对话流与消息上下文一致——新一轮在历史之后继续。思考块（reasoning/reasoningMs 已随
+  // assistant 消息持久化）一并回放，带「- thinking · 耗时」头行（旧会话无 reasoningMs → 无耗时）。
   if (messages.length > 0) {
     for (const m of messages) {
       if (m.role === 'user' && typeof m.content === 'string' && m.content) {
         output.onUserMessage(m.content);
-      } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
-        output.onAnswer(m.content);
-        output.onAnswerEnd();
+      } else if (m.role === 'assistant') {
+        const ext = m as unknown as { reasoning?: string; reasoningMs?: number };
+        if (ext.reasoning) output.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
+        if (typeof m.content === 'string' && m.content) {
+          output.onAnswer(m.content);
+          output.onAnswerEnd();
+        }
       }
     }
     output.onTurnEnd();

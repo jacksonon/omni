@@ -165,9 +165,13 @@ export async function runTuiInteractive(
     for (const m of msgs) {
       if (m.role === 'user' && typeof m.content === 'string' && m.content) {
         out.onUserMessage(m.content);
-      } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content) {
-        out.onAnswer(m.content);
-        out.onAnswerEnd();
+      } else if (m.role === 'assistant') {
+        const ext = m as unknown as { reasoning?: string; reasoningMs?: number };
+        if (ext.reasoning) out.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
+        if (typeof m.content === 'string' && m.content) {
+          out.onAnswer(m.content);
+          out.onAnswerEnd();
+        }
       }
     }
     out.onTurnEnd();

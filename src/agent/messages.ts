@@ -17,7 +17,8 @@ export interface ToolCallAccum {
 export function buildAssistantMessage(
   content: string,
   toolCalls: Map<number, ToolCallAccum>,
-  reasoning?: string
+  reasoning?: string,
+  reasoningMs?: number
 ): ChatCompletionAssistantMessageParam {
   const assistantMsg: ChatCompletionAssistantMessageParam = {
     role: 'assistant',
@@ -33,20 +34,26 @@ export function buildAssistantMessage(
   if (reasoning) {
     (assistantMsg as unknown as Record<string, unknown>).reasoning = reasoning;
   }
+  // 思考耗时（毫秒）随 reasoning 一并持久化——供 TUI/Web/console 恢复对话时回放
+  //「- thinking · 耗时」头行；缺失（旧会话）→ 恢复显示内容无耗时。
+  if (reasoning && typeof reasoningMs === 'number' && reasoningMs > 0) {
+    (assistantMsg as unknown as Record<string, unknown>).reasoningMs = Math.round(reasoningMs);
+  }
   return assistantMsg;
 }
 
-/** 从消息中剥离非标准字段（reasoning），返回新数组（不修改原数组）。
- *  用于 API 发送前清洗——避免久非标准字段被网关拒绝。 */
+/** 从消息中剥离非标准字段（reasoning / reasoningMs），返回新数组（不修改原数组）。
+ *  用于 API 发送前清洗——避免非标准字段被网关拒绝。 */
 export function stripNonStandardFields(
   messages: ChatCompletionMessageParam[]
 ): ChatCompletionMessageParam[] {
   return messages.map((m) => {
     if (m.role !== 'assistant') return m;
-    const r = (m as unknown as Record<string, unknown>).reasoning;
-    if (!r) return m;
+    const rec = m as unknown as Record<string, unknown>;
+    if (!rec.reasoning) return m;
     const clone = { ...m };
     delete (clone as unknown as Record<string, unknown>).reasoning;
+    delete (clone as unknown as Record<string, unknown>).reasoningMs;
     return clone;
   });
 }

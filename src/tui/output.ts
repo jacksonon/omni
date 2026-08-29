@@ -315,6 +315,18 @@ export class TuiOutput implements Output {
     // TUI 中思考已完整展示，无需落盘提示
   }
 
+  /**
+   * 恢复历史会话：回放一个已完成的思考块（头行 `- thinking · 耗时` + 完整内容），
+   * 与实时思考模块一致支持点击展开/收起（全部行带 thinkingIdx）。
+   * ms 缺失（旧会话）→ 头行无耗时（rows.ts 按 thinkingMs != null 条件追加）。
+   * /thinking 关闭（showThinking=false）时不回放思考块（与实时行为对齐）。
+   */
+  onThinkingRestored(text: string, ms?: number): void {
+    if (!this.showThinking || !text) return;
+    pushLine(this.state, { kind: 'thinking', text, thinkingRunning: false, thinkingMs: ms });
+    this.schedulePaint();
+  }
+
   onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>): void {
     // 步数统计：每次工具调用 +1（footer 统计行）
     this.state.stats.steps += 1;

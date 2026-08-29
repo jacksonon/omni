@@ -127,4 +127,10 @@ export interface Output {
    * 可见进度）；console 打印 dim 进度行。可选：缺省 = 静默（子代理过程不可见）。
    */
   onSubagentEvent?(ev: import('../agent/types.js').SubagentEvent): void;
+  /**
+   * 恢复历史会话时回放一个已完成的思考块（TUI/console 用；供对话流与消息上下文一致）。
+   * text = 思考内容；ms = 思考耗时毫秒（旧会话/缺失时 undefined = 显示无耗时）。
+   * 可选：缺省 = 不恢复思考块（仅回放正文）。
+   */
+  onThinkingRestored?(text: string, ms?: number): void;
 }
