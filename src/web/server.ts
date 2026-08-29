@@ -1521,7 +1521,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           return;
         }
         const ext = path.extname(name);
-        res.writeHead(200, { 'content-type': MIME[ext] ?? 'text/plain; charset=utf-8' });
+        // 静态页面不加缓存头（浏览器可能启发式缓存旧版 app.js/style.css，导致新功能
+        // 看不到——如右上角通知系统；强制 no-cache，每次刷新都拿最新）
+        res.writeHead(200, { 'content-type': MIME[ext] ?? 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
         res.end(asset);
         return;
       }

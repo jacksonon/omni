@@ -110,6 +110,15 @@ const I18N_ZH = {
   'composer.runningQueued': '运行中 · ⏳ 排队 {n} 条 · Enter 排队 · ⌘/Ctrl+Enter 打断',
   'composer.queued': '⏳ 排队中（{n}）',
   'composer.chooseSession': '选择或新建会话',
+  // 消息操作
+  'msg.copy': '复制',
+  'msg.rewrite': '重新编写',
+  'msg.retry': '重试',
+  // 通知（右上角 Alert notification）
+  'notify.copied': '已复制',
+  'notify.copyFailed': '复制失败',
+  'notify.modelSwitched': '已切换到 {model}',
+  'notify.saved': '✓ 已保存',
   // 附件
   'attach.remove': '移除附件',
   'attach.imageTooLarge': '⚠ 图片超过 4MB 上限，已跳过：{name}',
@@ -396,6 +405,15 @@ const I18N_EN = {
   'composer.runningQueued': 'Running · ⏳ {n} queued · Enter to queue · ⌘/Ctrl+Enter to steer',
   'composer.queued': '⏳ Queued ({n})',
   'composer.chooseSession': 'Select or create a session',
+  // message actions
+  'msg.copy': 'Copy',
+  'msg.rewrite': 'Rewrite',
+  'msg.retry': 'Retry',
+  // notifications (top-right alert)
+  'notify.copied': 'Copied',
+  'notify.copyFailed': 'Copy failed',
+  'notify.modelSwitched': 'Switched to {model}',
+  'notify.saved': '✓ Saved',
   // attachments
   'attach.remove': 'Remove attachment',
   'attach.imageTooLarge': '⚠ Image exceeds 4MB limit, skipped: {name}',
@@ -844,6 +862,46 @@ function initScrollFollow() {
   }, { passive: true });
 }
 
+/* ---------------- 消息操作按钮（复制 / 重新编写 / 重试；图标按钮，悬停显示） ----------------
+ * 用户消息：复制 + 重新编写（把原文带回输入框）；助手消息：复制 + 重试（重发前一条用户消息）。
+ * 按钮放 `.msg-actions` 容器（bubble/md-body 之后），CSS 悬停显示；助手按钮在 md-body
+ * 外的兄弟节点——流式重绘只清 innerHTML 不影响按钮。 */
+function msgIconButton(title, svgInner, onClick) {
+  const btn = el('button', 'msg-action-btn');
+  btn.type = 'button';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.innerHTML = svgInner;
+  btn.appendChild(svg);
+  btn.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  return btn;
+}
+
+/* 复制图标（两层矩形） */
+const SVG_ICON_COPY =
+  '<rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="2"/>';
+/* 重新编写图标（铅笔） */
+const SVG_ICON_EDIT =
+  '<path d="M17 3l4 4L8 20l-5 1 1-5L17 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>';
+/* 重试图标（循环箭头） */
+const SVG_ICON_RETRY =
+  '<path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+
+/** 找 `wrap` 之前最近的一条 `.msg.user` 泡泡文本（重试用：重新发送该提示词） */
+function prevUserMsgText(wrap) {
+  let n = wrap.previousElementSibling;
+  while (n) {
+    if (n.classList && n.classList.contains('msg') && n.classList.contains('user')) {
+      const bub = n.querySelector('.bubble');
+      return bub ? bub.textContent.trim() : '';
+    }
+    n = n.previousElementSibling;
+  }
+  return '';
+}
+
 /* 助手消息块（流式光标：打字机效果，注入 span 到最后一个文本块末尾，与字符同行） */
 function assistantBlock(sessionId) {
   setEmptyState(false);
@@ -851,6 +909,14 @@ function assistantBlock(sessionId) {
   const wrap = el('div', 'msg assistant');
   const body = el('div', 'md-body');
   wrap.appendChild(body);
+  // 操作按钮：复制（当前文本）+ 重试（重发前一条用户消息）——放在 body 外，流式重绘不丢掉
+  const actions = el('div', 'msg-actions');
+  actions.appendChild(msgIconButton(t('msg.copy'), SVG_ICON_COPY, () => copyText(b._text || '')));
+  actions.appendChild(msgIconButton(t('msg.retry'), SVG_ICON_RETRY, () => {
+    const prompt = prevUserMsgText(wrap);
+    if (prompt) doSend(prompt);
+  }));
+  wrap.appendChild(actions);
   msgList().appendChild(wrap);
   b._streaming = true; // paint 时向最后一个文本块末尾注入 .stream-cursor span
   b.stopCursor = () => {
@@ -861,6 +927,7 @@ function assistantBlock(sessionId) {
   b._text = '';
   b._body = body;
   b._dirty = false;
+  b._actions = actions;
   b.paint = () => {
     body.innerHTML = mdToHtml(b._text, { final: !b._streaming });
     if (b._streaming) appendStreamCursor(body);
@@ -885,6 +952,7 @@ function appendStreamCursor(body) {
 function userBlock(sessionId, text, attachments) {
   setEmptyState(false);
   const b = makeBlock('user', sessionId);
+  b._text = text || '';
   const wrap = el('div', 'msg user');
   const bubble = el('div', 'bubble');
   if (attachments && attachments.length) {
@@ -905,6 +973,17 @@ function userBlock(sessionId, text, attachments) {
   }
   if (text) bubble.appendChild(document.createTextNode(text));
   wrap.appendChild(bubble);
+  // 操作按钮：复制 + 重新编写（把原文带回输入框编辑）
+  const actions = el('div', 'msg-actions');
+  actions.appendChild(msgIconButton(t('msg.copy'), SVG_ICON_COPY, () => copyText(text || '')));
+  actions.appendChild(msgIconButton(t('msg.rewrite'), SVG_ICON_EDIT, () => {
+    input.value = text || '';
+    autoResize();
+    input.focus();
+    // 光标移到结尾（编辑整段原文）
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch { /* ignore */ }
+  }));
+  wrap.appendChild(actions);
   msgList().appendChild(wrap);
   state.autoFollow = true; // 用户发消息 → 恢复跟随
   scrollBottom(true);
@@ -965,15 +1044,15 @@ async function handleAttachFiles(fileList) {
     if (file.type.startsWith('image/')) {
       if (!modelSupportsImage()) {
         state.attachments.push({ id: attachId(), kind: 'path', name: file.name, size: file.size });
-        metaLine(state.session, [t('attach.modelNoImage', { name: file.name })]);
+        notify(t('attach.modelNoImage', { name: file.name }), 'info');
         continue;
       }
       if (file.size > IMAGE_MAX_BYTES) {
-        metaLine(state.session, [t('attach.imageTooLarge', { name: file.name })]);
+        notify(t('attach.imageTooLarge', { name: file.name }), 'error');
         continue;
       }
       const dataUrl = await compressImage(file);
-      if (!dataUrl) { metaLine(state.session, [`⚠ 无法读取图片：${file.name}`]); continue; }
+      if (!dataUrl) { notify(`⚠ 无法读取图片：${file.name}`, 'error'); continue; }
       state.attachments.push({ id: attachId(), kind: 'image', name: file.name, size: file.size, dataUrl });
     } else if (isTextFile(file)) {
       let content = '';
@@ -1540,7 +1619,7 @@ function renderSessionList() {
     addBtn.title = `在 ${projectName(project)} 新建会话`;
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      switchWorkspace(project).then(() => newSession()).catch((err) => alert(`切换工作目录失败：${err.message}`));
+      switchWorkspace(project).then(() => newSession()).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
     });
     head.appendChild(addBtn);
     const moreBtn = el('span', 'ws-gadd', '⋯');
@@ -1585,7 +1664,7 @@ function renderSessionList() {
         const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
         const needSwitch = target && target !== (state.status?.cwd || '');
         const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
-        if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => alert(`打开会话失败：${err.message}`));
+        if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(`打开会话失败：${err.message}`, 'error'));
         else doSelect();
       });
       body.appendChild(item);
@@ -1634,7 +1713,7 @@ function showChatActions(e) {
   const rw = mk('会话检查点（/rewind）', (id) => openRewindModal(id));
   const del = mk('删除会话', async (id) => {
     if (!confirm('删除该会话？此操作不可恢复。')) return;
-    await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => alert(`删除失败：${err.message}`));
+    await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => notify(`删除失败：${err.message}`, 'error'));
   });
   menu.append(ren, forkB, exp, rw, del);
   document.body.appendChild(menu);
@@ -1654,14 +1733,14 @@ function openForkDialog(s) {
     const raw = prompt(`分叉新会话：保留前 N 条消息（1..${maxN}，原会话保留）`, String(Math.max(1, Math.min(maxN, 4))));
     if (raw === null) return;
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < 1 || n > maxN) { alert(`N 须为 1..${maxN} 的整数`); return; }
+    if (!Number.isInteger(n) || n < 1 || n > maxN) { notify(`N 须为 1..${maxN} 的整数`, 'error'); return; }
     api(`/api/sessions/${s.id}/fork`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ n }),
     })
       .then(() => refreshSessions())
-      .catch((err) => alert(`fork 失败：${err.message}`));
+      .catch((err) => notify(`fork 失败：${err.message}`, 'error'));
   }).catch(() => {});
 }
 
@@ -1696,8 +1775,8 @@ async function openRewindModal(sessionId) {
             body: JSON.stringify({ index: c.index }),
           });
           $('#rewind-modal').classList.add('hidden');
-          metaLine(state.session, [`已回滚到检查点 #${c.index}（${c.files} 个文件处理）`]);
-        } catch (err) { alert(`回滚失败：${err.message}`); }
+          notify(`已回滚到检查点 #${c.index}（${c.files} 个文件处理）`, 'success');
+        } catch (err) { notify(`回滚失败：${err.message}`, 'error'); }
       });
       row.appendChild(btn);
       list.appendChild(row);
@@ -1760,7 +1839,7 @@ function showWorkspaceActions(e, project, count) {
         }
         renderSessionList();
       })
-      .catch((err) => alert(`移除失败：${err.message}`));
+      .catch((err) => notify(`移除失败：${err.message}`, 'error'));
   });
   menu.append(del);
   document.body.appendChild(menu);
@@ -1796,7 +1875,7 @@ function showSessionActions(e, s) {
         if (state.session === s.id) $('#chat-title').textContent = title;
         renderSessionList();
       })
-      .catch((err) => alert(`重命名失败：${err.message}`));
+      .catch((err) => notify(`重命名失败：${err.message}`, 'error'));
   });
   const del = el('button', 'ctx-item danger', '删除会话');
   del.type = 'button';
@@ -1816,7 +1895,7 @@ function showSessionActions(e, s) {
         }
         renderSessionList();
       })
-      .catch((err) => alert(`删除失败：${err.message}`));
+      .catch((err) => notify(`删除失败：${err.message}`, 'error'));
   });
   if (s.project === (state.status?.cwd || '')) {
     const forkB = el('button', 'ctx-item', '分叉新会话（/fork）');
@@ -1940,7 +2019,7 @@ function renderPermissionPop() {
       btn.appendChild(ck);
     }
     btn.addEventListener('click', () => {
-      applySettings({ permission: it.v }).catch((err) => alert(`设置失败：${err.message}`));
+      applySettings({ permission: it.v }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
       closeAllComposerPops();
     });
     list.appendChild(btn);
@@ -2312,7 +2391,7 @@ function renderStatusbarSettings() {
       else set.add(sg.id);
       const next = STATUS_SEGMENTS.map((x) => x.id).filter((id) => set.has(id));
       state.statusline = next;
-      applySettings({ statusline: next }).catch((err) => alert(`设置失败：${err.message}`));
+      applySettings({ statusline: next }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
       updateComposerStatus();
     });
     row.appendChild(sw);
@@ -2327,7 +2406,7 @@ function browseWorkspace() {
   if (window.omni && typeof window.omni.pickDirectory === 'function') {
     window.omni.pickDirectory()
       .then((dir) => {
-        if (dir) switchWorkspace(dir).catch((err) => alert(`切换工作目录失败：${err.message}`));
+        if (dir) switchWorkspace(dir).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
       })
       // 原生对话框异常（IPC 崩溃 / 桥接失效）→ 回退页面内目录浏览器，而不是静默失败
       .catch(() => openDirPicker(state.status?.cwd || '/'));
@@ -3158,7 +3237,7 @@ function focusSessionSearch() {
 function cyclePermission() {
   const cur = state.status?.permission || 'safe';
   const next = PERM_ORDER[(PERM_ORDER.indexOf(cur) + 1) % PERM_ORDER.length] || 'read';
-  applySettings({ permission: next }).catch((err) => alert(`设置失败：${err.message}`)); // 静默切换（D12），失败才提示
+  applySettings({ permission: next }).catch((err) => notify(`设置失败：${err.message}`, 'error')); // 静默切换（D12），失败才提示
 }
 function cycleTheme() {
   const cur = getStoredTheme() || state.status?.webTheme || 'system';
@@ -3179,7 +3258,7 @@ function togglePlanMode() {
   const sp = $('#set-plan');
   if (sp) sp.checked = next;
   updateComposer();
-  applySettings({ planMode: next }).catch((err) => alert(`设置失败：${err.message}`));
+  applySettings({ planMode: next }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
 }
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -3192,15 +3271,65 @@ function scrollMessages(dir) {
 }
 function copyText(text) {
   if (!text) return;
-  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).catch(() => {}); return; }
+  // ① 同步 execCommand 路径（点击 handler 内有用户手势上下文，不依赖窗口焦点——
+  //    writeText 在文档未聚焦时抛 NotAllowedError 且不可恢复，这里优先保证成功）
   const ta = el('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
   ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { /* ignore */ }
   ta.remove();
+  if (ok) { notify(t('notify.copied'), 'success'); return; }
+  // ② execCommand 不可用/失败 → 异步 Clipboard API（async 上下文已失手势，可能被拒）
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => notify(t('notify.copied'), 'success'))
+      .catch(() => notify(t('notify.copyFailed'), 'error'));
+    return;
+  }
+  // ③ 两条路都不通：至少给用户反馈
+  notify(t('notify.copyFailed'), 'error');
+}
+
+/* 右上角通知（Alert notification）：所有瞬时提示统一入口。
+ * type：info（默认）/ success（成功）/ error（错误）；自动消失（错误 4.5s，其余 2.6s），
+ * 悬停暂停计时，可点击 ✕ 关闭；同屏最多叠 4 条，超过先移除最旧的。 */
+function notify(msg, type = 'info') {
+  if (!msg) return;
+  let box = $('#notifications');
+  if (!box) {
+    box = el('div', 'notifications');
+    box.id = 'notifications';
+    document.body.appendChild(box);
+  }
+  while (box.children.length >= 4) box.removeChild(box.firstChild);
+  const n = el('div', 'notify ' + type);
+  const icon = el('span', 'notify-icon');
+  icon.textContent = type === 'error' ? '✕' : type === 'success' ? '✓' : 'ℹ';
+  const text = el('span', 'notify-text');
+  text.textContent = msg;
+  const close = el('button', 'notify-close', '✕');
+  close.type = 'button';
+  close.title = t('modal.close');
+  close.addEventListener('click', () => dismiss(n));
+  n.appendChild(icon); n.appendChild(text); n.appendChild(close);
+  box.appendChild(n);
+  // rAF + setTimeout 双保险：rAF 不触发（headless/后台标签页）时也能在下一帧加 show 类
+  requestAnimationFrame(() => { setTimeout(() => n.classList.add('show'), 0); });
+  let timer = setTimeout(() => dismiss(n), type === 'error' ? 4500 : 2600);
+  // 悬停暂停自动消失
+  n.addEventListener('mouseenter', () => clearTimeout(timer));
+  n.addEventListener('mouseleave', () => { timer = setTimeout(() => dismiss(n), type === 'error' ? 4500 : 2600); });
+}
+function dismiss(n) {
+  if (!n || n.dataset.gone) return;
+  n.dataset.gone = '1';
+  n.classList.remove('show');
+  n.classList.add('hide');
+  setTimeout(() => n.remove(), 200);
 }
 function copyLastReply() {
   const blocks = document.querySelectorAll('#messages .msg.assistant');
@@ -3262,7 +3391,7 @@ function pickSession(s) {
   const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
   const needSwitch = target && target !== (state.status?.cwd || '');
   const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
-  if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => alert(`打开会话失败：${err.message}`));
+  if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(`打开会话失败：${err.message}`, 'error'));
   else doSelect();
 }
 
@@ -3397,7 +3526,7 @@ function shortcutRecorder(e) {
   const combo = comboVariants(e)[0];
   const clash = findShortcutClash(SHORTCUT_FEATURES, (f) => getBinding(f), recordingFeatureId, combo);
   if (clash) {
-    alert(t('shortcut.conflict', { combo: formatCombo(combo), label: featureLabel(clash) }));
+    notify(t('shortcut.conflict', { combo: formatCombo(combo), label: featureLabel(clash) }), 'error');
     return;
   }
   setShortcutOverride(undefined, recordingFeatureId, combo);
@@ -3477,7 +3606,7 @@ input.addEventListener('keydown', (e) => {
       return;
     }
     if (sessionRunning()) {
-      if (state.attachments.length) { metaLine(state.session, [t('attach.running')]); return; } // 运行中不支持附件
+      if (state.attachments.length) { notify(t('attach.running'), 'info'); return; } // 运行中不支持附件
       if (e.metaKey || e.ctrlKey) steerMessage(text);
       else queueMessage(text);
     } else {
@@ -3914,7 +4043,8 @@ function renderModelPop(s) {
     sel.addEventListener('change', () => {
       const v = sel.value;
       if (v === s.model) return;
-      applySettings({ model: v }).then(() => closeModelPop()).catch((err) => alert(`切换失败：${err.message}`));
+      const picked = models.find((m) => m.name === v);
+      applySettings({ model: v }).then(() => { closeModelPop(); notify(t('notify.modelSwitched', { model: (picked ? modelLabel(picked) : v) }), 'success'); }).catch((err) => notify(`切换失败：${err.message}`, 'error'));
     });
     pop.appendChild(sel);
   }
@@ -3976,7 +4106,7 @@ function renderModelPop(s) {
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
         .then(() => { applied = pos; setTimeout(closeModelPop, 300); }) // 留 300ms 让动效可见
-        .catch((err) => { alert(`设置失败：${err.message}`); range.value = String(applied); val.textContent = efforts[applied]; });
+        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); val.textContent = efforts[applied]; });
     });
     pop.appendChild(range);
     const ticks = el('div', 'pop-ticks');
@@ -4025,7 +4155,7 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
   });
 });
 $('#set-plan').addEventListener('change', (e) => {
-  applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
+  applySettings({ planMode: e.target.checked }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
 });
 
 $('#session-search').addEventListener('input', (e) => {
@@ -4048,7 +4178,7 @@ $('#btn-sidebar-toggle').addEventListener('click', () => {
 $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.toggle('sidebar-open'));
 
 $('#set-permission').addEventListener('change', (e) => {
-  applySettings({ permission: e.target.value }).catch((err) => alert(`设置失败：${err.message}`));
+  applySettings({ permission: e.target.value }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
 });
 $('#set-language').addEventListener('change', (e) => {
   applyLanguage(e.target.value);
@@ -4056,12 +4186,12 @@ $('#set-language').addEventListener('change', (e) => {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ language: e.target.value }),
-  }).catch((err) => alert(`语言设置失败：${err.message}`));
+  }).catch((err) => notify(`语言设置失败：${err.message}`, 'error'));
 });
 $('#set-concurrency').addEventListener('change', (e) => {
   const val = Math.max(1, Math.min(16, parseInt(e.target.value) || 3));
   e.target.value = String(val);
-  applySettings({ webConcurrency: val }).catch((err) => alert(`设置失败：${err.message}`));
+  applySettings({ webConcurrency: val }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
 });
 /* ---------------- 模型配置（providers 分组：一个端点配置多个模型，设置面板「模型配置」tab） ---------------- */
 let cfgProviderSel = null;   // 当前选中分组：null=未选、'name'=provider、'__new__'=新建
@@ -4070,6 +4200,11 @@ let cfgProviderApiKey = '';  // 当前编辑 provider 的已保存 apiKey（眼�
 let mcNewCatalog = null;     // 新建 provider 模式下「获取模型列表」的临时目录（建组前缓存，勾选即建组）
 let mcFetching = null;       // 正在获取模型列表的 provider 名（列表内 loading 态）
 const mcAutoFetched = new Set(); // 本会话已自动获取过目录的 provider 名（避免每次刷新都重拉）
+// 持久化「本会话已自动获取过」标记（localStorage 按 key 存，刷新页面/重开设置不再自动拉）——
+// 模型列表自动获取只发生在该 provider 目录从未加载过且本机从未自动拉过；之后需手动点「获取/刷新模型列表」。
+const mcAutoFetchedKey = (name) => 'omni.mcAutoFetched_' + name;
+const mcAutoTried = (name) => mcAutoFetched.has(name) || (typeof localStorage !== 'undefined' && !!localStorage.getItem(mcAutoFetchedKey(name)));
+const mcMarkAutoTried = (name) => { mcAutoFetched.add(name); try { localStorage.setItem(mcAutoFetchedKey(name), '1'); } catch { /* 隐私/无存储环境忽略 */ } };
 let mcEditModel = null;      // 模型编辑弹窗当前目标 { provider, model }
 
 // 模型能力表缓存（models.dev 快照 → /api/settings/model-capabilities；name → {found, context, effortOptions}）
@@ -4123,7 +4258,7 @@ function currentEffortOf(s, m, opts) {
 async function ensureProviderName() {
   if (cfgProviderSel === '__new__' || cfgProviderNewName) {
     const name = $('#p-name').value.trim();
-    if (!name) { alert(t('provider.newName')); return null; }
+    if (!name) { notify(t('provider.newName'), 'info'); return null; }
     try {
       await api('/api/settings', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -4137,7 +4272,7 @@ async function ensureProviderName() {
         }),
       });
     } catch (err) {
-      alert(t('provider.errSave', { msg: err.message }));
+      notify(t('provider.errSave', { msg: err.message }), 'error');
       return null;
     }
     cfgProviderSel = name;
@@ -4178,7 +4313,7 @@ $('#mc-provider-chips')?.addEventListener('click', (e) => {
     }).then(() => {
       if (cfgProviderSel === name) cfgProviderSel = null;
       refreshStatus().catch(() => {});
-    }).catch((err) => alert(t('provider.errDelete', { msg: err.message })));
+    }).catch((err) => notify(t('provider.errDelete', { msg: err.message }), 'error'));
     return;
   }
   const chip = e.target.closest('.mc-chip');
@@ -4262,7 +4397,7 @@ function renderProviderPanel(s) {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerRemove: { provider: group.name } }),
       }).then(() => { cfgProviderSel = null; refreshStatus().catch(() => {}); })
-        .catch((err) => alert(t('provider.errDelete', { msg: err.message })));
+        .catch((err) => notify(t('provider.errDelete', { msg: err.message }), 'error'));
     };
   }
   // 保存 provider（新建 = 创建 + 切到新分组；已有 = 更新）——成功内联提示
@@ -4270,7 +4405,7 @@ function renderProviderPanel(s) {
   if (saveBtn) {
     saveBtn.onclick = () => {
       const name = isNew ? (pnameInput.value.trim() || '') : group.name;
-      if (isNew && !name) { alert(t('provider.newName')); return; }
+      if (isNew && !name) { notify(t('provider.newName'), 'info'); return; }
       api('/api/settings', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -4289,8 +4424,9 @@ function renderProviderPanel(s) {
           saveNote.textContent = t('provider.saved');
           setTimeout(() => { if (saveNote.textContent === t('provider.saved')) saveNote.textContent = ''; }, 2200);
         }
+        notify(t('notify.saved'), 'success');
         refreshStatus().catch(() => {});
-      }).catch((err) => alert(t('provider.errSave', { msg: err.message })));
+      }).catch((err) => notify(t('provider.errSave', { msg: err.message }), 'error'));
     };
   }
   // 获取模型列表 / 刷新缓存（GET {baseURL}/models）：
@@ -4302,11 +4438,11 @@ function renderProviderPanel(s) {
     fetchBtn.textContent = hasCatalog ? t('provider.refresh') : t('provider.fetch');
     fetchBtn.onclick = () => {
       const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
-      if (!b) { alert(t('provider.noBaseURL')); return; }
+      if (!b) { notify(t('provider.noBaseURL'), 'error'); return; }
       if (isNew) {
         doFetchNewCatalog();
       } else {
-        mcAutoFetched.add(group.name); // 手动刷新后不再自动拉取
+        mcMarkAutoTried(group.name); // 手动刷新后不再自动拉取
         doFetchModels(group);
       }
     };
@@ -4325,8 +4461,8 @@ function renderProviderPanel(s) {
     renderModelList(s, live2, isNew);
   }).catch(() => {});
   // 模型列表默认获取：已保存 provider 且从未拉取过目录 → 自动拉取（loading 态在列表内展示）
-  if (group && !isNew && !Array.isArray(group.modelCatalog) && !mcAutoFetched.has(group.name)) {
-    mcAutoFetched.add(group.name);
+  if (group && !isNew && !Array.isArray(group.modelCatalog) && !mcAutoTried(group.name)) {
+    mcMarkAutoTried(group.name);
     doFetchModels(group);
   }
 }
@@ -4369,7 +4505,7 @@ async function doFetchNewCatalog() {
 /** 调用 providerDiscover（共用获取逻辑）；返回模型条目数组，失败返回 null（错误已内联展示） */
 async function fetchProviderModels(group, silent) {
   const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
-  if (!b) { if (!silent) alert(t('provider.noBaseURL')); return null; }
+  if (!b) { if (!silent) notify(t('provider.noBaseURL'), 'error'); return null; }
   const fetchResult = $('#p-fetch-result');
   if (fetchResult) {
     fetchResult.classList.remove('hidden');
@@ -4442,6 +4578,17 @@ function renderModelList(s, group, isNew) {
   const q = ($('#mc-model-search').value || '').trim().toLowerCase();
   const filtered = merged.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.apiModel || '').toLowerCase().includes(q));
   box.innerHTML = '';
+  const fetching = mcFetching === (liveGroup ? liveGroup.name : '__new__');
+  // 加载中且列表完全为空：bare 模式（去掉灰底/表头/「空」提示），只显示简洁 loading 行
+  if (fetching && merged.length === 0) {
+    box.classList.add('bare');
+    const load = el('div', 'mc-loading');
+    load.appendChild(el('span', 'spin'));
+    load.appendChild(el('span', null, t('provider.fetching')));
+    box.appendChild(load);
+    return;
+  }
+  box.classList.remove('bare');
   // 表头（吸顶）：勾选 | 模型名 | apiModel | 思考级别 | context | 默认
   const thead = el('div', 'mc-thead');
   const th = (txt, cls) => { const c = el('span', 'mc-th' + (cls ? ' ' + cls : ''), txt); thead.appendChild(c); };
@@ -4457,7 +4604,7 @@ function renderModelList(s, group, isNew) {
   } else {
     filtered.forEach((m) => box.appendChild(modelListRow(s, liveGroup, m, isNew)));
   }
-  if (mcFetching === (liveGroup ? liveGroup.name : '__new__')) {
+  if (fetching) {
     const load = el('div', 'mc-loading');
     load.appendChild(el('span', 'spin'));
     load.appendChild(el('span', null, t('provider.fetching')));
@@ -4515,7 +4662,7 @@ function modelListRow(s, group, m, isNew) {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ setDefaultModel: { model: `${group.name}/${m.name}` } }),
         }).then(() => refreshStatus().catch(() => {}))
-          .catch((err) => alert(t('provider.errSetDefault', { msg: err.message })));
+          .catch((err) => notify(t('provider.errSetDefault', { msg: err.message }), 'error'));
       });
     }
     defCell.appendChild(defBtn);
@@ -4554,7 +4701,7 @@ async function toggleModelEnable(s, group, m, on, isNew) {
         }),
       });
     } catch (err) {
-      alert(t('provider.errAdd', { msg: err.message }));
+      notify(t('provider.errAdd', { msg: err.message }), 'error');
     }
   } else {
     if (!confirm(t('provider.removeConfirm', { name: m.name }))) return;
@@ -4565,7 +4712,7 @@ async function toggleModelEnable(s, group, m, on, isNew) {
       });
       if (mcEditModel && mcEditModel.provider === provider && mcEditModel.model.name === m.name) closeMcModelEdit();
     } catch (err) {
-      alert(t('provider.errDelete', { msg: err.message }));
+      notify(t('provider.errDelete', { msg: err.message }), 'error');
     }
   }
   refreshStatus().catch(() => {}); // 勾选态始终回显真实状态
@@ -4729,7 +4876,7 @@ function renderMcModelEdit(s, group, m) {
         closeMcModelEdit();
         refreshStatus().catch(() => {});
       }, 350);
-    }).catch((err) => alert(t('provider.errSave', { msg: err.message })));
+    }).catch((err) => notify(t('provider.errSave', { msg: err.message }), 'error'));
   });
   actRow.appendChild(saveNote);
   actRow.appendChild(cancelBtn);
@@ -4798,7 +4945,7 @@ function fillModelConfigForm(s) {
       const mm = g ? providerModelsOf(g).find((x) => x.name === modelName) : null;
       if (mm) openMcModelEdit(s2, g, mm, false);
       else { cfgProviderSel = provider; renderProviderBar(s2); renderProviderPanel(s2); }
-    }).catch((err) => alert(t('provider.errAdd', { msg: err.message })));
+    }).catch((err) => notify(t('provider.errAdd', { msg: err.message }), 'error'));
   };
   // 新建 provider
   $('#btn-provider-new').onclick = () => {
@@ -4823,7 +4970,7 @@ $('#mc-model-search')?.addEventListener('input', () => {
   renderModelList(s, group, isNew);
 });
 $('#plan-mode').addEventListener('change', (e) => {
-  applySettings({ planMode: e.target.checked }).catch((err) => alert(`设置失败：${err.message}`));
+  applySettings({ planMode: e.target.checked }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
 });
 
 /* ---------------- 文件夹浏览器（页面内，服务端列目录） ---------------- */
@@ -4872,7 +5019,7 @@ $('#btn-dir-up').addEventListener('click', () => {
 $('#btn-dir-select').addEventListener('click', () => {
   if (!dirPickerPath) return;
   closeDirPicker();
-  switchWorkspace(dirPickerPath).catch((err) => alert(`切换工作目录失败：${err.message}`));
+  switchWorkspace(dirPickerPath).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
 });
 $('#btn-dir-cancel').addEventListener('click', closeDirPicker);
 $('#btn-close-dirpicker').addEventListener('click', closeDirPicker);
