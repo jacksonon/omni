@@ -84,6 +84,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "repoMap": true,                       // 代码库结构感知：首轮注入紧凑符号地图（函数/类/常量，默认 true）
   "repoMapMaxSymbols": 200,              // repo map 符号上限
   "webFetchDomains": [],                 // web_fetch 工具域名允许列表（空 = 全部允许）
+  "webSearchApiKey": "",                 // web_search 工具 API key（Brave Search；缺省回退环境变量 BRAVE_API_KEY）
   "auditLog": true,                       // 写审计日志（~/.config/omni/audit.log；默认 true）
   "agentsFile": true,                     // 项目记忆 AGENTS.md：每次会话首轮**嵌套加载**所有层级的 AGENTS.md（从 cwd 向上到 git 根/home 边界，越贴近 cwd 权重越高；默认 true）
   "globalAgentsFile": true,               // 全局记忆 ~/.config/omni/AGENTS.md：跨项目用户偏好，排在项目记忆之前（级联；默认 true）
@@ -154,6 +155,15 @@ src/
                         #   上 hdiutil 产物校验损坏不可用）· win nsis exe x64 · linux AppImage x64）
   web/                  # **浏览器页面（仓库根目录）**：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；
                         #   src/web/assets.ts 的源，`npm run web:sync` 重新生成内嵌副本）
+                        #   消息操作按钮：**常显**（无需 hover）——用户消息 复制/重新编写（原文带回输入框，按钮堆在
+                        #   气泡正下方右对齐）、助手消息 复制/重试（重发前一条用户消息）；图标按钮，
+                        #   `.msg-actions` 放 bubble/md-body 外（流式重绘不丢）
+                        #   右上角通知（Alert notification）：`#notifications` 容器 + app.js `notify(msg, type)`
+                        #   ——复制成功/模型切换/保存成功/所有错误提示统一走这里（替代浏览器 alert），
+                        #   info/success/error 三型，自动消失、悬停暂停、✕ 关闭、同屏最多 4 条
+                        #   设置·模型配置为单一滚动视图（列表完全展开，随 .settings-content 整体一滚到底，无嵌套滚动）；
+                        #   模型列表加载时（空列表）不显示灰底（.mc-tbody.bare —— 简体 loading），自动获取只在首次
+                        #   （localStorage 持久化 omni.mcAutoFetched_<provider> 标记，之后需手动点「获取/刷新模型列表」）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -199,6 +209,7 @@ src/
   memory-tools.ts     # 记忆渐进披露工具：memory_search（多关键词 AND + 命中数排序）/ memory_read（按路径读完整记忆）
   todo.ts             # TodoWrite 任务清单工具：模型维护结构化 todo（in_progress/completed/pending，存 runOpts.todoList）
   web-fetch.ts        # WebFetch 内置工具：URL 抓取 → htmlToText 转纯文本 → 截断（域名白名单 webFetchDomains 可配）
+  web-search.ts       # WebSearch 内置工具：关键词 → 搜索结果（title/url/snippet），Brave Search API（webSearchApiKey / env BRAVE_API_KEY）
   diagnose.ts         # 诊断反馈工具（LSP 轻量版）：detectCheckCommand 探测 typecheck→lint→test + 运行返回诊断摘要
     delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
     mcp.ts              # MCP 客户端：stdio/streamable-HTTP 双传输 + JSON-RPC + 运行时发现注册（tools/resources/prompts/instructions、工具白黑名单、审批模式烘焙、OAuth 登录）
@@ -229,6 +240,7 @@ scripts/build-model-context-snapshot.ts # 模型能力快照生成器（npm run 
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
 scripts/tui-snapshot.ts # TUI 快照验证（47 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
+scripts/probe-tmp/probe-drag-select.ts # 拖选复制探针（colToChar 列→字符/highlight 克隆/selectionText 单行多行/selectionMoved/down·drag·up 状态机/渲染高亮）
 scripts/probe-tmp/probe-exec.ts # Headless 探针：parseExecArgs/schema 校验单元 + runHeadless 全链路 e2e（text/json/stream-json、
                                  #   max-turns/allowed-tools/stdin 两形态/exec resume/schema 通过·不符）+ MCP server 握手
 scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
@@ -260,10 +272,10 @@ for step in 1..maxSteps:
 
 - **命令式渲染**：直接用 `@opentui/core` 的 renderable 构建渲染树，状态变更后显式 `renderer.loop()` 重绘——放弃 `@opentui/solid`（JSX 转换时序坑：入口文件先于 preload 转换，信号失效无法重绘）；
 - **细胞池复用**（非全量重建）：池只增不减，行内容原位更新，防原生 TextBuffer 耗尽（早期每帧 remove+new ~1365 次重绘后崩）；`state.ts` 是纯可变对象，不是 signal；
-- **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行/loading/统计行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别`（模式前缀 + provider 组名 + 级别按强度着色）；**loading+esc 在灰色块外部**——统计行最左侧（左下侧，与 statusLine 一行；用户要求）；统计行水平位置可配（`statuslineAlign`：左/中/右，/settings statusline 面板 `a` 键切换）；内容行预算 = 高度 - 10 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
+- **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行/统计行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别 · ⠹ esc interrupt`（模式前缀 + provider 组名 + 级别按强度着色；**loading+esc interrupt 在模型行内、思考级别右侧**——会话进行中转圈 + `esc interrupt` 打断提示（让用户知道 Esc 可打断），`·` 分隔符只在 loading 显示时出现在思考级别与 loading 之间，Esc/会话结束一并消失；用户要求「loading esc 放到输入区域模型思考级别右侧」+「esc 改成 esc interrupt 让用户知道可以打断」+「与左侧思考级别之间用 · 分割（仅 loading 时显示）」）；统计行只含统计文本（灰色块下方），水平位置可配（`statuslineAlign`：左/中/右，/settings statusline 面板 `a` 键切换）；内容行预算 = 高度 - 10 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
 - **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送列表（steer 插最前、可排序/编辑/删除）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
 - **浮层体系**：`/` 命令联想与 `@` 提及文件选择（圆角方框、窗口滚动、鼠标点击）、命令面板（alert 居中）、命令输出面板、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
-- **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；
+- **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；**字符级拖选复制**（OpenTUI 无选区 API，omni 自绘）：左键按在内容行建立选区（`tree.sel`，行下标 + 显示列；`colToChar` 把事件 x → 字符，CJK/emoji 全角 2 列、不断代理对），拖动实时更新焦点行/列（渲染层 `selecRow`/`markRowSelected` 命中行 chunks 重建 + `selBg`/`selFg` 高亮块），松开若有位移则 `selectionText` 提取选区文本（跨行 `\n` 连接）写系统剪贴板（OSC52 + pbcopy/xclip/Set-Clipboard 回退），成功后**右上角 toast「✓ 已复制」**；纯点击（无位移）清空不复制，浮层打开/内容区外不触发；**右上角 toast（Alert notification）**：`pushToast(state, text, type)` 设置 + 过期时间戳，`repaintTree` 渲染绝对定位右上角浮层（`toastBox`，zIndex 11 最高；宽度由内容自适应，类型着色 success 绿/error 深红/info 默认；过期即清除，`state.schedulePaint` 由 TuiOutput 注入驱动自动消失）——**拖选复制/模型切换（/model 面板与 CLI）/思考级别切换/命令面板短结果（/mcp 添加移除）/请求失败错误**统一收口到 toast，`TuiOutput.pushToast` 供 Output 通道使用；
 - **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
 - **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 47 场景，与 CLI 共用同一渲染路径。
 ### 工具列表（src/tools/）
@@ -278,6 +290,7 @@ for step in 1..maxSteps:
 | `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
 | `run_command` | 执行 shell 命令（带超时 + 输出截断；危险命令拦截在安全护栏闸门）
 | `skill` | **技能**：按 name 加载已安装技能（SKILL.md）的完整指令内容（对标 opencode；只读，不修改文件） |
+| `web_search` | **Web 搜索**（运行时注入，Brave Search API）：关键词 → 搜索结果列表（标题/URL/摘要）；key 配 `webSearchApiKey` 或环境变量 `BRAVE_API_KEY`，结果可再交 `web_fetch` 抓取 |
 | `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方选项面板（A-D 勾选 / 自定义输入 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
 | `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）
 | `/skill` 命令 | **技能管理**（TUI/CLI 交互）：`/skill` 列出已发现（含标签：全局/仅手动/子代理）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性） |

@@ -422,9 +422,10 @@ next startup keeps your choice.
 Inside the gray block the model line sits on the left (`Build/Plan · model name provider · reasoning level` —
 mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider group, and the level
 color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple);
-while something is running, the loading animation and `esc` hint sit **outside the gray block**,
-at the far left of the stats line below (left-lower corner, same row as the status line —
-press Esc to cancel the current turn); below the block is the configurable status/stats line
+while something is running, the loading animation and `esc interrupt` hint sit **in the model line, right of
+the reasoning level** (`· ⠹ esc interrupt` — the `·` separator appears only while loading, hinting that Esc
+can interrupt the current turn; both disappear on Esc or when the turn ends); below the block is the configurable
+status/stats line
 (`/settings statusline` toggling and ordering): `first token/rate · cache hit ·
 in/out tokens · context` (context = prompt tokens of the latest LLM request — shows
 `used/limit` when the model config declares a context limit). Press **`a`** inside the
