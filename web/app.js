@@ -1966,7 +1966,31 @@ function renderWelcome() {
 function updateDetails() {
   const st = state.status || {};
   const eff = st.reasoningEffort;
-  $('#composer-model-label').textContent = st.model ? (eff ? `${st.model} · ${eff}` : st.model) : '—';
+  const label = $('#composer-model-label');
+  // 结构：模型 · provider 组 · 思考级别（思考级别用独立 span 上档位色——与卡片 slider 档位配色一致）
+  if (st.model) {
+    const cur = (Array.isArray(st.models) ? st.models : []).find((m) => m && m.name === st.model);
+    const provider = (cur && cur.provider) || '';
+    label.textContent = '';
+    const m = document.createElement('span');
+    m.textContent = st.model;
+    label.appendChild(m);
+    if (provider) {
+      const p = document.createElement('span');
+      p.textContent = ` · ${provider}`;
+      p.style.opacity = '.78'; // provider 组弱化显示，介于模型名与档位色之间
+      label.appendChild(p);
+    }
+    if (eff) {
+      const e = document.createElement('span');
+      e.textContent = ` · ${eff}`;
+      e.style.color = currentLevelColor(st) || '';
+      e.style.fontWeight = '600';
+      label.appendChild(e);
+    }
+  } else {
+    label.textContent = '—';
+  }
   $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
   updatePermissionPill();
 }
@@ -1979,7 +2003,8 @@ function updatePermissionPill() {
   const pl = $('#perm-label');
   if (pl) pl.textContent = map[perm] || perm;
   const pill = $('#btn-permission');
-  if (pill) pill.className = 'perm-pill' + (perm === 'full' ? ' full' : perm === 'ask' ? ' ask' : perm === 'read' ? ' read' : '');
+  // 四档程度色类（read/ask/safe/full 都有独立配色；未知档回退基础样式）
+  if (pill) pill.className = 'perm-pill' + (['read', 'ask', 'safe', 'full'].includes(perm) ? ` ${perm}` : '');
 }
 
 /* —— 权限 / 模型 pop 渲染 —— */
@@ -2017,7 +2042,7 @@ function renderPermissionPop() {
     { v: 'full', title: t('perm.fullTitle'), desc: t('perm.fullDesc'), icon: 'i-shield' },
   ];
   items.forEach((it) => {
-    const btn = el('button', 'pp-item' + (perm === it.v ? ' active' : ''));
+    const btn = el('button', `pp-item ${it.v}` + (perm === it.v ? ' active' : '')); // 档位类：弹层内四项按程度配色
     btn.type = 'button';
     const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     ic.setAttribute('class', 'pp-icon');
@@ -4053,6 +4078,13 @@ function lerpLevelColor(t) {
 }
 /** 第 i 档（共 n 档）的档位色 */
 const levelColor = (i, n) => lerpLevelColor(n <= 1 ? 0 : i / (n - 1));
+/** 按当前 status 解析当前思考档位的档位色（与 popover 卡片一致的逻辑）；无思考级别/无选项时返回 null */
+function currentLevelColor(st) {
+  const efforts = Array.isArray(st && st.reasoningEffortOptions) ? st.reasoningEffortOptions.filter(Boolean) : [];
+  if (!efforts.length) return null;
+  const cur = (st && st.reasoningEffort) || efforts[0];
+  return levelColor(Math.max(0, efforts.indexOf(cur)), efforts.length);
+}
 /** 整个轨道的渐变：每档一个色标（i/(n-1) 处取该档颜色） */
 function levelGradient(n) {
   const stops = [];
@@ -4214,6 +4246,15 @@ function renderModelPop(s) {
     });
   }
 }
+
+/* 代码块拷贝按钮（markdown-renderer 输出 .md-code-copy，委托处理点击：复制代码正文） */
+document.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('.md-code-copy') : null;
+  if (!btn) return;
+  const block = btn.closest('.md-code-block');
+  const codeEl = block && block.querySelector('pre code');
+  if (codeEl) copyText(codeEl.textContent);
+});
 
 /* 点击 popover 外关闭（统一处理所有 composer 相关 pop） */
 document.addEventListener('click', (e) => {

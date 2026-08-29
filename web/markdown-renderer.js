@@ -205,10 +205,109 @@
     return `<div class="md-diff split">${head}<pre>${out.join('')}</pre></div>`;
   }
 
-  /** 普通代码块（loading=流式中未闭合的围栏，保留尾部光标可落点） */
+  /* ---------------- 代码块外壳 + 轻量语法高亮（零依赖） ----------------
+   * markstream 自带 HTML 渲染器会给围栏代码块输出 .code-block 外壳（语言标签 + 拷贝按钮），
+   * 但本项目走 parseMarkdownToStructure → AST → 自绘 HTML 路径，绕过了它。这里在
+   * code_block 节点补上等价外壳：头部（语言标签 + 拷贝按钮）+ 极简 token 级语法高亮。
+   * 不引入新依赖（纯正则，覆盖常见语言的关键字/注释/字符串/数字/函数调用/类型/HTML 标签）。 */
+  const CODE_LANGS = {
+    js: 'const let var function return if else for while do switch case break continue new class extends super this async await import export from default try catch finally throw typeof instanceof of in delete void yield static get set null undefined true false',
+    ts: 'const let var function return if else for while do switch case break continue new class extends super this async await import export from default try catch finally throw typeof instanceof of in delete void yield static get set null undefined true false interface type enum namespace declare readonly public private protected implements abstract satisfies as is keyof infer unknown never any string number boolean object symbol',
+    python: 'def return if elif else for while in not and or is None True False class import from as try except finally raise with lambda pass break continue global nonlocal del yield assert async await match case',
+    bash: 'if then else elif fi for while do done case esac function in echo export local return break continue true false select until',
+    c: 'if else for while do switch case break continue return struct union enum typedef sizeof const static extern volatile register goto void int char float double long short unsigned signed',
+    cpp: 'if else for while do switch case break continue return struct union enum typedef sizeof const static extern volatile register goto void int char float double long short unsigned signed class public private protected virtual override new delete this namespace using template typename friend operator throw try catch',
+    java: 'public private protected static final void int long double float boolean char byte short class interface extends implements new return if else for while do switch case break continue try catch finally throw throws this super package import abstract synchronized volatile native transient instanceof',
+    go: 'func return if else for range switch case break continue defer go chan map struct interface type package import var const true false nil select fallthrough default goto',
+    rust: 'fn let mut return if else for while loop match struct enum trait impl pub use mod crate type const static true false Some None Ok Err async await move ref box dyn in where',
+    ruby: 'def end if elsif else unless case when while until for in do return yield class module require include extend self true false nil new rescue ensure begin raise puts',
+    php: 'function return if else elseif for foreach while do switch case break continue new class extends implements public private protected static const namespace use try catch finally throw echo print true false null array',
+    sql: 'select from where insert into values update set delete create table index view alter drop join left right inner outer on group by order having limit offset union all distinct as and or not null primary key foreign references default unique case when then else end between like in is exists',
+    json: 'true false null',
+    yaml: 'true false null yes no on off',
+  };
+  const CODE_ALIAS = {
+    javascript: 'js', js: 'js', jsx: 'js', javascriptreact: 'js',
+    typescript: 'ts', ts: 'ts', tsx: 'ts', typescriptreact: 'ts',
+    python: 'python', py: 'python', python3: 'python',
+    bash: 'bash', sh: 'bash', shell: 'bash', zsh: 'bash',
+    c: 'c', h: 'c', cpp: 'cpp', 'c++': 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
+    java: 'java', go: 'go', golang: 'go', rust: 'rust', rs: 'rust',
+    ruby: 'ruby', rb: 'ruby', php: 'php', sql: 'sql', json: 'json',
+    yaml: 'yaml', yml: 'yaml',
+    html: 'html', xml: 'html', svg: 'html',
+  };
+  /** 不高亮的语言（纯文本/图语言等） */
+  const NO_HL = new Set(['text', 'plain', 'txt', 'mermaid', 'console', 'log']);
+
+  /** 注释正则：按语言族选（避免把 Python 的 // 整除、JS 的 # 私有字段误判成注释） */
+  function commentReFor(lang) {
+    if (lang === 'python' || lang === 'bash' || lang === 'yaml') return /#[^\n]*/;
+    return /\/\/[^\n]*|\/\*[\s\S]*?\*\//;
+  }
+
+  /** 通用 token 高亮（C 系 / Python / Bash / SQL / JSON…）：
+   *  注释 / 字符串（单双引号与反引号）/ 数字 / 关键字 / 大写类型 / 函数调用 */
+  function highlightCode(code, lang) {
+    const l = CODE_ALIAS[lang] || 'js';
+    if (l === 'html') return highlightHtml(code);
+    const kwSet = new Set((CODE_LANGS[l] || '').split(/\s+/).filter(Boolean));
+    const cRe = commentReFor(l);
+    const re = new RegExp(
+      '(' + cRe.source + ')|' + // 1 注释
+      '(\x22(?:[^\x22\\\\]|\\.)*\x22|\x27(?:[^\x27\\\\]|\\.)*\x27|\x60(?:[^\x60\\\\]|\\.)*\x60)|' + // 2 字符串（单/双引号与反引号）
+      '(\\b\\d[\\w]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)|' + // 3 数字
+      '(\\b[A-Za-z_$][\\w$]*\\b)|' + // 4 单词
+      '(\\n|\\s+)|' + // 5 空白
+      '(.)', // 6 其它
+      'g'
+    );
+    let out = '', m;
+    while ((m = re.exec(code)) !== null) {
+      if (m[1]) out += '<span class="tk-c">' + esc(m[1]) + '</span>';
+      else if (m[2]) out += '<span class="tk-s">' + esc(m[2]) + '</span>';
+      else if (m[3]) out += '<span class="tk-n">' + esc(m[3]) + '</span>';
+      else if (m[4]) {
+        const w = m[4];
+        if (kwSet.has(w)) out += '<span class="tk-k">' + esc(w) + '</span>';
+        else if (/^[A-Z]/.test(w)) out += '<span class="tk-t">' + esc(w) + '</span>';
+        else if (code[re.lastIndex] === '(') out += '<span class="tk-f">' + esc(w) + '</span>';
+        else out += esc(w);
+      } else if (m[5]) out += m[5];
+      else out += esc(m[0]);
+    }
+    return out;
+  }
+
+  /** HTML/XML 高亮：注释 / 标签 / 属性 / 属性值字符串 */
+  function highlightHtml(code) {
+    const re = /(<!--[\s\S]*?-->)|(<\/?[A-Za-z][\w-]*\b)|(\x22(?:[^\x22\\]|\\.)*\x22|\x27(?:[^\x27\\]|\\.)*\x27)|(\s+[A-Za-z-]+)(?==)|(\/?>)|([^<\x22\x27]+)|(.)/g;
+    let out = '', m;
+    while ((m = re.exec(code)) !== null) {
+      if (m[1]) out += '<span class="tk-c">' + esc(m[1]) + '</span>';
+      else if (m[2]) out += '<span class="tk-tag">' + esc(m[2]) + '</span>';
+      else if (m[3]) out += '<span class="tk-s">' + esc(m[3]) + '</span>';
+      else if (m[4]) out += '<span class="tk-at">' + esc(m[4]) + '</span>';
+      else if (m[5]) out += '<span class="tk-tag">' + esc(m[5]) + '</span>';
+      else if (m[6]) out += esc(m[6]);
+      else out += esc(m[0]);
+    }
+    return out;
+  }
+
+  /** 普通代码块：头部（语言标签 + 拷贝按钮）+ token 高亮主体（loading=流式中未闭合围栏） */
   function codeBlockToHtml(node) {
-    const code = esc(node.code ?? '');
-    return `<pre${node.loading ? ' class="md-pre-loading"' : ''}><code>${code}</code></pre>`;
+    const langRaw = String(node.language || '').trim().split(/\s+/)[0];
+    const lang = langRaw.toLowerCase();
+    const copyLabel = document.documentElement.lang === 'en' ? 'Copy' : '复制';
+    const head = '<div class="md-code-head"><span class="md-code-lang">' + esc(langRaw) + '</span>' +
+      '<button class="md-code-copy" type="button" title="' + copyLabel + '">' + copyLabel + '</button></div>';
+    const body = node.loading || NO_HL.has(lang)
+      ? esc(node.code ?? '')
+      : highlightCode(node.code ?? '', lang);
+    const loadingCls = node.loading ? ' md-pre-loading' : '';
+    const noLangCls = langRaw && !NO_HL.has(lang) ? '' : ' no-lang';
+    return '<div class="md-code-block' + loadingCls + noLangCls + '">' + head + '<pre><code>' + body + '</code></pre></div>';
   }
 
   /** 表格节点：node.header (TableRowNode) + node.rows (TableRowNode[]) */

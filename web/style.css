@@ -60,6 +60,15 @@
   --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
   --ease-out: cubic-bezier(0, 0, .2, 1);
   --ease-inout: cubic-bezier(.4, 0, .2, 1);
+  /* 代码块 token 高亮色（浅色；暗色覆盖见 theme-dark / media 块） */
+  --tk-comment: #6a737d;
+  --tk-string: #22863a;
+  --tk-number: #005cc5;
+  --tk-keyword: #d73a49;
+  --tk-func: #6f42c1;
+  --tk-type: #e36209;
+  --tk-tag: #22863a;
+  --tk-attr: #6f42c1;
   color-scheme: light;
   font-family: var(--font);
   font-synthesis: none;
@@ -303,6 +312,26 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .md-body code { padding: 2px 5px; border-radius: 4px; background: var(--code); color: var(--text); font: 13px/20px var(--mono); }
 .md-body pre { max-height: 420px; margin: 16px 0; padding: 16px; overflow: auto; border: 1px solid var(--line-1); border-radius: 12px; background: var(--code); }
 .md-body pre code { padding: 0; background: transparent; font: 13px/22px var(--mono); white-space: pre; }
+/* 代码块外壳：头部（语言标签 + 拷贝按钮）+ token 高亮主体（补齐 markstream HTML 渲染器默认的
+ * .code-block 外壳；本项目渲染路径为 AST → 自绘，故在此自绘等价结构）。loading = 流式中未闭合围栏。 */
+.md-code-block { margin: 16px 0; border: 1px solid var(--line-1); border-radius: 12px; background: var(--code); overflow: hidden; }
+.md-code-block.md-pre-loading { border-style: dashed; }
+.md-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line-2); background: var(--surface-muted); }
+.md-code-lang { font: 700 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); }
+.md-code-block.no-lang .md-code-lang { display: none; }
+.md-code-copy { display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 7px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; opacity: .85; }
+.md-code-copy:hover { background: var(--surface-hover); color: var(--text); opacity: 1; }
+.md-code-block > pre { margin: 0; padding: 14px 16px; max-height: 420px; overflow: auto; border: 0; border-radius: 0; background: transparent; }
+.md-code-block > pre code { padding: 0; background: transparent; font: 13px/22px var(--mono); white-space: pre; color: var(--text); }
+/* 代码 token 高亮色（色值变量见 :root / 暗色主题块） */
+.tk-c { color: var(--tk-comment); font-style: italic; }
+.tk-s { color: var(--tk-string); }
+.tk-n { color: var(--tk-number); }
+.tk-k { color: var(--tk-keyword); font-weight: 600; }
+.tk-f { color: var(--tk-func); }
+.tk-t { color: var(--tk-type); }
+.tk-tag { color: var(--tk-tag); }
+.tk-at { color: var(--tk-attr); }
 .md-body table { width: 100%; margin: 14px 0; border-collapse: collapse; font-size: 14px; }
 .md-body th, .md-body td { padding: 7px 10px; border-bottom: 1px solid var(--line-2); }
 .md-body hr { margin: 20px 0; border: 0; border-top: 1px solid var(--line-2); }
@@ -399,7 +428,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .composer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 2px 8px 6px; }
 .composer-tools, .composer-trailing { display: flex; align-items: center; min-width: 0; }
 .composer-tools { gap: 12px; }
-.composer-trailing { flex: none; gap: 12px; margin-left: auto; }
+.composer-trailing { flex: 1 1 0; justify-content: flex-end; gap: 12px; margin-left: auto; min-width: 0; }
 .attach-button { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: var(--surface-muted); cursor: pointer; }
 .attach-button:disabled { opacity: .5; cursor: default; }
 .attach-button svg { width: 16px; height: 16px; }
@@ -482,22 +511,29 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* 拖入文件时 composer 高亮 */
 .composer-card.drag-over { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent), var(--shadow-2); }
 
-/* 权限胶囊（底栏左侧，橙色态为 full） */
+/* 权限胶囊（底栏左侧）：四档配色（用户指定）——只读=无颜色（沿用基础样式）、
+ * 请求批准=绿、帮我批准=黄、完全访问=红；有色三档同构（底色浅染 + 描边 + 文字/图标同色）。 */
 .perm-pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); color: var(--text-secondary); font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .perm-pill:hover { background: var(--surface-hover-solid); }
 .perm-pill svg { width: 14px; height: 14px; flex: none; }
-.perm-pill.full { background: color-mix(in srgb, #ea580c 11%, var(--surface)); border-color: rgba(234,88,12,.35); color: #ea580c; }
-.perm-pill.full svg { color: #ea580c; }
-.perm-pill.ask { color: var(--amber); }
-.perm-pill.ask svg { color: var(--amber); }
-.perm-pill.read { color: var(--text-caption); }
-.perm-pill.read svg { color: var(--text-caption); }
+.perm-pill.ask { background: color-mix(in srgb, var(--green) 12%, var(--surface)); border-color: color-mix(in srgb, var(--green) 40%, transparent); color: var(--green); }
+.perm-pill.ask svg { color: var(--green); }
+.perm-pill.safe { background: color-mix(in srgb, #ca8a04 12%, var(--surface)); border-color: color-mix(in srgb, #ca8a04 40%, transparent); color: #ca8a04; }
+.perm-pill.safe svg { color: #ca8a04; }
+.perm-pill.full { background: color-mix(in srgb, var(--red) 12%, var(--surface)); border-color: color-mix(in srgb, var(--red) 40%, transparent); color: var(--red); }
+.perm-pill.full svg { color: var(--red); }
 
-/* 模型胶囊（底栏右侧） —— 替代旧 model-select-face */
-.model-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 200px; height: 28px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); color: var(--text-secondary); font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; overflow: hidden; }
+/* 模型胶囊（底栏右侧） —— 替代旧 model-select-face。
+ * 「尽量展示完整」：去掉 200px 硬上限，pill 随内容撑开（trailing flex:1 1 auto 供给可用宽度）；
+ * 仅当宽度真的不够时才截断——且只截断最长的模型名（.label 首段 flex 收缩 + ellipsis），
+ * provider 组与思考级别永远完整显示。 */
+.model-pill { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 28px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); color: var(--text-secondary); font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; overflow: hidden; }
 .model-pill:hover { background: var(--surface-hover-solid); }
 .model-pill svg.chev { width: 10px; height: 10px; flex: none; color: var(--text-caption); }
-.model-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-pill span { white-space: nowrap; }
+.model-pill #composer-model-label { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; overflow: hidden; }
+.model-pill #composer-model-label > span { flex: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-pill #composer-model-label > span:first-child { flex: 1 1 auto; }
 
 /* 旧类名兼容隐藏（计划开关与旧设置按钮） */
 .plan-toggle.hidden, .mode-button.hidden { display: none !important; }
@@ -510,13 +546,18 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .permission-pop .pp-list { padding: 4px 6px 6px; display: flex; flex-direction: column; gap: 2px; }
 .permission-pop .pp-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: transparent; text-align: left; cursor: pointer; }
 .permission-pop .pp-item:hover { background: var(--surface-hover-solid); }
-.permission-pop .pp-item.active { background: color-mix(in srgb, var(--blue) 8%, transparent); }
-.permission-pop .pp-item .pp-icon { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--text-tertiary); }
-.permission-pop .pp-item.active .pp-icon { color: var(--blue); }
+.permission-pop .pp-item.active { background: color-mix(in srgb, var(--level-perm, var(--blue)) 9%, transparent); }
+.permission-pop .pp-item .pp-icon { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--level-perm, var(--text-tertiary)); }
+.permission-pop .pp-item.active .pp-icon { color: var(--level-perm, var(--blue)); }
 .permission-pop .pp-item .pp-main { flex: 1; min-width: 0; }
-.permission-pop .pp-item .pp-title { color: var(--text); font-size: 13px; line-height: 18px; font-weight: 500; }
+.permission-pop .pp-item .pp-title { color: var(--level-perm, var(--text)); font-size: 13px; line-height: 18px; font-weight: 500; }
 .permission-pop .pp-item .pp-desc { color: var(--text-tertiary); font-size: 11.5px; line-height: 15px; margin-top: 2px; }
-.permission-pop .pp-item .pp-check { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--blue); }
+.permission-pop .pp-item .pp-check { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--level-perm, var(--blue)); }
+/* 四档配色（与胶囊一致：只读无色 / 请求批准绿 / 帮我批准黄 / 完全访问红） */
+.permission-pop .pp-item.read { --level-perm: var(--text-caption); } /* 中性灰仅作选中指示 */
+.permission-pop .pp-item.ask { --level-perm: var(--green); }
+.permission-pop .pp-item.safe { --level-perm: #ca8a04; }
+.permission-pop .pp-item.full { --level-perm: var(--red); }
 
 /* 让 composer-card 自身成为定位上下文（permission-pop 相对它） */
 .composer-card { overflow: visible; }
@@ -1135,6 +1176,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   --state-done-fg: #86efac;
   --state-err-fg: #fca5a5;
   --shadow-2: 0 8px 24px rgba(0, 0, 0, .28), 0 1px 3px rgba(0, 0, 0, .35);
+  /* 代码块 token 高亮色（暗色） */
+  --tk-comment: #8b949e;
+  --tk-string: #a5d6ff;
+  --tk-number: #79c0ff;
+  --tk-keyword: #ff7b72;
+  --tk-func: #d2a8ff;
+  --tk-type: #ffa657;
+  --tk-tag: #7ee787;
+  --tk-attr: #d2a8ff;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -1166,6 +1216,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
     --state-done-fg: #86efac;
     --state-err-fg: #fca5a5;
     --shadow-2: 0 8px 24px rgba(0, 0, 0, .28), 0 1px 3px rgba(0, 0, 0, .35);
+    /* 代码块 token 高亮色（暗色） */
+    --tk-comment: #8b949e;
+    --tk-string: #a5d6ff;
+    --tk-number: #79c0ff;
+    --tk-keyword: #ff7b72;
+    --tk-func: #d2a8ff;
+    --tk-type: #ffa657;
+    --tk-tag: #7ee787;
+    --tk-attr: #d2a8ff;
     color-scheme: dark;
   }
   .preview-badge { color: #d3e2ff; background: #34415b; }
@@ -1890,6 +1949,10 @@ body.cmd-open::before {
   border-color: var(--line-2);
   box-shadow: var(--shadow-1);
 }
+/* 代码块外壳 hover 微浮（内部 pre 不再单独浮动，避免溢出阴影；同款规则后置覆盖） */
+.md-code-block { transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
+.md-code-block:hover { border-color: var(--line-2); box-shadow: var(--shadow-1); }
+.md-code-block > pre:hover { border-color: transparent; box-shadow: none; }
 
 /* ---- assistant 消息渐入 ---- */
 .msg.assistant .md-body {
