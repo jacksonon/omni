@@ -50,6 +50,13 @@
 
 ## 快速开始
 
+### 方式零：curl 一键安装（原生二进制，零依赖，含完整 TUI）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omni/omni/main/scripts/install.sh | sh
+omni "列出当前目录的结构"   # 在真实 TTY 上全屏 TUI
+```
+
 ### 方式一：npm 全局安装（console 版，需 Node ≥ 18）
 
 ```bash
@@ -74,6 +81,13 @@ omni                            # 交互式多轮对话
 ```bash
 npm install
 npm run dev -- "列出当前目录的文件"
+```
+
+### 方式四：TUI 开发运行（需 bun）
+
+```bash
+npm run dev:tui -- "任务描述"  # 单次任务
+npm run dev:tui                # 交互式多轮对话
 ```
 
 ### 方式五：Electron 桌面应用（macOS / Windows / Linux，无需 Node）
