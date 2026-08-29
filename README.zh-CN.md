@@ -8,11 +8,11 @@
 
 ## 界面截图
 
-**终端 TUI**（`omni`，全屏交互模式）——思考模块、工具卡片、Markdown 表格/代码块、token 统计与输入区：
+**终端 TUI**（`omni`，全屏交互模式）——思考模块、Bash 工具卡片、Markdown 表格、代码块、左右并排 diff、可滚动历史：
 
 ![Omni TUI](Doc/images/tui.png)
 
-**Web 界面**（`omni web`，浏览器 / Electron 桌面应用）——按工作区分组的会话侧栏、实时 Markdown 回答、带模型与工作区切换的输入区：
+**Web 界面**（`omni web`，浏览器 / Electron 桌面应用）——按工作区分组的会话侧栏、实时 Markdown 回答、左右并排 diff、带模型与工作区切换的输入区：
 
 ![Omni Web](Doc/images/web.png)
 
@@ -498,6 +498,9 @@ for step in 1..maxSteps:
 ```
 
 关键机制：自我纠错、工具结果 8000 字符截断（提示模型定向读取）、安全护栏（权限分级 + 审批 + 审计）、并行工具执行、子代理隔离上下文、`maxSteps` 防死循环。
+
+> 逐模块完整架构（每个工具、TUI 层、配置字段、命令）：
+> [`Doc/architecture.md`](Doc/architecture.md)（英文） · [`Doc/架构.md`](Doc/架构.md)（中文）。
 
 ## 开发
 

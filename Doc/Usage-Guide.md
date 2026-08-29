@@ -28,6 +28,7 @@
 14. [Skills (SKILL.md)](#14-skills-skillmd)
 15. [Subagents & Orchestration](#15-subagents--orchestration)
 16. [FAQ & Troubleshooting](#16-faq--troubleshooting)
+17. [Tools Overview](#17-tools-overview)
 
 ---
 
@@ -60,36 +61,45 @@ Zhipu / Moonshot / Grok, etc.) — switch models by config change, no code chang
 
 ## 2. Installation
 
-Four installation options, pick what fits:
+Five installation options, pick what fits:
 
-### Option 1: npm global install (Console edition, recommended, Node >= 18)
+### Option 0: curl one-liner (native binary, zero dependencies)
 
 ```bash
-npm install -g omni-<version>.tgz   # local package, or after publish: npm install -g omni
+curl -fsSL https://raw.githubusercontent.com/jacksonon/omni/main/scripts/install.sh | sh
+omni "<task>"      # full-screen TUI automatically in a real terminal
+```
+
+### Option 1: npm global install (recommended, Node >= 18)
+
+```bash
+npm install -g @right-ai/omni
 omni "Show me the structure of the current directory"
 ```
 
-After publishing, the main package is named `omni-cli` (auto-installs the native binary for your
-platform) and gives you the full TUI with one command:
+The published main package is the scoped `@right-ai/omni` (bin name `omni`); it pulls the native
+binary for your platform via `optionalDependencies`, so you get the full TUI with one command.
 
-```bash
-npm install -g omni-cli
-omni-cli                          # enters full-screen TUI automatically in a real terminal
-```
+> ⚠️ Do **not** install the bare `omni` package — that is an unrelated third-party project on npm.
+
+You can also install the console tarball from a GitHub Release:
+`npm install -g ./omni-<version>.tgz`.
 
 ### Option 2: TUI npm package (requires bun >= 1.3)
 
-The official console package runs on Node and cannot include the TUI (OpenTUI depends on bun's
-native FFI). The full-screen TUI is distributed separately as the `omni-tui` package (bin name also
-`omni`; the platform native library is installed automatically by os/cpu):
+The console package runs on Node and cannot include the TUI (OpenTUI depends on bun's native FFI).
+The full-screen TUI is packaged separately by `npm run pack:tui` → `omni-tui-<version>.tgz`
+(bin name also `omni`; the platform native library is installed automatically by os/cpu).
+**There is no `omni-tui` package on npm** — it is built and installed locally:
 
 ```bash
+npm run pack:tui                  # produces omni-tui-<version>.tgz
 npm install -g ./omni-tui-<version>.tgz
 omni "<task>"                     # full-screen TUI automatically in a real TTY (single task)
 omni                              # interactive multi-turn conversation
 ```
 
-> ⚠️ `omni-tui` and the console `omni` share the bin name — run `npm uninstall -g omni` first.
+> ⚠️ `omni-tui` and the console package share the bin name — run `npm uninstall -g omni` first.
 
 ### Option 3: Native binary (zero dependencies, no Node/bun required)
 
@@ -223,6 +233,8 @@ omni -h / -v                      # help / version
   // each id is a request overlay (deep-merged into the request body); the current pick is stored
   // in the `variant` field; the /variants panel lists both reasoning levels and named variants;
   // `apiModel` = real model name sent to the API
+  "architect": "gpt-5",                // model routing: strong model for /plan (falls back to the current model)
+  "editor": "gpt-5-mini",              // model routing: light model for execution (falls back to the current model)
 
   // ── Runtime & context ──
   "maxSteps": 50,                      // max agent loop steps (infinite-loop safeguard; typical tasks finish in <15)
@@ -232,10 +244,21 @@ omni -h / -v                      # help / version
   "preloadFiles": true,                // preload files mentioned in the task text
   "preloadMaxFiles": 5,                // max preloaded files
   "preloadMaxBytes": 30720,            // per-file preload byte cap (30KB)
+  "repoMap": true,                     // codebase structure awareness: inject a compact symbol map on the first turn
+  "repoMapMaxSymbols": 200,            // repo map symbol cap (10–2000)
+  "contextCompressRatio": 0.7,         // compaction 2.0: trigger by context-window ratio, not just message count
+  "diagnoseAfterEdit": false,          // run a quick typecheck/lint after write_file and feed diagnostics back
 
   // ── Safety ──
   "permission": "safe",                // full (pass-through) / safe (ask on dangerous, default) / ask (ask all) / read (read-only)
+  "dangerousPatterns": [],             // extra dangerous-command regexes (prompt on match in the safe tier and above)
   "auditLog": true,                    // audit log (~/.config/omni/audit.log)
+  // OS-level sandbox (see 5.5): wraps run_command with sandbox-exec (macOS) / bwrap (Linux)
+  "sandbox": "off",                    // off (default) / read-only / workspace-write / danger-full-access
+  "sandboxNetworkAllow": [],           // sandbox network allowlist (hostnames); empty = keep network fully blocked
+  "sandboxFailClosed": false,          // true = refuse to run when no sandbox primitive exists (fail-closed)
+  "sandboxWritePaths": [],             // extra writable absolute paths for workspace-write
+  "sandboxMaskEnv": true,              // mask credential env vars (*_KEY/*_TOKEN/*_SECRET/*_PASSWORD) handed to sandboxed commands
 
   // ── Memory & sessions ──
   "agentsFile": true,                  // project memory AGENTS.md: nested load on first turn (all levels from cwd up to git root/home boundary; inner layers override outer)
@@ -253,12 +276,18 @@ omni -h / -v                      # help / version
   "statuslineAlign": "center",              // status-line alignment: left / center (default) / right (press a in the panel)
 
   // ── External tools ──
-  "mcpServers": {                      // MCP external tools: { name: { command, args?, env? } }
+  "webFetchDomains": [],               // web_fetch domain allowlist (empty = all domains allowed)
+  "mcpServers": {                      // MCP external tools: { name: { command, args?, env? } | { url, headers? } }
     "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
   },
   "hooks": {                           // Hooks lifecycle automation (see section 13)
     "PostToolUse": [{ "matcher": "write_file", "command": "sh scripts/lint-hook.sh", "timeoutMs": 30000 }]
-  }
+  },
+
+  // ── Web & observability (1.0) ──
+  "webConcurrency": 3,                 // max concurrently running web sessions (each session runs one turn at a time)
+  "telemetry": { "enabled": false, "endpoint": "http://localhost:4318" }, // opt-in OTLP/HTTP JSON, redacted by default
+  "compatibility": { "reasoningField": "custom_thinking" }  // custom gateway reasoning field name
 }
 ```
 
@@ -306,6 +335,47 @@ subagents stay in sync with the main loop.
 
 On by default (`auditLog: true`): every tool call (time/tool/args/tier/decision) is written as
 JSONL to `~/.config/omni/audit.log` for later auditing.
+
+### 5.4 Workspace trust
+
+The first time you enter a directory that is not yet trusted, omni asks whether to trust it
+(a TUI approval card / a console prompt). Trust decides two things:
+
+- **Untrusted = read-only.** The permission tier is locked to read-only and cannot be raised with
+  `/permission`.
+- **Untrusted = skips project-level config.** Project hooks, skills, subagent definitions
+  (`.agents/subagents/*.md`) and project memory are all skipped.
+
+That second rule is the point of the mechanism: a cloned repository cannot smuggle in hooks or
+skills that execute on your machine the moment you run omni inside it.
+
+The trust list is persisted in `~/.config/omni/trusted-workspaces.json`, so you are only asked once
+per directory.
+
+### 5.5 OS-level sandbox
+
+Beyond the permission tiers, `run_command` can be wrapped in a real OS sandbox:
+
+| `sandbox` value | Behavior |
+|---|---|
+| `off` (default) | No wrapping — only the permission tiers apply |
+| `read-only` | Denies writes and network access |
+| `workspace-write` | Denies network; allows writes only inside the current working directory |
+| `danger-full-access` | Sandbox active but permissive (escape hatch) |
+
+On macOS the wrapper is `sandbox-exec`; on Linux it is `bwrap`. When the platform has no sandbox
+primitive available, omni degrades to running the command directly and tells you — unless you set
+`sandboxFailClosed: true`, which refuses to run instead (fail-closed, for locked-down environments).
+
+Related fields:
+
+- `sandboxNetworkAllow: ["api.openai.com"]` — allow outbound traffic to specific hostnames through a
+  built-in filtering proxy (CONNECT filtered by hostname; **TLS is not decrypted**).
+- `sandboxWritePaths: ["/tmp/omni-shared"]` — extra writable absolute paths for the
+  `workspace-write` tier (ignored by `read-only`).
+- `sandboxMaskEnv: true` (default) — replaces the values of credential-looking env vars
+  (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD`) with a sentinel before handing them to a
+  sandboxed command, so a command cannot `echo` a key back into the model's context.
 
 ---
 
@@ -405,36 +475,44 @@ Esc to close, mouse click to insert.
 ## 8. Command Reference
 
 All commands below work in both TUI and console interactive mode (`/` prefix; command output goes to
-a separate panel and never pollutes the conversation flow):
+a separate panel and never pollutes the conversation flow). Omni ships **30+ commands** — run `/help`
+inside omni for the authoritative list; the registry in `src/tui/commands.ts` is the source of truth.
+A few are console-only (`/doctor`) and are noted inline.
 
 | Command | Effect |
 |---|---|
 | `/permission` | switch permission tier at runtime (low=read / medium=safe ask-on-danger / high=ask all / full=pass-through) |
 | `/plan` | plan mode: read-only tools + research only, output an implementation plan for approval |
 | `/thinking` | fold/unfold all thinking globally |
-| `/model` | switch/add models (`/model <name>`; `/model add <name> [--base-url] [--api-key]`) |
+| `/model` | switch/add models (`/model <name>`; `/model add <name> [--base-url] [--api-key]`; `/model fetch` lists models the gateway offers that aren't registered locally) |
+| `/models` | model capability snapshot: `/models` shows status (built-in vs user-updated · entry count · age) · `/models refresh` pulls models.dev online and hot-swaps the in-memory table immediately (developers refresh the committed snapshot with `npm run models:snapshot`) |
 | `/variants` | switch the model's reasoning level (low/medium/high) |
 | `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
 | `/undo` | undo the latest file edit (`/undo all` rolls back everything; write_file snapshots automatically) |
 | `/redo` | redo the last undo |
 | `/rewind` | session checkpoints: roll workspace files back to any past turn (`/rewind` lists · `/rewind <N>` restores; auto-checkpointed every turn, survives session restore, conversation kept — files only) |
-| `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites existing) |
-| `/skill` | skill management: list / `find <word>` online search on skills.sh / `add <repo>` install / `show <name>` view |
+| `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory · `/init <subdir>` for a nested layer; never overwrites existing) |
+| `/memory-apply` | apply the pending project-memory snippet (`.omni/memory-pending.md`) into the project-root AGENTS.md, then clear the snippet — see 9.4 |
+| `/skill` | skill management: `list` (with tags) / `find <word>` online search on skills.sh / `add <repo> [--skill <name>] [--global]` install (takes effect in the current session immediately) / `show <name>` view |
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`, per-agent model/permission/tool whitelist/skills) |
 | `/orchestrate` | orchestration: fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report |
 | `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
+| `/spec <feature>` | spec trio: writes `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, and syncs the tasks into the session todo list |
+| `/preset browser` | one-click install of the browser-automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack needed |
 | `/status` | session status summary (model / permission / plan mode / tokens / session file / scaffolds) |
 | `/context` | context usage (message counts + token estimate + compression-threshold advice) |
 | `/session` | session management: list current-directory history and continue (`/session <id>` prefix match, `all` cross-directory) |
 | `/resume` | restore a past session (no arg lists; `<id>` restores) |
 | `/rename` | rename the session (terminal window title + persisted meta) |
+| `/fork` | fork a new session from any point in history (lists checkpoints → choose one → new independent session; the original is untouched) |
+| `/send <session-id> <message>` | send a message to another session and get its result injected into the current context (lightweight cross-session collaboration) |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace panel (right sidebar): per-turn request/tool/message ledger, click a row for the detail page |
 | `/diff` | view uncommitted changes (git diff + untracked files, first 60 lines; `--stat` summary only · `--full` untruncated) |
 | `/config` | show config file paths and sources |
-| `/mcp` | MCP management: list servers/tools; `/mcp reconnect` reconnects |
+| `/mcp` | MCP management: `list` servers/tools · `/mcp resources` · `/mcp prompts` · `/mcp reconnect` after config edits · `/mcp add <name> <command\|--url>` (runtime, persisted) · `/mcp remove <name>` · `/mcp login <name>` (OAuth PKCE for HTTP servers) · `/mcp install <id>` (one-click from the registry) — see section 12 |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` | clear the current session view (memory and undo stack are untouched) |
 | `/exit` (alias `/quit`) | quit (triggers autoMemory write and session finalize) |
@@ -443,6 +521,8 @@ a separate panel and never pollutes the conversation flow):
 ---
 
 ## 9. Memory System (AGENTS.md)
+
+### 9.1 Two-level cascade
 
 Memory has two levels, **cascade-injected** (global first, project second — later wins more weight):
 
@@ -457,12 +537,56 @@ Memory has two levels, **cascade-injected** (global first, project second — la
   with a hint to read the rest on demand);
 - **One-shot generation**: `/init` scans the project structure and asks the LLM to write AGENTS.md
   (never overwrites an existing file); `/init --global` generates global memory;
+  `/init <subdir>` generates a nested layer for a subdirectory;
 - **Auto-write**: with `autoMemory: true`, quitting interactive mode extracts preferences newly
   expressed in the session, dedups/merges conflicts, and appends them to global memory.
 
 > Want to permanently remember "I prefer tests-first" or "don't touch package-lock.json"? Write it
 > straight into AGENTS.md — or let it learn: after a few conversations, global memory accumulates
 > it automatically.
+
+### 9.2 Progressive disclosure tools
+
+A large AGENTS.md would eat the context window, so only a compact manifest is resident. When the
+model needs the full text it pulls it on demand with two read-only tools:
+
+| Tool | Behavior |
+|---|---|
+| `memory_search` | multi-keyword AND search over memory; results ranked by number of hits |
+| `memory_read` | read the full memory file at a given path |
+
+This is why you can keep a detailed AGENTS.md without paying for it on every turn.
+
+### 9.3 Structured memory (1.0)
+
+Global memory can also use a structured layout instead of one big file:
+
+```
+~/.config/omni/memory/MEMORY.md          ← index (always injected; one line per topic: `- topic: summary · path`)
+~/.config/omni/memory/topics/<slug>.md   ← topic files (frontmatter: topic / date / globs / archived + body)
+```
+
+- The **index is resident**; topic bodies are loaded on demand via `memory_search` / `memory_read`.
+- **Conditional injection by `globs`** — a topic declaring `globs: "src/**"` in its frontmatter is
+  inlined into the context automatically whenever the task text matches that pattern, so the model
+  does not have to know to look for it.
+- **TTL archival** — topics older than the TTL (default 90 days) are marked `archived: true` and
+  rebuilt out of the index. Nothing is ever deleted, just archived.
+- The legacy `~/.config/omni/AGENTS.md` is still loaded read-only; new writes go to the structured
+  layout.
+
+### 9.4 Pending project-memory snippet
+
+Project-level auto-writes are deliberately **not** applied silently — editing a repository's
+AGENTS.md is a change other people on the team will see. Instead, at the end of a session omni
+extracts durable project facts into a pending snippet:
+
+```
+.omni/memory-pending.md
+```
+
+Review it and apply it with `/memory-apply`, which merges the snippet into the project-root
+AGENTS.md and clears it. Nothing is written to the project until you run that command.
 
 ---
 
@@ -529,6 +653,54 @@ omni mcp-server                                     # act as an MCP server for e
 **Keys never enter the patch-generating job** — a compromised agent cannot exfiltrate keys. See
 `examples/ci/README.md` for details.
 
+### 11.4 omni-action (reusable GitHub Action)
+
+The same split is packaged as a reusable Action, so you don't have to hand-roll the two jobs:
+
+```yaml
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm test          # reproduce the failure
+        continue-on-error: true
+      - id: omni
+        uses: ./.github/actions/omni     # or owner/omni/action@v1
+        with:
+          task: "Fix the CI failure. Output:\n${{ steps.test.outputs.stdout }}"
+          api-key: ${{ secrets.OMNI_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        with: { name: patch, path: ${{ steps.omni.outputs.patch-file }} }
+  apply:
+    needs: fix
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: patch }
+      - run: git apply --binary patch.diff && git add -A && git commit -m "fix: agent fixed CI" && git push -u origin agent-fix
+      - uses: actions/github-script@v7
+        with:
+          script: "await github.rest.pulls.create({ ...owner/repo, title:'🤖 fix CI', head:'agent-fix', base:'main' })"
+```
+
+| Input | Meaning |
+|---|---|
+| `task` | task description (inject the failure log here) |
+| `api-key` / `base-url` / `model` | endpoint config (key should come from Secrets) |
+| `max-turns` | step cap (default 30) |
+| `allowed-tools` | tool allowlist (default: read + execute + write) |
+
+| Output | Meaning |
+|---|---|
+| `patch-file` | path to the `git diff --binary` patch |
+| `exit-code` | `omni exec` exit code (0 success / 1 failure) — gate the PR on it |
+
+Branch on the outcome with `if: ${{ steps.omni.outputs.exit-code == '0' }}` so a failed run never
+opens a PR.
+
 ---
 
 ## 11.5 Web Mode (`omni web`)
@@ -572,10 +744,11 @@ The backend exposes a small HTTP API — any client can drive it, not just the b
 | `POST /api/settings` | change model / permission / reasoning effort / plan mode live |
 | `DELETE /api/sessions/:id/delete` | delete a session |
 
-Implementation notes: one running agent at a time (a global run lock protects the shared
-`runOpts`/safety gate/undo stack); the static pages are served from the `web/` directory in dev
-(hot reload) and embedded in the bundle (`npm run web:sync` regenerates `src/web/assets.ts`).
-`npm run probe:web` runs an offline full-protocol e2e against the mock API.
+Implementation notes: **multiple sessions run concurrently** — each session gets its own cloned
+`runOpts`, undo stack, event stream and abort signal, capped globally by `webConcurrency` (default 3;
+each individual session still runs only one turn at a time). The static pages are served from the
+`web/` directory in dev (hot reload) and embedded in the bundle (`npm run web:sync` regenerates
+`src/web/assets.ts`). `npm run probe:web` runs an offline full-protocol e2e against the mock API.
 
 ### Local run & test (Web / Electron)
 
@@ -627,27 +800,75 @@ If macOS Gatekeeper blocks the app at first launch (downloaded app): right-click
 MCP (Model Context Protocol) lets you attach external tool servers; omni connects and registers
 their tools at startup.
 
-### Configuration
+### 12.1 Configuration (stdio or HTTP)
 
 ```jsonc
 {
   "mcpServers": {
-    "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }
+    // stdio: spawn a local process and speak JSON-RPC over stdin/stdout
+    "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] },
+    // streamable HTTP: talk to a remote endpoint
+    "remote": { "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer <token>" } }
   }
 }
 ```
 
-`{ name: { command, args?, env? } }` — any stdio JSON-RPC MCP server works (e.g. the official
-`@modelcontextprotocol/server-filesystem`). Registered tools are prefixed with the server name
-(e.g. `demo_ping`); the model calls them on demand, and they pass through the safety gate.
+A server entry needs at least one transport: `{ command, args?, env? }` for **stdio**, or
+`{ url, headers? }` for **streamable HTTP**. Any stdio JSON-RPC MCP server works (e.g. the official
+`@modelcontextprotocol/server-filesystem`).
 
-### Management
+Registered tools are prefixed with the server name (e.g. `demo_ping`); the model calls them on
+demand, and **every call passes through the safety gate** just like a built-in tool.
 
-- `/mcp`: list configured servers and discovered tools;
-- `/mcp reconnect`: reconnect (kill old processes → rediscover → rebuild the tool chain), so config
-  edits don't require restarting omni.
+### 12.2 Tool allowlist / denylist and approval mode
 
-### Reverse hook: omni as an MCP server
+```jsonc
+"mcpServers": {
+  "demo": {
+    "command": "node", "args": ["scripts/mock-mcp.mjs"],
+    "enabledTools": ["ping", "echo"],   // allowlist — expose only these (default: all)
+    "disabledTools": ["dangerous"],     // denylist — hide these
+    "defaultToolsApprovalMode": "writes"
+  }
+}
+```
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | follow the global permission tier |
+| `prompt` | always ask before calling |
+| `writes` | ask only for write-ish tools |
+| `approve` | never ask — pass through |
+
+Tools declaring `annotations.readOnlyHint` are treated as read-only and pass through where the tier
+allows it.
+
+### 12.3 Resources & Prompts
+
+Beyond tools, omni consumes two more MCP capabilities:
+
+- **Resources** — `/mcp resources` lists them; a companion `read_resource` tool lets the model fetch
+  a resource's contents on demand.
+- **Prompts** — `/mcp prompts` lists them; a companion `get_prompt` tool lets the model load a
+  prompt template.
+
+Servers that declare `instructions` have that text **injected into the system prompt**, so a server
+can explain its own conventions to the model without being asked.
+
+### 12.4 Management commands
+
+| Command | Effect |
+|---|---|
+| `/mcp` | list configured servers and discovered tools |
+| `/mcp resources` | list resources offered by the servers |
+| `/mcp prompts` | list prompt templates offered by the servers |
+| `/mcp reconnect` | reconnect (kill old processes → rediscover → rebuild the tool chain); config edits don't need a restart |
+| `/mcp add <name> <command\|--url>` | add a server at runtime and persist it to config |
+| `/mcp remove <name>` | remove a server |
+| `/mcp login <name>` | OAuth login for HTTP servers (RFC 8414 discovery + auth-code PKCE, token persisted) |
+| `/mcp install <id>` | one-click install from an MCP registry |
+
+### 12.5 Reverse hook: omni as an MCP server
 
 `omni mcp-server` exposes `omni_exec` (new session) / `omni_reply` (continue by `session_id`) over
 stdio JSON-RPC — external harnesses such as Claude Code / opencode can use omni as a subagent
@@ -663,7 +884,7 @@ to the hook via **stdin**, and the command prints a JSON decision on **stdout** 
 prompt, hard-block tool calls, feed lint results back to the model, require more fixes, or send
 notifications.
 
-### Configuration
+### 13.1 Configuration
 
 ```jsonc
 {
@@ -683,38 +904,141 @@ notifications.
 
 | Field | Description |
 |---|---|
-| `command` | the shell command to run (required) |
+| `command` | shell command to run (required for the `command` handler type) |
+| `url` | for the `http` handler type: the event JSON is POSTed here and the response body is parsed as a decision |
 | `matcher` | tool-name filter (only PreToolUse/PostToolUse): `*` = all (default), `read_*` / `*_file` wildcards |
 | `timeoutMs` | timeout (default 60000ms); on timeout/failure it **degrades to pass-through** — a broken hook never blocks the agent |
+
+Two handler types are supported: **`command`** (default — spawn a shell command) and **`http`**
+(`{ url, timeoutMs? }` — POST the event JSON, parse the response body as the same protocol).
 
 Config is **merged across layers** (global + project + custom accumulate; same matcher → later
 layer wins); the hook's stderr is captured and echoed too.
 
-### Events at a glance
+### 13.2 stdin context (what the hook receives)
+
+The event context is written to the hook's stdin (or POSTed for `http` handlers) as one JSON object:
+
+```jsonc
+{
+  "cwd": "/path/to/workspace",
+  "hook_event_name": "PreToolUse",
+  "source": "main",                 // or "subagent"
+  "session_id": "20260101-abc-def",
+  "tool_name": "write_file",        // tool events only
+  "tool_input": { "path": "a.ts" }, // tool events only
+  "tool_response": "...",           // PostToolUse / PostToolUseFailure only
+  "prompt": "...",                  // UserPromptSubmit only
+  "stop_hook_active": false         // Stop only: true after one continuation, prevents loops
+}
+```
+
+Fields appear depending on the event; hooks should tolerate absent keys.
+
+### 13.3 Events at a glance (12)
+
+The authoritative list is `HOOK_EVENTS` in `src/hooks/index.ts`.
 
 | Event | When | Key output JSON fields |
 |---|---|---|
 | `UserPromptSubmit` | after the user submits a prompt | `updatedPrompt` (rewritten prompt) · `hookSpecificOutput` |
-| `PreToolUse` | before a tool call (before the safety gate) | `decision: "approve" \| "block"` (**hard block**) · `updatedInput` (rewritten args) · `hookSpecificOutput` |
-| `PostToolUse` | after a tool runs | `hookSpecificOutput` (e.g. lint output appended to the tool result for the model) |
-| `Stop` | agent about to finish | `decision: "continue" \| "block"` (block → require more fixes, only once to avoid loops) |
+| `PreToolUse` | before a tool call (**before** the safety gate) | `decision: "approve" \| "block"` (**hard block**) · `updatedInput` (rewritten args) · `hookSpecificOutput` |
+| `PostToolUse` | after a tool runs | `hookSpecificOutput` (appended to the tool result, e.g. lint output for the model) |
+| `PostToolUseFailure` | after a tool **fails** | `hookSpecificOutput` (diagnostics fed back so the model self-fixes) |
+| `PermissionRequest` | before the approval UI is shown | `decision: "approve" \| "deny"` (short-circuits the UI; `default` / absent → show it) |
+| `Stop` | agent about to finish | `decision: "continue" \| "block"` (block → require more fixes; only once, to avoid loops) |
 | `Notification` | session completed (fire-and-forget) | `hookSpecificOutput` |
 | `SessionStart` | once, before the first turn | `sessionStartOutput` (injected into the first system prompt) |
-| `SubagentStart` / `SubagentStop` | subagent lifecycle | `hookSpecificOutput` |
+| `SubagentStart` | a `delegate` subagent spawns | `hookSpecificOutput` |
+| `SubagentStop` | a `delegate` subagent finishes | `hookSpecificOutput` |
 | `PreCompact` | before long-conversation compression | `decision: "continue" \| "block"` (block → skip this compression) |
+| `PostCompact` | after compression completes (fire-and-forget) | `hookSpecificOutput` (e.g. record the new summary length) |
 
-### Typical scenarios (runnable examples in `examples/hooks/`)
+### 13.4 Fail-open behavior
 
-1. **Auto-lint after edits** (PostToolUse): run ESLint after write_file, feed results back for self-fix;
-2. **Guard sensitive writes** (PreToolUse): hard-block `.env`/key file writes (`guard-env.mjs`);
-3. **Tests must pass before stopping** (Stop): block when `npm test` is red so the agent keeps
-   fixing (`require-tests.mjs`);
-4. **Guard destructive commands** (PreToolUse): hard-block `rm -rf /`, disk wipes, etc.
-   (`guard-dangerous.mjs`);
-5. **Guard git push** (PreToolUse): block pushes and ask the user to push themselves
-   (`guard-git-push.mjs`);
-6. **Rewrite prompts** (UserPromptSubmit): inject project policy into every user message;
-7. **Session-completion notification** (Notification).
+A broken hook must never brick the agent. These are all **ignored** (pass-through):
+
+- unknown event names;
+- empty commands;
+- failed process spawn;
+- non-JSON stdout;
+- non-zero exit codes;
+- timeouts (the process is killed).
+
+The failure reason is echoed to the terminal so you can tell a hook is misbehaving. The only
+exception is an explicit `decision: "block"` / `"deny"` — that is honored, because it is the hook's
+job.
+
+### 13.5 How output reaches you and the model
+
+Hook output is echoed to the terminal as `⚡ hook[<Event>] …`; in the TUI it renders as dim lines in
+the conversation flow, **capped at 5 lines** to avoid flooding the screen. The full
+`hookSpecificOutput` is still passed to the model regardless of that truncation.
+
+Two model-visible markers you'll see in tool results:
+
+- `[hook output]` — appended after a successful tool call (e.g. lint results);
+- `Blocked (hook)` — the reason returned when a call was hard-blocked by `PreToolUse`.
+
+### 13.6 Typical scenarios
+
+Runnable examples live in `examples/hooks/` (see `examples/hooks/README.md` for the catalog).
+
+1. **Auto-lint after edits** — run the linter on the file just written and feed the result back so
+   the model fixes its own mistakes:
+
+   ```jsonc
+   "hooks": { "PostToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/lint-hook.mjs" }] }
+   ```
+
+2. **Guard sensitive writes** — hard-block `.env` / secrets / certs no matter what the model wants.
+   The call is intercepted *before* the safety gate and never executes (no side effects):
+
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "write_file", "command": "node examples/hooks/guard-env.mjs" }] }
+   ```
+
+3. **Tests must pass before stopping** — block the agent from finishing while the suite is red
+   (once; `stop_hook_active` prevents an infinite loop):
+
+   ```jsonc
+   "hooks": { "Stop": [{ "command": "node examples/hooks/require-tests.mjs" }] }
+   ```
+
+4. **Rewrite the prompt** — inject project policy or extra context into every user message. The
+   rewritten prompt is what the model sees; the UI still echoes what you typed:
+
+   ```jsonc
+   "hooks": { "UserPromptSubmit": [{ "command": "node examples/hooks/rewrite-prompt.mjs" }] }
+   ```
+
+5. **Session-complete notification** — fire-and-forget, never blocks the flow:
+
+   ```jsonc
+   "hooks": { "Notification": [{ "command": "sh examples/hooks/notify.sh" }] }
+   ```
+
+6. **Guard destructive commands** — hard-block `rm -rf /`, disk wipes and friends. Complements the
+   built-in `safe` tier: this is **enforced by rule**, not model discretion:
+
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-dangerous.mjs" }] }
+   ```
+
+7. **Block `git push`** — stop the agent from pushing to a remote and remind the user to push:
+
+   ```jsonc
+   "hooks": { "PreToolUse": [{ "matcher": "run_command", "command": "node examples/hooks/guard-git-push.mjs" }] }
+   ```
+
+### 13.7 Testing hooks
+
+`scripts/mock-hook.mjs` is a mock hook for exercising the pipeline without writing your own; it
+accepts a mode argument covering the interesting outcomes:
+
+`pass` · `block` · `updated` · `output` · `rewrite` · `notify` · `fail` · `slow`
+
+Unit and end-to-end coverage for the hook system lives in `scripts/probe-tmp/probe-hooks.ts`.
 
 ---
 
@@ -793,6 +1117,26 @@ the current model when unset (no config = always the current model).
 /goal <goal>          # goal mechanism: derive acceptance criteria and loop until met (iteration log + verdict feedback; alias /loop)
 ```
 
+### 15.4 Worktree isolation
+
+By default a subagent writes into your working tree, which means several parallel delegates can
+collide on the same files. The `delegate` tool accepts a `worktree` argument to isolate it:
+
+- `worktree: true` — creates `git worktree add <repo-root>/.omni/worktrees/<branch> -b <branch>`
+  with an auto-generated branch name (`omni-wt-<id>-<ts>`);
+- `worktree: "<branch>"` — same, but uses your branch name;
+- `cleanup: true` — remove the worktree when the subagent finishes (default **false**, so you can
+  inspect or merge the diff yourself).
+
+All tool calls inside that subagent run with the worktree as their cwd, so it cannot touch your
+working tree. When it finishes, the result reports the changed files and how to merge them back.
+
+If worktree creation fails (not a git repo, target already exists, …), the delegate returns an error
+suggesting you drop the `worktree` argument and delegate inside the workspace instead.
+
+> In the web UI you can also create a worktree and switch the workspace to it via
+> **POST `/api/git/worktree`** (`{ "path"?, "branch"? }`).
+
 ---
 
 ## 16. FAQ & Troubleshooting
@@ -860,6 +1204,53 @@ OMNI_BASE_URL=http://127.0.0.1:8787/v1 OMNI_API_KEY=sk-mock omni "<test task>"
 In interactive mode, run `/permission low` (read tier: read-only tool whitelist) first, then send
 your task — zero-risk exploration; for one-off use, `--no-tui` plus self-checks: `/doctor` for the
 environment, `/diff` for changes.
+
+---
+
+## 17. Tools Overview
+
+Omni's tools come from four sources. The static registry is `src/tools/index.ts`; the rest are
+injected at runtime by `attachRuntime`.
+
+### 17.1 Static tools (7)
+
+| Tool | Purpose |
+|---|---|
+| `read_file` | read a file by line range (`offset` / `limit`) |
+| `write_file` | create or fully overwrite a file |
+| `edit_file` | targeted edits to an existing file |
+| `list_directory` | list directory contents |
+| `search_code` | code search (ripgrep first, built-in scan fallback) |
+| `run_command` | run a shell command (timeout + output truncation; interception lives in the safety gate) |
+| `skill` | load a skill's full SKILL.md by name (read-only; replaced at runtime to support `context: fork` subagent execution) |
+
+### 17.2 Context tools (always injected)
+
+| Tool | Purpose |
+|---|---|
+| `ask_user` | ask the user a question — surfaces as an option panel (TUI) or a prompt (console); the answer is fed back to the model |
+| `todo_write` | structured task list the model maintains (`pending` / `in_progress` / `completed`) |
+| `web_fetch` | fetch a URL and convert it to text (domain allowlist via `webFetchDomains`) |
+| `diagnose` | run a quick typecheck / lint / test and return the diagnostic summary so the model can self-fix |
+
+### 17.3 Trust- and config-gated tools
+
+| Tool | Injected when | Purpose |
+|---|---|---|
+| `memory_search` | workspace is **trusted** | multi-keyword AND search over memory, ranked by hits |
+| `memory_read` | workspace is **trusted** | read a full memory file by path |
+| `delegate` | `allowSubagents: true` **and** workspace trusted | hand a subtask to an isolated subagent (see section 15) |
+| `mcp_<server>_<tool>` | a server is configured in `mcpServers` | external MCP tools (see section 12) |
+
+The trust gate is deliberate: an untrusted repository must not be able to reach into (or pollute)
+your memory through these tools.
+
+`skill` is also removed entirely when `skills: false` or the workspace is untrusted.
+
+### 17.4 Output limits
+
+Tool results longer than 8000 characters are truncated with a hint to use `read_file` for targeted
+reads, so a single noisy command cannot blow up the context window.
 
 ---
 

@@ -8,11 +8,11 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 
 ## Screenshots
 
-**Terminal TUI** (`omni`, full-screen interactive mode) — thinking modules, tool cards, Markdown tables/code blocks, token stats and the input area:
+**Terminal TUI** (`omni`, full-screen interactive mode) — thinking modules, bash tool cards, Markdown tables, code blocks, side-by-side diff, scrollable history:
 
 ![Omni TUI](Doc/images/tui.png)
 
-**Web UI** (`omni web`, browser / Electron desktop app) — session sidebar with workspace grouping, live Markdown answers, composer with model & workspace switcher:
+**Web UI** (`omni web`, browser / Electron desktop app) — session sidebar with workspace grouping, live Markdown answers, side-by-side diff, composer with model & workspace switcher:
 
 ![Omni Web](Doc/images/web.png)
 
@@ -519,6 +519,9 @@ for step in 1..maxSteps:
 ```
 
 Key mechanisms: self-correction, 8000-char tool-result truncation (model is told to read targeted ranges), safety guardrails (permission tiers + approval + audit), parallel tool execution, isolated subagent contexts, `maxSteps` dead-loop guard.
+
+> Full module-by-module architecture (every tool, TUI layer, config field, command):
+> [`Doc/architecture.md`](Doc/architecture.md) (English) · [`Doc/架构.md`](Doc/架构.md) (中文).
 
 ## Development
 
