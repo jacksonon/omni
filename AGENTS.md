@@ -170,7 +170,7 @@ src/
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
   agent/
     loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
-    thinking.ts         # 思考过程：流式显示（浅色保留在屏幕，不折叠）/落盘（reasoning 字段提取）
+    thinking.ts         # 思考过程：流式显示（浅色保留在屏幕，不折叠）/落盘（reasoning + reasoningMs 耗时字段提取，恢复会话回放 thinking 块带「· 耗时」头行）
     messages.ts         # 消息组装：assistant 消息构造、工具参数解析
     context.ts          # 上下文管理：全局/项目记忆级联注入（项目记忆按层级嵌套，内层贴近用户消息）+ 相关文件预载（selectRelevantFiles）+ 长对话摘要压缩（summarizeContext）
     report.ts           # 会话状态/上下文用量/导出/诊断/配置路径 共享逻辑（/status /context /export /doctor /config）

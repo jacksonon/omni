@@ -68,7 +68,7 @@ src/
     loop.ts          # **Agent main loop**: stream LLM → tool calls (parallel) → safety gate → execute → feed back
     context.ts       # Context: memory cascade injection + relevant-file preload + summarization
     messages.ts      # Message assembly: assistant message construction, tool arg parsing
-    thinking.ts      # Thinking: streamed display + save to disk (reasoning field extraction)
+    thinking.ts      # Thinking: streamed display + save to disk (reasoning + reasoningMs duration fields; restored sessions replay thinking blocks with a "· duration" header)
     memory.ts        # Global/project memory cascade, nested AGENTS.md, auto-extract on exit
     memory-topics.ts # Structured memory: MEMORY.md index + topics/*.md + globs conditional injection
     session.ts       # Session persistence: JSONL on disk + list / latest / restore by id
