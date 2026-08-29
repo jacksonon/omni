@@ -827,8 +827,11 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .slider-fill {
   position: absolute;
   top: 0;
-  left: var(--pad);
-  width: calc((100% - 2 * var(--pad)) * var(--fill) / 100);
+  /* 0 = 轨道左端（.slider-inner 已 margin 内缩 var(--pad)，fill 从轨道左端起）；
+    宽 = pad + (内宽-2pad)×fill%——fill 右缘始终对齐 thumb 中心，进度条从 0 持续到拖动点（thumb 骑在 fill 末端）。
+    旧版 left: var(--pad) 双重内缩→左侧留白；上一版 left:0 但没加 pad→fill 只到 thumb 左缘，thumb 右半边下面空白 */
+  left: 0;
+  width: calc(var(--pad) + (100% - 2 * var(--pad)) * var(--fill) / 100);
   height: 20px;
   border-radius: 999px;
   overflow: hidden; /* 流光/光泽裁剪在填充宽度内 */
@@ -893,22 +896,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
     0 0 0 1px color-mix(in srgb, var(--slider-glow) 50%, transparent),
     0 2px 8px rgba(0, 0, 0, .35),
     0 0 16px color-mix(in srgb, var(--slider-glow) 85%, transparent);
-}
-/* 松手吸附：thumb 涟漪（扩展光环渐隐） */
-.slider-thumb.snap::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--slider-glow) 80%, transparent);
-  animation: slider-ripple .5s var(--ease-out);
-  z-index: -1;
-}
-@keyframes slider-ripple {
-  0% { opacity: 1; transform: scale(.7); }
-  70% { opacity: .4; }
-  100% { opacity: 0; transform: scale(2.6); }
-}
+}/* 松手吸附光环已移除：旧的 slider-ripple 把 thumb 光环 scale 到 2.6——max 时 thumb 在 slider 右端，
+ * 这个 ~62px 光环超出 slider 上下缘约 21px，在卡片右侧闪一个上下贯穿的光环（“切 max 整卡上下抖一下”）。
+ * 伪元素不在真实 DOM rect 采样内，按位置测量“稳定”肉眼看却在闪。——改由 thumb 呼吸光晕呈现即可。 */
 /* 档位刻度点：active 白点发光 + 弹跳 */
 .slider-dot {
   position: absolute;
@@ -930,7 +920,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 .slider-dot.pop { animation: slider-dot-pop .25s var(--ease); }
 @keyframes slider-dot-pop {
-  0% { transform: translate(-50%, -50%) scale(1.45); opacity: .5; }
+  0% { transform: translate(-50%, -50%) scale(1.25); opacity: .5; }
   100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
 /* 原生 range 透明交互层：盖住整个 slider（拖拽 / 点击跳转 / 键盘方向键） */
@@ -1217,8 +1207,10 @@ button:active, .send-button:active, .primary-button:active, .secondary-button:ac
 .ws-section-head .ws-chev { transition: transform .2s var(--ease); }
 
 /* ---- Popover 弹出动画 ---- */
+/* 纯淡入（不再位移）：from 态若被节流/卡住会以低于静止位 ~10px 悬停，动画补完瞬间整卡上跳——
+ * 即「切换到 max 时整个卡片上下抖动一下」的根因。opacity-only 保证任何环境下位置恒定。 */
 @keyframes pop-in {
-  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  from { opacity: 0; }
 }
 .permission-pop, .model-pop {
   animation: pop-in .16s var(--ease);
@@ -1822,8 +1814,9 @@ body.cmd-open::before {
 }
 
 /* ---- Popover 弹出 ---- */
+/* 同上：pop-enter 与 pop-in 都改为纯淡入，消除入场动画的位移型抖动 */
 @keyframes pop-enter {
-  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  from { opacity: 0; }
 }
 .permission-pop, .model-pop {
   animation: pop-enter .18s var(--ease-out);

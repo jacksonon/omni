@@ -4188,8 +4188,7 @@ function renderModelPop(s) {
       wrap.style.setProperty('--slider-glow', c);
       pop.style.setProperty('--level-color', c);
     };
-    // 重触发单次 CSS 动画（thumb 涟漪 / 标签弹跳）
-    const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
+    // 重触发单次 CSS 动画（刻度/标签弹跳）
     setFill(idx);
     // 拖动中：填充/thumb 跟手（dragging 时 CSS 无过渡）+ 预览吸附档位标签 + 高亮（不弹跳）
     range.addEventListener('input', () => {
@@ -4198,7 +4197,7 @@ function renderModelPop(s) {
       setFill(pos);
       setTicks(pos, false);
     });
-    // 松手：吸附最近档位并生效；播放动效（thumb 涟漪 + 标签/刻度弹跳），弹层保持打开
+    // 松手：吸附最近档位并生效；播放动效（刻度/标签弹跳），弹层保持打开
     range.addEventListener('change', () => {
       const pos = nearestIdx();
       const v = efforts[pos];
@@ -4207,7 +4206,7 @@ function renderModelPop(s) {
       setFill(pos);
       setTicks(pos, true);
       if (!v) return;
-      replay(thumb, 'snap');
+      // 不再 replay(thumb, 'snap')：旧涟漪动画会在 max 时于 slider 右端闪出上下贯穿的光环（“切 max 整卡抖动”）
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
         .then(() => { applied = pos; }) // 不关闭：用户可能反复调整思考级别，点弹层外才关闭
