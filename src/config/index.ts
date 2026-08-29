@@ -200,6 +200,8 @@ export interface OmniConfig {
   repoMapMaxSymbols?: number;
   /** WebFetch 工具域名允许列表（空 = 全部） */
   webFetchDomains?: string[];
+  /** WebSearch 工具 API key（Brave Search；缺省回退环境变量 BRAVE_API_KEY） */
+  webSearchApiKey?: string;
   /**
    * Web / Electron 上次使用的工作目录（`omni web` 与桌面应用启动时自动应用，
    * 界面「设置 → 工作目录」切换时持久化到这里）。优先级：OMNI_WEB_WORKSPACE
@@ -581,6 +583,9 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (Array.isArray(data.webFetchDomains)) {
     const arr = (data.webFetchDomains as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim());
     if (arr.length > 0) cfg.webFetchDomains = arr;
+  }
+  if (typeof data.webSearchApiKey === 'string' && data.webSearchApiKey.trim()) {
+    cfg.webSearchApiKey = data.webSearchApiKey.trim();
   }
   // 危险命令扩展正则：只收合法字符串（非法正则会在 dangerousCommand 里兜底忽略）
   if (Array.isArray(data.dangerousPatterns)) {

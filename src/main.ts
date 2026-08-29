@@ -18,6 +18,7 @@ import { createSkillTool } from './agent/skill.js';
 import { memorySearchTool, memoryReadTool } from './tools/memory-tools.js';
 import { createTodoWriteTool } from './tools/todo.js';
 import { createWebFetchTool } from './tools/web-fetch.js';
+import { createWebSearchTool } from './tools/web-search.js';
 import { createDiagnoseTool } from './tools/diagnose.js';
 import { runAgent } from './agent/loop.js';
 import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
@@ -417,6 +418,8 @@ export async function attachRuntime(
   toolchain.push(createTodoWriteTool(ctx.runOpts));
   // WebFetch 内置工具（P1）：URL 抓取 → 转纯文本
   toolchain.push(createWebFetchTool(cfg.webFetchDomains));
+  // WebSearch 内置工具（P1）：关键词 → 搜索结果（title/url/snippet）
+  toolchain.push(createWebSearchTool(cfg.webSearchApiKey));
   // diagnose 诊断工具（P1）：运行 typecheck/lint 返回诊断摘要
   toolchain.push(createDiagnoseTool(process.cwd()));
   // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令。
