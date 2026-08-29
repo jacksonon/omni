@@ -4080,7 +4080,13 @@ function renderModelPop(s) {
       const v = sel.value;
       if (v === s.model) return;
       const picked = models.find((m) => m.name === v);
-      applySettings({ model: v }).then(() => { closeModelPop(); notify(t('notify.modelSwitched', { model: (picked ? modelLabel(picked) : v) }), 'success'); }).catch((err) => notify(`切换失败：${err.message}`, 'error'));
+      // 不立即关闭：用户可能反复切换模型/思考级别；重渲染弹层以刷新新模型的思考级别选项
+      applySettings({ model: v })
+        .then(() => {
+          renderModelPop(state.status || {});
+          notify(t('notify.modelSwitched', { model: (picked ? modelLabel(picked) : v) }), 'success');
+        })
+        .catch((err) => notify(`切换失败：${err.message}`, 'error'));
     });
     pop.appendChild(sel);
   }
@@ -4088,8 +4094,9 @@ function renderModelPop(s) {
   // 思考级别：modern slider with linear gradient（动画参考：Lottie「modern-slider-with-linear-gradient」）
   // —— 多段渐变填充轨道（indigo→violet→pink + 顶部光泽）+ 发光白 thumb（呼吸光晕）+ 档位刻度点
   //     + 底部标签。交互沿用无级滑条：拖动连续不跳格、填充/thumb 跟手预览最近档位，松手吸附并
-  //    播放动效（thumb 涟漪 + 标签/刻度弹跳），短暂停留后自动关闭。原生 range 保留为透明交互层
-  //    （拖拽 / 点击跳转 / 键盘方向键 / aria）。
+  //    播放动效（thumb 涟漪 + 标签/刻度弹跳）；选择后**不自动关闭**（用户可能反复调整模型/
+  //    思考级别），点击弹层外或 Esc 才关闭。原生 range 保留为透明交互层（拖拽 / 点击跳转 /
+  //    键盘方向键 / aria）。
   pop.appendChild(el('div', 'pop-sep'));
   pop.appendChild(el('div', 'pop-head', '思考级别'));
   if (!efforts.length) {
@@ -4185,11 +4192,12 @@ function renderModelPop(s) {
       setFill(pos);
       setTicks(pos, true);
       if (!v) return;
+      val.textContent = v; // 弹层不再自动关闭：同步当前档位标签（旧逻辑关闭前无需更新）
       replay(val, 'snap');
       replay(thumb, 'snap');
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
-        .then(() => { applied = pos; setTimeout(closeModelPop, 300); }) // 留 300ms 让动效可见
+        .then(() => { applied = pos; }) // 不关闭：用户可能反复调整思考级别，点弹层外才关闭
         .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); val.textContent = efforts[applied]; });
     });
   }
