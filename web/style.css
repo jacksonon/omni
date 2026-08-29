@@ -778,68 +778,190 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .pop-select:focus { border-color: var(--blue); }
 .pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
 .pop-head-row .pop-head { padding: 0; }
-.pop-val { color: var(--blue); font-size: 12px; font-weight: 500; display: inline-block; }
+/* 当前档位值：颜色 = 当前档位色（--level-color 由 JS 同步） */
+.pop-val {
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-block;
+  color: var(--level-color, #a855f7);
+}
 /* 吸附时标签弹跳 */
 @keyframes pop-val-snap {
   0% { transform: scale(1.32); }
   100% { transform: scale(1); }
 }
 .pop-val.snap { animation: pop-val-snap .25s var(--ease); }
-/* 推理强度滑条：无级拖拽 + 动效——填充轨道（--fill 由 JS 驱动）平滑过渡，拖动中跟手、松手吸附 */
-.pop-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  margin: 10px 0 6px;
+/* —— 思考级别 slider：modern slider with linear gradient（参考 Lottie 动画
+ *    「modern-slider-with-linear-gradient」）——
+ * 配色：**不同档位不同颜色**——轨道渐变按档位生成色标（低=品牌蓝/冷 → 靛/紫 → 品红 →
+ *       最高=橙/暖，--slider-grad 由 JS 按档位数生成）；thumb 光晕/激活刻度/当前值文字
+ *       同步当前档位色（--slider-glow / --level-color）。
+ * 结构：.slider-wrap（--pad/--fill/--slider-grad/--slider-glow 由 JS 驱动）
+ *   ├ .slider-inner（左右内缩 var(--pad)，内容即轨道区域）
+ *   │   ├ .slider-track  底轨（未填充段，低调灰）
+ *   │   ├ .slider-fill   渐变填充（宽度 = --fill% × 内轨宽；顶部光泽 + 流光扫过，overflow 裁剪）
+ *   │   ├ .slider-dots   档位刻度点（active 白点发光）
+ *   │   └ .slider-thumb  发光白 thumb（呼吸光晕；拖动放大；松手涟漪）
+ *   └ .slider-input      原生 range 透明交互层（opacity:0 全尺寸——保留拖拽/点击跳转/键盘）
+ * 拖动中（.dragging）关闭过渡跟手；松手吸附恢复过渡。 */
+.slider-wrap {
+  --pad: 10px;      /* 轨道左右内缩 = thumb 半径，端点处 thumb 居中 */
+  --fill: 0;        /* 0..100，JS 按最近档位驱动 */
+  --slider-grad: linear-gradient(90deg, #4176e6 0%, #a855f7 50%, #f97316 100%);
+  --slider-glow: #a855f7;
+  position: relative;
+  margin: 14px 2px 2px;
+  z-index: 0;
+}
+.slider-inner { position: relative; height: 6px; margin: 0 var(--pad); }
+.slider-track {
+  position: absolute;
+  inset: 0;
   border-radius: 999px;
-  cursor: pointer;
-  background:
-    linear-gradient(var(--blue), var(--blue)) 0 0 / var(--fill, 0%) 100% no-repeat,
-    var(--line-2);
-  transition: background-size .18s var(--ease);
+  background: var(--line-2);
 }
-.pop-slider.dragging { transition: none; }
-.pop-slider::-webkit-slider-thumb {
+.slider-fill {
+  position: absolute;
+  top: 0;
+  left: var(--pad);
+  width: calc((100% - 2 * var(--pad)) * var(--fill) / 100);
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden; /* 流光/光泽裁剪在填充宽度内 */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .26), rgba(255, 255, 255, 0) 52%),
+    var(--slider-grad);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--slider-glow) 60%, transparent));
+  transition: width .18s var(--ease), filter .18s var(--ease);
+  z-index: 1;
+}
+/* 流光：细亮带从填充左端周期性扫到右端（周期 3.4s，明暗交替有节奏感） */
+.slider-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .4) 50%, transparent);
+  animation: slider-sheen 3.4s var(--ease-inout) infinite;
+}
+@keyframes slider-sheen {
+  0% { left: -60%; }
+  55%, 100% { left: 160%; }
+}
+.slider-wrap.dragging .slider-fill { transition: none; }
+.slider-thumb {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--pad) + (100% - 2 * var(--pad)) * var(--fill) / 100);
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--slider-glow) 38%, transparent),
+    0 2px 5px rgba(0, 0, 0, .3),
+    0 0 9px color-mix(in srgb, var(--slider-glow) 70%, transparent);
+  transition: transform .15s var(--ease), box-shadow .18s var(--ease), left .18s var(--ease);
+  pointer-events: none;
+  z-index: 2;
+}
+/* 呼吸光晕层（跟随 thumb 位置，始终柔光脉动） */
+.slider-thumb::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--slider-glow) 46%, transparent) 0%, transparent 68%);
+  animation: slider-breathe 2.6s var(--ease-inout) infinite alternate;
+  z-index: -1;
+}
+@keyframes slider-breathe {
+  from { opacity: .55; transform: scale(.92); }
+  to { opacity: 1; transform: scale(1.12); }
+}
+.slider-wrap.dragging .slider-thumb {
+  transform: translate(-50%, -50%) scale(1.28);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--slider-glow) 50%, transparent),
+    0 2px 8px rgba(0, 0, 0, .35),
+    0 0 16px color-mix(in srgb, var(--slider-glow) 85%, transparent);
+}
+/* 松手吸附：thumb 涟漪（扩展光环渐隐） */
+.slider-thumb.snap::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--slider-glow) 80%, transparent);
+  animation: slider-ripple .5s var(--ease-out);
+  z-index: -1;
+}
+@keyframes slider-ripple {
+  0% { opacity: 1; transform: scale(.7); }
+  70% { opacity: .4; }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+/* 档位刻度点：active 白点发光 + 弹跳 */
+.slider-dot {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
+  pointer-events: none;
+  transition: background .15s var(--ease), box-shadow .15s var(--ease), width .15s var(--ease), height .15s var(--ease);
+  z-index: 1;
+}
+.slider-dot.active {
+  width: 6px;
+  height: 6px;
+  background: #fff;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--slider-glow) 80%, transparent);
+}
+.slider-dot.pop { animation: slider-dot-pop .3s var(--ease); }
+@keyframes slider-dot-pop {
+  0% { transform: translate(-50%, -50%) scale(1.9); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+/* 原生 range 透明交互层：盖住整个 slider（拖拽 / 点击跳转 / 键盘方向键） */
+.slider-input {
+  position: absolute;
+  inset: -8px 0;
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -5px; /* 居中于 4px 轨道 */
-  border: 0;
-  border-radius: 50%;
-  background: var(--blue);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+  margin: 0;
+  opacity: 0;
   cursor: pointer;
-  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+  z-index: 3;
 }
-.pop-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
-.pop-slider::-webkit-slider-thumb:active { transform: scale(1.3); }
-/* 松手吸附：thumb 脉冲（缩放 + 光圈） */
-@keyframes pop-slider-snap {
-  0% { transform: scale(1.45); box-shadow: 0 0 0 7px color-mix(in srgb, var(--blue) 30%, transparent); }
-  100% { transform: scale(1); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
-}
-.pop-slider.snap::-webkit-slider-thumb { animation: pop-slider-snap .3s var(--ease); }
-/* Firefox 兼容 */
-.pop-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+.slider-input::-webkit-slider-runnable-track { height: 6px; background: transparent; }
+.slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px; /* (6-20)/2 居中于 6px 轨道 */
+  background: transparent;
   border: 0;
-  border-radius: 50%;
-  background: var(--blue);
-  cursor: pointer;
 }
-.pop-slider::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--blue); }
-.pop-slider.snap::-moz-range-thumb { animation: pop-slider-snap .3s var(--ease); }
+.slider-input::-moz-range-track { height: 6px; background: transparent; }
+.slider-input::-moz-range-thumb { width: 20px; height: 20px; background: transparent; border: 0; }
 .pop-ticks { display: flex; justify-content: space-between; padding: 0 2px 2px; color: var(--text-caption); font-size: 11px; }
 .pop-ticks span { padding: 2px 3px; border-radius: 6px; cursor: pointer; transition: color .15s var(--ease), background .15s var(--ease); }
 .pop-ticks span:hover { color: var(--text-secondary); }
-.pop-ticks span.active { color: var(--blue); font-weight: 600; }
-/* 吸附时激活刻度弹跳 */
+.pop-ticks span.active {
+  font-weight: 600;
+  color: var(--level-color, #a855f7);
+}
+/* 吸附时激活标签弹跳（只动 transform——active 标签是渐变文字，动画不动 background 避免背景覆盖） */
 @keyframes pop-tick-snap {
-  0% { transform: scale(1.35); background: color-mix(in srgb, var(--blue) 22%, transparent); }
-  100% { transform: scale(1); background: transparent; }
+  0% { transform: scale(1.35); }
+  100% { transform: scale(1); }
 }
 .pop-ticks span.pop { animation: pop-tick-snap .25s var(--ease); }
 

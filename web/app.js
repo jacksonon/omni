@@ -1369,11 +1369,17 @@ function toolBlock(sessionId, data) {
   return b;
 }
 
-/* 从历史消息渲染已完成的 thinking 块（刷新恢复用：reasoning 已随 assistant 消息持久化） */
-function renderHistoryThinking(sessionId, reasoning) {
+/* 从历史消息渲染已完成的 thinking 块（刷新恢复用：reasoning / reasoningMs 已随 assistant
+ * 消息持久化）。reasoningMs = 思考耗时毫秒；旧会话（无该字段）→ 用 block 的 finish() 里
+ * `_startTime → Date.now()` 兜底（即加载耗时，非原始），或 0。 */
+function renderHistoryThinking(sessionId, reasoning, reasoningMs) {
   const b = thinkingBlock(sessionId);
   b._chars = String(reasoning || '').length;
   b._body.textContent = reasoning || '';
+  // 有持久化的原始思考耗时 → 覆写 startTimer，让 finish() 算出正确原始耗时
+  if (typeof reasoningMs === 'number' && reasoningMs > 0) {
+    b._startTime = Date.now() - reasoningMs;
+  }
   b.finish();
   return b;
 }
@@ -2040,9 +2046,9 @@ async function renderSessionHistory(id) {
         const parsed = parseUserContent(m.content);
         userBlock(id, parsed.text, parsed.attachments);
       } else if (m.role === 'assistant') {
-        // 先恢复 thinking（reasoning 已持久化），再恢复工具卡片，最后正文——
-        // 与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
-        if (m.reasoning) renderHistoryThinking(id, m.reasoning);
+        // 先恢复 thinking（reasoning + reasoningMs 已持久化，恢复耗时），再恢复工具卡片，
+        // 最后正文——与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
+        if (m.reasoning) renderHistoryThinking(id, m.reasoning, m.reasoningMs);
         if (m.tool_calls) {
           for (const tc of m.tool_calls) {
             // 找到对应的 tool result 消息
@@ -4009,6 +4015,36 @@ $('#btn-permission').addEventListener('click', (e) => {
 });
 
 /* ---------------- 模型 / 思考级别 popover（composer 内联切换） ---------------- */
+/* 思考强度配色：**不同档位不同颜色**——低档=品牌蓝（冷）→ 靛/紫 → 品红 → 最高档=橙（暖），
+ * 轨道渐变按档位数在每个档位位置生成色标（i/(n-1)），任意档位数在色板上均匀插值取色。
+ * thumb 光晕 / 激活刻度 / 当前值文字同步当前档位颜色（--slider-glow / --level-color）。 */
+const LEVEL_COLORS = ['#4176e6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f97316'];
+function levelHexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+/** t∈[0,1] → 色板位置上的插值色（0=首色，1=末色） */
+function lerpLevelColor(t) {
+  const max = LEVEL_COLORS.length - 1;
+  const pos = Math.min(max, Math.max(0, t * max));
+  const i = Math.floor(pos);
+  const f = pos - i;
+  const a = levelHexToRgb(LEVEL_COLORS[i]);
+  const b = levelHexToRgb(LEVEL_COLORS[Math.min(max, i + 1)]);
+  return `rgb(${Math.round(a.r + (b.r - a.r) * f)}, ${Math.round(a.g + (b.g - a.g) * f)}, ${Math.round(a.b + (b.b - a.b) * f)})`;
+}
+/** 第 i 档（共 n 档）的档位色 */
+const levelColor = (i, n) => lerpLevelColor(n <= 1 ? 0 : i / (n - 1));
+/** 整个轨道的渐变：每档一个色标（i/(n-1) 处取该档颜色） */
+function levelGradient(n) {
+  const stops = [];
+  for (let i = 0; i < n; i++) {
+    const t = n <= 1 ? 0 : i / (n - 1);
+    stops.push(`${levelColor(i, n)} ${Math.round(t * 100)}%`);
+  }
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
 function openModelPop() {
   renderModelPop(state.status || {});
   $('#model-pop').classList.remove('hidden');
@@ -4049,10 +4085,13 @@ function renderModelPop(s) {
     pop.appendChild(sel);
   }
 
-  // 推理强度：无级滑条（step any，拖动连续不跳格）+ 动效——拖动中轨道填充跟手预览最近档位，
-  // 松手吸附最近档位并播放动效（thumb 脉冲 + 标签弹跳 + 刻度高亮弹跳），短暂停留后自动关闭
+  // 思考级别：modern slider with linear gradient（动画参考：Lottie「modern-slider-with-linear-gradient」）
+  // —— 多段渐变填充轨道（indigo→violet→pink + 顶部光泽）+ 发光白 thumb（呼吸光晕）+ 档位刻度点
+  //     + 底部标签。交互沿用无级滑条：拖动连续不跳格、填充/thumb 跟手预览最近档位，松手吸附并
+  //    播放动效（thumb 涟漪 + 标签/刻度弹跳），短暂停留后自动关闭。原生 range 保留为透明交互层
+  //    （拖拽 / 点击跳转 / 键盘方向键 / aria）。
   pop.appendChild(el('div', 'pop-sep'));
-  pop.appendChild(el('div', 'pop-head', '推理强度'));
+  pop.appendChild(el('div', 'pop-head', '思考级别'));
   if (!efforts.length) {
     pop.appendChild(el('div', 'pop-empty', '该模型未提供思考级别'));
   } else {
@@ -4063,52 +4102,38 @@ function renderModelPop(s) {
     headRow.appendChild(val);
     pop.appendChild(headRow);
     const idx = Math.max(0, efforts.indexOf(curEff));
+    const steps = Math.max(1, efforts.length - 1);
+    // 自定义渲染层：底轨 → 渐变填充 → 刻度点 → 发光 thumb；原生 range 盖在最上层作交互层
+    // 档位配色：轨道渐变按档位生成色标，光晕/刻度/当前值用当前档位颜色
+    const wrap = el('div', 'slider-wrap');
+    wrap.style.setProperty('--slider-grad', levelGradient(efforts.length));
+    wrap.style.setProperty('--slider-glow', levelColor(idx, efforts.length));
+    pop.style.setProperty('--level-color', levelColor(idx, efforts.length));
+    const inner = el('div', 'slider-inner');
+    inner.appendChild(el('div', 'slider-track'));
+    inner.appendChild(el('div', 'slider-fill'));
+    const dots = el('div', 'slider-dots');
+    inner.appendChild(dots);
+    const thumb = el('div', 'slider-thumb');
+    inner.appendChild(thumb);
+    wrap.appendChild(inner);
     const range = document.createElement('input');
     range.type = 'range';
-    range.className = 'pop-slider';
+    range.className = 'slider-input';
     range.min = '0';
     range.max = String(efforts.length - 1);
     range.step = 'any'; // 无级拖拽：拖动过程不跳格
     range.value = String(idx);
-    let applied = idx;
-    const setFill = (pos) => range.style.setProperty('--fill', `${(pos / Math.max(1, efforts.length - 1)) * 100}%`);
-    const nearestIdx = () => Math.min(efforts.length - 1, Math.max(0, Math.round(Number(range.value))));
-    // 刻度高亮；animate=true 时给刚激活的刻度一个缩放弹跳（重触发 .pop 动画）
-    const setTicks = (pos, animate) => {
-      ticks.querySelectorAll('span').forEach((sp, i) => {
-        const on = i === pos;
-        sp.classList.toggle('active', on);
-        if (on && animate) { sp.classList.remove('pop'); void sp.offsetWidth; sp.classList.add('pop'); }
-      });
-    };
-    // 重触发单次 CSS 动画（thumb 脉冲 / 标签弹跳）
-    const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
-    setFill(idx);
-    // 拖动中：轨道填充跟手（dragging 时 CSS 无过渡）+ 预览吸附档位标签 + 刻度高亮（不弹跳）
-    range.addEventListener('input', () => {
-      range.classList.add('dragging');
-      const pos = nearestIdx();
-      val.textContent = efforts[pos] ?? '';
-      setFill(pos);
-      setTicks(pos, false);
+    range.setAttribute('aria-label', '思考级别');
+    wrap.appendChild(range);
+    pop.appendChild(wrap);
+    // 档位刻度点（视觉指示；点击直达走底部标签——交互层盖住轨道）
+    efforts.forEach((_, i) => {
+      const dot = el('span', 'slider-dot');
+      dot.style.left = steps === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      if (i === idx) dot.classList.add('active'); // 初始高亮当前档位
+      dots.appendChild(dot);
     });
-    // 松手：吸附最近档位并生效；播放动效（thumb 脉冲 + 标签弹跳 + 刻度弹跳），短暂停留后关闭
-    range.addEventListener('change', () => {
-      const pos = nearestIdx();
-      const v = efforts[pos];
-      range.value = String(pos); // 吸附
-      range.classList.remove('dragging');
-      setFill(pos);
-      setTicks(pos, true);
-      if (!v) return;
-      replay(val, 'snap');
-      replay(range, 'snap');
-      if (pos === applied) return;
-      applySettings({ reasoningEffort: v })
-        .then(() => { applied = pos; setTimeout(closeModelPop, 300); }) // 留 300ms 让动效可见
-        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); val.textContent = efforts[applied]; });
-    });
-    pop.appendChild(range);
     const ticks = el('div', 'pop-ticks');
     efforts.forEach((t, i) => {
       const sp = el('span', null, t);
@@ -4120,6 +4145,53 @@ function renderModelPop(s) {
       ticks.appendChild(sp);
     });
     pop.appendChild(ticks);
+    let applied = idx;
+    const setFill = (pos) => wrap.style.setProperty('--fill', String((pos / steps) * 100));
+    const nearestIdx = () => Math.min(efforts.length - 1, Math.max(0, Math.round(Number(range.value))));
+    // 标签 + 刻度点高亮；animate=true 时给刚激活的标签/刻度点缩放弹跳（重触发 .pop 动画）
+    const setTicks = (pos, animate) => {
+      ticks.querySelectorAll('span').forEach((sp, i) => {
+        const on = i === pos;
+        sp.classList.toggle('active', on);
+        if (on && animate) { sp.classList.remove('pop'); void sp.offsetWidth; sp.classList.add('pop'); }
+      });
+      dots.querySelectorAll('span').forEach((d, i) => {
+        const on = i === pos;
+        d.classList.toggle('active', on);
+        if (on && animate) { d.classList.remove('pop'); void d.offsetWidth; d.classList.add('pop'); }
+      });
+      // 档位颜色同步：thumb 光晕 + 当前值/激活刻度文字颜色 = 当前档位色
+      const c = levelColor(pos, efforts.length);
+      wrap.style.setProperty('--slider-glow', c);
+      pop.style.setProperty('--level-color', c);
+    };
+    // 重触发单次 CSS 动画（thumb 涟漪 / 标签弹跳）
+    const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
+    setFill(idx);
+    // 拖动中：填充/thumb 跟手（dragging 时 CSS 无过渡）+ 预览吸附档位标签 + 高亮（不弹跳）
+    range.addEventListener('input', () => {
+      wrap.classList.add('dragging');
+      const pos = nearestIdx();
+      val.textContent = efforts[pos] ?? '';
+      setFill(pos);
+      setTicks(pos, false);
+    });
+    // 松手：吸附最近档位并生效；播放动效（thumb 涟漪 + 标签/刻度弹跳），短暂停留后关闭
+    range.addEventListener('change', () => {
+      const pos = nearestIdx();
+      const v = efforts[pos];
+      range.value = String(pos); // 吸附
+      wrap.classList.remove('dragging');
+      setFill(pos);
+      setTicks(pos, true);
+      if (!v) return;
+      replay(val, 'snap');
+      replay(thumb, 'snap');
+      if (pos === applied) return;
+      applySettings({ reasoningEffort: v })
+        .then(() => { applied = pos; setTimeout(closeModelPop, 300); }) // 留 300ms 让动效可见
+        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); val.textContent = efforts[applied]; });
+    });
   }
 }
 
