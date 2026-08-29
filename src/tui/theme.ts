@@ -85,6 +85,12 @@ export interface TuiTheme {
   diffRemBg: string;
   /** diff 上下文行背景色（未改动行：极淡灰，与卡片底色区分） */
   diffCtxBg: string;
+  /**
+   * 拖选高亮（字符级精选取中）文字色：选中的字符用背景色块 + 反白文字标出
+   *（OpenTUI 无选区 API，omni 自绘）。深色 = 亮蓝底深字、亮色 = 深蓝底白字。
+   */
+  selBg: string;
+  selFg: string;
 }
 
 const DARK_THEME: TuiTheme = {
@@ -114,6 +120,8 @@ const DARK_THEME: TuiTheme = {
   diffAddBg: '#14532d', // diff 新增行底：深绿（green-900）——灰块里再用深绿背景给"新增"行
   diffRemBg: '#7f1d1d', // diff 删除行底：深红（red-900）——深灰底上深红块
   diffCtxBg: '#52525b', // diff 上下文行底：略深灰（zinc-600）——比卡片底色稍亮一行做视觉分隔
+  selBg: '#1e40af', // 拖选高亮底：深蓝（blue-800）——深底上亮蓝块清晰
+  selFg: '#eff6ff', // 拖选高亮文字：淡蓝白（blue-50）——深蓝底上白字可读
   // 思考级别颜色（亮色主题，60 档）：绿→琥珀→橙→红→紫 强度递进
   effortColors: {
     low: '#4ade80', // green-400
@@ -152,6 +160,8 @@ const LIGHT_THEME: TuiTheme = {
   diffAddBg: '#dcfce7', // diff 新增行底：淡绿（green-100）——两主题统一
   diffRemBg: '#fee2e2', // diff 删除行底：淡红（red-100）——两主题统一
   diffCtxBg: '#f4f4f5', // diff 上下文行底：极淡灰（zinc-100）——两主题统一
+  selBg: '#bfdbfe', // 拖选高亮底：淡蓝（blue-200）——浅底上淡蓝块区分
+  selFg: '#172554', // 拖选高亮文字：深蓝（blue-950）——淡蓝底上深字可读
   // 思考级别颜色（亮色主题，600 档）：绿→琥珀→橙→红→紫 强度递进（浅底上对比足够）
   effortColors: {
     low: '#16a34a', // green-600

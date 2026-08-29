@@ -381,6 +381,7 @@ async function runMcpSub(
     }
     const persist = persistMcpServerToConfig(parsed.name, parsed.cfg, ctx.cfg!);
     pushCmdLine(ctx.state, { kind: 'meta', text: `已添加并连接 MCP 服务器「${parsed.name}」（工具已对模型可见）` });
+    ctx.out.pushToast(`✓ 已添加 MCP 服务器「${parsed.name}」`, 'success');
     if (persist.ok) pushCmdLine(ctx.state, { kind: 'meta', text: persist.message });
     else pushCmdLine(ctx.state, { kind: 'warn', text: persist.message });
     scheduleCmdPanelAutoClose(ctx.state, ctx.session);
@@ -408,6 +409,7 @@ async function runMcpSub(
     }
     const persist = removeMcpServerFromConfig(serverName, ctx.cfg!);
     pushCmdLine(ctx.state, { kind: 'meta', text: `已移除 MCP 服务器「${serverName}」（工具链已更新）` });
+    ctx.out.pushToast(`✓ 已移除 MCP 服务器「${serverName}」`, 'success');
     if (persist.ok) pushCmdLine(ctx.state, { kind: 'meta', text: persist.message });
     else pushCmdLine(ctx.state, { kind: 'warn', text: persist.message });
     scheduleCmdPanelAutoClose(ctx.state, ctx.session);

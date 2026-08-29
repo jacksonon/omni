@@ -20,7 +20,7 @@ import {
 } from '../output/format.js';
 import { INLINE_CODE_FG, markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
-import { CONTENT_PAD, STREAM_CURSOR, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
+import { CONTENT_PAD, STREAM_CURSOR, colToChar, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { visualWidth } from './width.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { TRACE_W } from './trace.js';
@@ -73,7 +73,114 @@ export interface Row {
 }
 
 /**
- * 工具卡片块底色 + 文字色：按执行状态取色——成功 → 淡绿底深绿字、
+ * 拖选选区（字符级）：{anchor/focus} 以行下标 + 列（显示列）表示。
+ * anchor = 按下起点、focus = 当前焦点；渲染/提取时归一化成 [start..end]。
+ */
+export interface TuiSelection {
+  /** 起点的内容行下标（rows 数组索引） */
+  aRow: number;
+  /** 起点的显示列（0-based，相对行首） */
+  aCol: number;
+  /** 焦点的内容行下标 */
+  fRow: number;
+  /** 焦点的显示列 */
+  fCol: number;
+}
+
+/**
+ * 判断一个选区是否跨了多余一行（用于鼠标 up 时判断「是否发生了拖动」：
+ * 起点与焦点同行同列 = 纯点击，不复制）。
+ */
+export function selectionMoved(sel: TuiSelection): boolean {
+  return sel.aRow !== sel.fRow || sel.aCol !== sel.fCol;
+}
+
+/** 归一化选区：返回 [start, end] 两个 {row, col}（按行优先排序） */
+function normRange(sel: TuiSelection): { s: { row: number; col: number }; e: { row: number; col: number } } {
+  const a = { row: sel.aRow, col: sel.aCol };
+  const f = { row: sel.fRow, col: sel.fCol };
+  if (a.row < f.row || (a.row === f.row && a.col <= f.col)) return { s: a, e: f };
+  return { s: f, e: a };
+}
+
+/**
+ * 横向取一行内某个字符区间（半开 [startCharInc, endCharExc)）在显示列上的范围。
+ * 拖选列坐标直接用显示列（字符宽度经 colToChar 换算），无需在这里折行。
+ */
+export function rowSelChars(row: Row, aCol: number, bCol: number): { start: number; end: number } {
+  // layout 只 type-import Row，无值级循环依赖，直接导入即可
+  // 拖到行尾之外 → 取到行尾（colToChar 递进式会漏最后一个字符：如行宽 11、拖到列 12
+  // → 只含前 7 字符漏末字。这里先把超宽列对准行尾，再交给 colToChar 换算）
+  const w = visualWidth(row.text);
+  const a = aCol >= w ? row.text.length : colToChar(row.text, aCol);
+  const b = bCol >= w ? row.text.length : colToChar(row.text, bCol);
+  return { start: a, end: b };
+}
+
+/**
+ * 对一行应用选区高亮：把 [aCol, bCol) 的显示列范围标成 selBg/selFg。
+ * 返回克隆后的 Row（chunks 重建；不修改原行）。woodrow 与原 chunks 同结构。
+ */
+export function markRowSelected(row: Row, aCol: number, bCol: number, theme: TuiTheme): Row {
+  if (aCol >= bCol) return row;
+  const { start, end } = rowSelChars(row, aCol, bCol);
+  if (start >= end) return row;
+  const text = row.text;
+  const base: MdChunk[] = row.chunks ?? [{ text, ...row.style }];
+  const out: MdChunk[] = [];
+  let charIdx = 0;
+  for (const c of base) {
+    const cEnd = charIdx + c.text.length;
+    // 片段落在选中区间之外：原样
+    if (start >= cEnd || end <= charIdx) {
+      out.push(c);
+      charIdx = cEnd;
+      continue;
+    }
+    // 片段前半（未选中）
+    if (charIdx < start && start < cEnd) {
+      out.push({ ...c, text: c.text.slice(0, start - charIdx) });
+    }
+    // 选中部分
+    const selStart = Math.max(start, charIdx);
+    const selEnd = Math.min(end, cEnd);
+    out.push({
+      ...c,
+      text: c.text.slice(selStart - charIdx, selEnd - charIdx),
+      fg: theme.selFg,
+      bg: theme.selBg,
+      bold: false,
+      dim: false,
+      italic: false,
+      underline: false,
+      strike: false,
+    });
+    // 片段后半（未选中）
+    if (cEnd > end) {
+      out.push({ ...c, text: c.text.slice(selEnd - charIdx) });
+    }
+    charIdx = cEnd;
+  }
+  return { ...row, chunks: out.filter((c) => c.text.length > 0) };
+}
+
+/** 从 rows 提取选区文本（跨多行用 \n 连接）；字符级精选取（列坐标按行 text 换算） */
+export function selectionText(rows: Row[], sel: TuiSelection): string {
+  const { s, e } = normRange(sel);
+  const lines: string[] = [];
+  for (let r = s.row; r <= e.row; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    const aCol = r === s.row ? s.col : 0;
+    const bCol = r === e.row ? e.col : row.text.length * 2; // 中间行取到底
+    const { start, end } = rowSelChars(row, aCol, bCol);
+    if (start < end) lines.push(row.text.slice(start, end));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 工具卡片块底色 + 文字色：按执行状态取色——成功 → 淡绿底深字、
  * 失败 → 淡红底深红字、执行中 → 超淡黄底深棕字（用户要求「执行成功淡绿色背景，
  * 执行异常淡红色背景」；两主题统一）。
  */

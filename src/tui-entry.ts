@@ -122,7 +122,7 @@ async function run(): Promise<void> {
       output.onUserMessage(singleTask);
       messages.push({ role: 'user', content: singleTask });
       await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
-      output.startLoading(); // 会话进行中：统计行左侧 loading 一直转
+      output.startLoading(); // 会话进行中：模型行思考级别右侧 loading 一直转
       try {
         await runAgent(client, cfg.model, messages, runOpts, output);
       } finally {

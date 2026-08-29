@@ -11,12 +11,18 @@ import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
-import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, SPINNER_FRAMES, type TuiState, type ToolStatus } from './state.js';
+import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, pushToast, SPINNER_FRAMES, type TuiState, type ToolStatus, type TuiToastType } from './state.js';
 import { t, tf } from './i18n.js';
 
 export class TuiOutput implements Output {
   readonly exitOnCtrlC = true; // TUI 渲染器处理 Ctrl+C（有输入时清空输入框、空输入退出），main 不注册自己的 SIGINT
   readonly thinking: ThinkingDisplay;
+
+  /** 弹出右上角 toast（Alert notification）：短暂显示后自动消失，不占对话流 */
+  pushToast(text: string, type: TuiToastType = 'info'): void {
+    pushToast(this.state, text, type);
+    this.schedulePaint();
+  }
   private paintTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * 思考过程展示开关（/thinking 运行时切换；初始值来自配置 showThinking）。
@@ -31,6 +37,8 @@ export class TuiOutput implements Output {
     private session: TuiSession
   ) {
     this.showThinking = opts.showThinking !== false;
+    // toast 自动消失定时器需要触发重绘：把 schedulePaint 注入 state（pushToast 内部使用）
+    state.schedulePaint = () => this.schedulePaint();
     const self = this; // thinking 对象方法里的 this 指向 thinking 本身，用闭包引用外层实例
     this.thinking = {
       get shown() {
@@ -292,6 +300,8 @@ export class TuiOutput implements Output {
     const lang = this.state.language;
     this.state.status = t(lang, 'status.requestFailed');
     pushLine(this.state, { kind: 'warn', text: `${t(lang, 'status.requestFailed')}：${(err as Error)?.message ?? String(err)}` });
+    // 请求失败 → 右上角错误 toast（对话流 warn 行保留，双通道提示）
+    this.pushToast(`${t(lang, 'status.requestFailed')}：${(err as Error)?.message ?? String(err)}`, 'error');
     this.schedulePaint();
   }
 

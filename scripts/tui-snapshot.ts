@@ -946,8 +946,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
-  // b2) 输入区域外部、统计行最左侧 loading（用户要求「加载按钮和 esc 显示在输入区域
-  //    外部、左下侧、和 statusLine 一行」）：未运行隐藏；运行中转圈（帧随 loadingIndex 换）；
+  // b2) 输入区域模型行内、思考级别右侧 loading（用户要求「loading esc 放到输入区域
+  //    模型思考级别右侧」）：未运行隐藏；运行中转圈（帧随 loadingIndex 换）；
   //    Esc/会话结束（loading=false）清空消失
   if (!tree15.footerLoading) {
     console.error('✗ 场景 15 loading 节点未创建');
@@ -972,19 +972,21 @@ async function main(): Promise<void> {
   const statsRow15 = frameLines15.findIndex((l) => l.includes('首 token'));
   const loadChar15 = SPINNER_FRAMES[2];
   const loadRow15 = frameLines15.findIndex((l) => l.includes(loadChar15));
-  if (loadingText15(tree15.footerLoading) !== loadChar15) {
-    console.error(`✗ 场景 15 loading 帧内容错误: ${JSON.stringify(loadingText15(tree15.footerLoading))}（应 ${loadChar15}）`);
+  // loading 内容 = `· ⠹`（分隔符「·」只在 loading 显示时出现，思考级别与 loading 之间）
+  if (loadingText15(tree15.footerLoading) !== `· ${loadChar15}`) {
+    console.error(`✗ 场景 15 loading 帧内容错误: ${JSON.stringify(loadingText15(tree15.footerLoading))}（应 · ${loadChar15}）`);
     process.exit(1);
   }
-  // loading 应在**统计行**（灰色块下方那行），不在模型行内——输入区域外部、左下侧
-  if (loadRow15 !== statsRow15 || statsRow15 <= modelRow15) {
-    console.error(`✗ 场景 15 loading 应位于统计行最左侧（输入区域外部；model=${modelRow15} stats=${statsRow15} load=${loadRow15}）`);
+  // loading 应在**模型行**（灰色块内那行），不在统计行——思考级别右侧
+  if (loadRow15 !== modelRow15) {
+    console.error(`✗ 场景 15 loading 应位于模型行内思考级别右侧（model=${modelRow15} stats=${statsRow15} load=${loadRow15}）`);
     console.log(frame15load);
     process.exit(1);
   }
-  // loading 应位于该行最左（列 < 统计文本列）
-  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) >= frameLines15[loadRow15]!.indexOf('首 token')) {
-    console.error('✗ 场景 15 loading 应位于统计行最左侧（统计文本之前）');
+  // loading 应位于该行模型文本之后（列 > 模型文本列）
+  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) <= frameLines15[loadRow15]!.indexOf('mock')) {
+    console.error('✗ 场景 15 loading 应位于模型行、模型文本之后');
+    console.log(frame15load);
     process.exit(1);
   }
   s15.loading = false;
@@ -995,7 +997,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 15 会话结束（loading=false）后 loading 应清空');
     process.exit(1);
   }
-  // b3) loading 右侧「esc」取消提示（同样在最左侧、loading 之后）：运行中显示（跟随 loading）、结束后消失
+  // b3) loading 右侧「esc」取消提示（思考级别右侧、loading 之后）：运行中显示（跟随 loading）、结束后消失
   if (!tree15.footerEsc) {
     console.error('✗ 场景 15 footerEsc 节点未创建');
     process.exit(1);
@@ -1009,15 +1011,25 @@ async function main(): Promise<void> {
   s15.loadingIndex = 2;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  if (escText15(tree15.footerEsc) !== 'esc') {
-    console.error(`✗ 场景 15 运行中 esc 提示应显示: ${JSON.stringify(escText15(tree15.footerEsc))}`);
+  if (escText15(tree15.footerEsc) !== 'esc interrupt') {
+    console.error(`✗ 场景 15 运行中 esc interrupt 提示应显示: ${JSON.stringify(escText15(tree15.footerEsc))}`);
     process.exit(1);
   }
   const escFrame15 = t15.captureCharFrame();
-  const escStatsRow15 = escFrame15.split('\n').findIndex((l) => l.includes('首 token'));
-  const escLine15 = escFrame15.split('\n')[escStatsRow15];
-  if (!escLine15 || !escLine15.includes('esc') || !escLine15.includes(SPINNER_FRAMES[2])) {
-    console.error('✗ 场景 15 运行中统计行应含 loading + esc 提示（输入区域外部、左下侧）');
+  const escModelRow15 = escFrame15.split('\n').findIndex((l) => l.includes('mock'));
+  const escLine15 = escFrame15.split('\n')[escModelRow15];
+  if (!escLine15 || !escLine15.includes('esc interrupt') || !escLine15.includes(SPINNER_FRAMES[2])) {
+    console.error('✗ 场景 15 运行中模型行应含 loading + esc interrupt 提示（思考级别右侧）');
+    console.log(escFrame15);
+    process.exit(1);
+  }
+  // b4) loading 与思考级别之间的「·」分隔符：只在 loading 显示时出现（esc interrupt 紧跟 loading）
+  const sepPos15 = escLine15.indexOf('·');
+  const loadPos15 = escLine15.indexOf(SPINNER_FRAMES[2]);
+  const escPos15 = escLine15.indexOf('esc interrupt');
+  if (sepPos15 < 0 || loadPos15 < 0 || escPos15 < 0 || !(sepPos15 < loadPos15 && loadPos15 < escPos15)) {
+    console.error(`✗ 场景 15 「· ⠹ esc interrupt」顺序/分隔符异常: ${escLine15}`);
+    console.log(escFrame15);
     process.exit(1);
   }
   // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）
@@ -5874,6 +5886,82 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 47 通过：hero 初始界面（大号字标 + 75% 输入区 + 隐藏统计行）');
+
+  // 场景 48：右上角 toast（Alert notification）——拖选复制成功/模型切换/命令结果/错误提示
+  // 统一收口：pushToast 设置 state.toast + 过期时间；repaintTree 渲染右上角浮层（✓ 前缀）；
+  // 过期自动清除（repaintTree 兜底）。
+  console.log('=== 场景 48：右上角 toast（拖选复制/模型切换/命令结果/错误统一提示）===');
+  {
+    const { pushToast, TOAST_MS } = await import('../src/tui/state.js');
+    // a) pushToast：设置 text/type/过期时间（≈ TOAST_MS）
+    const s48 = createTuiState();
+    s48.model = 'mock';
+    pushToast(s48, '✓ 已复制', 'success');
+    if (!s48.toast || s48.toast.text !== '✓ 已复制' || s48.toast.type !== 'success') {
+      console.error(`✗ 场景 48 pushToast 未设置 state.toast: ${JSON.stringify(s48.toast)}`);
+      process.exit(1);
+    }
+    if (Math.abs(s48.toast.expiresAt - Date.now() - TOAST_MS) > 50) {
+      console.error(`✗ 场景 48 toast 过期时间应为 now+${TOAST_MS}: ${s48.toast.expiresAt}`);
+      process.exit(1);
+    }
+    // b) 渲染：右上角出现「✓ 已复制」（toastBox 可见 + 帧含文本）
+    const t48 = await createTestRenderer({ width: 64, height: 20 });
+    const tree48 = mountTree(t48.renderer, s48, { withInput: true });
+    await t48.renderOnce();
+    const frame48 = t48.captureCharFrame();
+    if (!tree48.toastBox || !tree48.toastBox.visible) {
+      console.error('✗ 场景 48 toast 浮层不可见');
+      process.exit(1);
+    }
+    if (!frame48.includes('已复制')) {
+      console.error(`✗ 场景 48 帧中未见 toast 文本「已复制」:\n${frame48}`);
+      process.exit(1);
+    }
+    // 右上角：toast 文本应出现在帧顶部几行内（top=1），且明显靠右
+    const toastLineIdx48 = frame48.split('\n').findIndex((l) => l.includes('已复制'));
+    if (toastLineIdx48 < 0 || toastLineIdx48 > 3) {
+      console.error(`✗ 场景 48 toast 不在顶部（第 ${toastLineIdx48} 行，期望 ≤3）:\n${frame48}`);
+      process.exit(1);
+    }
+    const toastLine48 = frame48.split('\n')[toastLineIdx48] ?? '';
+    const col48 = toastLine48.indexOf('已复制');
+    if (col48 < 40) {
+      console.error(`✗ 场景 48 toast 不在右上角（列 ${col48}，期望 ≥40）:\n${frame48}`);
+      process.exit(1);
+    }
+    // c) 过期自动清除：把 expiresAt 改为过去 → 重绘后 toast 消失
+    s48.toast!.expiresAt = Date.now() - 1;
+    repaintTree(t48.renderer, tree48, s48, { withInput: true });
+    await t48.renderOnce();
+    if (s48.toast !== null || tree48.toastBox.visible) {
+      console.error('✗ 场景 48 过期 toast 未清除/未隐藏');
+      process.exit(1);
+    }
+    // d) 无 toast 时浮层隐藏（初始状态）
+    const s48b = createTuiState();
+    s48b.model = 'mock';
+    const t48b = await createTestRenderer({ width: 64, height: 20 });
+    const tree48b = mountTree(t48b.renderer, s48b, { withInput: true });
+    await t48b.renderOnce();
+    if (tree48b.toastBox?.visible !== false) {
+      console.error('✗ 场景 48 无 toast 时浮层应隐藏');
+      process.exit(1);
+    }
+    // e) 错误类型：✕ 前缀 + 红字（cardErrDim）
+    const s48c = createTuiState();
+    s48c.model = 'mock';
+    pushToast(s48c, '请求失败', 'error');
+    const t48c = await createTestRenderer({ width: 64, height: 20 });
+    const tree48c = mountTree(t48c.renderer, s48c, { withInput: true });
+    await t48c.renderOnce();
+    const frame48c = t48c.captureCharFrame();
+    if (!frame48c.includes('✕') || !frame48c.includes('请求失败')) {
+      console.error(`✗ 场景 48 error toast 缺 ✕ 前缀/文本:\n${frame48c}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 48 通过：右上角 toast（拖选复制/模型切换/命令结果/错误统一提示）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

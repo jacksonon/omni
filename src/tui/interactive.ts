@@ -37,7 +37,7 @@ function findProviderForModel(endpoints: ModelEndpoint[], model: string): string
 }
 import { insertMention } from './mention.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
-import { t } from './i18n.js';
+import { t, tf } from './i18n.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
 import { pushCmdLine, pushLine, type ScrollAction, type TuiState } from './state.js';
@@ -589,6 +589,8 @@ export async function runTuiInteractive(
       }
       applyEndpoint(endpoint);
       state.modelProvider = null;
+      // 模型切换成功 → 右上角 toast（✓ 已切换到 X；面板确认与 /model <名称> 两条路径共用）
+      out.pushToast(tf(state.language, 'toast.modelSwitched', { model: endpoint.name }), 'success');
     };
     // /model 面板确认的即时应用回调：confirmMenu（纯 state）记录意图后调用
     // syncModel——键盘 Enter/数字与鼠标点选两条确认路径共用（见 state.applyModelSwitch）

@@ -90,6 +90,38 @@ export interface TuiLine {
   tokens?: TurnTokens;
 }
 
+/** 右上角 toast 提示类型：info 信息 / success 成功 / error 错误 */
+export type TuiToastType = 'info' | 'success' | 'error';
+
+/**
+ * 右上角 toast（Alert notification）：短暂显示后自动消失，不占对话流、不阻塞输入。
+ * 覆盖：拖选复制成功（✓ 已复制）、模型/思考级别切换、命令面板短结果、错误提示。
+ */
+export interface TuiToast {
+  text: string;
+  type: TuiToastType;
+  /** 过期时间戳（Date.now()）：repaintTree 每帧检查，过期即清除；pushToast 另有定时器兜底 */
+  expiresAt: number;
+}
+
+/** toast 显示时长（毫秒） */
+export const TOAST_MS = 2600;
+
+/**
+ * 弹出右上角 toast：设置 state.toast + 过期时间；过期后经 state.schedulePaint（
+ * TuiOutput 构造时注入）触发一次重绘清除。调用方自身的 paint（如拖选 up 分支、
+ * 命令执行后）会立即渲染它。
+ */
+export function pushToast(state: TuiState, text: string, type: TuiToastType = 'info'): void {
+  state.toast = { text, type, expiresAt: Date.now() + TOAST_MS };
+  setTimeout(() => {
+    if (state.toast && state.toast.expiresAt <= Date.now()) {
+      state.toast = null;
+      state.schedulePaint?.();
+    }
+  }, TOAST_MS + 60);
+}
+
 /** 待发送消息类型：queue = 正常排队（Enter）；steer = 打断优先（Cmd/Ctrl/Option+Enter，插入最前） */
 export type PendingMode = 'queue' | 'steer';
 
@@ -555,6 +587,17 @@ export interface TuiState {
    * 无需反向依赖 TuiOutput 即可完成审批。
    */
   approvalResolve: ((allow: boolean) => void) | null;
+  /**
+   * 右上角 toast（Alert notification）：非空 = 显示（短暂后自动消失）；
+   * 由 pushToast 设置，repaintTree 每帧检查 expiresAt 过期清除。
+   * 覆盖：拖选复制成功（✓ 已复制）、模型/思考级别切换、命令面板短结果、错误提示。
+   */
+  toast: TuiToast | null;
+  /**
+   * 触发一次重绘的回调（TuiOutput 构造时注入 schedulePaint；pushToast 的
+   * 自动消失定时器用它清除 toast——无其它事件驱动时也能按时消失）。
+   */
+  schedulePaint: (() => void) | null;
 }
 
 export function createTuiState(): TuiState {
@@ -631,6 +674,8 @@ export function createTuiState(): TuiState {
     traceScroll: 0,
     traceSelected: -1,
     traceDetail: null,
+    toast: null,
+    schedulePaint: null,
   };
 }
 

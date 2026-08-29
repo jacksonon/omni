@@ -21,16 +21,17 @@
  *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
- *   ▍ Build · grok-4.5 demo · medium │ 模型行（模式/模型/组/级别；无 loading——已移出）
+ *   ▍ Build · grok-4.5 demo · medium · ⠹ esc interrupt │ 模型行（模式/模型/组/级别 + 思考级别右侧 loading/esc interrupt）
  *   ╰──────────────────────────────╯
- *   ⠹ esc 首 token 平均 6.5s · 112 tok/s| … ← 统计行（loading/esc 左下侧 + 统计内容，对齐可配）
+ *   首 token 平均 6.5s · 112 tok/s| …    ← 统计行（仅统计内容，对齐可配；loading/esc 已入模型行）
  *
  * 灰色块（输入框 + 模型行，淡灰色背景，四边 16px 圆角）与对话流区分；
  * 左侧**蓝色细线（▍，与对话流用户消息同款）**贴左缘、**竖跨整个灰色背景**（含上下
  * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4，
  * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0，
  * 输入框与模型行之间留 1 行间距，灰块 = 圆角边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4）。
- * 模型行（**左对齐**——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）。
+ * 模型行（**左对齐**——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）
+ * + 思考级别右侧的 loading/esc interrupt（会话进行中转圈 + esc 打断提示，`·` 分隔符仅 loading 时显示）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
  *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
  *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/⚡）；
@@ -56,6 +57,7 @@ import {
   parseColor,
 } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
+import { execFileSync } from 'node:child_process';
 import { openInEditor } from '../agent/report.js';
 import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { logCrash } from './crashlog.js';
@@ -65,7 +67,7 @@ import { detectMention, insertMention, listMentionCandidates } from './mention.j
 import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
 import { effortColor, isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
-import { SPINNER_FRAMES, pushLine, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
+import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { visualWidth } from './width.js';
 import {
   cmdPanelRows,
@@ -74,11 +76,15 @@ import {
   hitTestCard,
   hitTestThinking,
   hitTestTokens,
+  markRowSelected,
   menuPanelRows,
+  selectionMoved,
+  selectionText,
   settingsPanelRows,
   type CardRect,
   type Row,
   type RowStyle,
+  type TuiSelection,
 } from './rows.js';
 
 // 行构建与命中判定（纯函数层）对 render 的调用方保持原有导出面（快照测试等）
@@ -231,6 +237,20 @@ export interface TuiTree {
   askCells: TextRenderable[];
   /** 每次重绘刷新：ask 面板行的屏幕 y → 行类型（鼠标点击勾选/确认用） */
   askRects: Map<number, { kind: 'opt' | 'custom' | 'confirm'; idx?: number }>;
+  /**
+   * 本次可见的内容行（computeRows 结果，含滚动提示/窗口），供拖选字符级定位
+   * （x → 行内列 → 字符）与 up 时提取选区文本。每次重绘刷新。
+   */
+  lastRows: Row[];
+  /**
+   * 拖选选区（字符级精选取中）：非 null = 正在/刚完成一次拖选。
+   * 坐标用内容行下标 + 显示列（相对行首），渲染/提取都按它。
+   * up 时若 selectionMoved 为 false（纯点击）则清除不复制。
+   */
+  sel: TuiSelection | null;
+  /** 右上角 toast 浮层（Alert notification：绝对定位右上角，短暂显示自动消失） */
+  toastBox: BoxRenderable | null;
+  toastCell: TextRenderable | null;
 }
 
 /** 建树（首帧）：根 Box（无边框）+ 输入框 + 状态栏挂到 root 下，内容行由 repaintTree 维护 */
@@ -337,10 +357,11 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     });
     contentCol.add(input);
 
-    // 模型行（输入框下方，灰色块内，**左对齐**）：模式 + 模型 + provider + 思考级别
-    // `Build/Plan · 模型名 组 · 级别`（模式前缀独立着色：Build 绿 / Plan 蓝；级别按强度
-    // 着色）。**loading + esc 已移出灰色块**——用户要求「显示在输入区域外部、
-    // 左下侧、和 statusLine 一行」（见下方 infoRow：统计行最左侧）。
+    // 模型行（输入框下方，灰色块内，**左对齐**）：模式 + 模型 + provider + 思考级别 + loading/esc
+    // `Build/Plan · 模型名 组 · 级别 · ⠹ esc`（模式前缀独立着色：Build 绿 / Plan 蓝；
+    // 级别按强度着色）。**loading + esc 在思考级别右侧、模型行内**——用户要求
+    // 「loading esc 放到输入区域模型思考级别右侧」；会话进行中显示旋转帧 + esc，
+    // Esc/会话结束隐藏。
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
       justifyContent: 'flex-start',
@@ -359,6 +380,18 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerEffort = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerEffort.fg = parseColor(theme.footerDim);
     modelRow.add(footerEffort);
+    // loading（模型行内、思考级别右侧）：会话进行中显示旋转帧，Esc/会话结束消失
+    footerLoading = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
+    modelRow.add(footerLoading);
+    // loading 右侧的「esc」取消提示（淡色小字；跟随 loading 显示/隐藏）
+    footerEsc = new TextRenderable(ctx, {
+      content: '',
+      wrapMode: 'none',
+      attributes: createTextAttributes({ dim: true }),
+    });
+    footerEsc.fg = parseColor(theme.footerDim);
+    modelRow.add(footerEsc);
     contentCol.add(modelRow);
 
     footerBox.add(contentCol);
@@ -490,6 +523,24 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     traceCells.push(c);
   }
 
+  // 右上角 toast 浮层（Alert notification）：绝对定位右上角（top=1、右缘=1），
+  // 短暂显示自动消失；zIndex 最高（11）——不被菜单/命令面板/轨迹面板遮挡。
+  // 宽度按文本显示宽每帧重算（clamp 到视口内）；无 toast 时整体隐藏。
+  const toastBox = new BoxRenderable(ctx, {
+    position: 'absolute',
+    zIndex: 11,
+    flexDirection: 'row',
+    visible: false,
+    backgroundColor: theme.suggestBg,
+    border: true,
+    borderStyle: 'rounded',
+    borderColor: theme.suggestBorder,
+    paddingX: 1,
+  });
+  root.add(toastBox);
+  const toastCell = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+  toastBox.add(toastCell);
+
   // 待发送消息区：灰色块（输入框）正上方——运行中 Enter 提交的消息在此显示（标题 + 最多 4 条，
   // 每条带 queue/steer 徽标），不参与内容区滚动；回合结束后 interactive 按序消费。
   // 行数随 pending 长度变化（标题 1 + 最多 4 条 + 超出时「还有 N 条」1 行）。
@@ -535,34 +586,17 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
   root.add(bottomBlock);
-  // 统计行（灰色块下方，不在灰色背景里）：**loading + esc 提示在行首（左下侧）**，
-  // 统计内容随后——用户要求「加载按钮和 esc 显示在输入区域外部、左下侧、和 statusLine
-  // 一行」。行结构：`⠹ esc`（运行中可见）+ 统计文本（水平位置可配：statuslineAlign
-  // 左/中/右，statsWrap justifyContent 由 repaintTree 每帧刷新）。
-  // marginTop:1 与输入区域（灰色块）之间留 1 行间距（用户要求）
+  // 统计行（灰色块下方，不在灰色背景里）：**只有统计文本**——loading/esc 已移入模型行。
+  // 统计内容水平位置可配（statuslineAlign 左/中/右，statsWrap justifyContent 由
+  // repaintTree 每帧刷新）。marginTop:1 与输入区域（灰色块）之间留 1 行间距（用户要求）
   const infoRow = new BoxRenderable(ctx, {
     flexDirection: 'row',
     justifyContent: 'flex-start',
     alignItems: 'center',
-    gap: 1,
     marginTop: 1,
   });
   if (opts?.withInput) {
-    // loading（会话进行中转圈 state.loading + loadingIndex；Esc/会话结束消失）——
-    // 输入区域外部、统计行最左侧（用户要求）
-    footerLoading = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
-    // loading 右侧「esc」取消提示（淡色小字；跟随 loading 显示/隐藏）
-    footerEsc = new TextRenderable(ctx, {
-      content: '',
-      wrapMode: 'none',
-      attributes: createTextAttributes({ dim: true }),
-    });
-    footerEsc.fg = parseColor(theme.footerDim);
-    infoRow.add(footerLoading);
-    infoRow.add(footerEsc);
-    // 统计文本容器：占据 loading/esc 之后的剩余宽度，justifyContent 按 statuslineAlign
-    //（左/中/右）每帧刷新——对齐只作用于统计内容本身，loading/esc 恒在行首
+    // 统计文本容器：占据整行宽度，justifyContent 按 statuslineAlign（左/中/右）每帧刷新
     const statsWrapBox = new BoxRenderable(ctx, { flexDirection: 'row', flexGrow: 1, justifyContent: 'center' });
     statsWrap = statsWrapBox;
     footerTokens = new TextRenderable(ctx, {
@@ -619,6 +653,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     traceRect: null,
     traceRowMap: [],
     traceLeft: 0,
+    lastRows: [],
+    sel: null,
+    toastBox,
+    toastCell,
   };
   repaintTree(ctx, tree, state, opts);
   return tree;
@@ -950,27 +988,28 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   if (tree.footerTokens) {
     // footer 统计行（用户要求的格式）：首 token/速率 · 缓存命中 · 输入输出 · 上下文；
-    // 超宽时按段从右截断（fitFooterStats）。**与 loading/esc 共用一行**——loading/esc
-    // 固定在行首（输入区域外部、左下侧），统计内容在剩余宽度内按 statuslineAlign
-    // 左/中/右对齐（/settings statusline 面板 a 键 + Enter 保存：statuslineAlign 即时生效）。
+    // 超宽时按段从右截断（fitFooterStats）。loading/esc 已移入模型行（思考级别右侧），
+    // 统计行只剩统计内容本身，占据整行按 statuslineAlign 左/中/右对齐
+    //（/settings statusline 面板 a 键 + Enter 保存：statuslineAlign 即时生效）。
     // hero 模式下 infoRow 整体隐藏（见 hero 块），这里只负责正常模式的内容
     if (tree.statsWrap) {
       tree.statsWrap.justifyContent =
         state.statuslineAlign === 'left' ? 'flex-start' : state.statuslineAlign === 'right' ? 'flex-end' : 'center';
     }
-    // 统计文本可用宽度：视口 - 根内边距(2) - 行首 loading/esc 占用（运行时 ≈1+1+3+1=6 列）
-    const loadingW = state.loading && tree.footerLoading && tree.footerLoading.content ? 7 : 0;
-    const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2 - loadingW);
+    // 统计文本可用宽度：整个视口 - 根内边距(2)（无行首 loading/esc 占用）
+    const inner = Math.max(1, (width ?? 80) - CONTENT_PAD - 2);
     tree.footerTokens.content = fitFooterStats(buildFooterStats(state), inner);
   }
-  // loading（模型行内、模型文本右面）：会话进行中显示旋转帧，
-  // Esc/会话结束（state.loading=false）清空；右侧「esc」提示跟随显示/隐藏
+  // loading（模型行内、思考级别右侧）：会话进行中显示旋转帧，
+  // Esc/会话结束（state.loading=false）清空；右侧「esc interrupt」提示跟随显示/隐藏。
+  // 分隔符「·」只出现在 loading 显示时（思考级别 与 loading 之间，用户要求：
+  // 让用户知道 esc 可以打断——`· ⠹ esc interrupt`），会话结束一并消失。
   if (tree.footerLoading) {
     tree.footerLoading.content =
-      state.loading && state.loadingIndex >= 0 ? SPINNER_FRAMES[state.loadingIndex % SPINNER_FRAMES.length] : '';
+      state.loading && state.loadingIndex >= 0 ? `· ${SPINNER_FRAMES[state.loadingIndex % SPINNER_FRAMES.length]}` : '';
   }
   if (tree.footerEsc) {
-    tree.footerEsc.content = state.loading ? 'esc' : '';
+    tree.footerEsc.content = state.loading ? 'esc interrupt' : '';
   }
   // 状态栏可见性：hero 模式（未开始对话）隐藏「就绪」状态，让居中 hero 布局干净；
   // 正常交互模式需 11 行（灰色块 + 统计行 + 状态栏 + 内边距），不足时隐藏状态栏；
@@ -1229,7 +1268,39 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
 
+  // 右上角 toast（Alert notification）：短暂显示自动消失，不占对话流、不阻塞输入。
+  // 绝对定位右上角（top=1、右缘=1）；宽度按文本显示宽重算（clamp 到视口内，长文截断）；
+  // 类型着色：success 绿 / error 红 / info 默认；主题切换（/theme 或检测晚到）底色跟随刷新。
+  if (tree.toastBox && tree.toastCell) {
+    const toast = state.toast;
+    if (!toast || Date.now() >= toast.expiresAt) {
+      if (toast) state.toast = null; // 过期：repaintTree 兜底清除（pushToast 定时器也会清）
+      tree.toastBox.visible = false;
+    } else {
+      tree.toastBox.backgroundColor = theme.suggestBg;
+      tree.toastBox.borderColor = parseColor(theme.suggestBorder);
+      // 内容 = 类型图标 + 文本（文本已带 ✓/✕ 前缀则不再叠加——拖选复制 pushToast 的
+      // 文案自带「✓ 已复制」；命令/错误提示不带则这里补图标）；按显示宽算浮层宽（paddingX 2 + 边框 2）
+      const hasIcon = /^[✓✕]\s/.test(toast.text);
+      const icon = !hasIcon ? (toast.type === 'success' ? '✓ ' : toast.type === 'error' ? '✕ ' : '') : '';
+      const full = icon + toast.text;
+      const avail = Math.max(8, (width ?? 80) - 4); // 视口 - 右缘 1 - 根 padding 1 - 边框余量
+      const textW = visualWidth(full);
+      const w = Math.min(textW, avail);
+      const shown = textW > avail ? full.slice(0, Math.max(0, fitCount(full, avail - 1))) + '…' : full;
+      // 浮层宽度由内容自适应（同 traceBox：OpenTUI 由子文本决定宽，显式 width 会压缩内部）
+      tree.toastBox.top = 1;
+      tree.toastBox.left = Math.max(1, (width ?? 80) - (w + 2) - 1); // 右缘贴视口右边界
+      tree.toastCell.visible = true;
+      tree.toastCell.content = shown;
+      const fg = toast.type === 'success' ? theme.modeBuild : toast.type === 'error' ? theme.cardErrDim : theme.suggestText;
+      tree.toastCell.fg = parseColor(fg);
+      tree.toastBox.visible = true;
+    }
+  }
+
   const rows = computeRows(state, { height, width }, opts);
+  tree.lastRows = rows; // 供拖选字符级定位（x → 行内列 → 字符）与 up 时提取选区文本
   const anchor = tree.status; // 内容行始终插在状态栏之前（联想列表是独立浮层，不在内容流里）
   while (tree.cells.length < rows.length) {
     // 池增长：新建细胞插到状态栏前（一次原生分配；此后原位更新不再分配）
@@ -1255,7 +1326,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
     cell.visible = true;
     try {
-      applyRowToCell(cell, rows[i], theme);
+      // 拖选高亮：选区命中的行按选中列范围重绘底色/文字色（markRowSelected 克隆重建 chunks）
+      let r = rows[i];
+      if (tree.sel && i >= 0 && i < rows.length) r = selecRow(rows, i, tree.sel, theme) ?? r;
+      applyRowToCell(cell, r, theme);
     } catch (e) {
       // 单行失败保留旧内容，不让整帧挂掉；连续相同错误只记一次（防刷爆日志）
       const msg = e instanceof Error ? e.message : String(e);
@@ -1352,6 +1426,53 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
 }
 
+/**
+ * 把一行按选区换算成选中列范围并应用高亮（markRowSelected）。
+ * 选区用行下标 + 显示列（相对行首）；起点/终点行只选部分列，中间行整行高亮。
+ * 行不在选区范围内 → null（原样渲染）。
+ */
+function selecRow(rows: Row[], i: number, sel: TuiSelection, theme: TuiTheme): Row | null {
+  // 归一化：把 anchor/focus 整理成 [start, end]（行优先排序）
+  const a = { row: sel.aRow, col: sel.aCol };
+  const f = { row: sel.fRow, col: sel.fCol };
+  const s = a.row < f.row || (a.row === f.row && a.col <= f.col) ? a : f;
+  const e = a.row < f.row || (a.row === f.row && a.col <= f.col) ? f : a;
+  if (i < s.row || i > e.row) return null;
+  const row = rows[i];
+  const aCol = i === s.row ? s.col : 0;
+  const bCol = i === e.row ? e.col : row.text.length * 4; // 中间行取到底（超宽可被 colToChar 截断）
+  return markRowSelected(row, aCol, bCol, theme);
+}
+
+/**
+ * 把文本写进系统剪贴板：先尝试 OSC52（写 `\x1b]52;c;<base64>\x07`，主流终端都支持，
+ * 零外部依赖），再回退到平台剪贴板工具（macOS pbcopy / Linux xclip·wl-copy；
+ * Windows 用 PowerShell Set-Clipboard）。任一成功即可；全部失败静默（拖选不打断）。
+ */
+function copyTextToClipboard(text: string): void {
+  if (!text) return;
+  try {
+    process.stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
+  } catch {
+    // OSC52 失败（非 TTY/被吞）→ 回退子进程
+  }
+  try {
+    if (process.platform === 'darwin') execFileSync('pbcopy', [], { input: text });
+    else if (process.platform === 'linux') {
+      // 优先 wl-copy（Wayland），没有再用 xclip
+      try {
+        execFileSync('wl-copy', [], { input: text });
+      } catch {
+        execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
+      }
+    } else if (process.platform === 'win32') {
+      execFileSync('powershell', ['-NoProfile', '-Command', 'Set-Clipboard'], { input: text });
+    }
+  } catch {
+    // 无剪贴板工具（如最小容器）→ 拖选功能不中断，仅复制失效
+  }
+}
+
 /** OpenTUI 鼠标事件的结构化子集（滚轮滚动 + 点击展开卡片用） */
 interface MouseEventLike {
   type?: string;
@@ -1385,6 +1506,48 @@ export function handleTuiMouseEvent(
   /** 点击本地文件链接时的回调（startTui 注入：挂起 TUI → $EDITOR 打开 → 恢复 + 重绘）；未注入则命中链接不消费 */
   onOpenFile?: (path: string) => void,
 ): void {
+  // —— 拖选复制（字符级精选取中，见 AGENTS.md）——
+  // 状态机：down（左键落在内容行）→ 建立选区起点 tree.sel；drag → 移动焦点行/列；
+  // up → 若发生了真正拖动（selectionMoved）则提取选区文本写系统剪贴板并清空选区，
+  // 否则（纯点击）清空不复制。渲染层 repaintTree 读 tree.sel 给命中行画 selBg 高亮。
+  // 坐标换算：内容行 i 的事件 y = i + 1；行内显示列 c 的事件 x = c + 1（根 paddingX:1）。
+  // 菜单/审批/联想等浮层打开时拖选被下方守卫整体忽略（不穿透，保持原有点击行为）。
+  if (tree.sel) {
+    // up：拖动结束 → 有位移则复制，否则只是点击。无论哪种都清除选区
+    if (e.type === 'up' && e.button === 0) {
+      const sel = tree.sel;
+      tree.sel = null;
+      if (selectionMoved(sel) && typeof e.x !== 'undefined' && typeof e.y !== 'undefined') {
+        const text = selectionText(tree.lastRows, sel);
+        if (text) {
+          copyTextToClipboard(text);
+          // 复制成功 → 右上角 toast（✓ 已复制；立即显示，paint 在下方统一触发）
+          pushToast(state, t(state.language, 'toast.copied'), 'success');
+        }
+      }
+      void paint();
+      return;
+    }
+    // drag：更新焦点行/列（跟随鼠标拖动，字符级）
+    if (e.type === 'drag' && typeof e.x === 'number' && typeof e.y === 'number') {
+      tree.sel.fRow = Math.max(0, e.y - 1);
+      tree.sel.fCol = Math.max(0, e.x - 1);
+      void paint();
+      return;
+    }
+  }
+  // 左键按下且未在浮层上（此时无选区）：若落在内容行，开始拖选
+  if (e.type === 'down' && e.button === 0 && typeof e.x === 'number' && typeof e.y === 'number') {
+    if (
+      !state.menu &&
+      !state.settingsPanel &&
+      !state.cmdPanel &&
+      e.y >= 1 &&
+      e.y <= tree.lastRows.length
+    ) {
+      tree.sel = { aRow: e.y - 1, aCol: Math.max(0, e.x - 1), fRow: e.y - 1, fCol: Math.max(0, e.x - 1) };
+    }
+  }
   // 菜单浮层（/theme /permission /settings language 等）：点击选项行 = 选中并确认
   // （等同数字键 + Enter，用户反馈「点击也没有可选择的语言选项」——此前菜单鼠标被整体忽略）。
   // 面板内其它区域点击忽略；都不穿透到下层内容。

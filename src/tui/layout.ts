@@ -138,6 +138,30 @@ export function fitFooterStats(text: string, width: number): string {
   return out === text ? text : `${out}…`;
 }
 
+/**
+ * 把显示列偏移（0-based，相对行首）换算成字符下标（UTF-16 码元）。
+ * 拖选（字符级精选取中）用：鼠标事件 x = 内容列 + 1（根 paddingX:1），
+ * 行内列 c → 字符下标。CJK/emoji 全角按 charWidth 累计，断点不会落在
+ * 代理对中间（emoji 整对保留或整对舍弃）。col 超出行的显示宽度 → 行尾。
+ */
+export function colToChar(text: string, col: number): number {
+  if (col <= 0) return 0;
+  let cols = 0;
+  let i = 0;
+  for (; i < text.length; i++) {
+    const w = charWidth(text[i]);
+    if (cols + w > col) break;
+    cols += w;
+  }
+  // 断点落在代理对后半（emoji 等 astral 字符）时回退到前半之前，避免切出半个乱码
+  while (i > 0 && i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xdc00 && code <= 0xdfff) i--;
+    else break;
+  }
+  return i;
+}
+
 /** 文本中段截断（保留头尾，省略号指示省略）：长路径只显示首段与末段 */
 export function truncateMiddle(text: string, max: number): string {
   if (max < 8 || visualWidth(text) <= max) return text;
