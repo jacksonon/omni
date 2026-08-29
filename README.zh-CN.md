@@ -358,24 +358,7 @@ npm run tui:snapshot                 # TUI 渲染快照
 ## 使用指导（Usage Guide）
 
 > 完整使用手册（安装/配置/Headless 与 CI/MCP/Hooks/技能/FAQ）：[`Doc/使用指导.md`](Doc/使用指导.md)（中文）·
-> [`Doc/Usage-Guide.md`](Doc/Usage-Guide.md)（English）。本节是浓缩速查。
-
-### TUI 操作速查（全屏交互模式）
-
-| 操作 | 作用 |
-|---|---|
-| **Enter** | 发送消息 |
-| **Shift+Enter** | 换行（kitty 协议终端） |
-| **Cmd/Ctrl+Enter** | steer 打断：中止当前回合，新消息插入正在进行的这一轮 |
-| **Esc** | 取消正在运行的回合（无浮层打开时） |
-| 运行中提交 | 普通消息进「⏳ 待发送」列表、回合结束自动发送；steer 消息插队优先 |
-| `/` + 输入 | 命令联想浮层（↑/↓ 移动、Tab 填入、Enter 执行、Esc 关闭、点击填入） |
-| `@` + 输入 | 文件/目录提及浮层（Tab/Enter 插入；目录 `@path/` 继续下钻） |
-| 点击工具卡片 | 展开/收起完整输出与 diff（默认收起只显示命令） |
-| 点击思考行 | 单独折叠/展开该思考模块；`/thinking` 开/关思考过程展示（关闭后不再流式显示） |
-| 点击 token 汇总 | 展开逐次 LLM 请求明细（`⚡ 输入 X · 输出 Y · 缓存 Z`） |
-| 滚轮 / PgUp/PgDn / ↑↓ / Home / End | 滚动内容（End 回到最新） |
-| `/settings theme` · `/settings language` | 亮色/深色/跟随系统 · 中文/English 界面（持久化） |
+> [`Doc/Usage-Guide.md`](Doc/Usage-Guide.md)（English）。本节是浓缩速查（TUI 按键/点击操作详见上述手册）。
 
 ### 命令速查（全部 `/` 命令，TUI 与 console 交互通用）
 
@@ -442,65 +425,11 @@ npm run tui:snapshot                 # TUI 渲染快照
 
 ## 架构
 
-```
-src/
-  index.ts              # CLI 入口：参数 → 配置 → 客户端 → 单次/交互
-  main.ts               # attachRuntime：Safety 闸门 + MCP 工具发现 + delegate 注入 + 上下文准备
-  client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用
-  exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；--output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）；stdin 两形态；--max-turns / --allowed-tools / --output-schema（JSON Schema 子集校验）；exit code 0/1；exec resume <id>；omni_exec/omni_reply MCP 工具
-
-  web/                  # **Web 模式（`omni web`）**：本地后端服务（REST+SSE，零依赖）+ 浏览器界面——index.ts（入口：参数 + prepareRun + attachRuntime + 自动开浏览器）· server.ts（http 服务：SSE 事件广播 + 会话/消息/审批/提问/设置路由 + 静态页面托管（内嵌 assets 回退））· output.ts（WebOutput：Output 事件带 sessionId 广播；审批/提问经 pending 注册表）· events.ts（事件协议名）· assets.ts（web/ 内嵌副本，`npm run web:sync` 生成）
-
-  electron/             # **Electron 桌面应用（`omni`）**：main.cjs（Electron 主进程：以 Electron 自带 Node（ELECTRON_RUN_AS_NODE）执行 `dist/omni.cjs web --no-open` → 轮询 /api/status → 开 BrowserWindow；单实例锁 · 应用菜单（选择工作目录）· 退出杀后端；开发模式走 tsx 源码）+ package.json `build` 字段（electron-builder：mac zip arm64/x64 / win nsis x64 / linux AppImage x64）；GitHub Actions 打 tag 全平台构建
-
-  web/                  # 浏览器页面（仓库根目录）：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；是 src/web/assets.ts 的源——`npm run web:sync` 重新生成内嵌副本）
-  ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题
-  version.ts            # 版本号常量
-  cli/                  # 参数解析 / banner / 交互模式（28 个 / 命令）
-  agent/
-    loop.ts             # Agent 主循环：流式调 LLM → 并行工具调用 → 执行 → 回传
-    thinking.ts         # 思考过程：流式显示 / 落盘
-    messages.ts         # 消息组装：assistant 消息构造、工具参数解析
-    context.ts          # 上下文管理：相关文件预载 + 长对话摘要压缩（保留脚手架）+ 记忆注入
-    memory.ts           # 记忆系统：全局/项目记忆级联发现、加载、截断 + 会话结束自动提取写入（去重/矛盾合并）
-    init.ts             # /init [--global]：扫描项目/全局环境 → LLM 生成 AGENTS.md
-    session.ts          # 会话持久化：JSONL 落盘 + 列表/恢复（--continue / -r / -l / /resume）
-    report.ts           # 会话状态/上下文用量/导出/诊断/配置路径共享逻辑（/status /context /export /doctor /config）
-    review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    skill.ts            # 技能系统：SKILL.md 发现 / frontmatter 扩展解析 / 按名加载 / 渐进披露 / npx skills CLI / 安装即时生效 / 子代理执行
-    subagent.ts         # 子代理：隔离上下文嵌套循环（共用 Safety 闸门）
-    title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
-  safety/               # 安全护栏：权限分级（policy）/ 审批 / 审计日志（audit）
-  hooks/                # 生命周期自动化：HookRunner（9 事件、JSON 协议 stdin/stdout、matcher 通配、stderr 捕获、超时/失败降级放行；配置分层合并全局+项目）
-  tools/                # 工具注册表：5 基础工具 + skill 静态注册；delegate / mcp_* 运行时注入
-    undo.ts             # /undo 文件撤销：write_file 快照 + 恢复 + redo 重做栈
-  output/               # 输出层：console / TUI 共用格式化（format.ts 工具卡片、types.ts 接口）
-  config/               # 分层合并 / JSONC 解析 / 配置发现
-  tui/                  # 命令式渲染的全屏 TUI（state / render / rows / layout / theme / width / markdown / commands / interactive / output / crashlog）
-scripts/
-  mock-server.mjs       # 本地 mock OpenAI API（无 Key 端到端测试，含标题/摘要/usage 分支）
-  mock-mcp.mjs          # mock MCP 服务器（stdio JSON-RPC）
-  tui-snapshot.ts       # TUI 快照验证（内存渲染断言）
-  pack-tui.sh           # 一键打包 TUI：版本同步 + bundle + npm pack（--compile 额外出原生二进制）
-  eval/                 # 评估任务集 + 运行器（mock 离线 / 真实 API）
-packages/
-  omni-tui/             # TUI npm 包：bundle 产物 + package.json（bin: omni，@opentui/core 平台原生库走 optionalDependencies）
-```
-
-核心循环：
-
-```
-for step in 1..maxSteps:
-  1. 流式调用 LLM（携带全部历史消息 + 系统提示词）
-  2. 无工具调用 → 输出最终回答，结束
-  3. 有工具调用 → 解析 JSON 参数 → 并行执行（每个调用先过 Safety 闸门）
-  4. 结果以 role=tool 回传 → 回到 1
-```
-
-关键机制：自我纠错、工具结果 8000 字符截断（提示模型定向读取）、安全护栏（权限分级 + 审批 + 审计）、并行工具执行、子代理隔离上下文、`maxSteps` 防死循环。
-
-> 逐模块完整架构（每个工具、TUI 层、配置字段、命令）：
+> 逐模块完整架构（源码树、每个工具、TUI 层、配置字段、命令）见专文：
 > [`Doc/architecture.md`](Doc/architecture.md)（英文） · [`Doc/架构.md`](Doc/架构.md)（中文）。
+
+核心循环：流式调用 LLM → 并行工具调用（每个先过 Safety 闸门）→ 以 `role=tool` 回传，
+以 `maxSteps` 与 8000 字符结果截断防死循环。
 
 ## 开发
 
