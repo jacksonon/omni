@@ -198,16 +198,27 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   pointer-events: none;
 }
 .session-item.active::before { background: var(--blue); }
-/* 运行中：竖向彩虹渐变 + 光晕呼吸（多条运行多条彩色；当前会话仍以 .active 背景高亮区分） */
+/* 运行中：竖向彩虹渐变 + 竖向走马灯（彩条沿条流动，不只呼吸）；多条运行多条彩色，
+ * 当前会话仍以 .active 背景高亮区分。走马灯 = repeating 硬色带（周期 30px = 6 色 × 5px），
+ * background-position-y 平移恰好一个周期 → 无缝循环；保留柔和紫光晕做运行态光效。 */
 .session-item.running::before {
   width: 4px;
   border-radius: 0 4px 4px 0;
-  background: linear-gradient(to bottom, #f43f5e, #f97316, #facc15, #22c55e, #3b82f6, #a855f7);
-  animation: run-bar-breathe 1.8s ease-in-out infinite;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    #f43f5e 0,   #f43f5e 5px,
+    #f97316 5px,  #f97316 10px,
+    #facc15 10px,  #facc15 15px,
+    #22c55e 15px,  #22c55e 20px,
+    #3b82f6 20px,  #3b82f6 25px,
+    #a855f7 25px,  #a855f7 30px
+  );
+  box-shadow: 0 0 6px 0 rgba(168, 85, 247, .45);
+  animation: run-bar-scroll 1.6s linear infinite;
 }
-@keyframes run-bar-breathe {
-  0%, 100% { opacity: 1; box-shadow: 0 0 3px 0 rgba(244, 63, 94, .35); }
-  50% { opacity: .5; box-shadow: 0 0 10px 2px rgba(168, 85, 247, .5); }
+@keyframes run-bar-scroll {
+  from { background-position: 0 0; }
+  to   { background-position: 0 30px; } /* 平移恰好一个周期 → 无缝循环 */
 }
 .session-icon { display: none; }
 .session-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
@@ -346,7 +357,11 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .tool-args { flex: 1; min-width: 0; color: var(--text-secondary); font-family: var(--mono); font-size: 12.5px; line-height: 20px; word-break: break-all; }
 .tc-head:has(.tool-name)::before { display: none; }
 .tool-card:has(.tool-name), .tool-card.running { background: transparent; border: none; }
-.tool-card:has(.tool-name) .tc-head, .tool-card.running .tc-head { display: flex; align-items: flex-start; background: transparent; height: auto; min-height: 24px; padding: 2px 0; }
+/* 运行中的通用工具卡（web_search 等，无 .tool-name）保持 align-items:center ——" 展开箭头与文本
+ * 垂直居中对齐；flex-start 只用于 ● Bash 卡（tool-name），避免运行中箭头贴顶、完成后才居中的跳动。
+ * 二者 specificity 相同，:has(.tool-name) 必须排在 .running 之后才能在 Bash 卡上生效。 */
+.tool-card.running .tc-head { display: flex; align-items: center; background: transparent; height: auto; min-height: 24px; padding: 2px 0; }
+.tool-card:has(.tool-name) .tc-head { display: flex; align-items: flex-start; background: transparent; height: auto; min-height: 24px; padding: 2px 0; }
 .tool-card:has(.tool-name).selected .tc-head, .tool-card:has(.tool-name):hover .tc-head { background: transparent; }
 /* 流式光标（打字机效果） */
 .stream-cursor { display: inline-block; width: 2px; height: 1em; margin-left: 1px; vertical-align: -.12em; background: var(--blue); animation: cursor-soft .8s ease-in-out infinite; }
@@ -633,7 +648,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .model-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 50; display: flex; flex-direction: column; gap: 1px; width: min(300px, calc(100vw - 32px)); max-height: min(400px, 60vh); overflow-y: auto; padding: 6px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: 0 16px 48px rgba(0, 0, 0, .16); }
 .pop-head { padding: 6px 8px 4px; color: var(--text-caption); font-size: 11px; font-weight: 500; }
 .pop-sep { height: 1px; margin: 5px 4px; background: var(--line-1); }
-.pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; }
 .pop-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
 .pop-item:hover { background: var(--surface-hover-solid); }
 .pop-item.active { color: var(--blue); font-weight: 500; }
@@ -776,21 +790,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .fetch-item-cap { color: var(--text-caption); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
 .pop-select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 9px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; cursor: pointer; }
 .pop-select:focus { border-color: var(--blue); }
-.pop-head-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
-.pop-head-row .pop-head { padding: 0; }
-/* 当前档位值：颜色 = 当前档位色（--level-color 由 JS 同步） */
-.pop-val {
-  font-size: 12px;
-  font-weight: 600;
-  display: inline-block;
-  color: var(--level-color, #a855f7);
-}
-/* 吸附时标签弹跳 */
-@keyframes pop-val-snap {
-  0% { transform: scale(1.32); }
-  100% { transform: scale(1); }
-}
-.pop-val.snap { animation: pop-val-snap .25s var(--ease); }
+/* 思考级别 slider 上方的当前档位文字（.pop-val / .pop-head-row）已移除：
+ * 底部标签高亮已足够；且其 pop-val-snap 弹跳动画会在卡片顶部制造「整卡晃动」观感 */
 /* —— 思考级别 slider：modern slider with linear gradient（参考 Lottie 动画
  *    「modern-slider-with-linear-gradient」）——
  * 配色：**不同档位不同颜色**——轨道渐变按档位生成色标（低=品牌蓝/冷 → 靛/紫 → 品红 →
@@ -813,24 +814,28 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   margin: 14px 2px 2px;
   z-index: 0;
 }
-.slider-inner { position: relative; height: 6px; margin: 0 var(--pad); }
+/* 竖向加高：横条不再 6px 扁平，改为 ~20px 立体胶囊，高度=按钮（thumb）高度 ——
+ * 未填充段用 window 阴影做内凹、填充段配顶部光泽+底部微阴影出立体感，避免看起来扁平。 */
+.slider-inner { position: relative; height: 20px; margin: 0 var(--pad); }
 .slider-track {
   position: absolute;
   inset: 0;
   border-radius: 999px;
   background: var(--line-2);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08); /* 内凹 → 立体 */
 }
 .slider-fill {
   position: absolute;
   top: 0;
   left: var(--pad);
   width: calc((100% - 2 * var(--pad)) * var(--fill) / 100);
-  height: 6px;
+  height: 20px;
   border-radius: 999px;
   overflow: hidden; /* 流光/光泽裁剪在填充宽度内 */
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, .26), rgba(255, 255, 255, 0) 52%),
+    linear-gradient(180deg, rgba(255, 255, 255, .38), rgba(255, 255, 255, 0) 52%),
     var(--slider-grad);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--slider-glow) 60%, transparent));
   transition: width .18s var(--ease), filter .18s var(--ease);
   z-index: 1;
@@ -855,8 +860,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   position: absolute;
   top: 50%;
   left: calc(var(--pad) + (100% - 2 * var(--pad)) * var(--fill) / 100);
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: #fff;
@@ -923,10 +928,10 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   background: #fff;
   box-shadow: 0 0 6px color-mix(in srgb, var(--slider-glow) 80%, transparent);
 }
-.slider-dot.pop { animation: slider-dot-pop .3s var(--ease); }
+.slider-dot.pop { animation: slider-dot-pop .25s var(--ease); }
 @keyframes slider-dot-pop {
-  0% { transform: translate(-50%, -50%) scale(1.9); }
-  100% { transform: translate(-50%, -50%) scale(1); }
+  0% { transform: translate(-50%, -50%) scale(1.45); opacity: .5; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
 /* 原生 range 透明交互层：盖住整个 slider（拖拽 / 点击跳转 / 键盘方向键） */
 .slider-input {
@@ -939,31 +944,51 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   cursor: pointer;
   z-index: 3;
 }
-.slider-input::-webkit-slider-runnable-track { height: 6px; background: transparent; }
+.slider-input::-webkit-slider-runnable-track { height: 20px; background: transparent; }
 .slider-input::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 20px;
   height: 20px;
-  margin-top: -7px; /* (6-20)/2 居中于 6px 轨道 */
+  margin-top: 0; /* (20-20)/2 居中于 20px 轨道 */
   background: transparent;
   border: 0;
 }
-.slider-input::-moz-range-track { height: 6px; background: transparent; }
+.slider-input::-moz-range-track { height: 20px; background: transparent; }
 .slider-input::-moz-range-thumb { width: 20px; height: 20px; background: transparent; border: 0; }
-.pop-ticks { display: flex; justify-content: space-between; padding: 0 2px 2px; color: var(--text-caption); font-size: 11px; }
-.pop-ticks span { padding: 2px 3px; border-radius: 6px; cursor: pointer; transition: color .15s var(--ease), background .15s var(--ease); }
+/* 档位标签：与滑块轨道同宽同缩进（margin 0 12px = wrap 2px + --pad 10px），
+ * 每个标签绝对定位在所在刻度点的正上方（left 与刻度点同一 calc，translateX(-50%) 居中）——
+ * 端点 none/max 精确对齐滑块两端（旧实现 space-between 撑满整行，端点标签悬在轨道外留白）。 */
+.pop-ticks {
+  position: relative;
+  height: 22px;
+  margin: 0 12px 2px;
+  --pad: 10px;
+  color: var(--text-caption);
+  font-size: 11px;
+}
+.pop-ticks span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 2px 3px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color .15s var(--ease), background .15s var(--ease);
+}
 .pop-ticks span:hover { color: var(--text-secondary); }
 .pop-ticks span.active {
   font-weight: 600;
   color: var(--level-color, #a855f7);
 }
-/* 吸附时激活标签弹跳（只动 transform——active 标签是渐变文字，动画不动 background 避免背景覆盖） */
+/* 吸附时激活标签弹跳（只动 transform——active 标签是渐变文字，动画不动 background 避免背景覆盖）
+ * 缩小弹跳幅度，切换思考级别不再整卡跳动；translateX(-50%) 保持居中不偏移 */
 @keyframes pop-tick-snap {
-  0% { transform: scale(1.35); }
-  100% { transform: scale(1); }
+  0% { transform: translateX(-50%) scale(1.12); }
+  100% { transform: translateX(-50%) scale(1); }
 }
-.pop-ticks span.pop { animation: pop-tick-snap .25s var(--ease); }
+.pop-ticks span.pop { animation: pop-tick-snap .2s var(--ease); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: rgba(97, 102, 107, .3); background-clip: padding-box; }

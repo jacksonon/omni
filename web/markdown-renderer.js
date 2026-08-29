@@ -31,6 +31,65 @@
     return /^(https?:|mailto:|tel:)/i.test(s) ? s : '';
   }
 
+  /* ---------------- LaTeX 命令 → Unicode 数学符号 ----------------
+   * 轻量转换：项目不内嵌 KaTeX 排版，markstream 把 $...$ 解析成 math_inline 节点后
+   * 目前只做转义输出，"\rightarrow"、"\gg" 等会原样显示为反斜杠文本。这里把常见
+   * \command 转成等价 Unicode 符号（箭头/关系/运算/希腊字母等），使对话里数学符号
+   * 能正确显示。只作用于正文文本与数学节点 —— 代码块/行内代码保持原样（\command 是源码）。 */
+  const LATEX_UNICODE = {
+    // 箭头
+    'rightarrow': '→', 'leftarrow': '←', 'leftrightarrow': '↔', 'Leftrightarrow': '⇔',
+    'Rightarrow': '⇒', 'Leftarrow': '⇐', 'uparrow': '↑', 'downarrow': '↓', 'updownarrow': '↕',
+    'Uparrow': '⇑', 'Downarrow': '⇓', 'mapsto': '↦', 'longrightarrow': '⟶', 'longleftarrow': '⟵',
+    'longleftrightarrow': '⟷', 'hookrightarrow': '↪', 'rightleftharpoons': '⇌', 'leadsto': '↝',
+    'nearrow': '↗', 'searrow': '↘', 'nwarrow': '↖', 'swarrow': '↙',
+    // 关系
+    'gg': '≫', 'll': '≪', 'leq': '≤', 'le': '≤', 'geq': '≥', 'ge': '≥', 'neq': '≠', 'ne': '≠',
+    'equiv': '≡', 'approx': '≈', 'cong': '≅', 'sim': '∼', 'simeq': '≃', 'propto': '∝',
+    'lesssim': '≲', 'gtrsim': '≳', 'prec': '≺', 'succ': '≻', 'preceq': '≼', 'succeq': '≽',
+    'subset': '⊂', 'supset': '⊃', 'subseteq': '⊆', 'supseteq': '⊇', 'subsetneq': '⊊', 'supsetneq': '⊋',
+    'in': '∈', 'notin': '∉', 'ni': '∋', 'owns': '∋', 'parallel': '∥', 'nparallel': '∦',
+    'perp': '⊥', 'models': '⊨', 'vdash': '⊢', 'dashv': '⊣',
+    // 运算 / 集合
+    'times': '×', 'cdot': '·', 'cdots': '⋯', 'ldots': '…', 'pm': '±', 'mp': '∓', 'div': '÷',
+    'ast': '∗', 'star': '⋆', 'circ': '∘', 'bullet': '•', 'oplus': '⊕', 'ominus': '⊖',
+    'otimes': '⊗', 'oslash': '⊘', 'odot': '⊙', 'cap': '∩', 'cup': '∪', 'sqcap': '⊓', 'sqcup': '⊔',
+    'vee': '∨', 'lor': '∨', 'wedge': '∧', 'land': '∧', 'setminus': '∖', 'backslash': '∖',
+    'sum': '∑', 'prod': '∏', 'coprod': '∐', 'int': '∫', 'iint': '∬', 'iiint': '∭', 'oint': '∮',
+    'bigcup': '⋃', 'bigcap': '⋂', 'bigoplus': '⨁', 'mid': '∣', 'shortmid': '∣',
+    // 其它数学符号
+    'infty': '∞', 'partial': '∂', 'nabla': '∇', 'exists': '∃', 'nexists': '∄', 'forall': '∀',
+    'emptyset': '∅', 'varnothing': '∅', 'aleph': 'ℵ', 'hbar': 'ℏ', 'ell': 'ℓ', 'wp': '℘',
+    'Re': 'ℜ', 'Im': 'ℑ', 'angle': '∠', 'measuredangle': '∡',
+    'prime': '′', 'top': '⊤', 'bot': '⊥', 'flat': '♭', 'natural': '♮', 'sharp': '♯', 'checkmark': '✓',
+    'triangleq': '≜', 'asymp': '≍',
+    // 希腊字母（小写→大写）
+    'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε', 'varepsilon': 'ε',
+    'zeta': 'ζ', 'eta': 'η', 'theta': 'θ', 'vartheta': 'ϑ', 'iota': 'ι', 'kappa': 'κ', 'varkappa': 'ϰ',
+    'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ', 'pi': 'π', 'varpi': 'ϖ', 'rho': 'ρ',
+    'varrho': 'ϱ', 'sigma': 'σ', 'varsigma': 'ς', 'tau': 'τ', 'upsilon': 'υ', 'phi': 'φ',
+    'varphi': 'ϕ', 'chi': 'χ', 'psi': 'ψ', 'omega': 'ω',
+    'Gamma': 'Γ', 'Delta': 'Δ', 'Theta': 'Θ', 'Lambda': 'Λ', 'Xi': 'Ξ', 'Pi': 'Π',
+    'Sigma': 'Σ', 'Upsilon': 'Υ', 'Phi': 'Φ', 'Psi': 'Ψ', 'Omega': 'Ω',
+    // 命名函数 / 算子：去掉反斜杠（可读）
+    'sin': 'sin', 'cos': 'cos', 'tan': 'tan', 'cot': 'cot', 'sec': 'sec', 'csc': 'csc',
+    'sinh': 'sinh', 'cosh': 'cosh', 'tanh': 'tanh', 'log': 'log', 'ln': 'ln', 'exp': 'exp',
+    'lim': 'lim', 'max': 'max', 'min': 'min', 'sup': 'sup', 'inf': 'inf', 'arg': 'arg',
+    'det': 'det', 'rank': 'rank', 'dim': 'dim', 'ker': 'ker', 'gcd': 'gcd',
+    // 分隔符 / 尺寸命令 → 去除（\left( x \right) → ( x )）
+    'left': '', 'right': '', 'big': '', 'Big': '', 'bigg': '', 'Bigg': '',
+    'bigl': '', 'Bigl': '', 'biggl': '', 'Biggl': '', 'bigr': '', 'Bigr': '', 'biggr': '', 'Biggr': '',
+  };
+  const LATEX_RE = /\\([A-Za-z]+)/g;
+
+  /** 轻量 LaTeX → Unicode：先处理有参数的 \frac{}{} / \sqrt{}，再查命令表替换。 */
+  function latexToUnicode(s) {
+    s = String(s ?? '');
+    s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, (_, a, b) => `${a}/${b}`);
+    s = s.replace(/\\sqrt\{([^{}]*)\}/g, (_, x) => (x.length === 1 ? '√' + x : '√(' + x + ')'));
+    return s.replace(LATEX_RE, (m, name) => (Object.prototype.hasOwnProperty.call(LATEX_UNICODE, name) ? LATEX_UNICODE[name] : m));
+  }
+
   /* ---------------- AST → HTML ---------------- */
   /** 渲染子节点序列（inline / block 通用） */
   function childrenHtml(nodes) {
@@ -192,7 +251,7 @@
   function nodeToHtml(n) {
     if (!n || typeof n.type !== 'string') return '';
     switch (n.type) {
-      case 'text': return esc(n.content ?? '');
+      case 'text': return esc(latexToUnicode(n.content ?? ''));
       case 'paragraph': return `<p>${childrenHtml(n.children)}</p>`;
       case 'inline': return childrenHtml(n.children);
       case 'heading': {
@@ -235,8 +294,8 @@
       case 'checkbox_input': return n.checked ? '<span class="task-done">☑</span>' : '<span class="task-todo">☐</span>';
       case 'emoji': return esc(n.markup ?? n.name ?? '');
       case 'hardbreak': return '<br>';
-      case 'math_inline': return `<span class="md-math">${esc(n.content ?? '')}</span>`;
-      case 'math_block': return `<pre class="md-math">${esc(n.content ?? '')}</pre>`;
+      case 'math_inline': return `<span class="md-math">${esc(latexToUnicode(n.content ?? ''))}</span>`;
+      case 'math_block': return `<pre class="md-math">${esc(latexToUnicode(n.content ?? ''))}</pre>`;
       // 原始 HTML：作为纯文本转义输出（AI 输出不可信，避免 XSS 注入）
       case 'html_block':
       case 'html_inline': return esc(n.content ?? n.raw ?? '');

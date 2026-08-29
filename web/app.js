@@ -909,14 +909,21 @@ function assistantBlock(sessionId) {
   const wrap = el('div', 'msg assistant');
   const body = el('div', 'md-body');
   wrap.appendChild(body);
-  // 操作按钮：复制（当前文本）+ 重试（重发前一条用户消息）——放在 body 外，流式重绘不丢掉
+  // 操作按钮：拷贝（全部回答内容）+ 重新处理（重发前一条用户消息）——不随块默认挂载，
+  // 而是由 showActions() 在整轮（run）真正结束时才挂到「最后一个回答」上：
+  // 中间的 thinking/tool 回答块不带按钮（避免每条服务端消息都有拷贝/刷新）。
   const actions = el('div', 'msg-actions');
   actions.appendChild(msgIconButton(t('msg.copy'), SVG_ICON_COPY, () => copyText(b._text || '')));
   actions.appendChild(msgIconButton(t('msg.retry'), SVG_ICON_RETRY, () => {
     const prompt = prevUserMsgText(wrap);
     if (prompt) doSend(prompt);
   }));
-  wrap.appendChild(actions);
+  b.showActions = () => {
+    if (actions.parentNode || !actions.children.length) return;
+    wrap.appendChild(actions);
+    scrollBottom();
+  };
+  lastAnswerBlock = b; // 记录最近一个回答块：run.end / error / cancel / 历史加载时对它挂按钮
   msgList().appendChild(wrap);
   b._streaming = true; // paint 时向最后一个文本块末尾注入 .stream-cursor span
   b.stopCursor = () => {
@@ -934,6 +941,12 @@ function assistantBlock(sessionId) {
     scrollBottom();
   };
   return b;
+}
+
+/* 终答揭示：轮次结束（run.end / error / cancel）或历史加载后，把拷贝/重新处理按钮挂到
+ * 最后一个回答块上（中间思考/工具段落不挂）。showActions 幂等，重复调用无副作用。 */
+function revealLastAnswer() {
+  if (lastAnswerBlock) { lastAnswerBlock.showActions(); lastAnswerBlock = null; }
 }
 
 /** 流式光标：在最后一个有内容的文本块末尾注入内联竖条 span（打字机效果，
@@ -2067,6 +2080,7 @@ async function renderSessionHistory(id) {
       }
       // tool 消息已在 assistant 的 tool_calls 分支处理，跳过
     });
+    revealLastAnswer(); // 历史已加载完：仅最后一个回答带 拷贝/重新处理
     renderWelcome();
     state.autoFollow = true; // 切换/恢复会话：回到底部跟随模式
     scrollBottom(true);
@@ -2579,6 +2593,7 @@ bus.on('thinking.end', (ev) => {
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
 });
 
+let lastAnswerBlock = null; // 最近一个回答块（终答才挂拷贝/重新处理按钮）：run.end/error/cancel/历史加载时消费
 let currentAssistant = null;
 bus.on('answer.chunk', (ev) => {
   if (ev.sessionId !== state.session) return;
@@ -2680,6 +2695,7 @@ bus.on('run.end', async (ev) => {
     state._restoredMidRun = false;
     await renderSessionHistory(ev.sessionId).catch(() => {});
   }
+  revealLastAnswer(); // 本轮真正结束：只在最后一个回答块上挂 拷贝/重新处理
   // 本轮统计行
   const t = state.turnTokens;
   const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -2749,6 +2765,7 @@ bus.on('error', (ev) => {
   state._localRunning.delete(ev.sessionId);
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
   if (currentAssistant) { currentAssistant.stopCursor(); currentAssistant = null; }
+  revealLastAnswer(); // 出错：残存回答也算终答，允许拷贝/重试
   currentTools.clear();
   stopRunRing();
   updateComposer();
@@ -3922,6 +3939,7 @@ function cancelCurrentRun() {
     // 否则 interval 驱动的 spinner 继续转、实时耗时继续走）
     if (currentThinking) { currentThinking.finish(); currentThinking = null; }
     if (currentAssistant) { currentAssistant.paint(); currentAssistant.stopCursor(); currentAssistant = null; }
+    revealLastAnswer(); // 取消：残存回答也算终答，允许拷贝/重试
     currentTools.clear();
     stopRunRing();
     // 乐观清理：停止后不再自动消费待发送队列
@@ -4103,11 +4121,8 @@ function renderModelPop(s) {
     pop.appendChild(el('div', 'pop-empty', '该模型未提供思考级别'));
   } else {
     const curEff = s.reasoningEffort || efforts[0];
-    const headRow = el('div', 'pop-head-row');
-    headRow.appendChild(el('div', 'pop-head', ''));
-    const val = el('span', 'pop-val', curEff);
-    headRow.appendChild(val);
-    pop.appendChild(headRow);
+    // 不显示 slider 上方的当前档位文字（.pop-val）：底部标签高亮已足够；
+    // 同时避免其 pop-val-snap 弹跳动画（scale + opacity 闪烁）在卡片顶部制造「整卡晃动」观感
     const idx = Math.max(0, efforts.indexOf(curEff));
     const steps = Math.max(1, efforts.length - 1);
     // 自定义渲染层：底轨 → 渐变填充 → 刻度点 → 发光 thumb；原生 range 盖在最上层作交互层
@@ -4145,6 +4160,7 @@ function renderModelPop(s) {
     efforts.forEach((t, i) => {
       const sp = el('span', null, t);
       if (i === idx) sp.classList.add('active'); // 初始高亮当前档位
+      sp.style.left = steps === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`; // 与刻度点同 x：端点标签 none/max 对齐滑块两端
       sp.addEventListener('click', () => { // 点刻度直达该档
         range.value = String(i);
         range.dispatchEvent(new Event('change'));
@@ -4179,11 +4195,10 @@ function renderModelPop(s) {
     range.addEventListener('input', () => {
       wrap.classList.add('dragging');
       const pos = nearestIdx();
-      val.textContent = efforts[pos] ?? '';
       setFill(pos);
       setTicks(pos, false);
     });
-    // 松手：吸附最近档位并生效；播放动效（thumb 涟漪 + 标签/刻度弹跳），短暂停留后关闭
+    // 松手：吸附最近档位并生效；播放动效（thumb 涟漪 + 标签/刻度弹跳），弹层保持打开
     range.addEventListener('change', () => {
       const pos = nearestIdx();
       const v = efforts[pos];
@@ -4192,13 +4207,11 @@ function renderModelPop(s) {
       setFill(pos);
       setTicks(pos, true);
       if (!v) return;
-      val.textContent = v; // 弹层不再自动关闭：同步当前档位标签（旧逻辑关闭前无需更新）
-      replay(val, 'snap');
       replay(thumb, 'snap');
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
         .then(() => { applied = pos; }) // 不关闭：用户可能反复调整思考级别，点弹层外才关闭
-        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); val.textContent = efforts[applied]; });
+        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); });
     });
   }
 }
