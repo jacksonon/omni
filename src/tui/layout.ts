@@ -7,7 +7,7 @@ import type { MdChunk } from './markdown.js';
 import type { TuiTheme } from './theme.js';
 import { charWidth, visualWidth } from './width.js';
 import type { Row } from './rows.js';
-import type { SessionStats, TuiState } from './state.js';
+import type { LiveStreamStats, SessionStats, TuiState } from './state.js';
 import type { TokenUsage } from '../output/types.js';
 
 /** 内容区可用宽度 = 视口宽 - paddingX(2)（无根边框） */
@@ -45,13 +45,24 @@ export function formatToolDur(ms: number): string {
  * x = 上下文信息：lastPrompt = 最近一次 LLM 请求的 prompt token（来自流末 chunk 的
  * usage ——「LLM 消息内」拿到的当前上下文大小）；contextLimit = 当前模型 context 上限
  * （config limit.context；未知为 0）。
+ * live = 流式进行中的实时状态（若非 null，代表正处于流式生成，包含实时 tps 与累积估算 token）。
  */
 export interface StatuslineSegment {
   id: string;
   label: string;
   labelEn: string;
-  build(s: SessionStats, t: TokenUsage, x: { lastPrompt: number; contextLimit: number }): string;
-  buildEn(s: SessionStats, t: TokenUsage, x: { lastPrompt: number; contextLimit: number }): string;
+  build(
+    s: SessionStats,
+    t: TokenUsage,
+    x: { lastPrompt: number; contextLimit: number },
+    live?: LiveStreamStats | null
+  ): string;
+  buildEn(
+    s: SessionStats,
+    t: TokenUsage,
+    x: { lastPrompt: number; contextLimit: number },
+    live?: LiveStreamStats | null
+  ): string;
 }
 
 /** 全部可用状态行段（顺序 = 默认显示顺序） */
@@ -60,34 +71,55 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
     id: 'speed',
     label: '首token/速率',
     labelEn: 'First token/Rate',
-    build: (s, t) => {
-      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      // 生成耗时优先用 genMs（首内容 → 末内容）；单 chunk 响应 genMs=0 时回退
-      // llmMs - firstTokenSum（首 token → 流结束，仍 >0），1ms 下限防除零
-      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
-      return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+    build: (s, t, _x, live) => {
+      const firstAvg = live && live.firstTokenMs != null
+        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
+        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
+      let rate = 0;
+      if (live && live.liveGenMs > 0) {
+        // 流式生成中：高精度实时速率（纯生成耗时口径排除首 token 等待）
+        rate = Math.round(live.tps);
+      } else {
+        // 生成耗时优先用 genMs（首内容 → 末内容）；单 chunk 响应 genMs=0 时回退
+        // llmMs - firstTokenSum（首 token → 流结束，仍 >0），1ms 下限防除零
+        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+        rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
+      }
+      return `首 token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
-    buildEn: (s, t) => {
-      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
-      return `First token avg ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+    buildEn: (s, t, _x, live) => {
+      const firstAvg = live && live.firstTokenMs != null
+        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
+        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
+      let rate = 0;
+      if (live && live.liveGenMs > 0) {
+        rate = Math.round(live.tps);
+      } else {
+        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+        rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
+      }
+      return `First token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
   {
     id: 'cache',
     label: '缓存命中',
     labelEn: 'Cache hit',
-    build: (s, t) => `缓存命中 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
-    buildEn: (s, t) => `Cache hit ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
+    build: (s, t) => `缓存 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
+    buildEn: (s, t) => `Cache ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
   },
   {
     id: 'tokens',
     label: '输入/输出',
     labelEn: 'In/Out',
-    build: (_s, t) => `输入 ${formatCompact(t.prompt)} tok · 输出 ${formatCompact(t.completion)} tok`,
-    buildEn: (_s, t) => `In ${formatCompact(t.prompt)} tok · Out ${formatCompact(t.completion)} tok`,
+    build: (_s, t, _x, live) => {
+      const comp = t.completion + (live ? live.streamTokens : 0);
+      return `输入 ${formatCompact(t.prompt)} · 输出 ${formatCompact(comp)}`;
+    },
+    buildEn: (_s, t, _x, live) => {
+      const comp = t.completion + (live ? live.streamTokens : 0);
+      return `In ${formatCompact(t.prompt)} · Out ${formatCompact(comp)}`;
+    },
   },
   {
     id: 'context',
@@ -102,8 +134,27 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
   },
 ];
 
-/** 默认状态行段顺序（未配置 / 非法时回退） */
-export const STATUSLINE_DEFAULT: string[] = STATUSLINE_SEGMENTS.map((sg) => sg.id);
+/** 根据当前上下文 token 与上限计算圆环图标与格式化文本（5 档 Unicode 环） */
+export function formatContextRing(lastPrompt: number, contextLimit: number): { ring: string; text: string; percent: number } {
+  if (lastPrompt <= 0) {
+    return { ring: '○', text: '0', percent: 0 };
+  }
+  const ratio = contextLimit > 0 ? lastPrompt / contextLimit : 0;
+  const pct = Math.min(100, Math.round(ratio * 100));
+  let ring = '○';
+  if (pct > 75) ring = '●';
+  else if (pct > 50) ring = '◕';
+  else if (pct > 25) ring = '◑';
+  else if (pct > 0) ring = '◔';
+
+  const text = contextLimit > 0
+    ? `${formatCompact(lastPrompt)}/${formatCompact(contextLimit)}`
+    : `${formatCompact(lastPrompt)}`;
+  return { ring, text, percent: pct };
+}
+
+/** 默认状态行段顺序（未配置 / 非法时回退：上下文已移入输入区模型行常驻显示，底部默认不重复占用） */
+export const STATUSLINE_DEFAULT: string[] = ['speed', 'cache', 'tokens'];
 
 /**
  * 构建 footer 统计行（用户要求的格式，各段以 `| ` 分隔）：
@@ -120,7 +171,7 @@ export function buildFooterStats(state: TuiState): string {
   const segs = order
     .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
     .filter((x): x is StatuslineSegment => !!x)
-    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x) : sg.build(state.stats, state.tokens, x)));
+    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x, state.liveStream) : sg.build(state.stats, state.tokens, x, state.liveStream)));
   return segs.join('| ');
 }
 
@@ -315,18 +366,19 @@ export function wrapRow(row: Row, width: number): Row[] {
  * 文字 + 竖线 + 行尾剩余字符全部填充灰色背景，整行对齐，类比工具卡片/用户气泡）
  * 按主题（深色：白字深灰底；亮色：深字淡灰底）；折行后每行都保留竖线 + 整行底。 */
 export function wrapUserLine(text: string, width: number, theme: TuiTheme): Row[] {
-  const inner = Math.max(1, width - 1); // 竖线占 1 列
+  const inner = Math.max(1, width - 2); // 竖线占 1 列 + 左侧间距 1 列（与输入框 paddingX 1 对齐）
   const chunks: MdChunk[] = [{ text, fg: theme.userText, bg: theme.footerBg }];
   return wrapChunks(chunks, inner).map((rowChunks) => {
-    const used = 1 + rowChunks.reduce((a, c) => a + visualWidth(c.text), 0); // 竖线 + 文字列数
+    const used = 2 + rowChunks.reduce((a, c) => a + visualWidth(c.text), 0); // 竖线(1) + 间距(1) + 文字列数
     const fill = Math.max(0, width - used); // 行尾剩余列：填充灰色背景，整行铺满
     return {
-      text: `${ACCENT_BAR}${rowChunks.map((c) => c.text).join('')}`,
+      text: `${ACCENT_BAR} ${rowChunks.map((c) => c.text).join('')}`,
       style: { fg: theme.userText, bg: theme.footerBg },
       chunks: [
         { text: ACCENT_BAR, fg: theme.accentBlue, bg: theme.footerBg },
+        { text: ' ', bg: theme.footerBg },
         ...rowChunks,
-        ...(fill > 0 ? [{ text: ' '.repeat(fill), bg: theme.footerBg }] : []),
+        { text: ' '.repeat(fill), bg: theme.footerBg },
       ],
     };
   });

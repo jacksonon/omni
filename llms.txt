@@ -11,8 +11,7 @@
 - [Doc/tui-architecture.md](Doc/tui-architecture.md) — TUI 渲染实现细节（修改 TUI 前必读）
 - [Doc/roadmap.md](Doc/roadmap.md) — 路线图全量条目
 - [Doc/release-guide.md](Doc/release-guide.md) — 构建与发布完整流程（CI/npm/关键坑）
-- [Doc/TODO.md](Doc/TODO.md) — 可做事项 backlog
-- [Doc/TODO-1.0.md](Doc/TODO-1.0.md) — 1.0 版本规划
+- [Doc/TODO.md](Doc/TODO.md) — 可做事项 backlog + 1.0 调研与规划（合并版）
 - [Doc/Usage-Guide.md](Doc/Usage-Guide.md) — 用户手册（英文）
 - [Doc/使用指导.md](Doc/使用指导.md) — 用户手册（中文）
 - [Doc/Headless-Protocol.md](Doc/Headless-Protocol.md) — headless/协议冻结说明

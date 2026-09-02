@@ -38,11 +38,11 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
   switch (name) {
     case 'run_command': {
       const cmd = argStr(args, 'command').trim().replace(/\s*\n\s*/g, ' ');
-      s = cmd ? `● Bash(${cmd})` : '● Bash()';
+      s = cmd ? `$ ${cmd}` : '$';
       break;
     }
     case 'read_file':
-      s = `→ Read ${argStr(args, 'path')}`;
+      s = `* Read ${argStr(args, 'path')}`;
       break;
     case 'write_file':
       s = `← Write ${argStr(args, 'path')}`;
@@ -514,27 +514,27 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
     const isNew = isWriteDiff && card.diff!.original === null;
     const prefix = isEditDiff ? '← Edit' : isNew ? '← Write' : '← Edit';
     lines.push({
-      text: padInner(` ${prefix} ${truncateToWidth(filePath, Math.max(8, inner - 8 - spinSuffix.length))}${spinSuffix}`, contentWidth),
+      text: padInner(`  ${prefix} ${truncateToWidth(filePath, Math.max(8, inner - 8 - spinSuffix.length))}${spinSuffix}`, contentWidth),
       role: 'exec',
     });
   } else if (isRead) {
     const paths = card.paths ?? [];
     if (paths.length > 1) {
       const exploredHead = `→ Explored — ${paths.length} reads`;
-      lines.push({ text: padInner(` ${exploredHead}${spinSuffix}`, contentWidth), role: 'cmd' });
+      lines.push({ text: padInner(`  ${exploredHead}${spinSuffix}`, contentWidth), role: 'cmd' });
     } else {
-      lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+      lines.push({ text: padInner(`  ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
     }
   } else if (isSearch || card.name === 'list_directory' || card.name === 'web_fetch') {
-    lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+    lines.push({ text: padInner(`  ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
   } else {
     const segs = wrapText(card.summary, inner - 1 - spinSuffix.length);
     if (segs.length === 0) {
-      lines.push({ text: padInner(` ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
+      lines.push({ text: padInner(`  ${card.summary}${spinSuffix}`, contentWidth), role: 'cmd' });
     } else {
-      lines.push({ text: padInner(` ${segs[0]}${spinSuffix}`, contentWidth), role: 'cmd' });
+      lines.push({ text: padInner(`  ${segs[0]}${spinSuffix}`, contentWidth), role: 'cmd' });
       for (let i = 1; i < segs.length; i++) {
-        lines.push({ text: padInner(` ${segs[i]}`, contentWidth), role: 'cmd' });
+        lines.push({ text: padInner(`  ${segs[i]}`, contentWidth), role: 'cmd' });
       }
     }
   }
@@ -545,10 +545,10 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       const shown = card.liveLines.slice(-maxShow);
       const hidden = card.liveLines.length - shown.length;
       for (const raw of shown) {
-        for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
+        for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(`  ${seg}`, contentWidth), role: 'out' });
       }
       if (hidden > 0) {
-        lines.push({ text: padInner(` … ${hidden} 行已滚动`, contentWidth), role: 'out' });
+        lines.push({ text: padInner(`  … ${hidden} 行已滚动`, contentWidth), role: 'out' });
       }
     }
   } else if (isRead) {
@@ -556,12 +556,12 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       const paths = card.paths ?? [];
       if (paths.length > 1) {
         for (const p of paths) {
-          lines.push({ text: padInner(` ⤷ ${truncateToWidth(p, Math.max(1, inner - 4))}`, contentWidth), role: 'out' });
+          lines.push({ text: padInner(`  ⤷ ${truncateToWidth(p, Math.max(1, inner - 4))}`, contentWidth), role: 'out' });
         }
       }
       const out = card.output.filter((l) => !isExitCodeZeroLine(l));
       for (const raw of out.length ? out : ['（无输出）']) {
-        for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
+        for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(`  ${seg}`, contentWidth), role: 'out' });
       }
     }
   } else if (isWriteDiff || isEditDiff) {
@@ -574,14 +574,14 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
     if (!card.expanded) {
       if (isNew) {
         const rows = card.diff!.content.split('\n').length;
-        lines.push({ text: padInner(` ✓ 新增文件 · 全文 ${rows} 行`, contentWidth), role: 'exec' });
+        lines.push({ text: padInner(`  ✓ 新增文件 · 全文 ${rows} 行`, contentWidth), role: 'exec' });
       } else if (isWriteDiff) {
         const stats = countDiffLines(card.diff!.original!, card.diff!.content);
-        lines.push({ text: padInner(` ✓ 修改 · +${stats.add} −${stats.rem} 行`, contentWidth), role: 'exec' });
+        lines.push({ text: padInner(`  ✓ 修改 · +${stats.add} −${stats.rem} 行`, contentWidth), role: 'exec' });
       } else {
         const addCount = card.edit!.newLines.length;
         const remCount = card.edit!.oldLines.length;
-        lines.push({ text: padInner(` ✓ 修改 · +${addCount} −${remCount} 行`, contentWidth), role: 'exec' });
+        lines.push({ text: padInner(`  ✓ 修改 · +${addCount} −${remCount} 行`, contentWidth), role: 'exec' });
       }
     } else {
       const maxNo = diffData.lines.reduce((m, l) => Math.max(m, l.oldNo ?? 0, l.newNo ?? 0), 0);
@@ -589,20 +589,20 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
       for (const dl of diffData.lines) {
         const contentW = Math.max(4, inner - 1 - (digits + 5));
         const formatted = formatUnifiedDiffLine(dl, digits, contentW);
-        lines.push({ text: padInner(` ${formatted}`, contentWidth), role: 'diff', diffRole: dl.kind });
+        lines.push({ text: padInner(`  ${formatted}`, contentWidth), role: 'diff', diffRole: dl.kind });
       }
       if (diffData.truncated) {
-        lines.push({ text: padInner(` … diff 超长，仅展示前 ${DIFF_MAX_ROWS} 行`, contentWidth), role: 'out' });
+        lines.push({ text: padInner(`  … diff 超长，仅展示前 ${DIFF_MAX_ROWS} 行`, contentWidth), role: 'out' });
       }
     }
   } else if (card.expanded) {
-    lines.push({ text: padInner(` ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
+    lines.push({ text: padInner(`  ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
     const out = card.output.filter((l) => !isExitCodeZeroLine(l));
     const shown = out.length ? out : ['（无输出）'];
     for (const raw of shown) {
-      for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(` ${seg}`, contentWidth), role: 'out' });
+      for (const seg of wrapText(raw, inner - 1)) lines.push({ text: padInner(`  ${seg}`, contentWidth), role: 'out' });
     }
-    lines.push({ text: padInner(' ▾ 点击收起', contentWidth), role: 'hint' });
+    lines.push({ text: padInner('  ▾ 点击收起', contentWidth), role: 'hint' });
   }
   // 收起态（其余工具默认）：**只显示完整的执行命令**——执行结果/输出等点击展开才显示
   // （用户要求「执行命令默认只显示完整的执行命令」），且**不提示可以点击展开**。

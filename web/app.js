@@ -35,7 +35,7 @@ const state = {
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   _localRunning: new Set(), // 本地刚启动的会话（doSend 设置，status 覆盖前保持；run.end 清除）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
-  statusline: ['speed', 'cache', 'tokens', 'context'], // 输入区下方状态行段（设置 → 状态栏；同 TUI footer stats）
+  statusline: ['speed', 'cache', 'tokens'], // 输入区下方状态行段（设置 → 状态栏；同 TUI footer stats；context 已移入模型胶囊）
   sessionStats: new Map(),  // sessionId -> { turns, steps, llmMs, toolsMs, firstTokenSum, firstTokenCount, cached }
   sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
@@ -843,22 +843,69 @@ function makeBlock(type, sessionId) {
   return b;
 }
 
+let _scrollRaf = null;
+let _isProgrammaticScroll = false;
+
 // 滚动到底部：force = 无条件滚；否则只在 autoFollow 态滚（用户上滚后暂停跟随）
 function scrollBottom(force) {
   const sb = _scrollBody();
-  if (sb && (force || state.autoFollow)) {
+  if (!sb) return;
+  if (force) state.autoFollow = true;
+  if (state.autoFollow) {
+    _isProgrammaticScroll = true;
     sb.scrollTop = sb.scrollHeight;
+    if (_scrollRaf) cancelAnimationFrame(_scrollRaf);
+    _scrollRaf = requestAnimationFrame(() => {
+      _scrollRaf = null;
+      if (sb && state.autoFollow) {
+        sb.scrollTop = sb.scrollHeight;
+      }
+      setTimeout(() => { _isProgrammaticScroll = false; }, 80);
+    });
   }
 }
 // scroll 事件：检测用户手动上滚 / 回底——上滚即暂停自动跟随，回底恢复
 function initScrollFollow() {
   const sb = _scrollBody();
   if (!sb) return;
+
+  // 监听鼠标真实滚轮
+  sb.addEventListener('wheel', (e) => {
+    if (e.deltaY < -2) {
+      const dist = sb.scrollHeight - sb.scrollTop - sb.clientHeight;
+      if (dist > 30) state.autoFollow = false;
+    } else if (e.deltaY > 2) {
+      const dist = sb.scrollHeight - sb.scrollTop - sb.clientHeight;
+      if (dist < 60) state.autoFollow = true;
+    }
+  }, { passive: true });
+
+  // 监听触摸滑动
+  let touchStartY = 0;
+  sb.addEventListener('touchstart', (e) => {
+    if (e.touches && e.touches[0]) touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  sb.addEventListener('touchmove', (e) => {
+    if (e.touches && e.touches[0]) {
+      const delta = e.touches[0].clientY - touchStartY;
+      if (delta > 10) {
+        state.autoFollow = false;
+      } else if (delta < -10) {
+        const dist = sb.scrollHeight - sb.scrollTop - sb.clientHeight;
+        if (dist < 60) state.autoFollow = true;
+      }
+    }
+  }, { passive: true });
+
+  // 原生 scroll 事件兜底（过滤程序化滚动）
   sb.addEventListener('scroll', () => {
+    if (_isProgrammaticScroll) return;
     const dist = sb.scrollHeight - sb.scrollTop - sb.clientHeight;
-    // 60px：轻微滚轮一格（约 100px）即视为用户主动上滑打断跟随，回底恢复
-    if (dist > 60) state.autoFollow = false;
-    else state.autoFollow = true;
+    if (dist <= 40) {
+      state.autoFollow = true;
+    } else if (dist > 180) {
+      state.autoFollow = false;
+    }
   }, { passive: true });
 }
 
@@ -1190,22 +1237,28 @@ function formatDuration(ms) {
 function updateThinkingHead(b, head, box) {
   const icon = head.querySelector('.th-icon');
   const label = head.querySelector('.th-label');
-  if (!icon || !label) return;
+  if (!label) return;
   const collapsed = head.classList.contains('collapsed');
   // running 时实时耗时；完成用终值
   const dur = b._durMs || (box.classList.contains('running') ? Date.now() - (b._startTime || Date.now()) : 0);
   const durStr = formatDuration(dur);
   if (collapsed) {
-    icon.textContent = '+';
-    label.textContent = t('thinking.collapsed', { dur: durStr });
+    if (icon) {
+      icon.textContent = '+';
+      icon.classList.remove('spinning');
+    }
+    label.innerHTML = `<span class="th-title">Thought:</span> <span class="th-dur">${durStr}</span>`;
   } else if (box.classList.contains('running')) {
-    icon.textContent = SPIN[spinIdx % SPIN.length];
-    icon.classList.add('spinning');
-    label.textContent = t('thinking.running', { dur: durStr });
+    if (icon) {
+      icon.innerHTML = `<span class="spin spinning">${SPIN[spinIdx % SPIN.length]}</span>`;
+    }
+    label.innerHTML = `<span class="th-title">Thought:</span> <span class="th-dur">${durStr}</span>`;
   } else {
-    icon.textContent = '-';
-    icon.classList.remove('spinning');
-    label.textContent = t('thinking.done', { n: b._chars, dur: durStr });
+    if (icon) {
+      icon.textContent = '-';
+      icon.classList.remove('spinning');
+    }
+    label.innerHTML = `<span class="th-title">Thought:</span> <span class="th-dur">${durStr}</span>`;
   }
 }
 
@@ -1222,9 +1275,9 @@ function toolBlock(sessionId, data) {
 
   if (isExplored) {
     const block = el('div', 'explored-block running');
-    const headText = name === 'read_file' ? '→ Explored — 1 read' : name === 'web_fetch' ? '→ Explored — 1 fetch' : '→ Explored — 1 search';
+    const headText = name === 'read_file' ? 'Explored — 1 read' : name === 'web_fetch' ? 'Explored — 1 fetch' : 'Explored — 1 search';
     const head = el('div', 'explored-head');
-    head.innerHTML = `<span>${esc(headText)}</span> <span class="spin">${SPIN[0]}</span>`;
+    head.innerHTML = `<span class="explored-icon">→</span><span class="explored-title">${esc(headText)}</span> <span class="spin">${SPIN[0]}</span>`;
     const item = el('div', 'explored-item', data.argsPreview || name);
     item.classList.add('hidden');
     head.addEventListener('click', () => {
@@ -1310,8 +1363,8 @@ function toolBlock(sessionId, data) {
   const head = el('div', 'tc-head');
   let st = null;
   if (name === 'run_command') {
-    const cmd = (data.args?.command || data.argsPreview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '');
-    head.innerHTML = `<span class="tool-dot">●</span> <span class="tool-name">Bash</span><span class="tool-args">(${esc(cmd)})</span> <span class="spin">${SPIN[0]}</span>`;
+    const cmd = (data.args?.command || data.argsPreview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '').replace(/^\$\s*/, '');
+    head.innerHTML = `<span class="tool-prompt">$</span> <span class="tool-cmd">${esc(cmd)}</span> <span class="spin">${SPIN[0]}</span>`;
   } else {
     head.appendChild(el('span', 'tc-cmd', data.name || 'tool'));
     st = el('span', 'tc-state');
@@ -1323,8 +1376,6 @@ function toolBlock(sessionId, data) {
   const live = el('div', 'tc-live');
   live.classList.add('hidden');
   head.addEventListener('click', () => {
-    document.querySelectorAll('.tool-card.selected').forEach((node) => node.classList.remove('selected'));
-    card.classList.add('selected');
     if (!card.classList.contains('running')) body.classList.toggle('hidden');
     scrollBottom();
   });
@@ -1411,8 +1462,9 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
 
   if (isExplored) {
     const block = el('div', 'explored-block');
-    const headText = name === 'read_file' ? '→ Explored — 1 read' : name === 'web_fetch' ? '→ Explored — 1 fetch' : '→ Explored — 1 search';
-    const head = el('div', 'explored-head', headText);
+    const headText = name === 'read_file' ? 'Explored — 1 read' : name === 'web_fetch' ? 'Explored — 1 fetch' : 'Explored — 1 search';
+    const head = el('div', 'explored-head');
+    head.innerHTML = `<span class="explored-icon">→</span><span class="explored-title">${esc(headText)}</span>`;
     const item = el('div', 'explored-item', preview || name);
     item.classList.add('hidden');
     head.addEventListener('click', () => {
@@ -1459,8 +1511,6 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
   const body = el('div', 'tc-body');
   body.classList.add('hidden');
   head.addEventListener('click', () => {
-    document.querySelectorAll('.tool-card.selected').forEach((n) => n.classList.remove('selected'));
-    card.classList.add('selected');
     body.classList.toggle('hidden');
     scrollBottom();
   });
@@ -1993,6 +2043,39 @@ function updateDetails() {
   }
   $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
   updatePermissionPill();
+  updateContextRing();
+}
+
+/** 更新输入框模型按钮内的上下文容量微圆环 */
+function updateContextRing() {
+  const wrap = $('#composer-ctx-ring-wrap');
+  if (!wrap) return;
+  const u = state.session ? state.sessionUsage.get(state.session) : null;
+  const lastPrompt = (u && u.lastPrompt) || 0;
+  const limit = contextLimit() || 0;
+  if (lastPrompt <= 0) {
+    wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  const ratio = limit > 0 ? (lastPrompt / limit) : 0;
+  const pct = Math.min(100, Math.round(ratio * 100));
+
+  const fill = $('#ctx-ring-fill');
+  const label = $('#composer-ctx-label');
+  if (fill) fill.setAttribute('stroke-dasharray', `${pct}, 100`);
+  if (label) label.textContent = limit > 0 ? `${fmtCompact(lastPrompt)}/${fmtCompact(limit)}` : fmtCompact(lastPrompt);
+
+  let color = 'var(--text-tertiary)';
+  if (pct >= 90) color = 'var(--red, #ef4444)';
+  else if (pct >= 70) color = 'var(--amber, #f59e0b)';
+  else color = 'var(--blue, #3b82f6)';
+
+  wrap.style.setProperty('--ring-color', color);
+  const title = limit > 0
+    ? `上下文: ${fmtCompact(lastPrompt)} / ${fmtCompact(limit)} (${pct}%)`
+    : `上下文: ${fmtCompact(lastPrompt)}`;
+  wrap.setAttribute('title', title);
 }
 
 /* 权限 pill（composer 底栏左侧）：label 文本 + 配色类 */
@@ -2070,20 +2153,117 @@ function renderPermissionPop() {
   });
   pop.appendChild(list);
 }
-/** 从历史消息渲染会话内容（用户/思考/工具卡片/回答）——selectSession 与
+/** 渲染回合底部统计信息（Build / 模型 / 耗时 / tok/s / Tokens 消耗明细） */
+function renderTurnFooter(sessionId, data) {
+  const usages = data.usages || [];
+  const tokens = data.tokens;
+  if (!usages.length && (!tokens || (tokens.prompt + tokens.completion === 0))) return null;
+
+  let sumNew = 0, sumCached = 0, sumTotal = 0;
+  for (const item of usages) {
+    const cached = item.cached || 0;
+    sumNew += Math.max(0, item.prompt - cached);
+    sumCached += cached;
+    sumTotal += (item.total || (item.prompt + item.completion));
+  }
+  if (usages.length === 0 && tokens) {
+    const cached = tokens.cached || 0;
+    sumNew = Math.max(0, tokens.prompt - cached);
+    sumCached = cached;
+    sumTotal = tokens.prompt + tokens.completion;
+  }
+
+  const fmtN = (n) => n.toLocaleString();
+  const wrap = el('div', 'msg');
+  const footer = el('div', 'turn-footer');
+
+  const modelName = data.model || state.status?.model || 'Omni';
+  const durMs = data.durMs || 0;
+  const durStr = formatDuration(durMs);
+  const genMs = data.genMs || 0;
+  const compTok = data.completion || usages.reduce((acc, u) => acc + (u.completion || 0), 0);
+  const rate = genMs > 0 ? Math.round(compTok / (genMs / 1000)) : (durMs > 0 ? Math.round(compTok / (durMs / 1000)) : 0);
+  const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
+
+  const metaDiv = el('div', 'turn-meta', `Build · ${modelName} · ${durStr}${rateStr}`);
+  footer.appendChild(metaDiv);
+
+  const tokensDiv = el('div', 'turn-tokens');
+  const stepCount = Math.max(1, usages.length);
+  const headText = `- Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmtN(sumNew)} new · ${fmtN(sumCached)} cached · ${fmtN(sumTotal)} total`;
+  const tokensHead = el('div', 'turn-tokens-head', headText);
+  const tokensTable = el('div', 'turn-tokens-table');
+
+  const headerRow = el('div', 'token-row header');
+  headerRow.innerHTML = `<span class="col-step">Step</span><span class="col-new">New</span><span class="col-cached">Cached</span><span class="col-total">Total</span>`;
+  tokensTable.appendChild(headerRow);
+
+  const stepList = usages.length > 0 ? usages : [{ prompt: tokens?.prompt || sumNew, completion: tokens?.completion || 0, cached: sumCached, total: sumTotal }];
+  for (let i = 0; i < stepList.length; i++) {
+    const item = stepList[i];
+    const stepName = i === stepList.length - 1 ? 'stop' : 'tool-call';
+    const cached = item.cached || 0;
+    const newTok = Math.max(0, item.prompt - cached);
+    const tot = item.total || (item.prompt + item.completion);
+    const row = el('div', 'token-row');
+    row.innerHTML = `<span class="col-step">${stepName}</span><span class="col-new">${fmtN(newTok)}</span><span class="col-cached">${fmtN(cached)}</span><span class="col-total">${fmtN(tot)}</span>`;
+    tokensTable.appendChild(row);
+  }
+
+  tokensHead.addEventListener('click', () => {
+    tokensTable.classList.toggle('hidden');
+    scrollBottom();
+  });
+
+  tokensDiv.appendChild(tokensHead);
+  tokensDiv.appendChild(tokensTable);
+  footer.appendChild(tokensDiv);
+  wrap.appendChild(footer);
+  msgList().appendChild(wrap);
+  return wrap;
+}
+
+/** 从历史消息渲染会话内容（用户/思考/工具卡片/回答/回合统计）——selectSession 与
  *  运行中刷新后的 run.end 回填共用；不清会话状态、不动待发送队列。 */
 async function renderSessionHistory(id) {
   try {
     const data = await api(`/api/sessions/${id}/messages`);
     const s = state.sessions.find((x) => x.id === id);
     $('#chat-title').textContent = s?.title || (data.meta?.title) || '会话';
+
+    let currentTurnUsages = [];
+    let currentTurnModel = null;
+    let currentTurnDurMs = 0;
+    let currentTurnGenMs = 0;
+
+    const flushTurnFooter = () => {
+      if (currentTurnUsages.length > 0) {
+        renderTurnFooter(id, {
+          usages: currentTurnUsages,
+          model: currentTurnModel,
+          durMs: currentTurnDurMs,
+          genMs: currentTurnGenMs,
+        });
+        currentTurnUsages = [];
+        currentTurnModel = null;
+        currentTurnDurMs = 0;
+        currentTurnGenMs = 0;
+      }
+    };
+
     data.messages.forEach((m) => {
       const txt = typeof m.content === 'string' ? m.content : '';
       if (m.role === 'user') {
+        flushTurnFooter(); // 遇到新一轮用户消息：先结算并渲染上一轮的 turn-footer
         // 数组 content（图片/文本附件）：解析为附件 chips + 正文（历史恢复最小渲染）
         const parsed = parseUserContent(m.content);
         userBlock(id, parsed.text, parsed.attachments);
       } else if (m.role === 'assistant') {
+        if (m.usage) currentTurnUsages.push(m.usage);
+        if (m.model) currentTurnModel = m.model;
+        if (typeof m.durMs === 'number') currentTurnDurMs += m.durMs;
+        if (typeof m.genMs === 'number') currentTurnGenMs += m.genMs;
+
         // 先恢复 thinking（reasoning + reasoningMs 已持久化，恢复耗时），再恢复工具卡片，
         // 最后正文——与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
         if (m.reasoning) renderHistoryThinking(id, m.reasoning, m.reasoningMs);
@@ -2105,6 +2285,7 @@ async function renderSessionHistory(id) {
       }
       // tool 消息已在 assistant 的 tool_calls 分支处理，跳过
     });
+    flushTurnFooter(); // 历史最后一条消息后：结算并渲染最后一轮的 turn-footer
     revealLastAnswer(); // 历史已加载完：仅最后一个回答带 拷贝/重新处理
     renderWelcome();
     state.autoFollow = true; // 切换/恢复会话：回到底部跟随模式
@@ -2329,42 +2510,59 @@ function noteTokenChunk(len) {
 /* ---- 输入区下方状态行（token 统计，同 CLI/TUI footer stats）----
  * 段位（rounds/llm/speed/cache/tokens）由设置 → 状态栏开关控制，顺序固定为
  * 定义顺序；每会话独立累计（sessionStats/sessionUsage Map，SSE 事件驱动）。 */
-const STATUS_DEFAULT = ['speed', 'cache', 'tokens', 'context'];
+const STATUS_DEFAULT = ['speed', 'cache', 'tokens'];
 const STATUS_SEGMENTS = [
   {
     id: 'speed', labelKey: 'statusbar.speed',
     build: (s, u) => {
-      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      // 生成耗时优先 genMs；单 chunk 响应 genMs=0 → 回退 llmMs - firstTokenSum，1ms 下限防除零
-      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
-      return `首 token 平均 ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+      const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
+      const firstAvg = live && live.firstTokenMs != null
+        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
+        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
+      let rate = 0;
+      if (live && live.liveGenMs > 0) {
+        rate = Math.round(live.tps);
+      } else {
+        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+        rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
+      }
+      return `首 token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
     buildEn: (s, u) => {
-      const firstAvg = s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0;
-      const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
-      return `First token avg ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
+      const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
+      const firstAvg = live && live.firstTokenMs != null
+        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
+        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
+      let rate = 0;
+      if (live && live.liveGenMs > 0) {
+        rate = Math.round(live.tps);
+      } else {
+        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+        rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
+      }
+      return `First token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
   {
     id: 'cache', labelKey: 'statusbar.cache',
-    build: (s, u) => `缓存命中 ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
-    buildEn: (s, u) => `Cache hit ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
+    build: (s, u) => `缓存 ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
+    buildEn: (s, u) => `Cache ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
   },
   {
     id: 'tokens', labelKey: 'statusbar.tokens',
-    build: (_s, u) => `输入 ${fmtCompact(u.prompt)} tok · 输出 ${fmtCompact(u.completion)} tok`,
-    buildEn: (_s, u) => `In ${fmtCompact(u.prompt)} tok · Out ${fmtCompact(u.completion)} tok`,
-  },
-  {
-    id: 'context', labelKey: 'statusbar.context',
-    // 当前上下文 = 最近一次 LLM 请求的 prompt token（usage 事件覆盖）；模型配置 limit.context 时附 /上限
-    build: (_s, u) => `上下文 ${fmtCompact(u.lastPrompt)}${contextLimit() ? `/${fmtCompact(contextLimit())}` : ''}`,
-    buildEn: (_s, u) => `Context ${fmtCompact(u.lastPrompt)}${contextLimit() ? `/${fmtCompact(contextLimit())}` : ''}`,
+    build: (_s, u) => {
+      const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
+      const comp = u.completion + (live ? live.streamTokens : 0);
+      return `输入 ${fmtCompact(u.prompt)} · 输出 ${fmtCompact(comp)}`;
+    },
+    buildEn: (_s, u) => {
+      const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
+      const comp = u.completion + (live ? live.streamTokens : 0);
+      return `In ${fmtCompact(u.prompt)} · Out ${fmtCompact(comp)}`;
+    },
   },
 ];
-/** 当前模型 context 上限（config limit.context；未知返回 0）——footer context 段 `已用/上限` 用 */
+/** 当前模型 context 上限（config limit.context；未知返回 0）——输入框模型胶囊内 context 环用 */
 function contextLimit() {
   const st = state.status;
   if (!st || !Array.isArray(st.models)) return 0;
@@ -2396,9 +2594,11 @@ function usageOf(sid) {
 }
 /** 渲染输入区下方状态行：按 state.statusline（设置 → 状态栏）拼段，无数据/无段位时隐藏 */
 function updateComposerStatus() {
+  updateContextRing();
   const el = $('#composer-status');
   if (!el) return;
-  const order = Array.isArray(state.statusline) ? state.statusline : STATUS_DEFAULT;
+  const rawOrder = Array.isArray(state.statusline) ? state.statusline : STATUS_DEFAULT;
+  const order = rawOrder.filter((id) => id !== 'context');
   const s = state.session ? state.sessionStats.get(state.session) : null;
   const u = state.session ? state.sessionUsage.get(state.session) : null;
   if (!s || !u || !order.length) {
@@ -2501,7 +2701,7 @@ function connectSSE() {
   [
     'status', 'session.created', 'user.message', 'thinking.start', 'thinking.chunk',
     'thinking.end', 'tool.start', 'tool.result', 'tool.output', 'answer.chunk', 'answer.end',
-    'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
+    'stream.progress', 'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
     'workspace.changed', 'session.deleted',
@@ -2634,6 +2834,10 @@ bus.on('answer.chunk', (ev) => {
 });
 bus.on('answer.end', (ev) => {
   if (ev.sessionId !== state.session) return;
+  if (state.liveStream?.sessionId === ev.sessionId) {
+    state.liveStream = null;
+    updateComposerStatus();
+  }
   if (currentAssistant) {
     clearTimeout(currentAssistant._paintTimer);
     currentAssistant.paint();
@@ -2679,6 +2883,13 @@ bus.on('tool.result', (ev) => {
 
 bus.on('usage', (ev) => {
   if (ev.sessionId !== state.session) return;
+  if (!state.turnUsages) state.turnUsages = [];
+  state.turnUsages.push({
+    prompt: ev.prompt || 0,
+    completion: ev.completion || 0,
+    total: ev.total || ((ev.prompt || 0) + (ev.completion || 0)),
+    cached: ev.cached || 0,
+  });
   state.turnTokens.prompt += ev.prompt || 0;
   state.turnTokens.completion += ev.completion || 0;
   state.turnTokens.cached += ev.cached || 0;
@@ -2721,18 +2932,26 @@ bus.on('run.end', async (ev) => {
     await renderSessionHistory(ev.sessionId).catch(() => {});
   }
   revealLastAnswer(); // 本轮真正结束：只在最后一个回答块上挂 拷贝/重新处理
-  // 本轮统计行
-  const t = state.turnTokens;
-  const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-  if (t.prompt + t.completion > 0 || state.inFlight > 0) {
-    metaLine(ev.sessionId, [
-      `⚡ 输入 ${fmt(t.prompt)} · 输出 ${fmt(t.completion)}` + (t.cached ? ` · 缓存 ${fmt(t.cached)}` : ''),
-      `· ${ev.reason === 'completed' ? '完成' : ev.reason === 'aborted' ? '已取消' : ev.reason === 'error' ? '出错' : '触达步数上限'}`,
-    ]);
-  }
+  // 本轮统计行（对标 GUI 样式：Build · 模型 · 耗时 · 速率 + Tokens 表格）
+  const s = statsOf(ev.sessionId);
+  const u = usageOf(ev.sessionId);
+  const usages = state.turnUsages || [];
+  const modelName = state.status?.model || 'Omni';
+  renderTurnFooter(ev.sessionId, {
+    usages,
+    model: modelName,
+    durMs: s.llmMs || 0,
+    genMs: s.genMs || (s.llmMs - (s.firstTokenSum || 0)),
+    tokens: state.turnTokens,
+    completion: u.completion,
+  });
+  state.turnUsages = [];
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
   state.inFlight = 0;
+  if (state.liveStream?.sessionId === ev.sessionId) state.liveStream = null;
+  updateComposerStatus();
   refreshSessions().then(updateDetails);
+  scrollBottom(true);
 
   // 消费 steer（优先）→ queue → 下一轮自动发送；仅「成功完成」的轮次自动续发——
   // 出错/取消/超步数后不自动消费队列（避免同一 500 连环触发），留待用户手动重试
@@ -2755,9 +2974,17 @@ bus.on('turn.step', (ev) => {
   if (ev.sessionId !== state.session) return;
 });
 
+// stream.progress：流式生成实时速率与用量
+bus.on('stream.progress', (ev) => {
+  if (ev.sessionId !== state.session) return;
+  state.liveStream = ev;
+  updateComposerStatus();
+});
+
 // lap：LLM 请求墙钟 / 首 token / 生成耗时（tok/s 用 genMs——排除首 token 等待）
 bus.on('lap', (ev) => {
   if (ev.sessionId !== state.session) return;
+  if (state.liveStream?.sessionId === ev.sessionId) state.liveStream = null;
   const s = statsOf(ev.sessionId);
   s.llmMs += ev.llmMs || 0;
   if (ev.firstTokenMs != null) { s.firstTokenSum += ev.firstTokenMs; s.firstTokenCount++; }
@@ -2794,6 +3021,7 @@ bus.on('error', (ev) => {
   currentTools.clear();
   stopRunRing();
   updateComposer();
+  scrollBottom(true);
 });
 
 bus.on('approval.request', (ev) => {

@@ -1,7 +1,7 @@
 # Omni 路线图
 
 > 2026-08-26 从 `AGENTS.md` 迁移。全部已完成项与剩余进阶项清单。
-> 来源：仓库根目录 `Agent开发认知梳理.md` 的认知地图；backlog 见 `Doc/TODO.md`、`Doc/TODO-1.0.md`。
+> 来源：仓库根目录 `Agent开发认知梳理.md` 的认知地图；backlog 与 1.0 规划见 `Doc/TODO.md`（合并版）。
 
 ## 路线图
 

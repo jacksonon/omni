@@ -6,7 +6,7 @@
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import type { HookEventName } from '../hooks/index.js';
-import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
+import type { Output, StreamProgress, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -109,6 +109,8 @@ export class TuiOutput implements Output {
   /** 当次对话轮（onTurnStart → onTurnEnd）内每次 LLM 请求的 token 用量（onUsage 按
    *  请求顺序收集；onTurnEnd 组装成 tokens 模块插入对话流——收起=汇总/展开=逐次明细） */
   private turnUsages: TokenUsage[] = [];
+  private turnLlmMs = 0;
+  private turnGenMs = 0;
 
   /** 更新当前流式思考行的实时耗时（头行 `· N.Ns`；spinner 定时器每 200ms + write 时调用） */
   private refreshThinkingMs(): void {
@@ -161,6 +163,7 @@ export class TuiOutput implements Output {
     this.stopSpinner();
     this.state.spinnerIndex = -1;
     this.state.status = '';
+    this.state.liveStream = null;
     this.schedulePaint();
   }
 
@@ -232,6 +235,7 @@ export class TuiOutput implements Output {
     // 执行中这一类文本」——思考状态由头行 ⠋ thinking · 耗时 直观表达）。
     this.state.spinnerIndex = 0;
     this.state.generating = false;
+    this.state.liveStream = null;
     this.state.status = ''; // 思考中不显示状态栏文案
     this.startSpinner('');
     // 收到消息开始思考：**立即显示 thinking 模块头行**（loading + thinking + 实时耗时），
@@ -248,6 +252,11 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
+  onStreamProgress(progress: StreamProgress): void {
+    this.state.liveStream = progress;
+    this.schedulePaint();
+  }
+
   onAnswer(text: string): void {
     appendLine(this.state, 'answer', text);
     this.schedulePaint();
@@ -255,6 +264,7 @@ export class TuiOutput implements Output {
 
   onAnswerEnd(): void {
     this.state.generating = false;
+    this.state.liveStream = null;
     this.schedulePaint();
   }
 
@@ -275,17 +285,24 @@ export class TuiOutput implements Output {
     // 轮数：交互模式每轮用户提交 / 单次任务各 1 次（runAgent 开头触发）
     this.state.stats.turns += 1;
     this.turnUsages = []; // 新一轮：重置当次 token 收集
+    this.turnLlmMs = 0;
+    this.turnGenMs = 0;
     this.schedulePaint();
   }
 
   onLlmLap(llmMs: number, firstTokenMs: number | null, genMs?: number): void {
     // LLM 请求墙钟累计 + 首 token 延迟累计（平均 = sum/count）+ 纯生成耗时（tok/s 用）
+    this.state.liveStream = null;
     this.state.stats.llmMs += llmMs;
+    this.turnLlmMs += llmMs;
     if (firstTokenMs !== null) {
       this.state.stats.firstTokenSum += firstTokenMs;
       this.state.stats.firstTokenCount += 1;
     }
-    if (genMs !== undefined) this.state.stats.genMs += genMs;
+    if (genMs !== undefined) {
+      this.state.stats.genMs += genMs;
+      this.turnGenMs += genMs;
+    }
     this.schedulePaint();
   }
 
@@ -600,10 +617,18 @@ export class TuiOutput implements Output {
       pushLine(this.state, {
         kind: 'tokens',
         text: '',
-        tokens: { usages: [...this.turnUsages], expanded: false },
+        tokens: {
+          usages: [...this.turnUsages],
+          expanded: false,
+          model: this.state.model,
+          durMs: this.turnLlmMs,
+          genMs: this.turnGenMs,
+        },
       });
     }
     this.turnUsages = [];
+    this.turnLlmMs = 0;
+    this.turnGenMs = 0;
     pushLine(this.state, { kind: 'meta', text: '' });
     this.schedulePaint();
   }

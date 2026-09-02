@@ -252,18 +252,16 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
       return { text: '', style: {} };
     }
     const contentStyle = toolRowStyle(line.role, status, theme);
-    if (line.text.includes('● Bash')) {
-      const match = line.text.match(/^(\s*)(●)(\s*)(Bash)(\(.*\))(.*)$/);
+    if (line.text.includes('● Bash') || line.text.startsWith('$ ') || line.text.trim().startsWith('$')) {
+      const match = line.text.match(/^(\s*)(\$|●\s*Bash)(\s*)(.*)$/);
       if (match) {
-        const [, sp1, dot, sp2, bashName, args, rest] = match;
+        const [, sp1, prompt, sp2, cmd] = match;
         const chunks: MdChunk[] = [
           { text: sp1 },
-          { text: dot, fg: theme.modeBuild }, // 绿点
+          { text: prompt, fg: theme.modeBuild, bold: true },
           { text: sp2 },
-          { text: bashName, fg: theme.diffAdd, bold: true }, // Bash 强调
-          { text: args, fg: theme.cardDim },
+          { text: cmd, fg: theme.cardDim, bold: true },
         ];
-        if (rest) chunks.push({ text: rest, fg: theme.cardDim });
         return { text: line.text, style: {}, chunks };
       }
     }
@@ -606,12 +604,10 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'tokens' && line.tokens) {
-      // 当次 token 使用统计模块（**可点击展开/收起**，用户要求）：
-      //   收起（默认） = 汇总一行 `⚡ N 次 LLM 请求 · 输入 X · 输出 Y · 缓存 Z`
-      //   展开 = 汇总 + 每次 LLM 请求一行明细（`LLM 请求：输入 X · 输出 Y · 缓存 Z`），
-      //          加起来 = 汇总（同一份 usages 数组累加）。
-      // 全部行带 tokensIdx，点击任意行切换展开/收起；/tokens 关闭时不渲染（showTokens）。
-      // 数值用 formatCompact（12.3K / 3M），缓存缺省按 0 显示（网关不支持时）。
+      // 当次 token 使用与耗时统计模块（对标 Web GUI 风格，可点击展开/收起）：
+      //   头行 = `Build · <model> · <dur> · <rate> tok/s`
+      //   汇总行 = `- Tokens: <N> steps · <new> new · <cached> cached · <total> total`
+      //   展开态 = Step 表格明细（Step / New / Cached / Total）
       if (!state.showTokens) continue; // /tokens 关闭：该行不渲染（数据保留在 state.lines）
       const usages = line.tokens.usages;
       const sum = usages.reduce(
@@ -623,30 +619,88 @@ export function buildBody(state: TuiState, width: number): Row[] {
         { prompt: 0, completion: 0, cached: 0 }
       );
       const fmt = (n: number): string => formatCompact(n);
-      const lang = state.language;
+
+      const durStr = line.tokens.durMs ? formatToolDur(line.tokens.durMs) : '';
+      const model = line.tokens.model || state.model || 'Omni';
+      const compSum = usages.reduce((acc, u) => acc + u.completion, 0);
+      const genMs = line.tokens.genMs ?? line.tokens.durMs ?? 0;
+      const rate = genMs > 0 ? Math.round(compSum / (genMs / 1000)) : 0;
+      const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
+      const buildText = `Build · ${model}${durStr ? ` · ${durStr}` : ''}${rateStr}`;
+
+      // 第一行：Build 元信息
       body.push({
-        text: tf(lang, 'tokens.summary', {
-          n: usages.length,
-          in: fmt(sum.prompt),
-          out: fmt(sum.completion),
-          cached: fmt(sum.cached),
-        }),
-        style: { dim: true },
+        text: buildText,
+        style: {},
+        chunks: [
+          { text: 'Build', fg: theme.accentBlue, bold: true },
+          { text: ` · ${model}${durStr ? ` · ${durStr}` : ''}${rateStr}`, dim: true },
+        ],
         tokensIdx: li,
       });
+
+      // Build 与 Tokens 之间留空行间距（用户要求：build / tokens 要有点间距）
+      body.push({
+        text: '',
+        style: {},
+        chunks: [],
+        tokensIdx: li,
+      });
+
+      // 第二行：Tokens 汇总（展开时 -，收起时 +）
+      const prefix = line.tokens.expanded ? '- ' : '+ ';
+      const stepCount = Math.max(1, usages.length);
+      const sumNew = Math.max(0, sum.prompt - sum.cached);
+      const sumTot = sum.prompt + sum.completion;
+      const tokensText = `${prefix}Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmt(sumNew)} new · ${fmt(sum.cached)} cached · ${fmt(sumTot)} total`;
+      body.push({
+        text: tokensText,
+        style: {},
+        chunks: [
+          { text: prefix, dim: true },
+          { text: 'Tokens: ', dim: true, bold: true },
+          { text: `${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmt(sumNew)} new · ${fmt(sum.cached)} cached · ${fmt(sumTot)} total`, dim: true },
+        ],
+        tokensIdx: li,
+      });
+
       if (line.tokens.expanded) {
-        // 展开态：每次 LLM 请求一行明细（输入/输出/缓存；与汇总同源累加），
-        // 用 `-` 作列表符号（用户要求「不要显示 1、2、3 这种，使用 - 即可」），
-        // 每项开头标明「LLM 请求」说明这一行是什么（用户要求「在开头标明每一项是干嘛的」）
+        // 展开态：Step 表格严格对齐（固定列宽 + 表头/数据右对齐）
+        const colStep = 14;
+        const colNew = 10;
+        const colCached = 10;
+        const colTotal = 10;
+
+        const hStep = 'Step'.padEnd(colStep);
+        const hNew = 'New'.padStart(colNew);
+        const hCached = 'Cached'.padStart(colCached);
+        const hTotal = 'Total'.padStart(colTotal);
+        const headerText = `  ${hStep}${hNew}${hCached}${hTotal}`;
+
+        body.push({
+          text: headerText,
+          style: { dim: true },
+          chunks: [{ text: headerText, dim: true }],
+          tokensIdx: li,
+        });
+
         for (let i = 0; i < usages.length; i++) {
           const u = usages[i]!;
+          const stepName = i === usages.length - 1 ? 'stop' : 'tool-call';
+          const uCached = u.cached ?? 0;
+          const uNew = Math.max(0, u.prompt - uCached);
+          const uTot = u.prompt + u.completion;
+
+          const dStep = stepName.padEnd(colStep);
+          const dNew = fmt(uNew).padStart(colNew);
+          const dCached = fmt(uCached).padStart(colCached);
+          const dTotal = fmt(uTot).padStart(colTotal);
+          const rowText = `  ${dStep}${dNew}${dCached}${dTotal}`;
+
           body.push({
-            text: tf(lang, 'tokens.item', {
-              in: fmt(u.prompt),
-              out: fmt(u.completion),
-              cached: fmt(u.cached ?? 0),
-            }),
+            text: rowText,
             style: { dim: true },
+            chunks: [{ text: rowText, dim: true }],
             tokensIdx: li,
           });
         }
@@ -654,47 +708,54 @@ export function buildBody(state: TuiState, width: number): Row[] {
       continue;
     }
     if (line.kind === 'thinking') {
-      // /thinking 关闭（state.thinkingShow=false）：完全不展示思考流——历史行与新轮
-      // 行都在渲染层过滤掉（数据仍在 state.lines 保留，重新开启即恢复显示）。
+      // /thinking 关闭（state.thinkingShow=false）：完全不展示思考流
       if (!state.thinkingShow) continue;
-      // 思考模块：**支持点击展开/收起**（用户要求）。每个思考段落是独立模块——
-      // 展开态 = 头行（思考中 `⠋ thinking · 实时耗时` / 思考完 `- thinking · 耗时`）
-      // + 完整思考内容；收起态 = 一行（思考中 `⠋ thinking` loading / 思考完 `+ thinking`）。
-      // 全部行带 thinkingIdx，点击即切换该段。
-      // 全局开关（/thinking）决定默认态：展开（默认）或折叠；两个反例集合记录用户
-      // 点击——展开态点 `-`/内容 → 收起（collapsedThinking），折叠态点 `+` → 展开
-      // （expandedThinking）。effective = thinkingExpanded ? !collapsed : expanded。
       const expanded = state.thinkingExpanded
         ? !state.collapsedThinking.has(li)
         : state.expandedThinking.has(li);
       if (expanded) {
-        // 头行前缀：**思考中（thinkingRunning）→ loading spinner**（`⠋ thinking · 实时耗时`，
-        // 用户要求「思考中显示 loading + thinking + time」）；**思考完 → `-`**（`- thinking · 耗时`）。
-        // spinner 帧与工具卡片同源（state.spinnerIndex，TuiOutput 200ms 定时器推进）；无帧回退 ⏳。
+        // 展开态头行（向右缩进 2 格，不与正文顶格）：`  - Thought: · 2.8s` / `  ⠋ Thought: · 2.8s`
         const time = line.thinkingMs != null ? ` · ${formatToolDur(line.thinkingMs)}` : '';
         const prefix = line.thinkingRunning
           ? state.spinnerIndex >= 0
             ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
             : '⏳'
           : '-';
-        body.push({ text: `${prefix} thinking${time}`, style: { dim: true }, thinkingIdx: li });
-        // 内容为空（onRound 预建头行、chunk 未到）：只显示头行（loading + thinking + 耗时），
-        // 不渲染多余的空内容行
+        body.push({
+          text: `  ${prefix} Thought:${time}`,
+          style: { fg: 'yellow' },
+          chunks: [
+            { text: `  ${prefix} `, dim: true },
+            { text: 'Thought:', fg: 'yellow', bold: true },
+            ...(time ? [{ text: time, dim: true }] : []),
+          ],
+          thinkingIdx: li,
+        });
+        // 思考正文：整体缩进 4 格并使用 dim 暗色展示（对标 Web GUI，弱化非主要回答）
         if (line.text) {
+          // 头行与思考正文之间留 1 行空行间距（用户要求：thought 和 具体的thinking 内容也需要间距）
+          body.push({ text: '', style: {}, chunks: [], thinkingIdx: li });
           for (const seg of line.text.split('\n')) {
-            body.push(...wrapRow({ text: seg, style: rowStyle(line.kind), thinkingIdx: li }, width));
+            const indentSeg = seg ? `    ${seg}` : '';
+            body.push(...wrapRow({ text: indentSeg, style: rowStyle(line.kind), thinkingIdx: li }, width));
           }
         }
       } else {
-        // 收起态：**思考中（thinkingRunning）→ loading spinner**（用户要求「收起时正在思考，
-        // 左侧不显示 + 号，而是显示 loading」——与展开态思考中头行同源，动画持续到思考完；
-        // 无帧回退 ⏳）；**思考完 → `+ thinking`**（点击可展开）。
+        // 收起态头行（向右缩进 2 格）：`  + Thought:` / `  ⠋ Thought:`
         const prefix = line.thinkingRunning
           ? state.spinnerIndex >= 0
             ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
             : '⏳'
           : '+';
-        body.push({ text: `${prefix} thinking`, style: { dim: true }, thinkingIdx: li });
+        body.push({
+          text: `  ${prefix} Thought:`,
+          style: { fg: 'yellow' },
+          chunks: [
+            { text: `  ${prefix} `, dim: true },
+            { text: 'Thought:', fg: 'yellow', bold: true },
+          ],
+          thinkingIdx: li,
+        });
       }
       continue;
     }

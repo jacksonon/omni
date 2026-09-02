@@ -162,19 +162,39 @@ export async function runTuiInteractive(
     state.traceScroll = 0;
     // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
     if (prevPath && prevPath !== file) void removeEmptySession(prevPath);
+    let hasUser = false;
     for (const m of msgs) {
       if (m.role === 'user' && typeof m.content === 'string' && m.content) {
+        if (hasUser) out.onTurnEnd();
+        hasUser = true;
+        out.onTurnStart();
         out.onUserMessage(m.content);
       } else if (m.role === 'assistant') {
-        const ext = m as unknown as { reasoning?: string; reasoningMs?: number };
+        const ext = m as unknown as {
+          reasoning?: string;
+          reasoningMs?: number;
+          usage?: import('../agent/messages.js').AssistantUsage;
+          model?: string;
+          durMs?: number;
+          genMs?: number;
+        };
         if (ext.reasoning) out.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
         if (typeof m.content === 'string' && m.content) {
           out.onAnswer(m.content);
           out.onAnswerEnd();
         }
+        if (ext.usage) {
+          out.onUsage({
+            prompt: ext.usage.prompt,
+            completion: ext.usage.completion,
+            total: ext.usage.total ?? (ext.usage.prompt + ext.usage.completion),
+            cached: ext.usage.cached ?? 0,
+          });
+          if (ext.durMs) out.onLlmLap(ext.durMs, null, ext.genMs);
+        }
       }
     }
-    out.onTurnEnd();
+    if (hasUser) out.onTurnEnd();
   };
 
   // Ctrl+X 前缀快捷键的目标上下文：ctx 在每轮循环内重建（含当前 client/model），

@@ -10,7 +10,7 @@ import type { OmniConfig } from '../config/index.js';
 import type { HookEventName } from '../hooks/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
-import type { Output, TokenUsage, ToolResultDetail } from '../output/types.js';
+import type { Output, StreamProgress, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { WebBroadcast } from './events.js';
 
 /** 服务端持有的 pending 注册表（approval / ask 的 resolve 槽） */
@@ -110,6 +110,10 @@ export class WebOutput implements Output {
 
   onAnswerEnd(): void {
     this.announce('answer.end');
+  }
+
+  onStreamProgress(progress: StreamProgress): void {
+    this.announce('stream.progress', { ...progress });
   }
 
   onUsage(usage: TokenUsage): void {

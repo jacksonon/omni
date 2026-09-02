@@ -40,6 +40,9 @@ export type TuiLineKind =
 export interface TurnTokens {
   usages: TokenUsage[];
   expanded: boolean;
+  model?: string;
+  durMs?: number;
+  genMs?: number;
 }
 
 /** 工具卡片状态：执行中 / 成功 / 失败 */
@@ -230,6 +233,22 @@ export interface SessionStats {
 }
 
 /**
+ * 实时流式生成状态（流式响应进行中）：
+ * 由 onStreamProgress 实时写入，流结束 / 取消时置 null。
+ * 供 footer 状态行在流式期间实时渲染高精度 tok/s 与输出 token。
+ */
+export interface LiveStreamStats {
+  /** 当前纯生成耗时（now - firstTokenAt，毫秒） */
+  liveGenMs: number;
+  /** 当前流式已生成的 token 估算/实际数 */
+  streamTokens: number;
+  /** 当前流式的实时速率（tok/s） */
+  tps: number;
+  /** 当前流式的首 token 延迟（firstTokenAt - llmT0，毫秒） */
+  firstTokenMs: number;
+}
+
+/**
  * 命令输出面板：**所有 / 命令的输出（含 /skill、/session、/status 等）统一进这个
  * 独立浮层窗口，不进对话流（state.lines）**——用户要求「所有的 command 都是独立
  * 窗口，不要影响对话流」。圆角方框 + 标题，内容超高时 ↑/↓ 滚动，Esc/Enter 关闭。
@@ -380,6 +399,8 @@ export interface TuiState {
   restoreHint: string | null;
   /** 会话累计 token 用量（footer 右下角显示，来自每次响应的 usage） */
   tokens: TokenUsage;
+  /** 流式生成实时进度（正在流式生成时非 null；流结束/取消置 null） */
+  liveStream: LiveStreamStats | null;
   /**
    * 会话运行统计（footer 统计行：首 token/速率/缓存命中/输入输出）。
    * 由 TuiOutput 按事件累加（onLlmLap/onToolsLap/onUsage）。
@@ -627,6 +648,7 @@ export function createTuiState(): TuiState {
     activeVariant: null,    sessionTitle: null,
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
+    liveStream: null,
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
     // 最近一次 LLM 请求的 prompt token（= 当前上下文大小，onUsage 每次覆盖）+
     // 当前模型 context 上限（config limit.context；interactive 按端点解析）

@@ -1,6 +1,6 @@
 /**
  * 能力一键预设（1.0 P1-6）：`omni preset browser` 把浏览器自动化双雄写入全局
- * MCP 配置——**不自研浏览器栈**（TODO-1.0 明确不做清单）：
+ * MCP 配置——**不自研浏览器栈**（TODO 明确不做清单）：
  * · playwright  → @playwright/mcp（自动化：开页面/填表/点击/截图/抓数据）
  * · devtools    → chrome-devtools-mcp（调试/性能分析）
  * 写入全局配置 ~/.config/omni/omni.json 的 mcpServers 字段；下次会话自动连接。

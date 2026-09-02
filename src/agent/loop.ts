@@ -23,7 +23,7 @@ import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
-import { buildAssistantMessage, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
+import { buildAssistantMessage, estimateTokens, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
 
 /** 消息里是否含图片输入（多模态前置校验用：content 为分段数组且带 image 类型） */
@@ -512,6 +512,7 @@ export async function runAgent(
     // 流式累积：思考（reasoning）、正文（content）与工具调用（tool_calls）
     let content = '';
     let reasoning = '';
+    let streamTokens = 0;
     let lastUsage: OpenAI.Completions.CompletionUsage | null = null;
     const toolCalls = new Map<number, ToolCallAccum>();
     let streamStarted = false;
@@ -549,10 +550,40 @@ export async function runAgent(
         // 而非首个 chunk——有些网关先发 role-only 空 delta，会让 TTFT 偏小。
         // lastContentAt 同步刷新到最后一个内容 chunk：生成耗时 = lastContentAt - firstTokenAt
         // （排除首 token 等待，tok/s 才是真实生成速率而非含 prefill 的平均吞吐）。
-        if (piece || delta?.content || (delta?.tool_calls && delta.tool_calls.length > 0)) {
+        const hasContent = Boolean(piece || delta?.content || (delta?.tool_calls && delta.tool_calls.length > 0));
+        if (hasContent) {
           const now = Date.now();
           firstTokenAt ??= now;
           lastContentAt = now;
+
+          // 累积生成 token 估算（单 chunk 产出保底 1 token）
+          let deltaText = '';
+          if (piece) deltaText += piece;
+          if (delta?.content) deltaText += delta.content;
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (tc.id) deltaText += tc.id;
+              if (tc.function?.name) deltaText += tc.function.name;
+              if (tc.function?.arguments) deltaText += tc.function.arguments;
+            }
+          }
+          const chunkTokens = Math.max(1, estimateTokens(deltaText));
+          streamTokens += chunkTokens;
+
+          // 若网关在流式 chunk 中携带了 usage，优先对齐官方精准 completion_tokens
+          if (chunk.usage?.completion_tokens) {
+            streamTokens = chunk.usage.completion_tokens;
+          }
+
+          const liveGenMs = lastContentAt - firstTokenAt;
+          const firstTokenMs = firstTokenAt - llmT0;
+          const tps = liveGenMs > 0 ? streamTokens / (liveGenMs / 1000) : 0;
+          output.onStreamProgress?.({
+            liveGenMs,
+            streamTokens,
+            tps,
+            firstTokenMs,
+          });
         }
         if (piece) {
           reasoning += piece;
@@ -632,16 +663,33 @@ export async function runAgent(
       output.onThinkingSaved(reasoning.length, saved);
     }
 
-    // 组装 assistant 消息并追加进历史（reasoning + reasoningMs 一并持久化——
-    // web/TUI/console 恢复后回放 thinking 块，含「- thinking · 耗时」头行）
-    const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning, reasoningMs);
-    messages.push(assistantMsg);
-
-    // 轨迹：assistant 消息（正文 + 用量 + LLM 墙钟/首 token 延迟）
+    // 轨迹与消息持久化用量
     const u = lastUsage as (OpenAI.Completions.CompletionUsage & {
       prompt_tokens_details?: { cached_tokens?: number };
       prompt_cache_hit_tokens?: number;
     }) | null;
+    const usageMeta = u
+      ? {
+          prompt: u.prompt_tokens ?? 0,
+          completion: u.completion_tokens ?? 0,
+          total: u.total_tokens ?? ((u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)),
+          cached: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
+        }
+      : undefined;
+    const durMs = Date.now() - llmT0;
+    const genMs = firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined;
+
+    // 组装 assistant 消息并追加进历史（reasoning + reasoningMs + usage + model 一并持久化——
+    // web/TUI/console 恢复后回放 thinking 块与 turn-footer 统计）
+    const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning, reasoningMs, {
+      usage: usageMeta,
+      model,
+      durMs,
+      genMs,
+    });
+    messages.push(assistantMsg);
+
+    // 轨迹：assistant 消息（正文 + 用量 + LLM 墙钟/首 token 延迟）
     opts.events?.assistant(
       step,
       content,

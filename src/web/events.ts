@@ -44,6 +44,7 @@ export type WebEventName =
   | 'tool.output' // run_command 实时输出（{ sessionId, seq, chunk, isError }）
   | 'answer.chunk'
   | 'answer.end'
+  | 'stream.progress'
   | 'turn.step'
   | 'lap'
   | 'toolsLap'

@@ -14,6 +14,18 @@ import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import type { EditDiff, WriteDiff } from './format.js';
 
+/** 响应流式的实时生成进度（实时 tok/s 速率与用量） */
+export interface StreamProgress {
+  /** 当前纯生成耗时（now - firstTokenAt，毫秒） */
+  liveGenMs: number;
+  /** 当前流式响应已生成的累计 token 估算/实际数 */
+  streamTokens: number;
+  /** 当前流式的实时速率（tok/s） */
+  tps: number;
+  /** 首 token 延迟（firstTokenAt - llmT0，毫秒） */
+  firstTokenMs: number;
+}
+
 /** 单次响应的 token 用量（OpenAI usage 字段；TUI footer 展示会话累计值） */
 export interface TokenUsage {
   prompt: number;
@@ -49,6 +61,8 @@ export interface Output {
   onAnswer(text: string): void;
   /** 正文结束（console 补换行，让后续内容从新行开始） */
   onAnswerEnd(): void;
+  /** 流式生成实时进度（每次 chunk 到达且有实际内容/思考/工具调用时触发） */
+  onStreamProgress?(progress: StreamProgress): void;
   /** 一轮流式响应结束时的 token 用量（TUI footer 右下角累计展示；console 忽略） */
   onUsage(usage: TokenUsage): void;
   /** 一次 Agent 回合开始（交互模式每轮用户提交 / 单次任务各 1 次；TUI footer 轮数统计用） */

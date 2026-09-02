@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }
   // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
   // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
-  const checks1 = ['你是谁？', '$ ls -la', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '缓存命中 0%'];
+  const checks1 = ['你是谁？', '$ ls -la', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '缓存 0%'];
   // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
@@ -368,7 +368,7 @@ async function main(): Promise<void> {
   const s7 = createTuiState();
   fill(s7, 40);
   s7.scrollTop = 0; // 回滚到最早的内容
-  const r7 = await render(s7, 22); // 思考头行 +1 行、输入/模型间距 +1 行后 22 行才容得下 📁 .（scrollTop=0 窗 cap-1）
+  const r7 = await render(s7, 24); // 思考间距 +1 行后 24 行容得下顶部内容与卡片（scrollTop=0 窗 cap-1）
   console.log('=== 场景 7：上滚回看历史（scrollTop=0）===');
   console.log(r7.frame);
   const checks7 = ['你是谁？', '$ ls -la', '已上滚'];
@@ -560,7 +560,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 12 摘要仍含换行（会打破卡片边框）: ${JSON.stringify(sum)}`);
     process.exit(1);
   }
-  if (!sum.startsWith('● Bash(curl') || !sum.endsWith('…')) {
+  if (!sum.startsWith('$ curl') || !sum.endsWith('…')) {
     console.error(`✗ 场景 12 摘要截断异常: ${JSON.stringify(sum)}`);
     process.exit(1);
   }
@@ -632,7 +632,7 @@ async function main(): Promise<void> {
   const r13 = await render(s13);
   console.log('=== 场景 13：footer 统计行（窄屏段级截断）===');
   console.log(r13.frame);
-  const checks13 = ['grok-4.5', '首 token 平均', '缓存命中 0%', '…'];
+  const checks13 = ['grok-4.5', '首 token', '缓存 0%', '…'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
     console.error(`✗ 场景 13 footer 缺少: ${missing13.join(', ')}`);
@@ -670,12 +670,12 @@ async function main(): Promise<void> {
   // 期望：首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok| 上下文 300
   //（tok/s = 输出 350 / 生成耗时 0.5s——排除首 token 等待，非 llmMs 全墙钟；
   //  上下文 = 最后一次请求的 prompt token = 300）
-  const expect13 = '首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok| 上下文 300';
+  const expect13 = '首 token 0.5s · 700 tok/s| 缓存 77%| 输入 1.3K · 输出 350| 上下文 300';
   if (!frame13.includes(expect13)) {
     console.error(`✗ 场景 13 统计累计不符\n期望: ${expect13}\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
     process.exit(1);
   }
-  // 用户示例格式验证（示例值：首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok| 上下文 45K/128K）
+  // 用户示例格式验证（示例值：首 token 6.5s · 127 tok/s| 缓存 97%| 输入 3M · 输出 44.2K| 上下文 45K/128K）
   const s13c = createTuiState();
   s13c.model = 'mock';
   pushLine(s13c, { kind: 'user', text: '你好' }); // 有会话内容 → 非 hero 模式（hero 隐藏统计行）
@@ -688,7 +688,7 @@ async function main(): Promise<void> {
   await t13c.renderOnce();
   const frame13c = t13c.captureCharFrame();
   // 用户示例格式验证（示例值；tok/s = 输出 44.2K / 生成耗时 349.1s ≈ 127）
-  const expect13c = '首 token 平均 6.5s · 127 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok| 上下文 45K/128K';
+  const expect13c = '首 token 6.5s · 127 tok/s| 缓存 97%| 输入 3M · 输出 44.2K| 上下文 45K/128K';
   if (!frame13c.includes(expect13c)) {
     console.error(`✗ 场景 13 示例格式不符\n期望: ${expect13c}\n实际帧:\n${frame13c}`);
     process.exit(1);
@@ -936,6 +936,15 @@ async function main(): Promise<void> {
   await t15.renderOnce();
   if (JSON.stringify(effortFg15()) !== JSON.stringify([251, 146, 60])) {
     console.error(`✗ 场景 15 思考级别 high 颜色错误: ${JSON.stringify(effortFg15())}（应 orange-400 [251,146,60]）`);
+    process.exit(1);
+  }
+  // 上下文圆环与用量在模型行常驻展示（◔ 15.5K/128K）
+  s15.lastPromptTokens = 15500;
+  s15.contextLimit = 128000;
+  repaintTree(t15.renderer, tree15, s15, { withInput: true });
+  await t15.renderOnce();
+  if (!tree15.footerContext?.visible || !JSON.stringify(tree15.footerContext.content).includes('◔') || !JSON.stringify(tree15.footerContext.content).includes('15.5K/128K')) {
+    console.error(`✗ 场景 15 上下文圆环与容量未在模型行正确展示: ${JSON.stringify(tree15.footerContext?.content)}`);
     process.exit(1);
   }
   s15.reasoningEffort = 'custom-level';
@@ -1327,8 +1336,8 @@ async function main(): Promise<void> {
   s18b.status = '任务完成';
   const rows18b = computeRows(s18b, { height: 20, width: 64 }, { withInput: true });
   const userIdx18 = rows18b.findIndex((r) => r.text.includes('你好'));
-  // 思考模块展开态 = `- thinking` 头行 + 内容（用户要求）——间距以**头行**为思考起点
-  const thinkIdx18 = rows18b.findIndex((r) => r.text.trim().startsWith('- thinking'));
+  // 思考模块展开态 = `- Thought:` 头行 + 内容（用户要求）——间距以**头行**为思考起点
+  const thinkIdx18 = rows18b.findIndex((r) => r.text.trim().startsWith('- Thought:'));
   if (userIdx18 < 0 || thinkIdx18 < 0 || thinkIdx18 - userIdx18 !== 3) {
     console.error(`✗ 场景 18 用户消息与思考之间缺空行（thinkIdx=${thinkIdx18} userIdx=${userIdx18}，应差 3 = 气泡底部留白 + 空行）`);
     process.exit(1);
@@ -1386,9 +1395,9 @@ async function main(): Promise<void> {
     console.error('✗ 场景 18 thinking 后的间距行应为空白行');
     process.exit(1);
   }
-  if (think2Idx18c - cardBottomIdx18c !== 3) {
-    // 卡片底行 + 1 行空白 + `- thinking` 头行 + 内容 = 差 3（收起态卡片 = top/cmd/bottom）
-    console.error(`✗ 场景 18 卡片↔thinking 间距异常（应底留白+1 行空白+头行 = 差 3，实际 ${think2Idx18c - cardBottomIdx18c}）`);
+  if (think2Idx18c - cardBottomIdx18c !== 4) {
+    // 卡片底行 + 1 行空白 + `- thinking` 头行 + 思考内空行 + 内容 = 差 4（收起态卡片 = top/cmd/bottom）
+    console.error(`✗ 场景 18 卡片↔thinking 间距异常（应底留白+1 行空白+头行+内部空行 = 差 4，实际 ${think2Idx18c - cardBottomIdx18c}）`);
     process.exit(1);
   }
   if (ansIdx18c - think2Idx18c !== 2) {
@@ -1616,7 +1625,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 20 渲染帧不应包含会话标题（已改为窗口标题）');
     process.exit(1);
   }
-  if (!r20.frame.includes('首 token 平均')) {
+  if (!r20.frame.includes('首 token')) {
     console.error('✗ 场景 20 footer 统计行缺失');
     process.exit(1);
   }
@@ -1660,15 +1669,15 @@ async function main(): Promise<void> {
   s21.status = '任务完成';
   // a) 默认展示 + 展开：每个思考段落 = `- thinking` 头行（含思考时间 · 3.2s）+ 全文
   //    （用户要求「展示时显示 - thinking + 思考时间 + 思考内容」）
-  const rows21 = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
+  const rows21 = buildBody(s21, 64);
   const thinkFull21 = rows21.filter((r) => r.text.includes('第一段思考内容') || r.text.includes('第二轮思考'));
   if (thinkFull21.length !== 2) {
     console.error(`✗ 场景 21 默认未展开思考全文: ${JSON.stringify(thinkFull21)}`);
     process.exit(1);
   }
-  const headerRows21 = rows21.filter((r) => r.text.trim().startsWith('- thinking'));
-  if (headerRows21.length !== 2 || !rows21.some((r) => r.text.includes('- thinking · 3.2s')) || !rows21.some((r) => r.text.includes('- thinking · 1.5s'))) {
-    console.error(`✗ 场景 21 展开态缺 - thinking 头行/思考时间: ${JSON.stringify(headerRows21.map((r) => r.text))}`);
+  const headerRows21 = rows21.filter((r) => r.text.trim().startsWith('- Thought:'));
+  if (headerRows21.length !== 2 || !rows21.some((r) => r.text.includes('- Thought: · 3.2s')) || !rows21.some((r) => r.text.includes('- Thought: · 1.5s'))) {
+    console.error(`✗ 场景 21 展开态缺 - Thought: 头行/思考时间: ${JSON.stringify(headerRows21.map((r) => r.text))}`);
     process.exit(1);
   }
   // a2) **思考中头行 = loading + thinking + 实时耗时**（用户要求）：thinkingRunning=true
@@ -1679,38 +1688,38 @@ async function main(): Promise<void> {
   pushLine(s21a2, { kind: 'thinking', text: '正在思考', thinkingRunning: true, thinkingMs: 1200 });
   s21a2.spinnerIndex = 3;
   const rows21a2 = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
-  const runHead21 = rows21a2.find((r) => r.text.includes('thinking'));
-  if (!runHead21 || !runHead21.text.startsWith('⠸ thinking · 1.2s')) {
-    console.error(`✗ 场景 21 思考中头行应为 loading+thinking+time（⠸ thinking · 1.2s）: ${JSON.stringify(runHead21?.text)}`);
+  const runHead21 = rows21a2.find((r) => r.text.includes('Thought:'));
+  if (!runHead21 || !runHead21.text.includes('⠸ Thought: · 1.2s')) {
+    console.error(`✗ 场景 21 思考中头行应为 loading+thinking+time（⠸ Thought: · 1.2s）: ${JSON.stringify(runHead21?.text)}`);
     process.exit(1);
   }
   s21a2.lines[0]!.thinkingRunning = false; // 思考完 → 前缀变 `-`
   const rows21a2b = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
-  const doneHead21 = rows21a2b.find((r) => r.text.includes('thinking'));
-  if (!doneHead21 || !doneHead21.text.startsWith('- thinking · 1.2s')) {
-    console.error(`✗ 场景 21 思考完头行应为 - thinking · time: ${JSON.stringify(doneHead21?.text)}`);
+  const doneHead21 = rows21a2b.find((r) => r.text.includes('Thought:'));
+  if (!doneHead21 || !doneHead21.text.includes('- Thought: · 1.2s')) {
+    console.error(`✗ 场景 21 思考完头行应为 - Thought: · time: ${JSON.stringify(doneHead21?.text)}`);
     process.exit(1);
   }
   // a2b) **收起态（点击单条收起）思考中 = loading 而非 + 号**（用户要求「收起时正在思考，
   //      左侧不显示 + 号，而是应该显示 loading」）：collapsedThinking 记录该条 + running
-  //      → 头行 `⠸ thinking`（spinner 帧，无时间）；思考完 → `+ thinking`
+  //      → 头行 `⠸ Thought:`（spinner 帧，无时间）；思考完 → `+ Thought:`
   s21a2.collapsedThinking.add(0);
   s21a2.lines[0]!.thinkingRunning = true;
   const rows21a2c = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
-  const runColl21 = rows21a2c.find((r) => r.text.includes('thinking'));
-  if (!runColl21 || !runColl21.text.startsWith('⠸ thinking') || runColl21.text.includes('·')) {
-    console.error(`✗ 场景 21 收起态思考中应为 loading（⠸ thinking，无 + 号）: ${JSON.stringify(runColl21?.text)}`);
+  const runColl21 = rows21a2c.find((r) => r.text.includes('Thought:'));
+  if (!runColl21 || !runColl21.text.includes('⠸ Thought:') || runColl21.text.includes('·')) {
+    console.error(`✗ 场景 21 收起态思考中应为 loading（⠸ Thought:，无 + 号）: ${JSON.stringify(runColl21?.text)}`);
     process.exit(1);
   }
-  s21a2.lines[0]!.thinkingRunning = false; // 思考完 → 恢复 + thinking
+  s21a2.lines[0]!.thinkingRunning = false; // 思考完 → 恢复 + Thought:
   const rows21a2d = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
-  if (rows21a2d.filter((r) => r.text.trim() === '+ thinking').length !== 1) {
-    console.error('✗ 场景 21 收起态思考完应恢复 + thinking');
+  if (rows21a2d.filter((r) => r.text.trim() === '+ Thought:').length !== 1) {
+    console.error('✗ 场景 21 收起态思考完应恢复 + Thought:');
     process.exit(1);
   }
   // a3) **收到消息开始思考（onRound）立即显示 thinking 模块**（用户要求「接收到消息开始
   //     thinking 的时候就要显示，而不是收到流式返回才开始」）：onRound 预建空内容
-  //     running 行 → 头行 `⠋ thinking · 0.0s`（无内容行）；无实际思考 finish 移除空模块
+  //     running 行 → 头行 `⠋ Thought: · 0.0s`（无内容行）；无实际思考 finish 移除空模块
   {
     const { TuiOutput } = await import('../src/tui/output.js');
     const s21a3 = createTuiState();
@@ -1725,8 +1734,8 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const rows21a3 = computeRows(s21a3, { height: 20, width: 64 }, { withInput: true });
-    const head3 = rows21a3.find((r) => r.text.includes('thinking'));
-    if (!head3 || !head3.text.includes('thinking') || rows21a3.some((r) => r.thinkingIdx !== undefined && r.text !== '' && !r.text.includes('thinking'))) {
+    const head3 = rows21a3.find((r) => r.text.includes('Thought:'));
+    if (!head3 || !head3.text.includes('Thought:') || rows21a3.some((r) => r.thinkingIdx !== undefined && r.text !== '' && !r.text.includes('Thought:'))) {
       console.error(`✗ 场景 21 onRound 后应只显示头行（无空内容行）: ${JSON.stringify(rows21a3.map((r) => r.text))}`);
       process.exit(1);
     }
@@ -1736,11 +1745,11 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  // b) **/thinking 关闭（thinkingShow=false）→ 思考流完全不展示**：无 `- thinking` 头行、
-  //    无 `+ thinking` 摘要、无思考全文（历史行与新轮行都在渲染层过滤）；回答不受影响。
+  // b) **/thinking 关闭（thinkingShow=false）→ 思考流完全不展示**：无 `- Thought:` 头行、
+  //    无 `+ Thought:` 摘要、无思考全文（历史行与新轮行都在渲染层过滤）；回答不受影响。
   s21.thinkingShow = false;
   const rows21b = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
-  if (rows21b.some((r) => r.text.includes('第一段思考内容') || r.text.includes('第二轮思考') || r.text.trim() === '+ thinking' || r.text.includes('- thinking'))) {
+  if (rows21b.some((r) => r.text.includes('第一段思考内容') || r.text.includes('第二轮思考') || r.text.trim() === '+ Thought:' || r.text.includes('- Thought:'))) {
     console.error(`✗ 场景 21 thinkingShow=false 仍渲染思考内容: ${JSON.stringify(rows21b.map((r) => r.text))}`);
     process.exit(1);
   }
@@ -1813,10 +1822,10 @@ async function main(): Promise<void> {
   s21.thinkingExpanded = true;
   s21.collapsedThinking.clear();
   s21.expandedThinking.clear();
-  const rows21e = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
+  const rows21e = computeRows(s21, { height: 30, width: 64 }, { withInput: true });
   const rects21e = buildRects21(rows21e);
   const contentRow21 = rows21e.findIndex((r) => r.text.includes('第一段思考内容'));
-  const headerRow21 = rows21e.findIndex((r) => r.text.includes('- thinking · 3.2s'));
+  const headerRow21 = rows21e.findIndex((r) => r.text.includes('- Thought: · 3.2s'));
   if (contentRow21 < 0 || headerRow21 < 0 || rects21e.get(contentRow21 + 1) !== 1 || rects21e.get(headerRow21 + 1) !== 1) {
     console.error(`✗ 场景 21 展开态思考行未带 thinkingIdx: ${JSON.stringify([...rects21e])}`);
     process.exit(1);
@@ -1826,9 +1835,9 @@ async function main(): Promise<void> {
     console.error('✗ 场景 21 展开态点头行未单独收起');
     process.exit(1);
   }
-  const rows21f = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
-  if (rows21f.some((r) => r.text.includes('第一段思考内容')) || !rows21f.some((r) => r.text.includes('第二轮思考')) || rows21f.filter((r) => r.text.trim() === '+ thinking').length !== 1) {
-    console.error('✗ 场景 21 收起后第 1 条应只剩 + thinking、第 2 条仍展开');
+  const rows21f = computeRows(s21, { height: 30, width: 64 }, { withInput: true });
+  if (rows21f.some((r) => r.text.includes('第一段思考内容')) || !rows21f.some((r) => r.text.includes('第二轮思考')) || rows21f.filter((r) => r.text.trim() === '+ Thought:').length !== 1) {
+    console.error('✗ 场景 21 收起后第 1 条应只剩 + Thought:、第 2 条仍展开');
     process.exit(1);
   }
   // 空白行点击不命中（不消费、不误展开）：点用户行（y=0）
@@ -1836,15 +1845,15 @@ async function main(): Promise<void> {
     console.error('✗ 场景 21 空白区域误命中思考行');
     process.exit(1);
   }
-  // 再点 `+ thinking` → 重新展开该条
+  // 再点 `+ Thought:` → 重新展开该条
   const rects21f2 = buildRects21(rows21f);
-  const sumRow21 = rows21f.findIndex((r) => r.text.trim() === '+ thinking');
+  const sumRow21 = rows21f.findIndex((r) => r.text.trim() === '+ Thought:');
   if (sumRow21 < 0 || !hitTestThinking(s21, rects21f2, sumRow21 + 1) || s21.collapsedThinking.has(1)) {
-    console.error('✗ 场景 21 展开态点 + thinking 未重新展开');
+    console.error('✗ 场景 21 展开态点 + Thought: 未重新展开');
     process.exit(1);
   }
-  const rows21g = computeRows(s21, { height: 20, width: 64 }, { withInput: true });
-  if (!rows21g.some((r) => r.text.includes('第一段思考内容')) || rows21g.some((r) => r.text.trim() === '+ thinking')) {
+  const rows21g = computeRows(s21, { height: 30, width: 64 }, { withInput: true });
+  if (!rows21g.some((r) => r.text.includes('第一段思考内容')) || rows21g.some((r) => r.text.trim() === '+ Thought:')) {
     console.error('✗ 场景 21 重新展开后思考全文未恢复');
     process.exit(1);
   }
@@ -4233,19 +4242,19 @@ async function main(): Promise<void> {
   s39.contextLimit = 128000; // 模型 context 上限 → `上下文 4.2K/128K`
   const statsLine39 = layout39.buildFooterStats(s39);
   if (
-    !statsLine39.includes('首 token 平均 6.5s · 115 tok/s') ||
+    !statsLine39.includes('首 token 6.5s · 115 tok/s') ||
     !statsLine39.includes('上下文 4.2K/128K') ||
-    !statsLine39.includes('输入 10K tok · 输出 73.7K tok') ||
-    statsLine39.includes('缓存命中') ||
+    !statsLine39.includes('输入 10K · 输出 73.7K') ||
+    statsLine39.includes('缓存') ||
     statsLine39.includes('LLM') ||
     statsLine39.includes('轮 ·')
   ) {
     console.error(`✗ 场景 39 buildFooterStats 未按新配置拼行: ${JSON.stringify(statsLine39)}`);
     process.exit(1);
   }
-  // 单段配置（只留缓存命中）→ 只拼该段
+  // 单段配置（只留缓存）→ 只拼该段
   s39.statusline = ['cache'];
-  if (layout39.buildFooterStats(s39) !== '缓存命中 97%') {
+  if (layout39.buildFooterStats(s39) !== '缓存 97%') {
     console.error(`✗ 场景 39 单段配置拼行错误: ${JSON.stringify(layout39.buildFooterStats(s39))}`);
     process.exit(1);
   }
@@ -4305,7 +4314,7 @@ async function main(): Promise<void> {
   const statsLineCol39 = async (st: typeof s39r): Promise<number> => {
     repaintTree(t39a.renderer, tree39a, st, { withInput: true });
     await t39a.renderOnce(); // 测试渲染器需要显式重绘一帧（repaintTree 只更新树值）
-    return t39a.captureCharFrame().split('\n').find((l) => l.includes('首 token 平均'))!.indexOf('首 token');
+    return t39a.captureCharFrame().split('\n').find((l) => l.includes('首 token'))!.indexOf('首 token');
   };
   const colCenter39 = await statsLineCol39({ ...s39r });
   s39r.statuslineAlign = 'right';
@@ -4723,18 +4732,18 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 42 轮结束未插入收起态 tokens 模块: ${JSON.stringify(tokLines42.map((l) => l.tokens))}`);
     process.exit(1);
   }
-  // b) 收起态渲染：一行汇总 `⚡ 3 次 LLM 请求 · 输入 1.8K · 输出 600 · 缓存 1.1K`（1300+300+200 / 350+150+100 / 1000+30+50）
+  // b) 收起态渲染：对标 Web GUI（Build · <model> 与 + Tokens: 3 steps · 720 new · 1.1K cached · 2.4K total）
   const frame42a = t42.captureCharFrame();
-  if (!frame42a.includes('⚡ 3 次 LLM 请求 · 输入 1.8K · 输出 600 · 缓存 1.1K')) {
-    console.error(`✗ 场景 42 收起态汇总行缺失: ${frame42a.split('\n').filter((l) => l.includes('⚡')).join('|')}`);
+  if (!frame42a.includes('Build · mock') || !frame42a.includes('Tokens: 3 steps')) {
+    console.error(`✗ 场景 42 收起态汇总行缺失: ${frame42a}`);
     process.exit(1);
   }
-  // 收起态不显示逐次明细
-  if (frame42a.includes('输入 1300') || frame42a.includes('输入 300')) {
-    console.error('✗ 场景 42 收起态不应显示逐次明细');
+  // 收起态不显示 Step 表格
+  if (frame42a.includes('tool-call') || frame42a.includes('stop')) {
+    console.error('✗ 场景 42 收起态不应显示逐次明细表格');
     process.exit(1);
   }
-  // c) 点击汇总行 → 展开：每次 LLM 请求一行明细（输入/输出/缓存，加起来 = 汇总）
+  // c) 点击汇总行 → 展开：每次 LLM 请求一行明细（Step 表格，加起来 = 汇总）
   const { hitTestApproval: hta42, hitTestCard: htc42, hitTestThinking: htt42 } = await import('../src/tui/render.js');
   (tree42.root as unknown as { onMouseEvent?: (e: unknown) => void }).onMouseEvent = (e: unknown) => {
     const ev = e as { type?: string; button?: number; x?: number; y?: number };
@@ -4769,21 +4778,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame42b = t42.captureCharFrame();
-  const detail42 = frame42b.split('\n').filter((l) => l.includes('⚡') || /^\s+- LLM 请求/.test(l));
-  if (detail42.length !== 4) {
-    console.error(`✗ 场景 42 展开后明细行数错误（应 1 汇总 + 3 明细 = 4 行）: ${JSON.stringify(detail42)}`);
+  if (!frame42b.includes('Step') || !frame42b.includes('tool-call') || !frame42b.includes('stop')) {
+    console.error(`✗ 场景 42 展开明细表格缺失: ${frame42b}`);
     process.exit(1);
   }
-  for (const want of ['- LLM 请求：输入 1.3K · 输出 350 · 缓存 1K', '- LLM 请求：输入 300 · 输出 150 · 缓存 30', '- LLM 请求：输入 200 · 输出 100 · 缓存 50']) {
-    if (!frame42b.includes(want)) {
-      console.error(`✗ 场景 42 展开明细缺失: ${want}`);
-      process.exit(1);
-    }
-  }
   // 汇总行与回答文本之间应有 1 行空白间距（tokens 是独立组，other→tokens 切换插 1 行）
-  const frame42Lines = frame42b.split('\n');
-  const sum42Row = frame42Lines.findIndex((l) => l.includes('⚡ 3 次 LLM 请求'));
-  if (sum42Row < 2 || frame42Lines[sum42Row - 1]!.trim() !== '' || !frame42Lines[sum42Row - 2]!.includes('统计结果如上')) {
+  const allRows42b = computeRows(s42, { height: 100, width: 64 }, { withInput: true });
+  const sum42Idx = allRows42b.findIndex((r) => r.text.includes('Build · mock'));
+  if (sum42Idx < 2 || allRows42b[sum42Idx - 1]!.text.trim() !== '' || !allRows42b[sum42Idx - 2]!.text.includes('统计结果如上')) {
     console.error('✗ 场景 42 汇总行上方缺少间距（应紧邻的回答文本后留 1 行空白）');
     process.exit(1);
   }
@@ -4795,7 +4797,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame42c = t42.captureCharFrame();
-  if (frame42c.includes('- LLM 请求')) {
+  if (frame42c.includes('tool-call') || frame42c.includes('stop')) {
     console.error('✗ 场景 42 收起后明细仍显示');
     process.exit(1);
   }
@@ -4803,7 +4805,7 @@ async function main(): Promise<void> {
   const s42t = createTuiState();
   pushLine(s42t, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
   const rows42on = computeRows(s42t, { height: 20, width: 64 }, { withInput: true });
-  if (!rows42on.some((r) => r.text.includes('⚡ 1 次 LLM 请求'))) {
+  if (!rows42on.some((r) => r.text.includes('Tokens: 1 step'))) {
     console.error('✗ 场景 42 showTokens=true 应渲染 tokens 行');
     process.exit(1);
   }
@@ -4811,7 +4813,7 @@ async function main(): Promise<void> {
   s42off.showTokens = false;
   pushLine(s42off, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
   const rows42off = computeRows(s42off, { height: 20, width: 64 }, { withInput: true });
-  if (rows42off.some((r) => r.text.includes('⚡ 1 次 LLM 请求'))) {
+  if (rows42off.some((r) => r.text.includes('Tokens: 1 step'))) {
     console.error('✗ 场景 42 showTokens=false 不应渲染 tokens 行');
     process.exit(1);
   }
@@ -4863,13 +4865,13 @@ async function main(): Promise<void> {
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
   s43f.statusline = ['speed', 'cache'];
   const zhLine43 = buildFooterStats(s43f);
-  if (!zhLine43.includes('首 token 平均 0.5s') || !zhLine43.includes('缓存命中 30%')) {
+  if (!zhLine43.includes('首 token 0.5s') || !zhLine43.includes('缓存 30%')) {
     console.error(`✗ 场景 43 中文统计行错误: ${zhLine43}`);
     process.exit(1);
   }
   s43f.language = 'en';
   const enLine43 = buildFooterStats(s43f);
-  if (!enLine43.includes('First token avg 0.5s') || !enLine43.includes('Cache hit 30%') || zhLine43 === enLine43) {
+  if (!enLine43.includes('First token 0.5s') || !enLine43.includes('Cache 30%') || zhLine43 === enLine43) {
     console.error(`✗ 场景 43 英文统计行错误: ${enLine43}`);
     process.exit(1);
   }
@@ -4961,7 +4963,7 @@ async function main(): Promise<void> {
   s43t.language = 'en';
   pushLine(s43t, { kind: 'tokens', text: '', tokens: { usages: [{ prompt: 1300, completion: 350, total: 1650, cached: 1000 }], expanded: false } });
   const rows43t = buildBody(s43t, 60);
-  if (!rows43t.some((r) => r.text.includes('⚡ 1 LLM requests · In 1.3K'))) {
+  if (!rows43t.some((r) => r.text.includes('Tokens: 1 step'))) {
     console.error(`✗ 场景 43 tokens 英文渲染错误: ${rows43t.map((r) => r.text).join('|')}`);
     process.exit(1);
   }
@@ -5841,7 +5843,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     // 统计行隐藏（灰色块下方的统计段不渲染）
-    if (frame47.includes('首 token 平均') || frame47.includes('缓存命中')) {
+    if (frame47.includes('首 token') || frame47.includes('缓存')) {
       console.error(`✗ 场景 47 hero 下统计行不应显示:\n${frame47}`);
       process.exit(1);
     }
@@ -5880,7 +5882,7 @@ async function main(): Promise<void> {
     repaintTree(t47.renderer, tree47, s47, { withInput: true });
     await t47.renderOnce();
     const frame47b = t47.captureCharFrame();
-    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('首 token 平均')) {
+    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('首 token')) {
       console.error(`✗ 场景 47 首条消息后未退出 hero:\n${frame47b}`);
       process.exit(1);
     }
@@ -5962,6 +5964,78 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 48 通过：右上角 toast（拖选复制/模型切换/命令结果/错误统一提示）');
+
+  // =========================================================================
+  // 场景 49：流式实时 TPS 速率与用量高精度计算
+  // =========================================================================
+  {
+    console.log('=== 场景 49：流式实时 TPS 速率与用量高精度计算 ===');
+    const { estimateTokens } = await import('../src/agent/messages.js');
+    const { buildFooterStats } = await import('../src/tui/layout.js');
+    const { TuiOutput } = await import('../src/tui/output.js');
+
+    // 1. estimateTokens 高精度分词
+    if (estimateTokens('你好世界') !== 4) {
+      console.error(`✗ 场景 49 CJK token 估算错误: 期望 4, 实际 ${estimateTokens('你好世界')}`);
+      process.exit(1);
+    }
+    if (estimateTokens('Hello world') !== 2) {
+      console.error(`✗ 场景 49 英文 token 估算错误: 期望 2, 实际 ${estimateTokens('Hello world')}`);
+      process.exit(1);
+    }
+
+    // 2. TuiState + footer 实时渲染
+    const s49 = createTuiState();
+    s49.stats.firstTokenCount = 1;
+    s49.stats.firstTokenSum = 1000;
+    s49.stats.genMs = 2000;
+    s49.tokens.completion = 100;
+
+    // 非流式状态（历史沉淀统计）
+    const idleStats = buildFooterStats(s49);
+    if (!idleStats.includes('50 tok/s') || !idleStats.includes('输出 100')) {
+      console.error(`✗ 场景 49 非流式 footer 统计错误: ${idleStats}`);
+      process.exit(1);
+    }
+
+    // 流式进行中（实时速率与增量 token）
+    s49.liveStream = {
+      liveGenMs: 1000,
+      streamTokens: 150,
+      tps: 150,
+      firstTokenMs: 600,
+    };
+    const liveStats = buildFooterStats(s49);
+    if (!liveStats.includes('150 tok/s') || !liveStats.includes('输出 250') || !liveStats.includes('首 token 0.8s')) {
+      console.error(`✗ 场景 49 流式 live footer 统计错误: ${liveStats}`);
+      process.exit(1);
+    }
+
+    // 3. TuiOutput 生命周期
+    const mockSession = {
+      paint: async () => {},
+      stop: async () => {},
+      input: null,
+      onKeyPress: () => () => {},
+    };
+    const out49 = new TuiOutput(s49, { showThinking: true }, mockSession);
+    out49.onStreamProgress({
+      liveGenMs: 500,
+      streamTokens: 60,
+      tps: 120,
+      firstTokenMs: 500,
+    });
+    if (!s49.liveStream || s49.liveStream.tps !== 120) {
+      console.error('✗ 场景 49 onStreamProgress 未正确写入 liveStream');
+      process.exit(1);
+    }
+    out49.onAnswerEnd();
+    if (s49.liveStream !== null) {
+      console.error('✗ 场景 49 onAnswerEnd 未清空 liveStream');
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 49 通过：流式实时 TPS 速率与用量高精度计算');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

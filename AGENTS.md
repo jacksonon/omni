@@ -330,7 +330,7 @@ for step in 1..maxSteps:
 
 ## 路线图（摘要）
 
-> 全部历史条目见 `Doc/roadmap.md`；可做事项 backlog 见 `Doc/TODO.md`（持续演进）与 `Doc/TODO-1.0.md`（1.0 版本规划）。
+> 全部历史条目见 `Doc/roadmap.md`；可做事项 backlog 与 1.0 规划（调研/差距矩阵/发布工程）见合并后的 `Doc/TODO.md`。
 
 - [x] **MVP → 完整能力（已完成）**：Agent 循环 + 工具 + mock e2e → 安全护栏（权限分级/审批/审计/工作区信任/OS 沙箱 2.0）→ 上下文管理（截断/摘要压缩/预载）→ 评估体系 → CLI/TUI → MCP（双传输/Resources/Prompts/OAuth/通知流）→ 子代理与编排 → 记忆系统（嵌套 AGENTS.md/渐进披露/TTL/结构化）→ 会话持久化/检查点/撤销 → 技能系统 → Web/Electron 多前端 → Headless 与 CI（协议冻结 + omni-action）→ **1.0**（providers 模型层/Web 多会话并发/子代理 worktree 隔离/Hooks 扩展/压缩 2.0/LSP 反馈/预设/规格/遥测/eval 成本报告/发布工程）
 - [ ] 进阶：SWE-bench 评测、/rewind 三模式（code/conversation/both）、agent teams 完整版
@@ -342,8 +342,7 @@ for step in 1..maxSteps:
 | `Doc/tui-architecture.md` | TUI 渲染实现细节（OpenTUI 踩坑/布局预算/交互设计） |
 | `Doc/roadmap.md` | 路线图全量条目 |
 | `Doc/release-guide.md` | 构建与发布完整流程（CI/npm/关键坑） |
-| `Doc/TODO.md` | 可做事项 backlog（持续演进） |
-| `Doc/TODO-1.0.md` | 1.0 版本规划（全市场调研） |
+| `Doc/TODO.md` | 可做事项 backlog + 1.0 调研与规划（合并版：当前待办 / 调研・差距矩阵 / 1.0 TODO / 发布工程 / 不做清单 / 领先项） |
 | `Doc/Usage-Guide.md` · `Doc/使用指导.md` | 用户手册（英 / 中） |
 | `Doc/Headless-Protocol.md` | Headless 协议冻结说明 |
 | `Doc/research-terminal-agents-2026.md` | 全市场 Agent Harness 调研原始报告 |

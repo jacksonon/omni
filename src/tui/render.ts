@@ -65,7 +65,7 @@ import { dim } from '../ui.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
 import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
-import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats } from './layout.js';
+import { ACCENT_BAR, buildFooterStats, CONTENT_PAD, estimateInputLines, fitCount, fitFooterStats, formatContextRing } from './layout.js';
 import { effortColor, isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { visualWidth } from './width.js';
@@ -189,6 +189,8 @@ export interface TuiTree {
   footerMode: TextRenderable | null;
   /** 思考级别（`· medium`，按级别强度着色 effortColor；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
+  /** 上下文圆环与用量（` · ◔ 15.5K/128K`，模型行内常驻；repaintTree 每次刷新） */
+  footerContext: TextRenderable | null;
   footerTokens: TextRenderable | null;
   /** loading（模型行内、模型文本右面；会话进行中转，Esc/会话结束消失） */
   footerLoading: TextRenderable | null;
@@ -271,6 +273,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerModel: TextRenderable | null = null;
   let footerMode: TextRenderable | null = null;
   let footerEffort: TextRenderable | null = null;
+  let footerContext: TextRenderable | null = null;
   let footerTokens: TextRenderable | null = null;
   let statsWrap: BoxRenderable | null = null;
   let footerLoading: TextRenderable | null = null;
@@ -380,6 +383,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerEffort = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerEffort.fg = parseColor(theme.footerDim);
     modelRow.add(footerEffort);
+    // 上下文圆环与用量（` · ◔ 15.5K/128K`，模型行内常驻；未发生请求时隐藏）
+    footerContext = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerContext.fg = parseColor(theme.footerDim);
+    modelRow.add(footerContext);
     // loading（模型行内、思考级别右侧）：会话进行中显示旋转帧，Esc/会话结束消失
     footerLoading = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerLoading.fg = parseColor(theme.accentBlue); // 蓝色转圈，与左侧蓝色细线同色系
@@ -625,6 +632,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerModel,
     footerMode,
     footerEffort,
+    footerContext,
     footerTokens,
     footerLoading,
     footerEsc,
@@ -933,6 +941,23 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   if (tree.footerEffort) {
     tree.footerEffort.content = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
+  }
+  if (tree.footerContext) {
+    const lastPrompt = state.lastPromptTokens || 0;
+    const contextLimit = state.contextLimit || 0;
+    if (lastPrompt > 0) {
+      const { ring, text, percent } = formatContextRing(lastPrompt, contextLimit);
+      tree.footerContext.content = ` · ${ring} ${text}`;
+      const light = isLightTheme(theme);
+      let color = theme.footerDim;
+      if (percent >= 90) color = light ? '#dc2626' : '#f87171';
+      else if (percent >= 70) color = light ? '#d97706' : '#fbbf24';
+      tree.footerContext.fg = parseColor(color);
+      tree.footerContext.visible = true;
+    } else {
+      tree.footerContext.content = '';
+      tree.footerContext.visible = false;
+    }
   }
   // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ⚡M 打断）」+ 每条消息带
   // queue/steer 徽标（· 普通排队 / ⚡ 打断优先）+ 选中高亮（› 青色加粗）。
