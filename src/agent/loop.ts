@@ -67,18 +67,37 @@ function resolveVariantOverlay(
   return v ? { reasoningEffort: v.reasoningEffort, body: v.body, headers: v.headers } : {};
 }
 
+/** 从 usage 中提取 cached tokens（兼容 OpenAI, DeepSeek, Anthropic 等多厂商字段） */
+export function extractCachedTokens(usage: OpenAI.Completions.CompletionUsage | null | undefined): number {
+  if (!usage) return 0;
+  const u = usage as OpenAI.Completions.CompletionUsage & {
+    prompt_tokens_details?: { cached_tokens?: number };
+    prompt_cache_hit_tokens?: number;
+    cache_read_input_tokens?: number;
+    cached_tokens?: number;
+  };
+  return (
+    u.prompt_tokens_details?.cached_tokens ??
+    u.prompt_cache_hit_tokens ??
+    u.cache_read_input_tokens ??
+    u.cached_tokens ??
+    0
+  );
+}
+
 /**
  * 组装一轮流式请求参数（1.0 P0-3 能力驱动构建）：
  * · max_tokens ≤ limit.output（元数据声明时才下发——长回答不再被网关默认值截断）；
  * · 命名 variants 叠加层：{ reasoningEffort?, body?, headers? } deep-merge 进请求；
- * · reasoning_effort（/variants 思考级别；variant 自带时覆盖）。
+ * · reasoning_effort（/variants 思考级别；variant 自带时覆盖）；
+ * · Anthropic Prompt Caching（Claude 系列显式 cache_control 断点标记）。
  */
 function buildStreamParams(
   endpoint: ModelEndpoint | undefined,
   model: string,
   messages: ChatCompletionMessageParam[],
   tools: ReturnType<typeof buildToolSchemas>,
-  extra: { includeUsage?: boolean; signal?: AbortSignal; reasoningEffort?: string; activeVariant?: string }
+  extra: { includeUsage?: boolean; signal?: AbortSignal; reasoningEffort?: string; activeVariant?: string; disableCacheControl?: boolean }
 ): { params: Record<string, unknown>; headers: Record<string, string> | undefined; options: { headers?: Record<string, string>; signal?: AbortSignal } } {
   const overlay = resolveVariantOverlay(endpoint, extra.activeVariant);
   // P2 能力驱动请求构建：capabilities 元数据**事前**决定是否携带参数——
@@ -86,10 +105,37 @@ function buildStreamParams(
   // tools=false → 传空工具表（模型无工具调用能力时网关不报错）
   const canReason = endpoint?.capabilities?.reasoning !== false;
   const canTools = endpoint?.capabilities?.tools !== false;
+
+  let requestTools = canTools ? tools : [];
+  let requestMessages = messages;
+
+  // Anthropic 显式 Prompt Caching 适配：Claude 模型下发 cache_control 断点
+  const isClaude =
+    !extra.disableCacheControl &&
+    (model.toLowerCase().includes('claude') ||
+      Boolean(endpoint?.baseURL?.includes('anthropic')) ||
+      Boolean((endpoint?.headers as Record<string, string> | undefined)?.['anthropic-version']));
+
+  if (isClaude) {
+    if (requestTools.length > 0) {
+      requestTools = requestTools.map((t, idx) =>
+        idx === requestTools.length - 1
+          ? { ...t, cache_control: { type: 'ephemeral' } }
+          : t
+      );
+    }
+    requestMessages = requestMessages.map((m, idx) => {
+      if (idx === 0 && m.role === 'system') {
+        return { ...(m as unknown as Record<string, unknown>), cache_control: { type: 'ephemeral' } } as unknown as ChatCompletionMessageParam;
+      }
+      return m;
+    });
+  }
+
   const params: Record<string, unknown> = {
     model,
-    messages,
-    tools: canTools ? tools : [],
+    messages: requestMessages,
+    tools: requestTools,
     stream: true,
   };
   if (extra.includeUsage) params.stream_options = { include_usage: true };
@@ -256,16 +302,19 @@ export const PLAN_MODE_NOTE =
  * 构建工具 JSON Schema 列表（纯函数，供测试）：
  * planMode 时只保留只读工具（read_file / list_directory / search_code），
  * 其余工具（write_file / run_command / delegate / MCP 等）不出现在模型可见的工具表里。
+ * 静态确定性排序（按工具名字母序）：保证 tools 数组在任何请求中顺序严格一致，提升 Prompt Cache 命中率。
  */
 export function buildToolSchemas(
   tools: Pick<Tool, 'name' | 'description' | 'parameters'>[],
   planMode: boolean
-): { type: 'function'; function: { name: string; description: string; parameters: Tool['parameters'] } }[] {
+): { type: 'function'; function: { name: string; description: string; parameters: Tool['parameters'] }; cache_control?: { type: 'ephemeral' } }[] {
   const visible = planMode ? tools.filter((t) => READ_ONLY_TOOLS.has(t.name)) : tools;
-  return visible.map((t) => ({
-    type: 'function' as const,
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
+  return visible
+    .map((t) => ({
+      type: 'function' as const,
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }))
+    .sort((a, b) => a.function.name.localeCompare(b.function.name));
 }
 
 /**
@@ -414,9 +463,10 @@ export async function runAgent(
         );
       } catch (createErr) {
         if ((createErr as Error)?.name === 'AbortError') throw createErr;
-        // 回退：不带 include_usage/reasoning_effort/max_tokens 等增强参数的普通流式请求
+        // 回退：不带 include_usage/reasoning_effort/max_tokens/cache_control 等增强参数的普通流式请求
         const plain = buildStreamParams(activeEndpoint, routedModelRuntime, requestMessages, toolSchemas, {
           signal: opts.abortSignal,
+          disableCacheControl: true,
         });
         delete plain.params.stream_options;
         delete plain.params.reasoning_effort;
@@ -644,16 +694,12 @@ export async function runAgent(
       firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
     );
     if (lastUsage) {
-      // 缓存命中 token：OpenAI 系 prompt_tokens_details.cached_tokens；DeepSeek 系 prompt_cache_hit_tokens
-      const usage = lastUsage as OpenAI.Completions.CompletionUsage & {
-        prompt_tokens_details?: { cached_tokens?: number };
-        prompt_cache_hit_tokens?: number;
-      };
+      // 缓存命中 token：OpenAI 系 prompt_tokens_details.cached_tokens；DeepSeek 系 prompt_cache_hit_tokens；Anthropic 系 cache_read_input_tokens
       output.onUsage({
-        prompt: usage.prompt_tokens ?? 0,
-        completion: usage.completion_tokens ?? 0,
-        total: usage.total_tokens ?? 0,
-        cached: usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0,
+        prompt: lastUsage.prompt_tokens ?? 0,
+        completion: lastUsage.completion_tokens ?? 0,
+        total: lastUsage.total_tokens ?? 0,
+        cached: extractCachedTokens(lastUsage),
       });
     }
 
@@ -664,16 +710,13 @@ export async function runAgent(
     }
 
     // 轨迹与消息持久化用量
-    const u = lastUsage as (OpenAI.Completions.CompletionUsage & {
-      prompt_tokens_details?: { cached_tokens?: number };
-      prompt_cache_hit_tokens?: number;
-    }) | null;
-    const usageMeta = u
+    const cachedTokens = extractCachedTokens(lastUsage);
+    const usageMeta = lastUsage
       ? {
-          prompt: u.prompt_tokens ?? 0,
-          completion: u.completion_tokens ?? 0,
-          total: u.total_tokens ?? ((u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)),
-          cached: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
+          prompt: lastUsage.prompt_tokens ?? 0,
+          completion: lastUsage.completion_tokens ?? 0,
+          total: lastUsage.total_tokens ?? ((lastUsage.prompt_tokens ?? 0) + (lastUsage.completion_tokens ?? 0)),
+          cached: cachedTokens,
         }
       : undefined;
     const durMs = Date.now() - llmT0;
@@ -693,11 +736,11 @@ export async function runAgent(
     opts.events?.assistant(
       step,
       content,
-      u
+      lastUsage
         ? {
-            input: u.prompt_tokens ?? 0,
-            cached: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
-            output: u.completion_tokens ?? 0,
+            input: lastUsage.prompt_tokens ?? 0,
+            cached: cachedTokens,
+            output: lastUsage.completion_tokens ?? 0,
           }
         : undefined,
       Date.now() - llmT0,

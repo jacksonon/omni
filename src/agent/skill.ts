@@ -220,21 +220,14 @@ export function skillRelevance(s: { name: string; description: string }, taskTex
 
 /**
  * 技能清单 → system 消息（只列 name+description + 渐进披露截断 + 过滤 disable-model-invocation）。
- * taskText 提供时按**任务相关性排序**（命中最多的在前；无关技能保持原序靠后）——
- * 技能很多时模型先看到最相关的（对标 opencode 可用技能索引）。
+ * 静态确定性排序（按 name 字母序）：保证前缀文本在不同任务间逐 token 一致，最大化 Prompt Cache 命中率。
  */
-export function skillMessage(skills: SkillInfo[], taskText?: string): ChatCompletionMessageParam {
-  const visible = skills.filter((s) => !s.disableModelInvocation);
+export function skillMessage(skills: SkillInfo[], _taskText?: string): ChatCompletionMessageParam {
+  const visible = skills
+    .filter((s) => !s.disableModelInvocation)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const total = visible.length;
-  let listed = visible.slice(0, SKILL_LIST_MAX);
-  if (taskText && total > SKILL_LIST_MAX) {
-    // 相关性排序（稳定：同分保持原序）→ 取最相关的前 N 条
-    listed = visible
-      .map((s, i) => ({ s, i, rel: skillRelevance(s, taskText) }))
-      .sort((a, b) => b.rel - a.rel || a.i - b.i)
-      .slice(0, SKILL_LIST_MAX)
-      .map((x) => x.s);
-  }
+  const listed = visible.slice(0, SKILL_LIST_MAX);
   const body = listed.map((s) => {
     let line = `- ${s.name}：${s.description}`;
     if (s.context === 'fork') line += '（子代理执行）';

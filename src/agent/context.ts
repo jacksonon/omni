@@ -285,9 +285,14 @@ async function summarizeMessages(
 
 /**
  * 上下文准备（入口在每轮用户输入后调用）：
- *   1. 项目记忆 AGENTS.md：首轮（尚未注入过）**嵌套加载**所有层级的 AGENTS.md
- *      （从 cwd 向上到 git 根/home 边界，每层一条 system 消息，内层贴近用户消息权重最高）；
- *   2. 首轮（尚未预载过）按任务文本预载相关文件；
+ *   1. 静态脚手架前缀（首轮尚未注入时构建，严格按照「静态优先」层级排列，最大化 Prompt Cache 命中率）：
+ *      - 全局记忆（~/.config/omni/AGENTS.md）
+ *      - 项目记忆（嵌套 AGENTS.md：外层靠 system、内层贴近 user 权重最高）
+ *      - 代码库结构感知地图（repo map）
+ *      - 静态确定性技能清单（skills）
+ *   2. 动态任务上下文（放在静态层之后，避免破坏公共前缀）：
+ *      - 任务命中全局记忆主题（topics）
+ *      - 任务相关文件预载（preloadFiles）
  *   3. 长对话做摘要压缩。
  */
 export async function prepareContext(
@@ -297,12 +302,80 @@ export async function prepareContext(
   opts: ContextOptions,
   recorder?: EventRecorder
 ): Promise<void> {
-  // 1) 相关文件预载：只在尚未预载过时执行一次（会话首个用户消息）
+  if (messages.length === 0) return;
+
+  const staticScaffold: ChatCompletionMessageParam[] = [];
+  const dynamicScaffold: ChatCompletionMessageParam[] = [];
+
+  // 1) 全局记忆 ~/.config/omni/AGENTS.md：跨项目共享，首轮注入一次
+  const globalFile = opts.globalAgentsFile !== false;
+  const hasGlobal = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(GLOBAL_MEMORY_PREFIX)
+  );
+  if (globalFile && !hasGlobal) {
+    const mem = await loadGlobalMemory();
+    if (mem) staticScaffold.push(globalMemoryMessage(mem));
+  }
+
+  // 2) 项目记忆 AGENTS.md：跨会话共享，首轮注入一次
+  //    嵌套多层级：loadProjectMemory 返回 [内层, …, 外层]（从内到外），
+  //    反转为 [外层, …, 内层] 注入——外层靠 system prompt、内层贴近 user 权重最高
+  const agentsFile = opts.agentsFile !== false;
+  const hasMemory = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(MEMORY_PREFIX)
+  );
+  if (agentsFile && !hasMemory) {
+    const mems = await loadProjectMemory();
+    for (const mem of [...mems].reverse()) {
+      staticScaffold.push(memoryMessage(mem));
+    }
+  }
+
+  // 3) 代码库结构感知（repo map，P1）：首轮注入一次紧凑符号地图
+  const repoMap = opts.repoMap !== false;
+  const hasRepoMap = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(REPO_MAP_PREFIX)
+  );
+  if (repoMap && !hasRepoMap) {
+    const map = await buildRepoMap(process.cwd(), { maxSymbols: opts.repoMapMaxSymbols ?? 200 });
+    if (map) {
+      staticScaffold.push({ role: 'system', content: `${REPO_MAP_PREFIX}，供快速了解项目结构]\n${map}` });
+    }
+  }
+
+  // 4) 技能清单：跨会话共享（SKILL.md 已安装），静态按名称字典序排列
+  const skillsFile = opts.skills !== false;
+  const hasSkills = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith(SKILL_PREFIX)
+  );
+  if (skillsFile && !hasSkills) {
+    const skills = await discoverSkills();
+    if (skills.length > 0) {
+      staticScaffold.push(skillMessage(skills));
+    }
+  }
+
+  // 5) 动态任务主题匹配：任务命中主题 glob 时内联
+  const hasTopics = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆主题')
+  );
+  if (globalFile && !hasTopics) {
+    const lastUserForTopics = [...messages].reverse().find((m) => m.role === 'user');
+    const taskText0 =
+      lastUserForTopics && typeof lastUserForTopics.content === 'string' ? lastUserForTopics.content : undefined;
+    const matched = await topicsMatchingTask(taskText0);
+    if (matched.length > 0) {
+      const body = matched.map((m) => `### ${m.topic}\n${m.content}`).join('\n\n');
+      dynamicScaffold.push({ role: 'system', content: `[全局记忆主题（任务命中自动加载）]\n${body}` });
+    }
+  }
+
+  // 6) 任务相关文件预载：按任务文本预载相关文件
   const preload = opts.preloadFiles !== false;
   const hasPreload = messages.some(
     (m) => typeof m.content === 'string' && m.content.startsWith(PRELOAD_PREFIX)
   );
-  if (preload && !hasPreload && messages.length > 0) {
+  if (preload && !hasPreload) {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
     if (lastUser && typeof lastUser.content === 'string') {
       const files = await selectRelevantFiles(
@@ -310,72 +383,16 @@ export async function prepareContext(
         opts.preloadMaxFiles ?? 5,
         opts.preloadMaxBytes ?? 30 * 1024
       );
-      if (files.length > 0) messages.unshift(preloadMessage(files));
+      if (files.length > 0) dynamicScaffold.push(preloadMessage(files));
     }
   }
-  // 2) 项目记忆 AGENTS.md：跨会话共享，首轮注入一次（system 消息；
-  //    在预载之后 unshift → 排在预载文件之前，紧跟循环的 SYSTEM_PROMPT）。
-  //    嵌套多层级：loadProjectMemory 返回 [内层, …, 外层]（从内到外），
-  //    依次 unshift → 最终顺序 [外层, …, 内层]——外层靠 system prompt、
-  //    内层贴近用户消息、权重最高（内层可覆盖/细化外层）。
-  const agentsFile = opts.agentsFile !== false;
-  const hasMemory = messages.some(
-    (m) => typeof m.content === 'string' && m.content.startsWith(MEMORY_PREFIX)
-  );
-  if (agentsFile && !hasMemory && messages.length > 0) {
-    const mems = await loadProjectMemory();
-    for (const mem of mems) {
-      messages.unshift(memoryMessage(mem));
-    }
+
+  // 一次性将按「静态 -> 动态」排好序的脚手架消息注入到消息头部
+  const allScaffold = [...staticScaffold, ...dynamicScaffold];
+  if (allScaffold.length > 0) {
+    messages.unshift(...allScaffold);
   }
-  // 0) 全局记忆 ~/.config/omni/AGENTS.md：跨项目共享，首轮注入一次；
-  //    在项目记忆之后 unshift → 排在项目记忆之前（级联：全局在前、项目在后）
-  const globalFile = opts.globalAgentsFile !== false;
-  const hasGlobal = messages.some(
-    (m) => typeof m.content === 'string' && m.content.startsWith(GLOBAL_MEMORY_PREFIX)
-  );
-  if (globalFile && !hasGlobal && messages.length > 0) {
-    const mem = await loadGlobalMemory();
-    if (mem) messages.unshift(globalMemoryMessage(mem));
-    // globs 条件注入（1.0 P1-2，Amp 方案）：任务文本命中主题 frontmatter 的
-    // glob 模式时把该主题全文内联（不用等模型主动 memory_search）
-    const lastUserForTopics = [...messages].reverse().find((m) => m.role === 'user');
-    const taskText0 =
-      lastUserForTopics && typeof lastUserForTopics.content === 'string' ? lastUserForTopics.content : undefined;
-    const matched = await topicsMatchingTask(taskText0);
-    if (matched.length > 0) {
-      const body = matched.map((m) => `### ${m.topic}\n${m.content}`).join('\n\n');
-      messages.unshift({ role: 'system', content: `[全局记忆主题（任务命中自动加载）]\n${body}` });
-    }
-  }
-  // -1) 技能清单：跨会话共享（SKILL.md 已安装），首轮注入一次——
-  //     只列 name+description，模型需要时用 skill 工具按名加载全文（对标 opencode）。
-  //     注入顺序在全局记忆之后 → 排在记忆之前、紧跟 SYSTEM_PROMPT（技能是通用能力）。
-  const skillsFile = opts.skills !== false;
-  const hasSkills = messages.some(
-    (m) => typeof m.content === 'string' && m.content.startsWith(SKILL_PREFIX)
-  );
-  if (skillsFile && !hasSkills && messages.length > 0) {
-    const skills = await discoverSkills();
-    if (skills.length > 0) {
-      // 任务文本 = 最近一条用户消息（技能清单按任务相关性排序——第十节 P2）
-      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-      const taskText = lastUser && typeof lastUser.content === 'string' ? lastUser.content : undefined;
-      messages.unshift(skillMessage(skills, taskText));
-    }
-  }
-  // -0.5) 代码库结构感知（repo map，P1）：首轮注入一次紧凑符号地图（文件: 符号列表）——
-  //       模型对项目结构有概览，避免盲目 list_directory。可配置关闭。
-  const repoMap = opts.repoMap !== false;
-  const hasRepoMap = messages.some(
-    (m) => typeof m.content === 'string' && m.content.startsWith(REPO_MAP_PREFIX)
-  );
-  if (repoMap && !hasRepoMap && messages.length > 0) {
-    const map = await buildRepoMap(process.cwd(), { maxSymbols: opts.repoMapMaxSymbols ?? 200 });
-    if (map) {
-      messages.unshift({ role: 'system', content: `${REPO_MAP_PREFIX}，供快速了解项目结构]\n${map}` });
-    }
-  }
-  // 3) 长对话摘要压缩（recorder：压缩成功时记 compact 轨迹事件）
+
+  // 7) 长对话做摘要压缩
   await summarizeContext(client, model, messages, opts, recorder);
 }
