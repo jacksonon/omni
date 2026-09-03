@@ -563,6 +563,8 @@ export async function runAgent(
     let content = '';
     let reasoning = '';
     let streamTokens = 0;
+    let emaTps: number | null = null; // 瞬时速率 EMA（按 chunk 递推平滑，消毛刺）
+    let prevContentAt = 0; // 上一个内容 chunk 到达时间（chunk 间隔速率用）
     let lastUsage: OpenAI.Completions.CompletionUsage | null = null;
     const toolCalls = new Map<number, ToolCallAccum>();
     let streamStarted = false;
@@ -606,7 +608,8 @@ export async function runAgent(
           firstTokenAt ??= now;
           lastContentAt = now;
 
-          // 累积生成 token 估算（单 chunk 产出保底 1 token）
+          // 累积生成 token 估算（按实际估算值累加，不设单 chunk 保底——
+          // 小 chunk 密集时保底 1 会虚增峰值）
           let deltaText = '';
           if (piece) deltaText += piece;
           if (delta?.content) deltaText += delta.content;
@@ -617,7 +620,7 @@ export async function runAgent(
               if (tc.function?.arguments) deltaText += tc.function.arguments;
             }
           }
-          const chunkTokens = Math.max(1, estimateTokens(deltaText));
+          const chunkTokens = estimateTokens(deltaText);
           streamTokens += chunkTokens;
 
           // 若网关在流式 chunk 中携带了 usage，优先对齐官方精准 completion_tokens
@@ -627,7 +630,20 @@ export async function runAgent(
 
           const liveGenMs = lastContentAt - firstTokenAt;
           const firstTokenMs = firstTokenAt - llmT0;
-          const tps = liveGenMs > 0 ? streamTokens / (liveGenMs / 1000) : 0;
+          // 瞬时速率 EMA 平滑（α=0.3 按 chunk 递推）：累计口径在流刚开始分母极小，
+          // 一两个 chunk 就冲出虚假峰值；EMA 只反映近期生成速度，贴轮均值走。
+          // 官方 usage 到达时按累计真值校准一次；300ms 起显门限内报 0（调用方隐藏）。
+          const dt = prevContentAt > 0 ? now - prevContentAt : 0;
+          prevContentAt = now;
+          if (chunk.usage?.completion_tokens && liveGenMs > 0) {
+            emaTps = streamTokens / (liveGenMs / 1000);
+          } else if (dt > 0 && liveGenMs >= 300) {
+            // 预热期（<300ms）内的 chunk 不参与递推——突发投递会污染 EMA 记忆；
+            // 首个有效采样用累计均值播种，之后按近期速度走
+            const inst = chunkTokens / (dt / 1000);
+            emaTps = emaTps == null ? streamTokens / (liveGenMs / 1000) : 0.3 * inst + 0.7 * emaTps;
+          }
+          const tps = liveGenMs >= 300 && emaTps != null && emaTps > 0 ? emaTps : 0;
           output.onStreamProgress?.({
             liveGenMs,
             streamTokens,

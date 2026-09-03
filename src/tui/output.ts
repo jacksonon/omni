@@ -254,6 +254,7 @@ export class TuiOutput implements Output {
 
   onStreamProgress(progress: StreamProgress): void {
     this.state.liveStream = progress;
+    if (progress.tps > 0) this.state.lastTps = progress.tps;
     this.schedulePaint();
   }
 

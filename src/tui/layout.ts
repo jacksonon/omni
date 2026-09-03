@@ -75,29 +75,21 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
       const firstAvg = live && live.firstTokenMs != null
         ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
         : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      let rate = 0;
-      if (live && live.liveGenMs > 0) {
-        // 流式生成中：高精度实时速率（纯生成耗时口径排除首 token 等待）
-        rate = Math.round(live.tps);
-      } else {
-        // 生成耗时优先用 genMs（首内容 → 末内容）；单 chunk 响应 genMs=0 时回退
-        // llmMs - firstTokenSum（首 token → 流结束，仍 >0），1ms 下限防除零
-        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-        rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
-      }
+      // 底部始终显示本 session 累计平均（含正在生成的 token/耗时）：completion 累计 / 纯生成耗时累计
+      const comp = t.completion + (live?.streamTokens ?? 0);
+      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const gen = baseGen + (live?.liveGenMs ?? 0);
+      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
       return `首 token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
     buildEn: (s, t, _x, live) => {
       const firstAvg = live && live.firstTokenMs != null
         ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
         : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      let rate = 0;
-      if (live && live.liveGenMs > 0) {
-        rate = Math.round(live.tps);
-      } else {
-        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-        rate = gen > 0 ? Math.round(t.completion / (gen / 1000)) : 0;
-      }
+      const comp = t.completion + (live?.streamTokens ?? 0);
+      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const gen = baseGen + (live?.liveGenMs ?? 0);
+      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
       return `First token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
@@ -105,8 +97,9 @@ export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
     id: 'cache',
     label: '缓存命中',
     labelEn: 'Cache hit',
-    build: (s, t) => `缓存 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
-    buildEn: (s, t) => `Cache ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%`,
+    // 网关未返回缓存字段（会话累计 cached=0）时整段隐藏，不显示易误会的 0%
+    build: (s, t) => (s.cached > 0 ? `缓存 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%` : ''),
+    buildEn: (s, t) => (s.cached > 0 ? `Cache ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%` : ''),
   },
   {
     id: 'tokens',
@@ -171,7 +164,8 @@ export function buildFooterStats(state: TuiState): string {
   const segs = order
     .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
     .filter((x): x is StatuslineSegment => !!x)
-    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x, state.liveStream) : sg.build(state.stats, state.tokens, x, state.liveStream)));
+    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x, state.liveStream) : sg.build(state.stats, state.tokens, x, state.liveStream)))
+    .filter((seg) => seg.length > 0); // 空段（如无缓存数据时的 cache 段）直接丢弃，不占分隔符
   return segs.join('| ');
 }
 

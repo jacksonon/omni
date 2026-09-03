@@ -30,6 +30,9 @@ const state = {
   waiters: new Map(),   // interactionId -> { sessionId, type(approval|ask), el }
   inFlight: 0,          // 本轮未完成的请求计数（跑完才印统计行）
   turnTokens: { prompt: 0, completion: 0, cached: 0 },
+  turnUsages: [],
+  turnLlmMs: 0,         // 本轮 LLM 墙钟累计（turn-footer 当次速率用；对标 TUI turnLlmMs）
+  turnGenMs: 0,         // 本轮纯生成耗时累计（turn-footer 当次速率用；对标 TUI turnGenMs）
   sessionFilter: '',
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
@@ -1270,7 +1273,7 @@ function toolBlock(sessionId, data) {
   const b = makeBlock('tool', sessionId);
   const wrap = el('div', 'msg');
   const name = data.name || 'tool';
-  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch';
+  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch' || name === 'web_search';
   const isEdit = name === 'write_file' || name === 'edit_file';
 
   if (isExplored) {
@@ -1453,7 +1456,7 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
   setEmptyState(false);
   const b = makeBlock('tool', sessionId);
   const wrap = el('div', 'msg');
-  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch';
+  const isExplored = name === 'read_file' || name === 'search_code' || name === 'list_directory' || name === 'web_fetch' || name === 'web_search';
   const isEdit = name === 'write_file' || name === 'edit_file';
 
   let parsedArgs = {};
@@ -1531,6 +1534,18 @@ function formatToolArgs(name, a) {
   if ((name === 'read_file' || name === 'write_file' || name === 'edit_file') && a.path) return a.path;
   if (name === 'list_directory' && a.path) return a.path;
   if (name === 'search_code' && a.pattern) return a.pattern;
+  if (name === 'web_fetch' && a.url) return `🌐 ${a.url}`;
+  if (name === 'web_search' && a.query) return `🔍 ${a.query}`;
+  if (name === 'skill' && a.name) return `📦 ${a.name}`;
+  if (name === 'ask_user' && a.question) return `❓ ${String(a.question).split('\n').map((l) => l.trim()).find(Boolean) || ''}`;
+  if (name === 'delegate' && a.task) return `→ ${a.agent ? `${a.agent} · ` : ''}${String(a.task).split('\n').map((l) => l.trim()).find(Boolean) || ''}`.slice(0, 120);
+  if (name === 'diagnose') return `🩺 ${a.scope || 'all'}`;
+  if (name === 'todo_write' && Array.isArray(a.todos)) {
+    const done = a.todos.filter((t) => t && typeof t === 'object' && t.status === 'completed').length;
+    return `☑ ${done}/${a.todos.length} 完成`;
+  }
+  if (name === 'memory_search' && a.query) return `🧠 ${a.query}`;
+  if (name === 'memory_read' && a.path) return `📖 ${a.path}`;
   return JSON.stringify(a).slice(0, 120);
 }
 
@@ -1997,6 +2012,9 @@ function clearMessages() {
   $('#interaction-stack').innerHTML = '';
   state.waiters.clear();
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
+  state.turnUsages = [];
+  state.turnLlmMs = 0;
+  state.turnGenMs = 0;
   state.inFlight = 0;
   updateDetails();
 }
@@ -2027,13 +2045,13 @@ function updateDetails() {
     label.appendChild(m);
     if (provider) {
       const p = document.createElement('span');
-      p.textContent = ` · ${provider}`;
+      p.textContent = `· ${provider}`;
       p.style.opacity = '.78'; // provider 组弱化显示，介于模型名与档位色之间
       label.appendChild(p);
     }
     if (eff) {
       const e = document.createElement('span');
-      e.textContent = ` · ${eff}`;
+      e.textContent = `· ${eff}`;
       e.style.color = currentLevelColor(st) || '';
       e.style.fontWeight = '600';
       label.appendChild(e);
@@ -2230,6 +2248,9 @@ async function renderSessionHistory(id) {
     const data = await api(`/api/sessions/${id}/messages`);
     const s = state.sessions.find((x) => x.id === id);
     $('#chat-title').textContent = s?.title || (data.meta?.title) || '会话';
+    // 会话级累计按历史重建（底部状态行 = 全会话平均，不只是本页新消息）
+    rebuildSessionStats(id, data.messages);
+    updateComposerStatus();
 
     let currentTurnUsages = [];
     let currentTurnModel = null;
@@ -2519,13 +2540,11 @@ const STATUS_SEGMENTS = [
       const firstAvg = live && live.firstTokenMs != null
         ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
         : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      let rate = 0;
-      if (live && live.liveGenMs > 0) {
-        rate = Math.round(live.tps);
-      } else {
-        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-        rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
-      }
+      // 底部始终显示本 session 累计平均（含正在生成的 token/耗时）
+      const comp = u.completion + (live?.streamTokens ?? 0);
+      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const gen = baseGen + (live?.liveGenMs ?? 0);
+      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
       return `首 token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
     buildEn: (s, u) => {
@@ -2533,20 +2552,18 @@ const STATUS_SEGMENTS = [
       const firstAvg = live && live.firstTokenMs != null
         ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
         : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      let rate = 0;
-      if (live && live.liveGenMs > 0) {
-        rate = Math.round(live.tps);
-      } else {
-        const gen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-        rate = gen > 0 ? Math.round(u.completion / (gen / 1000)) : 0;
-      }
+      const comp = u.completion + (live?.streamTokens ?? 0);
+      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+      const gen = baseGen + (live?.liveGenMs ?? 0);
+      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
       return `First token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
     },
   },
   {
     id: 'cache', labelKey: 'statusbar.cache',
-    build: (s, u) => `缓存 ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
-    buildEn: (s, u) => `Cache ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%`,
+    // 网关未返回缓存字段（会话累计 cached=0）时整段隐藏，不显示易误会的 0%
+    build: (s, u) => (s.cached > 0 ? `缓存 ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%` : ''),
+    buildEn: (s, u) => (s.cached > 0 ? `Cache ${u.prompt > 0 ? Math.min(100, Math.round((s.cached / u.prompt) * 100)) : 0}%` : ''),
   },
   {
     id: 'tokens', labelKey: 'statusbar.tokens',
@@ -2582,7 +2599,7 @@ function fmtCompact(n) {
 }
 function statsOf(sid) {
   if (!state.sessionStats.has(sid)) {
-    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 });
+    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0, lastTps: 0 });
   }
   return state.sessionStats.get(sid);
 }
@@ -2592,9 +2609,52 @@ function usageOf(sid) {
   }
   return state.sessionUsage.get(sid);
 }
+/* 从历史消息重建会话级累计（切会话/刷新恢复时调用）：
+ * 输入/输出/缓存/llmMs/genMs/轮数/步数按 assistant 消息持久化的 usage/durMs/genMs/tool_calls 求和；
+ * 首 token（firstTokenSum/Count）、瞬时 lastTps、工具耗时 toolsMs 无持久化，保持本页事件值不动
+ * （首 token 等下一轮新消息到达再展示）。先重置再累加，避免与 SSE 事件重复计数；
+ * run.end 后回填历史（含刚结束的一轮）同样走这里，结果与事件累计一致。 */
+function rebuildSessionStats(id, messages) {
+  const s = statsOf(id);
+  const u = usageOf(id);
+  s.turns = 0; s.steps = 0; s.llmMs = 0; s.genMs = 0; s.cached = 0;
+  u.prompt = 0; u.completion = 0; u.total = 0; u.cached = 0; u.lastPrompt = 0;
+  for (const m of messages || []) {
+    if (m.role === 'user') { s.turns += 1; continue; }
+    if (m.role !== 'assistant') continue;
+    const um = m.usage;
+    if (um) {
+      u.prompt += um.prompt || 0;
+      u.completion += um.completion || 0;
+      u.total += um.total || ((um.prompt || 0) + (um.completion || 0));
+      u.cached += um.cached || 0;
+      s.cached += um.cached || 0;
+      u.lastPrompt = um.prompt || 0;
+    }
+    if (typeof m.durMs === 'number') s.llmMs += m.durMs;
+    if (typeof m.genMs === 'number') s.genMs += m.genMs;
+    if (Array.isArray(m.tool_calls)) s.steps += m.tool_calls.length;
+  }
+}
+/** 更新输入框模型按钮右侧的瞬时速率（会话内常驻：流式中为实时值，结束后保留最后一次） */
+function updateLiveTps() {
+  const tag = $('#composer-live-tps');
+  if (!tag) return;
+  const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
+  const s = state.session ? state.sessionStats.get(state.session) : null;
+  const tps = live && live.liveGenMs > 0 && live.tps > 0 ? live.tps : (s?.lastTps ?? 0);
+  if (tps > 0) {
+    tag.textContent = `${Math.round(tps)} tok/s`;
+    tag.classList.remove('hidden');
+  } else {
+    tag.textContent = '';
+    tag.classList.add('hidden');
+  }
+}
 /** 渲染输入区下方状态行：按 state.statusline（设置 → 状态栏）拼段，无数据/无段位时隐藏 */
 function updateComposerStatus() {
   updateContextRing();
+  updateLiveTps(); // 模型胶囊右侧瞬时速率（流式中显示 live.tps，结束隐藏）
   const el = $('#composer-status');
   if (!el) return;
   const rawOrder = Array.isArray(state.statusline) ? state.statusline : STATUS_DEFAULT;
@@ -2610,7 +2670,8 @@ function updateComposerStatus() {
   const segs = order
     .map((id) => STATUS_SEGMENTS.find((x) => x.id === id))
     .filter(Boolean)
-    .map((sg) => (en ? sg.buildEn(s, u) : sg.build(s, u)));
+    .map((sg) => (en ? sg.buildEn(s, u) : sg.build(s, u)))
+    .filter((seg) => seg && seg.length > 0); // 空段（如无缓存数据时的 cache 段）直接丢弃
   const text = segs.join('| ');
   el.textContent = text;
   el.classList.toggle('hidden', !text);
@@ -2895,10 +2956,12 @@ bus.on('usage', (ev) => {
   state.turnTokens.cached += ev.cached || 0;
   // 会话级累计（输入区下方状态行）
   const u = usageOf(ev.sessionId);
+  const s = statsOf(ev.sessionId);
   u.prompt += ev.prompt || 0;
   u.completion += ev.completion || 0;
   u.total += ev.total || 0;
   u.cached += ev.cached || 0;
+  s.cached += ev.cached || 0; // 缓存命中累计（之前漏加导致 Web 缓存恒显示 0%，对标 TUI onUsage）
   u.lastPrompt = ev.prompt || 0; // 当前上下文 = 最近一次请求的 prompt token（footer context 段）
   updateComposerStatus();
 });
@@ -2933,20 +2996,22 @@ bus.on('run.end', async (ev) => {
   }
   revealLastAnswer(); // 本轮真正结束：只在最后一个回答块上挂 拷贝/重新处理
   // 本轮统计行（对标 GUI 样式：Build · 模型 · 耗时 · 速率 + Tokens 表格）
-  const s = statsOf(ev.sessionId);
-  const u = usageOf(ev.sessionId);
+  // 注意：必须用本轮累计（turnLlmMs/turnGenMs/turnTokens），不能用会话累计 s/u——
+  // 之前误传 s.llmMs/s.genMs/u.completion 导致每轮 footer 都等于会话平均（与底部状态行一致）
   const usages = state.turnUsages || [];
   const modelName = state.status?.model || 'Omni';
   renderTurnFooter(ev.sessionId, {
     usages,
     model: modelName,
-    durMs: s.llmMs || 0,
-    genMs: s.genMs || (s.llmMs - (s.firstTokenSum || 0)),
+    durMs: state.turnLlmMs || 0,
+    genMs: state.turnGenMs || 0,
     tokens: state.turnTokens,
-    completion: u.completion,
+    completion: state.turnTokens.completion,
   });
   state.turnUsages = [];
   state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
+  state.turnLlmMs = 0;
+  state.turnGenMs = 0;
   state.inFlight = 0;
   if (state.liveStream?.sessionId === ev.sessionId) state.liveStream = null;
   updateComposerStatus();
@@ -2978,6 +3043,7 @@ bus.on('turn.step', (ev) => {
 bus.on('stream.progress', (ev) => {
   if (ev.sessionId !== state.session) return;
   state.liveStream = ev;
+  if (ev.tps > 0) statsOf(ev.sessionId).lastTps = ev.tps;
   updateComposerStatus();
 });
 
@@ -2987,8 +3053,9 @@ bus.on('lap', (ev) => {
   if (state.liveStream?.sessionId === ev.sessionId) state.liveStream = null;
   const s = statsOf(ev.sessionId);
   s.llmMs += ev.llmMs || 0;
+  state.turnLlmMs += ev.llmMs || 0;
   if (ev.firstTokenMs != null) { s.firstTokenSum += ev.firstTokenMs; s.firstTokenCount++; }
-  if (ev.genMs != null) s.genMs += ev.genMs;
+  if (ev.genMs != null) { s.genMs += ev.genMs; state.turnGenMs += ev.genMs; }
   updateComposerStatus();
 });
 
@@ -3935,6 +4002,11 @@ async function doSend(text) {
     }
     state.runningSessions.add(state.session);
     state._localRunning.add(state.session); // 本地运行标记：status 覆盖前保持圆环/取消态
+    // 新一轮开始：重置本轮累计（run.end 已重置，这里兜底——队列连发时保证本轮 footer 纯净）
+    state.turnUsages = [];
+    state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
+    state.turnLlmMs = 0;
+    state.turnGenMs = 0;
     updateComposer();
     updateStatusText();
     // 乐观回显：先显示用户消息（含附件），再预建 thinking（保证顺序 user -> thinking，

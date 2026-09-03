@@ -189,6 +189,8 @@ export interface TuiTree {
   footerMode: TextRenderable | null;
   /** 思考级别（`· medium`，按级别强度着色 effortColor；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
+  /** 瞬时速率（模型行内、流式生成中显示 `· 85 tok/s`，取 liveStream.tps；结束即隐藏） */
+  footerTps: TextRenderable | null;
   /** 上下文圆环与用量（` · ◔ 15.5K/128K`，模型行内常驻；repaintTree 每次刷新） */
   footerContext: TextRenderable | null;
   footerTokens: TextRenderable | null;
@@ -273,6 +275,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerModel: TextRenderable | null = null;
   let footerMode: TextRenderable | null = null;
   let footerEffort: TextRenderable | null = null;
+  let footerTps: TextRenderable | null = null;
   let footerContext: TextRenderable | null = null;
   let footerTokens: TextRenderable | null = null;
   let statsWrap: BoxRenderable | null = null;
@@ -383,6 +386,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerEffort = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerEffort.fg = parseColor(theme.footerDim);
     modelRow.add(footerEffort);
+    // 瞬时速率（模型右侧、思考级别后：流式中显示实时 tok/s，结束隐藏）
+    footerTps = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerTps.fg = parseColor(theme.accentBlue);
+    modelRow.add(footerTps);
     // 上下文圆环与用量（` · ◔ 15.5K/128K`，模型行内常驻；未发生请求时隐藏）
     footerContext = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerContext.fg = parseColor(theme.footerDim);
@@ -632,6 +639,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerModel,
     footerMode,
     footerEffort,
+    footerTps,
     footerContext,
     footerTokens,
     footerLoading,
@@ -941,6 +949,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   if (tree.footerEffort) {
     tree.footerEffort.content = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
+  }
+  if (tree.footerTps) {
+    const live = state.liveStream;
+    const tps = live && live.liveGenMs > 0 ? live.tps : state.lastTps;
+    tree.footerTps.content = tps > 0 ? `· ${Math.round(tps)} tok/s` : '';
   }
   if (tree.footerContext) {
     const lastPrompt = state.lastPromptTokens || 0;

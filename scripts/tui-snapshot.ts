@@ -70,7 +70,12 @@ async function main(): Promise<void> {
   }
   // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
   // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
-  const checks1 = ['你是谁？', '$ ls -la', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock', '缓存 0%'];
+  const checks1 = ['你是谁？', '$ ls -la', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock'];
+  // 无缓存数据时 cache 段整段隐藏（网关未返回缓存字段就不显示 0%）：空态 footer 不应出现「缓存」
+  if (r1.frame.includes('缓存')) {
+    console.error('✗ 场景 1 无缓存数据时仍显示缓存段（应整段隐藏）');
+    process.exit(1);
+  }
   // 块式卡片（无边框字符）：每行总宽必须恰为内容宽度且带状态底色（宽度不一致
   // 会让色块右侧露出底色缺口——宽度数学与折行预算精确成立）
   const rows1w = computeRows(s1, { height: 20, width: 64 }, { withInput: true });
@@ -627,12 +632,13 @@ async function main(): Promise<void> {
   s13.version = '0.1.0';
   s13.model = 'grok-4.5';
   s13.tokens = { prompt: 1234, completion: 567, total: 1801 };
+  s13.stats.cached = 617; // 有缓存数据 → cache 段显示（无数据时整段隐藏，见场景 1 断言）
   pushLine(s13, { kind: 'user', text: '你好' });
   s13.status = '任务完成';
   const r13 = await render(s13);
   console.log('=== 场景 13：footer 统计行（窄屏段级截断）===');
   console.log(r13.frame);
-  const checks13 = ['grok-4.5', '首 token', '缓存 0%', '…'];
+  const checks13 = ['grok-4.5', '首 token', '缓存 50%', '…'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
     console.error(`✗ 场景 13 footer 缺少: ${missing13.join(', ')}`);
@@ -5998,7 +6004,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // 流式进行中（实时速率与增量 token）
+    // 流式进行中（底部为 session 累计平均含 live 增量；瞬时速率走模型行 footerTps）
     s49.liveStream = {
       liveGenMs: 1000,
       streamTokens: 150,
@@ -6006,7 +6012,8 @@ async function main(): Promise<void> {
       firstTokenMs: 600,
     };
     const liveStats = buildFooterStats(s49);
-    if (!liveStats.includes('150 tok/s') || !liveStats.includes('输出 250') || !liveStats.includes('首 token 0.8s')) {
+    // 累计平均：(100+150)/(2000+1000)ms = 250/3s ≈ 83 tok/s；输出含 live 增量 250；首 token (1000+600)/2 = 0.8s
+    if (!liveStats.includes('83 tok/s') || !liveStats.includes('输出 250') || !liveStats.includes('首 token 0.8s')) {
       console.error(`✗ 场景 49 流式 live footer 统计错误: ${liveStats}`);
       process.exit(1);
     }
@@ -6029,9 +6036,17 @@ async function main(): Promise<void> {
       console.error('✗ 场景 49 onStreamProgress 未正确写入 liveStream');
       process.exit(1);
     }
+    if (s49.lastTps !== 120) {
+      console.error(`✗ 场景 49 瞬时速率未保留 lastTps: ${s49.lastTps}`);
+      process.exit(1);
+    }
     out49.onAnswerEnd();
     if (s49.liveStream !== null) {
       console.error('✗ 场景 49 onAnswerEnd 未清空 liveStream');
+      process.exit(1);
+    }
+    if (s49.lastTps !== 120) {
+      console.error(`✗ 场景 49 会话内瞬时速率未保留: ${s49.lastTps}`);
       process.exit(1);
     }
   }

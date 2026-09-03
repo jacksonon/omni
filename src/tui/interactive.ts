@@ -154,6 +154,14 @@ export async function runTuiInteractive(
     messages.push(...msgs);
     runOpts.sessionPath = file;
     savedCount = persistableMessages(messages).length; // 已落盘历史不重复追加
+    // 会话级累计按历史重建：先清零再回放（usage/durMs/genMs 经 onUsage/onLlmLap 累加，
+    // 底部状态行 = 全会话平均）；不清零会把新旧两份叠加。首 token（firstTokenSum/Count）
+    // 无持久化、回放传 null，保持 0 等下一轮新消息再展示；lastTps 同理清零。
+    state.stats = { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 };
+    state.tokens = { prompt: 0, completion: 0, total: 0 };
+    state.lastPromptTokens = 0;
+    state.lastTps = 0;
+    state.liveStream = null;
     // 快照旧记录器（恢复失败时保留原内存事件，不打断会话恢复流程）
     const oldEvents = runOpts.events;
     runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);

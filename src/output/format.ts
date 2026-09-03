@@ -65,6 +65,44 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
       s = `🌐 ${url}`;
       break;
     }
+    case 'web_search': {
+      const query = argStr(args, 'query');
+      s = `🔍 ${query}`;
+      break;
+    }
+    case 'skill': {
+      s = `📦 ${argStr(args, 'name')}`;
+      break;
+    }
+    case 'ask_user': {
+      const q = argStr(args, 'question').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+      s = `❓ ${q}`;
+      break;
+    }
+    case 'delegate': {
+      const task = argStr(args, 'task').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+      const agent = argStr(args, 'agent').trim();
+      s = agent ? `→ ${agent} · ${task}` : `→ 子代理 · ${task}`;
+      break;
+    }
+    case 'diagnose': {
+      s = `🩺 ${argStr(args, 'scope') || 'all'}`;
+      break;
+    }
+    case 'todo_write': {
+      const todos = Array.isArray(args.todos) ? args.todos : [];
+      const done = todos.filter((t) => t && typeof t === 'object' && (t as { status?: unknown }).status === 'completed').length;
+      s = `☑ ${done}/${todos.length} 完成`;
+      break;
+    }
+    case 'memory_search': {
+      s = `🧠 ${argStr(args, 'query')}`;
+      break;
+    }
+    case 'memory_read': {
+      s = `📖 ${argStr(args, 'path')}`;
+      break;
+    }
     default:
       s = Object.entries(args)
         .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)

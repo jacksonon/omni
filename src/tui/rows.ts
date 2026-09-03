@@ -245,6 +245,7 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
     toolName === 'list_directory' ||
     toolName === 'run_command' ||
     toolName === 'web_fetch' ||
+    toolName === 'web_search' ||
     toolName === 'write_file' ||
     toolName === 'edit_file';
   if (isNoBg) {

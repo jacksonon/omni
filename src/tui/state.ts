@@ -401,6 +401,8 @@ export interface TuiState {
   tokens: TokenUsage;
   /** 流式生成实时进度（正在流式生成时非 null；流结束/取消置 null） */
   liveStream: LiveStreamStats | null;
+  /** 会话内保留的上次瞬时速率（模型行右侧常驻；流式中为实时值，结束后保留最后一次） */
+  lastTps: number;
   /**
    * 会话运行统计（footer 统计行：首 token/速率/缓存命中/输入输出）。
    * 由 TuiOutput 按事件累加（onLlmLap/onToolsLap/onUsage）。
@@ -649,6 +651,7 @@ export function createTuiState(): TuiState {
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
     liveStream: null,
+    lastTps: 0,
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
     // 最近一次 LLM 请求的 prompt token（= 当前上下文大小，onUsage 每次覆盖）+
     // 当前模型 context 上限（config limit.context；interactive 按端点解析）
