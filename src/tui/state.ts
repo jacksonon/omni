@@ -45,6 +45,8 @@ export interface TurnTokens {
   genMs?: number;
   /** 本轮首 token 均值（毫秒；多步请求取均值；无数据/旧历史为 null → 不显示该段） */
   firstTokenAvg?: number | null;
+  /** 本轮是否 Plan 模式（创建时快照——头行显示 Plan/Build + 对应模式色，历史轮不随当前模式漂移） */
+  plan?: boolean;
 }
 
 /** 工具卡片状态：执行中 / 成功 / 失败 */

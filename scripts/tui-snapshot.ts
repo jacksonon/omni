@@ -740,6 +740,27 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 13 通过：模型行 + 底行输入输出/缓存/上下文（44 全显/24 超窄隐藏/事件累计/完整示例格式）渲染正确');
 
+  // 场景 13m：对话流 Build/Plan 头行与输入区模式色一致（用户要求）——
+  // tokens 头行 Plan/Build 标签 + modeBuild 青 / modePlan 洋红（本轮模式快照，历史不漂移）
+  {
+    const s13m = createTuiState();
+    s13m.model = 'mock';
+    pushLine(s13m, { kind: 'user', text: '你好' });
+    pushLine(s13m, { kind: 'tokens', text: '', tokens: { usages: [], expanded: false, model: 'mock', plan: false } });
+    const { themeFor: tf13m } = await import('../src/tui/theme.js');
+    const head13m = buildBody(s13m, 80).find((r) => r.tokensIdx !== undefined);
+    if (!head13m?.chunks || head13m.chunks[0]?.text !== 'Build' || head13m.chunks[0]?.fg !== tf13m(s13m).modeBuild) {
+      console.error(`✗ 场景 13m Build 头行应为 modeBuild 色: ${JSON.stringify(head13m?.chunks?.[0])}`);
+      process.exit(1);
+    }
+    s13m.lines[1]!.tokens!.plan = true;
+    const head13m2 = buildBody(s13m, 80).find((r) => r.tokensIdx !== undefined);
+    if (!head13m2?.chunks || head13m2.chunks[0]?.text !== 'Plan' || head13m2.chunks[0]?.fg !== tf13m(s13m).modePlan) {
+      console.error(`✗ 场景 13m Plan 头行应为 modePlan 色: ${JSON.stringify(head13m2?.chunks?.[0])}`);
+      process.exit(1);
+    }
+  }
+
   // 场景 14：用户消息左侧蓝色细线（▍≈3px）+ 白色文本 + 灰色背景——折行后每行都保留
   const s14 = createTuiState();
   s14.version = '0.1.0';

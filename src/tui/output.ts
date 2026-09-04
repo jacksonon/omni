@@ -675,6 +675,7 @@ export class TuiOutput implements Output {
           durMs: this.turnLlmMs,
           genMs: this.turnGenMs,
           firstTokenAvg: this.turnFirstTokenCount > 0 ? this.turnFirstTokenSum / this.turnFirstTokenCount : null,
+          plan: this.state.planMode, // 本轮模式快照（头行 Plan/Build + 模式色——与输入区模型行一致）
         },
       });
     }

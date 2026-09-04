@@ -595,14 +595,19 @@ export function buildBody(state: TuiState, width: number): Row[] {
       const ftAvg = line.tokens.firstTokenAvg;
       const ftStr = ftAvg != null && ftAvg > 0 ? ` · 首 token ${(ftAvg / 1000).toFixed(1)}s` : '';
       const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
-      const buildText = `Build · ${model}${durStr ? ` · ${durStr}` : ''}${ftStr}${rateStr}`;
+      // 模式标签与配色跟随本轮模式快照（plan?: boolean）——与输入区模型行 Build 青/Plan 洋红
+      // 一致（用户要求对话流与输入区同色；旧历史无 plan 字段 → 按 Build 渲染）
+      const isPlan = line.tokens.plan === true;
+      const modeLabel = isPlan ? 'Plan' : 'Build';
+      const modeFg = isPlan ? theme.modePlan : theme.modeBuild;
+      const buildText = `${modeLabel} · ${model}${durStr ? ` · ${durStr}` : ''}${ftStr}${rateStr}`;
 
-      // 第一行：Build 元信息
+      // 第一行：模式元信息（模式词用模式色，余段 dim）
       body.push({
         text: buildText,
         style: {},
         chunks: [
-          { text: 'Build', fg: theme.accentBlue, bold: true },
+          { text: modeLabel, fg: modeFg, bold: true },
           { text: ` · ${model}${durStr ? ` · ${durStr}` : ''}${ftStr}${rateStr}`, dim: true },
         ],
         tokensIdx: li,
