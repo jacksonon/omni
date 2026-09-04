@@ -38,7 +38,7 @@
    * 能正确显示。只作用于正文文本与数学节点 —— 代码块/行内代码保持原样（\command 是源码）。 */
   const LATEX_UNICODE = {
     // 箭头
-    'rightarrow': '→', 'leftarrow': '←', 'leftrightarrow': '↔', 'Leftrightarrow': '⇔',
+    'rightarrow': '→', 'to': '→', 'leftarrow': '←', 'leftrightarrow': '↔', 'Leftrightarrow': '⇔',
     'Rightarrow': '⇒', 'Leftarrow': '⇐', 'uparrow': '↑', 'downarrow': '↓', 'updownarrow': '↕',
     'Uparrow': '⇑', 'Downarrow': '⇓', 'mapsto': '↦', 'longrightarrow': '⟶', 'longleftarrow': '⟵',
     'longleftrightarrow': '⟷', 'hookrightarrow': '↪', 'rightleftharpoons': '⇌', 'leadsto': '↝',

@@ -41,15 +41,88 @@ export const CODE_FG = '#8fa3bf';
 // 引用行（浅灰）
 export const QUOTE_FG = '#9aa4b2';
 
+/* ---------------- LaTeX 命令 → Unicode 数学符号 ----------------
+ * 项目不内嵌 KaTeX 排版：`$\gg$`、`$\rightarrow$`、`$\neq$` 之类的行内数学
+ * 原样显示为反斜杠命令文本（用户反馈无法正确渲染）。这里把常见 \command 转成
+ * 等价 Unicode 符号（箭头/关系/运算/希腊字母等）、剥离 `$` 定界符。与 Web 端
+ * `web/markdown-renderer.js` 的 LATEX_UNICODE 同表保持两端一致。只作用于正文
+ * 与数学片段——行内代码/代码块保持原样（\command 是源码，token 顺序保证）。 */
+const LATEX_UNICODE: Record<string, string> = {
+  // 箭头
+  rightarrow: '→', to: '→', leftarrow: '←', longrightarrow: '⟶', longleftarrow: '⟵',
+  Rightarrow: '⇒', Leftarrow: '⇐', Leftrightarrow: '⇔', longleftrightarrow: '⟷',
+  uparrow: '↑', downarrow: '↓', updownarrow: '↕', Uparrow: '⇑', Downarrow: '⇓',
+  mapsto: '↦', hookrightarrow: '↪', rightleftharpoons: '⇌', leadsto: '↝',
+  nearrow: '↗', searrow: '↘', nwarrow: '↖', swarrow: '↙',
+  // 关系
+  gg: '≫', ll: '≪', leq: '≤', le: '≤', geq: '≥', ge: '≥', neq: '≠', ne: '≠',
+  equiv: '≡', approx: '≈', cong: '≅', sim: '∼', simeq: '≃', propto: '∝',
+  lesssim: '≲', gtrsim: '≳', prec: '≺', succ: '≻', preceq: '≼', succeq: '≽',
+  subset: '⊂', supset: '⊃', subseteq: '⊆', supseteq: '⊇', subsetneq: '⊊', supsetneq: '⊋',
+  in: '∈', notin: '∉', ni: '∋', owns: '∋', parallel: '∥', nparallel: '∦',
+  perp: '⊥', models: '⊨', vdash: '⊢', dashv: '⊣',
+  // 运算 / 集合
+  times: '×', cdot: '·', cdots: '⋯', ldots: '…', pm: '±', mp: '∓', div: '÷',
+  ast: '∗', star: '⋆', circ: '∘', bullet: '•', oplus: '⊕', ominus: '⊖',
+  otimes: '⊗', oslash: '⊘', odot: '⊙', cap: '∩', cup: '∪', sqcap: '⊓', sqcup: '⊔',
+  vee: '∨', lor: '∨', wedge: '∧', land: '∧', setminus: '∖',
+  sum: '∑', prod: '∏', coprod: '∐', int: '∫', iint: '∬', iiint: '∭', oint: '∮',
+  bigcup: '⋃', bigcap: '⋂', bigoplus: '⨁', mid: '∣', shortmid: '∣',
+  // 其它数学符号
+  infty: '∞', partial: '∂', nabla: '∇', exists: '∃', nexists: '∄', forall: '∀',
+  emptyset: '∅', varnothing: '∅', aleph: 'ℵ', hbar: 'ℏ', ell: 'ℓ', wp: '℘',
+  Re: 'ℜ', Im: 'ℑ', angle: '∠', measuredangle: '∡',
+  prime: '′', top: '⊤', bot: '⊥', flat: '♭', natural: '♮', sharp: '♯',
+  triangleq: '≜', asymp: '≍',
+  // 希腊字母（小写 + 常用大写）
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε',
+  zeta: 'ζ', eta: 'η', theta: 'θ', vartheta: 'ϑ', iota: 'ι', kappa: 'κ', varkappa: 'ϰ',
+  lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', pi: 'π', varpi: 'ϖ', rho: 'ρ',
+  varrho: 'ϱ', sigma: 'σ', varsigma: 'ς', tau: 'τ', upsilon: 'υ', phi: 'φ',
+  varphi: 'ϕ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π',
+  Sigma: 'Σ', Upsilon: 'Υ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+  // 命名函数 / 算子：去掉反斜杠（可读）
+  sin: 'sin', cos: 'cos', tan: 'tan', cot: 'cot', sec: 'sec', csc: 'csc',
+  sinh: 'sinh', cosh: 'cosh', tanh: 'tanh', log: 'log', ln: 'ln', exp: 'exp',
+  lim: 'lim', max: 'max', min: 'min', sup: 'sup', inf: 'inf', arg: 'arg',
+  det: 'det', rank: 'rank', dim: 'dim', ker: 'ker', gcd: 'gcd',
+  // 分隔符 / 尺寸命令 → 去除（\left( x \right) → ( x )）
+  left: '', right: '', big: '', Big: '', bigg: '', Bigg: '',
+  bigl: '', Bigl: '', biggl: '', Biggl: '', bigr: '', Bigr: '', biggr: '', Biggr: '',
+};
+
+/** 轻量 LaTeX → Unicode：先处理有参数的 \frac{}{} / \sqrt{}，再查命令表替换（未知 \command 原样保留） */
+export function latexToUnicode(input: string): string {
+  let s = String(input ?? '');
+  s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, (_, a, b) => `${a}/${b}`);
+  s = s.replace(/\\sqrt\{([^{}]*)\}/g, (_, x) => (x.length === 1 ? `√${x}` : `√(${x})`));
+  return s.replace(/\\([A-Za-z]+)/g, (m, name) => (name in LATEX_UNICODE ? LATEX_UNICODE[name]! : m));
+}
+
+/**
+ * 成对 `$…$` 内容是否按数学处理（防误伤价格文本）：
+ * · 含 `\`（LaTeX 命令）→ 数学（`$\gg$`、`$\rightarrow$`）
+ * · 无空格、≤40 字符且含字母 → 数学（`$x^2$`、`$a+b$`）
+ * · 其余（含空格 / 纯数字如 `$5-$10`）→ 普通文本原样保留
+ */
+function isMathContent(c: string): boolean {
+  if (c.includes('\\')) return true;
+  if (/\s/.test(c) || c.length > 40) return false;
+  return /[A-Za-z]/.test(c);
+}
+
 /**
  * 行内 token：加粗 ** / __、删除线 ~~、行内代码 `、斜体 *（词边界守卫）、
- * 链接（只取显示文本）。
+ * 链接（只取显示文本）、**行内/显示数学**（`$…$` / `\(…\)` / `\[…\]` —
+ * LaTeX 命令转 Unicode 符号，见 latexToUnicode；行内代码先匹配所以
+ * `` `$…$` `` 保持原样）。
  *
  * 刻意不做 `_斜体_`：编程回答里裸 `snake_case` 标识符太常见，`_x_` 会误伤成斜体；
  * `*斜体*` 也加了 `(?<!\w)` / `(?!\w)` 边界守卫（CJK 不算 \w，`中文*强调*中文` 仍可匹配）。
  */
 const INLINE_TOKEN =
-  /\*\*([^*]+)\*\*|(?<!\w)__([^_]+)__(?!\w)|~~([^~\n]+)~~|`([^`]+)`|(?<!\w)\*([^*\n]+)\*(?!\w)|\[([^\]]+)\]\([^)]*\)/g;
+  /\*\*([^*]+)\*\*|(?<!\w)__([^_]+)__(?!\w)|~~([^~\n]+)~~|`([^`]+)`|(?<!\w)\*([^*\n]+)\*(?!\w)|\[([^\]]+)\]\([^)]*\)|\$([^$\n]+)\$|\\\(([^)\n]+)\\\)|\\\[([^[\]\n]+)\\\]/g;
 
 /** 扫描一行内的 Markdown 标记，产出样式片段 */
 function scanInline(text: string): MdChunk[] {
@@ -57,12 +130,21 @@ function scanInline(text: string): MdChunk[] {
   let last = 0;
   for (const m of text.matchAll(INLINE_TOKEN)) {
     if (m.index > last) out.push({ text: text.slice(last, m.index) });
-    const [, b1, b2, s1, code, i1, link] = m;
+    const [, b1, b2, s1, code, i1, link, m1, m2, m3] = m;
     if (b1 || b2) out.push({ text: b1 ?? b2, bold: true });
     else if (s1) out.push({ text: s1, strike: true });
     else if (code) out.push({ text: code, fg: INLINE_CODE_FG });
     else if (i1) out.push({ text: i1, italic: true });
     else if (link) out.push({ text: link });
+    else if (m1 !== undefined || m2 !== undefined || m3 !== undefined) {
+      // 数学：`$…$` 按内容守卫判定（防误伤价格）；`\(…\)` / `\[…\]` 显式定界恒为数学
+      const raw = m1 ?? m2 ?? m3 ?? '';
+      if (m2 !== undefined || m3 !== undefined || isMathContent(raw)) {
+        out.push({ text: latexToUnicode(raw) });
+      } else {
+        out.push({ text: m[0] }); // 非数学（价格等）→ 原样（含 $）
+      }
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push({ text: text.slice(last) });

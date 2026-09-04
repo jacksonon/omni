@@ -1357,6 +1357,16 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 18 删除线未生效: ${JSON.stringify(strike18)}`);
     process.exit(1);
   }
+  // a2) **行内数学 `$…$` → Unicode 符号**（用户反馈 `$\gg$` `$\rightarrow$` `$\neq$` 原样显示）：
+  //     LaTeX 命令转符号 + 剥 `$` 定界符；价格（$5-$10）与行内代码（`$…$`）不受误伤
+  const md18m = markdownToRows('蛋白 $\\gg$ 蛋黄\n$\\rightarrow$ $\\neq$ $\\alpha \\to \\beta$\n价格 $5-$10\n代码 `$\\neq$` 原样', 80);
+  const mathText18 = md18m.map((r) => r.chunks.map((c) => c.text).join(''));
+  for (const want of ['蛋白 ≫ 蛋黄', '→ ≠ α → β', '价格 $5-$10', '代码 $\\neq$ 原样']) {
+    if (!mathText18.some((t) => t.includes(want))) {
+      console.error(`✗ 场景 18 行内数学渲染缺失「${want}」: ${JSON.stringify(mathText18)}`);
+      process.exit(1);
+    }
+  }
   const taskDone18 = md18.flatMap((r) => r.chunks).find((c) => c.text === '☑ ');
   const taskTodo18 = md18.flatMap((r) => r.chunks).find((c) => c.text === '☐ ');
   if (!taskDone18 || !taskTodo18) {
