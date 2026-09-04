@@ -53,6 +53,7 @@ export function createTodoWriteTool(runOpts: RunOptions): Tool {
         if (content.trim()) list.push({ content: content.trim(), status: s });
       }
       runOpts.todoList = list;
+      runOpts.onTodo?.(list); // 实时回调（TUI 输入区上方 todo 小视图；未注入时静默跳过）
       const done = list.filter((t) => t.status === 'completed').length;
       const active = list.filter((t) => t.status === 'in_progress').length;
       const pending = list.filter((t) => t.status === 'pending').length;

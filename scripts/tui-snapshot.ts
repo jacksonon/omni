@@ -1068,8 +1068,8 @@ async function main(): Promise<void> {
     console.error('✗ 场景 15 会话结束后左侧应恢复文件夹');
     process.exit(1);
   }
-  // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）
-  //    + 消息行（queue `·` / steer `↑` 徽标）+ 选中高亮（›）——**钉在灰色块正上方**
+  // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后每条一行「N 排队/打断 · 文本」
+  //    （对标 Claude Code queued 样式——用户要求）——**钉在灰色块正上方**
   if (!tree15.queueBox || JSON.stringify(tree15.queueBox.visible) !== 'false') {
     console.error('✗ 场景 15 空待发送时消息区应隐藏');
     process.exit(1);
@@ -1082,21 +1082,22 @@ async function main(): Promise<void> {
   await t15.renderOnce();
   const frame15 = t15.captureCharFrame();
   if (
-    !frame15.includes('⏳ 待发送（4 · ↑ 1 打断）') ||
-    !frame15.includes('· 第一条排队消息') ||
-    !frame15.includes('↑ 打断消息') ||
-    !frame15.includes('第四条排队消息')
+    !frame15.includes('1 打断 · 打断消息') ||
+    !frame15.includes('2 排队 · 第一条排队消息') ||
+    !frame15.includes('3 排队 · 第三条排队消息') ||
+    !frame15.includes('4 排队 · 第四条排队消息') ||
+    frame15.includes('⏳')
   ) {
-    console.error('✗ 场景 15 待发送区渲染缺失（应显示标题含打断计数/queue·steer↑徽标/消息行）');
+    console.error('✗ 场景 15 待发送区渲染缺失（应每条一行 N 排队/打断 · 文本，无标题行/⏳）');
     console.log(frame15);
     process.exit(1);
   }
   // 待发送区必须**紧贴灰色块正上方**（底部固定块钉底；位置确定与内容长度无关）
   const lines15 = frame15.split('\n');
-  const titleIdx15 = lines15.findIndex((l) => l.includes('⏳ 待发送（4'));
+  const firstRowIdx15 = lines15.findIndex((l) => l.includes('1 打断 ·'));
   const greyTop15 = lines15.findIndex((l) => l.includes('╮'));
-  if (titleIdx15 < 0 || greyTop15 < 0 || titleIdx15 + 5 !== greyTop15) {
-    console.error(`✗ 场景 15 待发送区未钉在灰色块正上方（title=${titleIdx15} grey=${greyTop15}，应 title+5==grey）`);
+  if (firstRowIdx15 < 0 || greyTop15 < 0 || firstRowIdx15 + 4 !== greyTop15) {
+    console.error(`✗ 场景 15 待发送区未钉在灰色块正上方（firstRow=${firstRowIdx15} grey=${greyTop15}，应 firstRow+4==grey）`);
     console.log(frame15);
     process.exit(1);
   }
@@ -1105,7 +1106,7 @@ async function main(): Promise<void> {
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
   const frame15c = t15.captureCharFrame();
-  if (!frame15c.includes('› · 第三条排队消息')) {
+  if (!frame15c.includes('› 3 排队 · 第三条排队消息')) {
     console.error('✗ 场景 15 选中行未显示 › 高亮');
     console.log(frame15c);
     process.exit(1);
@@ -1115,6 +1116,40 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 15 pendingRects 未命中真实消息行（y=${rectY15}）`);
     process.exit(1);
   }
+  // c2) 任务清单小视图（输入框正上方、待发送区上方——用户要求）：todo_write 更新后显示
+  //     ✓/▸/· 各状态；空清单隐藏；待发送区在 todo 之下、灰块之上
+  if (!tree15.todoBox || JSON.stringify(tree15.todoBox.visible) !== 'false') {
+    console.error('✗ 场景 15 空 todo 时清单视图应隐藏');
+    process.exit(1);
+  }
+  s15.todoList = [
+    { content: '修复编译错误', status: 'completed' },
+    { content: '补快照断言', status: 'in_progress' },
+    { content: '更新文档', status: 'pending' },
+  ];
+  repaintTree(t15.renderer, tree15, s15, { withInput: true });
+  await t15.renderOnce();
+  const frame15t = t15.captureCharFrame();
+  if (
+    !frame15t.includes('✓ 修复编译错误') ||
+    !frame15t.includes('▸ 补快照断言') ||
+    !frame15t.includes('· 更新文档') ||
+    !frame15t.includes('1 打断 · 打断消息')
+  ) {
+    console.error('✗ 场景 15 todo 视图未显示（应 ✓/▸/· 各一行，且待发送区在其下方）');
+    console.log(frame15t);
+    process.exit(1);
+  }
+  // 顺序：todo 在待发送区上方（todoRows 预算同步——todo 出现后待发送行下移）
+  const lines15t = frame15t.split('\n');
+  const todoIdx15 = lines15t.findIndex((l) => l.includes('✓ 修复编译错误'));
+  const queueIdx15 = lines15t.findIndex((l) => l.includes('1 打断 ·'));
+  if (todoIdx15 < 0 || queueIdx15 < 0 || queueIdx15 - todoIdx15 !== 3) {
+    console.error(`✗ 场景 15 todo 应紧贴待发送区上方（todo=${todoIdx15} queue=${queueIdx15}，应差 3 行）`);
+    console.log(frame15t);
+    process.exit(1);
+  }
+  s15.todoList = []; // 还原，后续断言不受 todo 影响
   // d) 左侧蓝色细线（与对话流用户消息同款 ▍）：紧贴灰块左缘、**竖跨整个灰色背景
   //    含上下圆角边框行**——单行输入 = 边框 1 + 输入 1 + 间距 1 + 模型 1 + 边框 1 = 5 行；
   //    增高到 3 行输入后 = 7 行（输入区域高度低，输入与模型行之间留 1 行间距）
@@ -1178,7 +1213,7 @@ async function main(): Promise<void> {
     console.log(frame15b);
     process.exit(1);
   }
-  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（Esc 取消+排队替代）+ 模型/思考强度行 + 待发送区渲染（⏳ 待发送/queue·steer↑ 徽标/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
+  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（Esc 取消+排队替代）+ 模型/思考强度行 + 待发送区渲染（每条一行 N 排队/打断 · 文本/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
 
   // 场景 17：/theme 命令面板 —— openThemeMenu 打开面板 + handleMenuKey 选择/确认/取消 + 渲染
   const { closeMenu, handleMenuKey, openThemeMenu } = await import('../src/tui/commands.js');
@@ -4387,7 +4422,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 40 普通按键应退出选择并放行: ${JSON.stringify(ch40)}`);
     process.exit(1);
   }
-  // h) 渲染：2 条消息（queue + steer）带徽标；选中第 2 条高亮 ›；待发送区钉在灰块上方
+  // h) 渲染：2 条消息（steer + queue）每条一行「N 打断/排队 · 文本」；选中第 2 条高亮 ›；待发送区钉在灰块上方
   const s40r = createTuiState();
   s40r.version = '0.1.0';
   s40r.model = 'mock';
@@ -4400,11 +4435,11 @@ async function main(): Promise<void> {
   await t40.renderOnce();
   const frame40 = t40.captureCharFrame();
   if (
-    !frame40.includes('⏳ 待发送（2 · ↑ 1 打断）') ||
-    !frame40.includes('↑ 打断优先') ||
-    !frame40.includes('› · 普通排队')
+    !frame40.includes('1 打断 · 打断优先') ||
+    !frame40.includes('› 2 排队 · 普通排队') ||
+    frame40.includes('⏳')
   ) {
-    console.error('✗ 场景 40 待发送渲染缺失（标题/徽标/选中高亮）');
+    console.error('✗ 场景 40 待发送渲染缺失（每条一行 N 打断/排队 · 文本/选中高亮）');
     console.log(frame40);
     process.exit(1);
   }

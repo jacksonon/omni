@@ -533,6 +533,11 @@ export interface TuiState {
   /** 待发送消息 id 递增（编辑替换时保持稳定身份） */
   pendingSeq: number;
   /**
+   * 任务清单（todo_write 工具更新，RunOptions.onTodo 镜像进来）：显示在输入框
+   * 正上方小视图（todoBox，与待发送区/灰色块一起钉底）——✓ 完成 / ▸ 进行中 / · 待办。
+   */
+  todoList: { content: string; status: 'in_progress' | 'completed' | 'pending' }[];
+  /**
    * 本次提交的模式：keypress 检测 Enter（queue）/ Cmd|Ctrl|Option+Enter（steer）写入，
    * submit 回调消费后重置为 queue。运行中提交处理据此分流。
    */
@@ -636,6 +641,7 @@ export function createTuiState(): TuiState {
     pending: [],
     pendingSelected: -1,
     pendingSeq: 0,
+    todoList: [],
     submitMode: 'queue',
     traceOpen: false,
     traceRows: [],

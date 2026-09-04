@@ -121,6 +121,12 @@ export async function runTuiInteractive(
     interruptText = null;
     return t;
   };
+  // todo 清单实时镜像（todo_write 工具 → 输入区上方 todo 小视图）：写进 state +
+  // 触发重绘（schedulePaint 由 TuiOutput 注入，pushToast 同款通道）
+  runOpts.onTodo = (list) => {
+    state.todoList = list;
+    state.schedulePaint?.();
+  };
   // 会话持久化：增量追加每轮新增消息。
   // savedCount 统计**可落盘**消息数（脚手架 system 消息不落盘，见 persistableMessages）：
   // · --continue/-r 恢复时历史已在文件里 → 从可落盘数起步，避免整段重复追加（review 抓到的 bug）；

@@ -67,6 +67,7 @@ import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './t
 import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, formatCompact, formatContextUsage, formatMiniBar, sessionAvgRate, truncatePathHead } from './layout.js';
 import { effortColor, isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
+import { editPending } from './pending.js';
 import { visualWidth } from './width.js';
 import {
   cmdPanelRows,
@@ -202,6 +203,9 @@ export interface TuiTree {
   /** 待发送消息区（输入框上方小视图：显示 queue/steer 消息，回合结束后按序发送；可选中/排序/删除/编辑） */
   queueBox: BoxRenderable | null;
   queueCells: TextRenderable[];
+  /** 任务清单小视图（输入框上方、待发送区上方：todo_write 更新实时显示 ✓/▸/·） */
+  todoBox: BoxRenderable | null;
+  todoCells: TextRenderable[];
   /** 每次重绘刷新：待发送消息行的屏幕 y → pending 下标（点击选中用；仅消息行，不含标题/还有 N 条） */
   pendingRects: Map<number, number>;
   /** 每次重绘刷新：卡片 id → 本次可见的屏幕 y 范围（点击命中用） */
@@ -291,6 +295,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerCache: TextRenderable | null = null;
   let queueBox: BoxRenderable | null = null;
   const queueCells: TextRenderable[] = [];
+  let todoBox: BoxRenderable | null = null;
+  const todoCells: TextRenderable[] = [];
   let askBox: BoxRenderable | null = null;
   const askCells: TextRenderable[] = [];
   if (opts?.withInput) {
@@ -598,9 +604,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   const toastCell = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
   toastBox.add(toastCell);
 
-  // 待发送消息区：灰色块（输入框）正上方——运行中 Enter 提交的消息在此显示（标题 + 最多 4 条，
-  // 每条带 queue/steer 徽标），不参与内容区滚动；回合结束后 interactive 按序消费。
-  // 行数随 pending 长度变化（标题 1 + 最多 4 条 + 超出时「还有 N 条」1 行）。
+  // 待发送消息区：灰色块（输入框）正上方——运行中 Enter 提交的消息在此显示
+  //（每条一行「N queued · 文本」，对标 Claude Code queued 样式——用户要求），不参与
+  // 内容区滚动；回合结束后 interactive 按序消费。行数随 pending 长度变化（最多 4 条 +
+  // 超出时「还有 N 条」1 行）。
   queueBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
     paddingX: 1,
@@ -611,6 +618,21 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     queueBox.add(c);
     queueCells.push(c);
+  }
+
+  // 任务清单小视图：待发送区上方（todo_write 工具更新 → RunOptions.onTodo 镜像
+  // state.todoList → 这里渲染 ✓ 完成 / ▸ 进行中 / · 待办，最多 4 条 + 超出提示）。
+  // 空清单隐藏（不占布局）。显示但不点击（todo 状态由模型维护，非用户操作对象）。
+  todoBox = new BoxRenderable(ctx, {
+    flexDirection: 'column',
+    paddingX: 1,
+    gap: 0,
+    visible: false,
+  });
+  for (let i = 0; i < 6; i++) {
+    const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    todoBox.add(c);
+    todoCells.push(c);
   }
 
   // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 操作提示。
@@ -640,6 +662,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     marginTop: 'auto',
   });
   if (askBox) bottomBlock.add(askBox);
+  if (todoBox) bottomBlock.add(todoBox);
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
   root.add(bottomBlock);
@@ -670,6 +693,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerCache,
     queueBox,
     queueCells,
+    todoBox,
+    todoCells,
     pendingRects: new Map(),
     cardRects: new Map(),
     thinkingRects: new Map(),
@@ -797,14 +822,18 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 思考级别按级别取色（强度递进色阶：low 绿→medium 琥珀→high 橙→xhigh 红→max 紫），
   // 未知/自定义级别回退 footerDim；/variants 切换或主题切换时每帧重取即时生效
   if (tree.footerEffort) tree.footerEffort.fg = parseColor(effortColor(state.reasoningEffort, theme));
-  // 待发送消息区（输入框上方小视图）行数预算：标题 1 + 最多 4 条消息 + 超出时「还有 N 条」1 行。
-  // 由 computeRows / footerTop（联想浮层）共用——预算同步收缩，灰色块永远完整可见。
+  // 待发送消息区（输入框上方小视图）行数预算：最多 4 条消息（每条「N queued · 文本」一行）
+  // + 超出时「还有 N 条」1 行。由 computeRows / footerTop（联想浮层）共用——预算同步收缩，
+  // 灰色块永远完整可见。
   const pendingCount = state.pending.length;
   const pendingVisibleMsgs = Math.min(4, pendingCount);
-  const pendingRows = pendingCount > 0 ? 1 + pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
+  const pendingRows = pendingCount > 0 ? pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
+  // 任务清单小视图（待发送区上方）行数预算：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）。
+  const todoCount = state.todoList.length;
+  const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) : 0;
   // 灰色块顶部（0-based 屏幕行）。联想/菜单/命令面板浮层共用：
   // 浮层底边钳制在此行上方——永不遮住输入区。inputLines 刷新后（下方 if 块内）重新赋值。
-  let footerTop = (height ?? 24) - 7 - pendingRows - 1;
+  let footerTop = (height ?? 24) - 7 - pendingRows - todoRows - 1;
   // 状态栏：dark 保持 dim 白字（原样）；light 去掉 dim 属性 + 显式深灰文字
   //（浅底上 dim 白字看不见，dim+深灰又会半亮发浅）
   (tree.status as { attributes?: number }).attributes = createTextAttributes(isLightTheme(theme) ? {} : { dim: true });
@@ -837,17 +866,17 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     // 居中组（自上而下）：状态栏 marginTop(1)——hero 隐藏「就绪」后空文本高 0 但
     // margin 仍占 1 行（visible=false 不摘除布局节点，探针实测）+ 大号字标
     //（OMNI_BANNER = HERO_LINES 行）+ 间距(1) + 底部固定块[灰色块 inputLines+4 +
-    // 待发送区 pendingRows + ask 面板] + 灰块外底行(margin 1 + 行 1)。
+    // 任务清单 todoRows + 待发送区 pendingRows + ask 面板] + 灰块外底行(margin 1 + 行 1)。
     const inputLines = Math.max(1, state.inputLines);
     const askRows = state.ask ? state.ask.options.length + 4 : 0;
-    const groupH = 1 + HERO_LINES + 1 + pendingRows + askRows + (inputLines + 4) + 2;
+    const groupH = 1 + HERO_LINES + 1 + todoRows + pendingRows + askRows + (inputLines + 4) + 2;
     // 居中偏移 = 内容盒（视口 - 根 paddingY 2）剩余空间的一半，**round 而非 floor**：
     // yoga 对半行居中做四舍五入（floor 会在奇数剩余时把灰块算低 1 行 → 联想浮层
     // 与输入区之间漏出 1 行缝隙；40 例宽高矩阵探针实测，见 scripts/probe-tmp/dbg-hero-formula.ts）
     const groupTop = Math.max(1, 1 + Math.round(((height ?? 24) - 2 - groupH) / 2));
-    // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
+    // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - todoRows - inputLines
     const grayTopCentered = groupTop + 1 + HERO_LINES + 1;
-    const grayTopBottom = (height ?? 24) - 7 - pendingRows - inputLines;
+    const grayTopBottom = (height ?? 24) - 7 - pendingRows - todoRows - inputLines;
     heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
@@ -899,8 +928,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.input && opts?.withInput) {
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
-    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 待发送区(pendingRows) - 灰色块(inputLines+4，含圆角边框)）
-    footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset; // 灰色块顶部（0-based 屏幕行）；hero 居中模式再减 heroOffset
+    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 任务清单(todoRows) - 待发送区(pendingRows) - 灰色块(inputLines+4，含圆角边框)）
+    footerTop = (height ?? 24) - 7 - pendingRows - todoRows - state.inputLines - heroOffset; // 灰色块顶部（0-based 屏幕行）；hero 居中模式再减 heroOffset
     if (!state.menu && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -1076,40 +1105,29 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.footerLoad.visible = false;
     }
   }
-  // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ↑M 打断）」+ 每条消息带
-  // queue/steer 徽标（· 普通排队 / ↑ 打断优先——精简 ASCII，用户要求去 emoji）+ 选中高亮（› 青色加粗）。
-  // 空列表隐藏（不占布局）；行数预算 = pendingRows（computeRows/footerTop 同步减）。
-  // 可点击：消息行 y → pending 下标存 pendingRects（鼠标点击选中，见 startTui）——
-  // 消息行位于灰色块正上方（footerTop - visibleMsgs .. footerTop - 1）。
+  // 待发送消息区（输入框上方小视图）：每条一行「N queued · 文本」（对标 Claude Code
+  // queued 样式——用户要求；queue=排队/steer=打断，i18n pending.item/pending.steerItem），
+  // 选中行 `›` 前缀高亮。空列表隐藏（不占布局）；行数预算 = pendingRows（computeRows/
+  // footerTop 同步减）。可点击：消息行 y → pending 下标存 pendingRects（点击**直接编辑**，
+  // 见 startTui）——消息行位于灰色块正上方（todoRows 之下）。
   if (tree.queueBox) {
     tree.queueBox.visible = pendingCount > 0;
     tree.pendingRects.clear();
     let idx = 0;
     if (pendingCount > 0) {
-      const steerCount = state.pending.filter((m) => m.mode === 'steer').length;
-      const c = tree.queueCells[idx++]!;
-      c.visible = true;
       const lang = state.language;
-      c.content = tf(lang, 'pending.title', {
-        q: pendingCount,
-        s: steerCount > 0 ? tf(lang, 'pending.steer', { s: steerCount }) : '',
-      });
       for (let i = 0; i < pendingVisibleMsgs; i++) {
         const m = state.pending[i]!;
         const t = m.text.replace(/\s+/g, ' ').trim();
         const selected = i === state.pendingSelected;
-        const badge = m.mode === 'steer' ? '↑' : '·';
-        const body = `${selected ? '› ' : '  '}${badge} ${t.length > 38 ? `${t.slice(0, 37)}…` : t}`;
+        const label = tf(lang, m.mode === 'steer' ? 'pending.steerItem' : 'pending.item', { n: i + 1 });
+        const body = t.length > 38 ? `${t.slice(0, 37)}…` : t;
         const cell = tree.queueCells[idx++]!;
         cell.visible = true;
         try {
           cell.content = new StyledText([
-            {
-              __isChunk: true as const,
-              text: body,
-              fg: parseColor(selected ? theme.accentBlue : theme.footerDim),
-              attributes: selected ? TextAttributes.BOLD : 0,
-            },
+            { __isChunk: true as const, text: `${selected ? '› ' : '  '}${label}`, fg: parseColor(selected ? theme.accentBlue : theme.footerText), attributes: TextAttributes.BOLD },
+            { __isChunk: true as const, text: ` · ${body}`, fg: parseColor(selected ? theme.accentBlue : theme.footerText), attributes: selected ? TextAttributes.BOLD : 0 },
           ]);
         } catch (e) {
           logCrash('pending-row', e);
@@ -1126,6 +1144,41 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     for (; idx < tree.queueCells.length; idx++) {
       tree.queueCells[idx]!.content = '';
       tree.queueCells[idx]!.visible = false;
+    }
+  }
+  // 任务清单小视图（待发送区上方）：每条一行「✓/▸/· 内容」——完成 dim、进行中
+  // accent 加粗、待办 dim；最多 4 条 + 超出「还有 N 项」提示。空清单隐藏。纯显示
+  //（不参与点击——todo 状态由模型维护）。
+  if (tree.todoBox) {
+    tree.todoBox.visible = todoCount > 0;
+    let idx = 0;
+    if (todoCount > 0) {
+      for (let i = 0; i < Math.min(4, todoCount); i++) {
+        const item = state.todoList[i]!;
+        const done = item.status === 'completed';
+        const active = item.status === 'in_progress';
+        const mark = done ? '✓' : active ? '▸' : '·';
+        const text = item.content.length > 50 ? `${item.content.slice(0, 49)}…` : item.content;
+        const cell = tree.todoCells[idx++]!;
+        cell.visible = true;
+        try {
+          cell.content = new StyledText([
+            { __isChunk: true as const, text: `${mark} `, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
+            { __isChunk: true as const, text, fg: parseColor(active ? theme.footerText : theme.footerDim), attributes: 0 },
+          ]);
+        } catch (e) {
+          logCrash('todo-row', e);
+        }
+      }
+      if (todoCount > 4) {
+        const c2 = tree.todoCells[idx++]!;
+        c2.visible = true;
+        c2.content = tf(state.language, 'todo.more', { n: todoCount - 4 });
+      }
+    }
+    for (; idx < tree.todoCells.length; idx++) {
+      tree.todoCells[idx]!.content = '';
+      tree.todoCells[idx]!.visible = false;
     }
   }
   // 状态栏可见性：hero 模式（未开始对话）隐藏「就绪」状态，让居中 hero 布局干净；
@@ -1558,15 +1611,15 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       else tree.approvalRect = { top: y, bottom: y };
     }
   }
-  // 待发送消息行的点击区域：底部固定块（待发送区 + 灰色块）被 marginTop:auto 钉在视口
+  // 待发送消息行的点击区域：底部固定块（todo + 待发送区 + 灰色块）被 marginTop:auto 钉在视口
   // 底部，位置是**确定**的（与内容长度/滚动无关）——底部块顶 = 视口 - 根底内边距(1)
-  // - 待发送区(pendingRows) - 灰色块(inputLines+4)。
-  // 标题行在底部块顶，消息行从 +1 开始：消息 i 在 y = wrapperTop + 1 + i。
+  // - 任务清单(todoRows) - 待发送区(pendingRows) - 灰色块(inputLines+4)。
+  // 每条消息一行（无标题行）：消息 i 在 y = wrapperTop + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
     // hero 居中模式下底部块随根居中上移 heroOffset，命中区同步换算
-    const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset;
-    for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
+    const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - state.inputLines - heroOffset;
+    for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + i, i);
   }
   // ask_user 提问面板（输入区上方）：**竖向勾选列表**——? 问题（单选/多选）+ 每行
   // 一个 `[x] A) 选项` + 自定义行（`[ ] 自定义：内容`，有内容自动勾选）+ `✓ 确认（Enter）`
@@ -1876,12 +1929,16 @@ export function handleTuiMouseEvent(
         return;
       }
     }
-    // 待发送消息区：点击某条消息 → 选中该条（进入选择态后可 ↑/↓ 移动高亮、
-    // ←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc 退出）
+    // 待发送消息区：点击某条消息 → **直接编辑**（对标 Claude Code queued 点击编辑——
+    // 用户要求；与 Enter 编辑同路径：文本取回输入框、从列表移除，改完重新提交即再入列）
     if (state.pending.length > 0) {
       const pIdx = tree.pendingRects.get(e.y);
       if (pIdx !== undefined) {
-        state.pendingSelected = pIdx;
+        const text = editPending(state, pIdx);
+        if (text !== null) {
+          tree.input?.setText(text);
+          state.pendingSelected = -1;
+        }
         void paint();
         return;
       }

@@ -23,6 +23,8 @@ export interface RunOptions {
   trusted?: boolean;
   /** TodoWrite 任务清单（P1：模型维护结构化 todo；todo_write 工具更新，/status 查看） */
   todoList?: { content: string; status: 'in_progress' | 'completed' | 'pending' }[];
+  /** todo 清单更新回调（todo_write 工具执行后触发；TUI 镜像进 state.todoList 渲染输入区上方小视图） */
+  onTodo?: (list: { content: string; status: 'in_progress' | 'completed' | 'pending' }[]) => void;
   /** OS 级沙箱档位（attachRuntime 注入；run_command 包装用，/status 展示） */
   sandbox?: import('../safety/sandbox.js').SandboxMode;
   /** 安全护栏：是否写审计日志 */
