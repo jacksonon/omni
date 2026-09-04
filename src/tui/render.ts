@@ -636,14 +636,15 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   }
 
   // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 自定义输入 + 操作提示。
-  // **扁平面板**（无边框/无底色——同命令面板风格，用户要求不显示黑底色块、与其它
-  // 非主要模块融合）：顶部留白 1 行 + 标题/选项/自定义/确认/提示；行数 = 留白 1 +
-  // 问题 1 + 选项 n + 自定义 1 + 确认 1 + 提示 1；预算同步（computeRows options+5）。
+  // **扁平面板 + 输入区同款底色**（用户要求：像 command 面板一样有背景色——
+  // theme.footerBg 填充，无边框；顶部留白 1 行 + 问题 1 + 选项 n + 自定义 1 + 确认 1 + 提示 1；
+  // 预算同步 computeRows options+5）。
   askBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
     paddingX: 1,
     gap: 0,
     visible: false,
+    backgroundColor: theme.footerBg,
   });
   for (let i = 0; i < 12; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
@@ -1627,6 +1628,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.askBox.visible = !!a && !!opts?.withInput;
     tree.askRects.clear();
     if (a && opts?.withInput) {
+      tree.askBox.backgroundColor = theme.footerBg; // 主题切换（/theme）每帧跟随（同命令面板底色）
       const lang = state.language;
       const aRows: { text: string; style: { dim?: boolean; bold?: boolean; fg?: string } }[] = [];
       aRows.push({ text: ' ', style: {} }); // 顶部留白 1 行（同命令面板——空文本高度 0，单空格占位）

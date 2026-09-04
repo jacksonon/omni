@@ -2,6 +2,7 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-04（第二百四十四次）**：**ask 面板补输入区同款底色**——用户要求「ask 需要一个背景色，像 command 的面板一样」（241 次去底色去过头了）。改动（`render.ts`）：askBox 挂 `backgroundColor: theme.footerBg`（命令/菜单面板同款输入区底色，无边框保持扁平），refresh 每帧跟随主题切换；快照场景 45 断言 askBox 底色 = footerBox 底色（toInts 对比）。**验证**：typecheck ✓ · tui:snapshot 全绿。
 - **2026-09-04（第二百四十三次）**：**对话流 Build/Plan 头行与输入区模式色一致**——用户要求「tui 对话流中的 build/plan 颜色需要和输入区域的 build/plan 模式颜色一致」。改动：a) `state.ts` `TurnTokens` 新增 `plan?: boolean`（创建时快照——历史轮不随当前模式漂移）；b) `output.ts` tokens 行创建时写入 `plan: state.planMode`；c) `rows.ts` tokens 头行：`Build`（原 accentBlue 蓝，与输入区 Build 青 #22d3ee 不一致）→ 按本轮模式快照显示 `Plan`/`Build` 标签 + `theme.modePlan`/`theme.modeBuild` 色（与模型行前缀同源）。**快照**：场景 13m 新增——Build 头行 = modeBuild 青、plan=true 头行 = Plan + modePlan 洋红。**验证**：typecheck ✓ · tui:snapshot 全绿。
 
 - **2026-09-04（第二百四十二次）**：**对话流行内数学 `$…$` 渲染（LaTeX 命令 → Unicode 符号）**——用户反馈「蛋白 $\gg$ 蛋黄 / $\rightarrow$ / $\neq$ 无法正确渲染」（原样显示反斜杠命令）。改动（`markdown.ts`）：a) **LATEX_UNICODE 符号表**（与 Web 端 `latexToUnicode` 同表，两端一致；顺带补 `\to` → → 进两端）：箭头/关系（≫ ≪ ≤ ≥ ≠ ≡ ≈ ∈ ⊂…）/运算（× ± ∑ ∫ √ ∂…）/希腊字母/命名函数/`\left \right \big` 尺寸命令去除，`\frac{a}{b}`→a/b、`\sqrt{x}`→√x；未知 `\command` 原样保留；b) **INLINE_TOKEN 新增数学 token**：`$…$` / `\(…\)` / `\[…\]`——`$…$` 按守卫判定（含 `\` 或「无空格≤40 且含字母」→ 数学；价格 `$5-$10`/`$100 and $200` 含空格/纯数字不误伤），`\(\)`/`\[\]` 显式定界恒为数学；行内代码先于数学匹配 → `` `$…$` `` 保持源码原样。**快照**：场景 18 新增 a2 断言（≫/→/≠/α→β 转换 + 价格与行内代码不误伤）。**验证**：typecheck ✓ · tui:snapshot 全绿 · test:features 49/49 · probe:web ✓ · web:sync ✓。

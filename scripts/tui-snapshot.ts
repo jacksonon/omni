@@ -5523,10 +5523,15 @@ async function main(): Promise<void> {
         console.error('✗ 场景 45 askBox 未显示');
         process.exit(1);
       }
-      // 扁平面板（用户要求去黑底色块）：无边框（底色由帧内容验证——无整行灰底）
-      const ab = tree45.askBox as { border?: unknown };
+      // 扁平面板（用户要求去黑底色块）：无边框；底色 = 输入区同款 footerBg（像 command 面板）
+      const ab = tree45.askBox as { border?: unknown; backgroundColor?: unknown };
       if (ab.border === true) {
         console.error(`✗ 场景 45 ask 面板应为扁平无边框: border=${JSON.stringify(ab.border)}`);
+        process.exit(1);
+      }
+      const toInts45 = (c: unknown): number[] => ((c as { toInts?: () => number[] }).toInts?.() ?? []).slice(0, 3);
+      if (JSON.stringify(toInts45(ab.backgroundColor)) !== JSON.stringify(toInts45(tree45.footerBox?.backgroundColor))) {
+        console.error('✗ 场景 45 ask 面板底色应与输入区一致（footerBg）');
         process.exit(1);
       }
     const frame45 = t45.captureCharFrame();
