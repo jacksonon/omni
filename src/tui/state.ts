@@ -193,7 +193,8 @@ export interface TuiAsk {
   multiple: boolean;
   /** 勾选的选项下标集合（单选最多 1 个；Set 便于切换） */
   selected: Set<number>;
-  /** 自定义输入内容（末尾自定义行；有内容即视为勾选） */
+  /** 自定义输入缓冲（面板**独立输入**——打字/Backspace/空格由 ask 按键处理器直接写这里，
+   *  不经过主输入框——用户要求 ask 自带独立输入框；有内容即视为勾选） */
   custom: string;
   /** 高亮行光标（0..options.length；options.length = 自定义行） */
   cursor: number;

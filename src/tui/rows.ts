@@ -807,9 +807,9 @@ export function computeRows(
   // 任务清单小视图（待发送区上方）：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）。
   const todoCount = opts?.withInput ? state.todoList.length : 0;
   const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) : 0;
-  // ask_user 提问面板（输入区上方）：? 问题行 1 + 每选项 1 行 + 自定义行 1 + 确认行 1 +
-  // 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
-  const askRows = opts?.withInput && state.ask ? state.ask.options.length + 4 : 0;
+  // ask_user 提问面板（输入区上方）：留白 1 + ? 问题行 1 + 每选项 1 行 + 自定义行 1 +
+  // 确认行 1 + 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
+  const askRows = opts?.withInput && state.ask ? state.ask.options.length + 5 : 0;
   // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 任务清单(todoRows) + 待发送区(pendingRows) + ask 面板(askRows)
   const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + todoRows + askRows : 2));
   const total = body.length;

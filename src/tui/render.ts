@@ -635,20 +635,17 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     todoCells.push(c);
   }
 
-  // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 操作提示。
-  // 圆角方框 + 主题面板底色（同联想/轨迹浮层设计语言）；行数 = 标题 1 + 问题 1 +
-  // ceil(选项/3) 选项行 + 提示 1（最多 6 个选项 → 6 行）；预算同步（computeRows）。
+  // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 自定义输入 + 操作提示。
+  // **扁平面板**（无边框/无底色——同命令面板风格，用户要求不显示黑底色块、与其它
+  // 非主要模块融合）：顶部留白 1 行 + 标题/选项/自定义/确认/提示；行数 = 留白 1 +
+  // 问题 1 + 选项 n + 自定义 1 + 确认 1 + 提示 1；预算同步（computeRows options+5）。
   askBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
     paddingX: 1,
     gap: 0,
     visible: false,
-    backgroundColor: theme.suggestBg,
-    border: true,
-    borderStyle: 'rounded',
-    borderColor: theme.suggestBorder,
   });
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     askBox.add(c);
     askCells.push(c);
@@ -868,7 +865,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     //（OMNI_BANNER = HERO_LINES 行）+ 间距(1) + 底部固定块[灰色块 inputLines+4 +
     // 任务清单 todoRows + 待发送区 pendingRows + ask 面板] + 灰块外底行(margin 1 + 行 1)。
     const inputLines = Math.max(1, state.inputLines);
-    const askRows = state.ask ? state.ask.options.length + 4 : 0;
+    const askRows = state.ask ? state.ask.options.length + 5 : 0;
     const groupH = 1 + HERO_LINES + 1 + todoRows + pendingRows + askRows + (inputLines + 4) + 2;
     // 居中偏移 = 内容盒（视口 - 根 paddingY 2）剩余空间的一半，**round 而非 floor**：
     // yoga 对半行居中做四舍五入（floor 会在奇数剩余时把灰块算低 1 行 → 联想浮层
@@ -1621,23 +1618,20 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - state.inputLines - heroOffset;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + i, i);
   }
-  // ask_user 提问面板（输入区上方）：**竖向勾选列表**——? 问题（单选/多选）+ 每行
-  // 一个 `[x] A) 选项` + 自定义行（`[ ] 自定义：内容`，有内容自动勾选）+ `✓ 确认（Enter）`
-  // 提交行 + 提示行（空间不足时提示行被截，确认行恒保留）。高亮行 `›` 前缀。
-  // 输入框内容每帧同步为自定义内容（打字 = 自定义输入，字母/数字不拦截——勾选用空格）。
+  // ask_user 提问面板（输入区上方）：**扁平面板 + 独立自定义输入**——? 问题（单选/多选，
+  // cyan 加粗同命令面板标题）+ 每行 `[x] A) 选项` + 自定义行（面板**自己独立的输入缓冲**
+  // `ask.custom`，打字进面板不进主输入框——用户要求；光标 ▏ 提示输入位置）+ `✓ 确认（Enter）`
+  // 提交行 + 提示行。顶部留白 1 行（同命令面板）。高亮行 `›` 前缀。
   if (tree.askBox) {
     const a = state.ask;
     tree.askBox.visible = !!a && !!opts?.withInput;
     tree.askRects.clear();
     if (a && opts?.withInput) {
-      tree.askBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
-      tree.askBox.borderColor = parseColor(theme.suggestBorder);
       const lang = state.language;
-      // 输入框内容实时同步为自定义输入（打字进输入框 = 自定义答案；提交时一并返回）
-      if (tree.input) a.custom = tree.input.plainText;
       const aRows: { text: string; style: { dim?: boolean; bold?: boolean; fg?: string } }[] = [];
+      aRows.push({ text: ' ', style: {} }); // 顶部留白 1 行（同命令面板——空文本高度 0，单空格占位）
       const modeTag = a.multiple ? t(lang, 'ask.multiple') : t(lang, 'ask.single');
-      aRows.push({ text: `? ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { bold: true } });
+      aRows.push({ text: `? ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { fg: 'cyan', bold: true } });
       const optCols = Math.max(10, (width ?? 80) - 8);
       for (let i = 0; i < a.options.length; i++) {
         const on = a.selected.has(i);
@@ -1650,9 +1644,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       }
       const curCustom = a.cursor === a.options.length;
       const customOn = a.custom.trim().length > 0;
-      const customText = a.custom.trim() ? fitAsk(a.custom.trim(), optCols - 7) : t(lang, 'ask.customPlaceholder');
+      // 独立输入行：有内容显示内容、无内容显示占位；光标在高亮行时追加 ▏（输入位置提示）
+      const customText = a.custom ? fitAsk(a.custom, optCols - 7) : t(lang, 'ask.customPlaceholder');
       aRows.push({
-        text: `${curCustom ? '›' : ' '} [${customOn ? 'x' : ' '}] ${t(lang, 'ask.custom')}：${customText}`,
+        text: `${curCustom ? '›' : ' '} [${customOn ? 'x' : ' '}] ${t(lang, 'ask.custom')}：${customText}${curCustom ? '▏' : ''}`,
         style: curCustom ? { fg: 'blue', bold: true } : customOn ? { bold: true } : { dim: true },
       });
       aRows.push({ text: `✓ ${t(lang, 'ask.confirm')}（Enter）`, style: { fg: 'green', bold: true } });
@@ -1666,16 +1661,16 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         applyRowToCell(cell, aRows[i], theme);
       }
-      // 面板底 = footer 顶 - pendingRows（待发送区在面板与灰色块之间）；顶 = 底 - 行数（hero 居中再减 heroOffset）
-      const aBottom = (height ?? 24) - 6 - state.inputLines - pendingRows - heroOffset;
+      // 面板底 = footer 顶 - todoRows - pendingRows（todo/待发送区在面板与灰色块之间）；
+      // 顶 = 底 - 行数（hero 居中再减 heroOffset）
+      const aBottom = (height ?? 24) - 6 - state.inputLines - todoRows - pendingRows - heroOffset;
       const aTop = aBottom - aRows.length;
-      // 行 y → 类型：1 起选项行（面板内下标 1+i）、自定义行（下标 1+options.length）、
-      // 确认行（下标 2+options.length）
+      // 行 y → 类型：顶部留白行后，问题行下标 1、选项行下标 2+i、自定义行 2+n、确认行 3+n
       for (let i = 0; i < a.options.length; i++) {
-        tree.askRects.set(aTop + 1 + i, { kind: 'opt', idx: i });
+        tree.askRects.set(aTop + 2 + i, { kind: 'opt', idx: i });
       }
-      tree.askRects.set(aTop + 1 + a.options.length, { kind: 'custom' });
-      tree.askRects.set(aTop + 2 + a.options.length, { kind: 'confirm' });
+      tree.askRects.set(aTop + 2 + a.options.length, { kind: 'custom' });
+      tree.askRects.set(aTop + 3 + a.options.length, { kind: 'confirm' });
     }
   }
 }
@@ -1872,8 +1867,7 @@ export function handleTuiMouseEvent(
         } else if (rowOpt.kind === 'custom') {
           state.ask.cursor = state.ask.options.length;
         } else if (rowOpt.kind === 'confirm') {
-          submitAsk(state);
-          tree.input?.setText(''); // 自定义内容已进结果，清空输入框
+          submitAsk(state); // 自定义内容在面板独立缓冲里，主输入框无需清理
         }
         void paint();
         return;
@@ -1983,10 +1977,11 @@ export function handleCtrlCKey(key: TuiKey, input: TextareaRenderable | null): '
 
 /**
  * ask_user 提问面板按键（导出供快照复用同一真实代码路径；startTui 注册）：
- * 竖向勾选列表交互——↑/↓ 移动高亮、**空格勾选/取消**（单选互斥；输入框有内容时
- * 空格放行给输入框——打字优先）、**Enter 确认提交**（勾选选项 + 自定义内容）、
+ * 竖向勾选列表交互——↑/↓ 移动高亮、**空格勾选/取消**（光标在选项行；自定义行空格 =
+ * 输入空格）、**Enter 确认提交**（勾选选项 + 自定义内容）、Backspace 删除自定义末字符、
  * Esc 取消（置 askKeyJustConsumed——interactive 据此跳过取消运行）。
- * 字母/数字键恒放行给输入框（= 自定义输入，无选项键冲突）；提交结果含自定义内容。
+ * 可打印字符进面板**独立的自定义输入缓冲**（ask.custom，不进主输入框——用户要求）；
+ * 提交结果含自定义内容。
  */
 export function onAskKeyPress(
   key: TuiKey,
@@ -2004,17 +1999,24 @@ export function onAskKeyPress(
     paint();
     return;
   }
-  // Enter：确认提交（勾选项 + 自定义内容；无任何选择时不提交）
+  // Enter：确认提交（勾选项 + 自定义内容；无任何选择时不提交）——主输入框不参与
+  //（自定义内容在面板独立缓冲里，无需清主输入框——用户要求独立输入）
   if (n === 'return' || n === 'kpenter' || n === 'linefeed') {
     submitAsk(state);
-    tree?.input?.setText(''); // 自定义内容已进结果，清空输入框（下一轮输入干净）
     key.preventDefault();
     paint();
     return;
   }
-  // 空格：勾选/取消当前高亮选项（输入框有内容 = 正在输入自定义 → 放行给输入框）
+  // Backspace/Delete：删除自定义输入末字符（独立输入缓冲）
+  if (n === 'backspace' || n === 'delete') {
+    if (ask.custom.length > 0) ask.custom = ask.custom.slice(0, -1);
+    key.preventDefault();
+    paint();
+    return;
+  }
+  // 空格：光标在选项行 = 勾选/取消（单选互斥）；光标在自定义行 = 输入空格
   if (n === 'space') {
-    if (!(tree?.input && tree.input.plainText.length > 0) && ask.cursor < ask.options.length) {
+    if (ask.cursor < ask.options.length) {
       if (ask.multiple) {
         if (ask.selected.has(ask.cursor)) ask.selected.delete(ask.cursor);
         else ask.selected.add(ask.cursor);
@@ -2028,7 +2030,11 @@ export function onAskKeyPress(
       }
       key.preventDefault();
       paint();
+      return;
     }
+    ask.custom += ' '; // 自定义行：空格进输入缓冲
+    key.preventDefault();
+    paint();
     return;
   }
   if (n === 'escape' || n === 'esc') {
@@ -2036,6 +2042,15 @@ export function onAskKeyPress(
     //（取消提问 ≠ 取消对话——模型收到「用户取消」自行决定继续）
     state.askKeyJustConsumed = true;
     state.askResolve?.(null);
+    key.preventDefault();
+    paint();
+    return;
+  }
+  // 可打印字符（含粘贴多字符）：进面板独立的自定义输入缓冲（不进主输入框——
+  // 用户要求 ask 自带独立输入框）；Ctrl/Meta 组合键不放行不消费
+  const seq = key.sequence ?? '';
+  if (seq.length > 0 && !key.ctrl && !key.meta && !key.super && !key.option) {
+    ask.custom += seq;
     key.preventDefault();
     paint();
   }

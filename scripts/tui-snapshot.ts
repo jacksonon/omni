@@ -5479,18 +5479,25 @@ async function main(): Promise<void> {
     }
   }
   // b) 渲染：竖向勾选列表——❓ 问题（单选/多选）+ [x] 选项行 + 自定义行 + ✓ 确认行 +
-  //    提示行；askRects 行 y → {kind: opt/custom/confirm}；computeRows 预算收缩 options+4
-  {
-    const s45 = createTuiState();
-    s45.model = 'mock';
-    s45.ask = { question: '如何推进？', options: ['先调研', '直接实现', '先问清楚'], multiple: false, selected: new Set([1]), custom: '', cursor: 0 };
-    const t45 = await createTestRenderer({ width: 80, height: 24 });
-    const tree45 = mountTree(t45.renderer, s45, { withInput: true });
-    await t45.renderOnce();
-    if (!tree45.askBox || !tree45.askBox.visible) {
-      console.error('✗ 场景 45 askBox 未显示');
-      process.exit(1);
-    }
+    //    提示行；askRects 行 y → {kind: opt/custom/confirm}；computeRows 预算收缩 options+5
+    //    （留白 1 + 问题 1 + 选项 n + 自定义 1 + 确认 1 + 提示 1）；扁平面板（无边框/无底色）
+    {
+      const s45 = createTuiState();
+      s45.model = 'mock';
+      s45.ask = { question: '如何推进？', options: ['先调研', '直接实现', '先问清楚'], multiple: false, selected: new Set([1]), custom: '', cursor: 0 };
+      const t45 = await createTestRenderer({ width: 80, height: 24 });
+      const tree45 = mountTree(t45.renderer, s45, { withInput: true });
+      await t45.renderOnce();
+      if (!tree45.askBox || !tree45.askBox.visible) {
+        console.error('✗ 场景 45 askBox 未显示');
+        process.exit(1);
+      }
+      // 扁平面板（用户要求去黑底色块）：无边框（底色由帧内容验证——无整行灰底）
+      const ab = tree45.askBox as { border?: unknown };
+      if (ab.border === true) {
+        console.error(`✗ 场景 45 ask 面板应为扁平无边框: border=${JSON.stringify(ab.border)}`);
+        process.exit(1);
+      }
     const frame45 = t45.captureCharFrame();
     if (
       !frame45.includes('如何推进') ||
@@ -5526,14 +5533,14 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 askRects 确认行映射错误: y15 → ${JSON.stringify(rCfm)}`);
       process.exit(1);
     }
-    // 内容区预算收缩：ask 打开时 cap 减 options+4 行（❓ 1 + 选项 3 + 自定义 1 + 确认 1 + 提示 1）
+    // 内容区预算收缩：ask 打开时 cap 减 options+5 行（留白 1 + 问题 1 + 选项 3 + 自定义 1 + 确认 1 + 提示 1）
     const s45b = createTuiState();
     for (let i = 0; i < 20; i++) pushLine(s45b, { kind: 'user', text: `行 ${i}` });
     const capNone = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
     s45b.ask = { question: 'q', options: ['a', 'b', 'c'], multiple: false, selected: new Set(), custom: '', cursor: 0 };
     const capAsk = computeRows(s45b, { height: 24, width: 80 }, { withInput: true }).length;
-    if (capAsk !== capNone - 7) {
-      console.error(`✗ 场景 45 ask 预算未收缩: none=${capNone} ask=${capAsk}（应差 7 = 3 选项+4）`);
+    if (capAsk !== capNone - 8) {
+      console.error(`✗ 场景 45 ask 预算未收缩: none=${capNone} ask=${capAsk}（应差 8 = 3 选项+5）`);
       process.exit(1);
     }
     // ask 关闭后恢复
@@ -5545,7 +5552,7 @@ async function main(): Promise<void> {
     }
   }
   // c) 按键：↑/↓ 移动光标、空格勾选（单选互斥/多选叠加）、Enter 提交（submitAsk 组装
-  //    choices + 清空输入框）、输入框有内容时空格放行、Esc 取消 + askKeyJustConsumed
+  //    choices）、可打印字符进面板独立输入缓冲（不进主输入框）、Esc 取消 + askKeyJustConsumed
   {
     const s45 = createTuiState();
     const mkAsk = (multiple = false) => {
@@ -5559,7 +5566,7 @@ async function main(): Promise<void> {
     const t45 = await createTestRenderer({ width: 80, height: 24 });
     const tree45 = mountTree(t45.renderer, s45, { withInput: true });
     const { onAskKeyPress } = await import('../src/tui/render.js');
-    const key45 = (name: string) => ({ name, preventDefault: () => {} }) as never;
+    const key45 = (name: string, seq = '') => ({ name, sequence: seq, preventDefault: () => {} }) as never;
     // 单选：↓ 移到选项二 → 空格勾选 → 空格再按取消 → 空格勾选 → Enter 提交
     mkAsk();
     onAskKeyPress(key45('down'), s45, tree45, () => {});
@@ -5590,7 +5597,7 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 单选互斥失败: ${JSON.stringify([...s45.ask!.selected])}`);
       process.exit(1);
     }
-    // 多选叠加：multiple=true 勾选两个 + 自定义内容 → 提交含自定义 + 输入框清空
+    // 多选叠加：multiple=true 勾选两个 + 自定义内容（面板独立缓冲打字）→ 提交含自定义
     mkAsk(true);
     resolved = 'pending';
     onAskKeyPress(key45('space'), s45, tree45, () => {});
@@ -5600,12 +5607,16 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 多选叠加失败: ${JSON.stringify([...s45.ask!.selected])}`);
       process.exit(1);
     }
-    tree45.input!.setText('我的补充');
-    s45.ask!.custom = '我的补充'; // repaintTree 每帧同步（快照手动模拟）
+    // 自定义输入：可打印字符进面板独立缓冲（主输入框不参与、保持不动——用户要求）
+    for (const ch of '我的补充') onAskKeyPress(key45('', ch), s45, tree45, () => {});
+    if (s45.ask!.custom !== '我的补充' || tree45.input!.plainText !== '') {
+      console.error(`✗ 场景 45 独立输入缓冲失败: custom=${JSON.stringify(s45.ask!.custom)} input=${JSON.stringify(tree45.input!.plainText)}`);
+      process.exit(1);
+    }
     onAskKeyPress(key45('return'), s45, tree45, () => {});
     const mr = resolved as { choice: string; custom: boolean; choices: string[] } | null;
-    if (mr?.choice !== '一、二、我的补充' || mr.custom !== true || mr.choices.length !== 3 || tree45.input!.plainText !== '') {
-      console.error(`✗ 场景 45 多选+自定义提交失败: ${JSON.stringify({ mr, input: tree45.input!.plainText })}`);
+    if (mr?.choice !== '一、二、我的补充' || mr.custom !== true || mr.choices.length !== 3) {
+      console.error(`✗ 场景 45 多选+自定义提交失败: ${JSON.stringify(mr)}`);
       process.exit(1);
     }
     // 无任何选择 Enter 不提交（面板保持）
@@ -5616,19 +5627,20 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 无选择 Enter 不应提交: ${JSON.stringify(resolved)}`);
       process.exit(1);
     }
-    // 输入框有内容时空格放行（打字优先——自定义输入含空格不被吞）
+    // 光标在自定义行：空格进输入缓冲（独立输入，不再放行主输入框）
     mkAsk();
-    tree45.input!.setText('x');
-    s45.ask!.custom = 'x';
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('down'), s45, tree45, () => {});
+    onAskKeyPress(key45('down'), s45, tree45, () => {}); // 末位 = 自定义行
     let prevented = false;
-    const key45b = (name: string) => ({ name, preventDefault: () => { prevented = true; } }) as never;
-    onAskKeyPress(key45b('space'), s45, tree45, () => {});
-    if (prevented || s45.ask!.selected.size !== 0) {
-      console.error(`✗ 场景 45 输入框有内容时空格应放行: ${JSON.stringify({ prevented, sel: [...s45.ask!.selected] })}`);
+    const key45b = (name: string, seq = '') => ({ name, sequence: seq, preventDefault: () => { prevented = true; } }) as never;
+    onAskKeyPress(key45b('space', ' '), s45, tree45, () => {});
+    onAskKeyPress(key45b('', 'x'), s45, tree45, () => {});
+    onAskKeyPress(key45b('backspace'), s45, tree45, () => {}); // 删掉 x
+    if (!prevented || s45.ask!.custom !== ' ' || tree45.input!.plainText !== '') {
+      console.error(`✗ 场景 45 自定义行独立输入失败: custom=${JSON.stringify(s45.ask!.custom)} prevented=${prevented} input=${JSON.stringify(tree45.input!.plainText)}`);
       process.exit(1);
     }
-    tree45.input!.setText('');
-    s45.ask!.custom = '';
     // Esc 取消（含 askKeyJustConsumed）
     onAskKeyPress(key45('escape'), s45, tree45, () => {});
     if (resolved !== null || !s45.askKeyJustConsumed) {
