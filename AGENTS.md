@@ -274,10 +274,10 @@ for step in 1..maxSteps:
 - **细胞池复用**（非全量重建）：池只增不减，行内容原位更新，防原生 TextBuffer 耗尽（早期每帧 remove+new ~1365 次重绘后崩）；`state.ts` 是纯可变对象，不是 signal；
 - **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行）+ 灰块外底行（左文件夹全路径/loading …… 右迷你条用量，左右与输入区文本对齐、与灰块隔 1 行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别 · 会话平均 tok/s · 输入/输出 · 缓存`（中部无数据段隐藏，超宽按缓存→输入输出顺序隐藏）；旧底部统计行与 `/settings statusline` 面板已移除（`statusline`/`statuslineAlign` 配置保留兼容、被忽略）；内容行预算 = 高度 - 9 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
 - **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送列表（steer 插最前、可排序/编辑/删除）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
-- **浮层体系**：`/` 命令联想与 `@` 提及文件选择（圆角方框、窗口滚动、鼠标点击）、命令面板（alert 居中）、命令输出面板、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
+- **浮层体系**：`/` 命令联想与 `@` 提及文件选择（输入区同款风格：同底色 + 左侧深灰竖线 + 与输入区同宽，扁平无边框、窗口滚动、鼠标点击）、命令菜单面板（/theme /settings /model 等）与命令输出面板（/mcp /status 等）——**扁平无边框 + 顶部留白 1 行**（同联想下拉：留白/标题/内容/提示行，无圆角卡片线）、与输入区同宽同左、底边**贴住灰色块**（hero 居中时保持 hero 跟随 0.75 居中输入区，打开面板不把输入区拉到底部；操作提示渲染在面板内部，不写状态栏）、轨迹面板（右侧栏 + 详情页）、ask 提问面板——全部绝对定位、不占内容流、不遮输入区；
 - **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；**字符级拖选复制**（OpenTUI 无选区 API，omni 自绘）：左键按在内容行建立选区（`tree.sel`，行下标 + 显示列；`colToChar` 把事件 x → 字符，CJK/emoji 全角 2 列、不断代理对），拖动实时更新焦点行/列（渲染层 `selecRow`/`markRowSelected` 命中行 chunks 重建 + `selBg`/`selFg` 高亮块），松开若有位移则 `selectionText` 提取选区文本（跨行 `\n` 连接）写系统剪贴板（OSC52 + pbcopy/xclip/Set-Clipboard 回退），成功后**右上角 toast「✓ 已复制」**；纯点击（无位移）清空不复制，浮层打开/内容区外不触发；**右上角 toast（Alert notification）**：`pushToast(state, text, type)` 设置 + 过期时间戳，`repaintTree` 渲染绝对定位右上角浮层（`toastBox`，zIndex 11 最高；宽度由内容自适应，类型着色 success 绿/error 深红/info 默认；过期即清除，`state.schedulePaint` 由 TuiOutput 注入驱动自动消失）——**拖选复制/模型切换（/model 面板与 CLI）/思考级别切换/命令面板短结果（/mcp 添加移除）/请求失败错误**统一收口到 toast，`TuiOutput.pushToast` 供 Output 通道使用；
 - **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
-- **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 47 场景，与 CLI 共用同一渲染路径。
+- **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 51 场景，与 CLI 共用同一渲染路径。
 ### 工具列表（src/tools/）
 
 静态注册表 6 个基础工具；`ask_user`（向用户提问）、`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。

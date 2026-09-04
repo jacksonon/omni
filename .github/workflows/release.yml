@@ -112,6 +112,23 @@ jobs:
             npm publish --registry=https://registry.npmjs.org --access public
           fi
 
+      - name: Smoke test published platform package
+        shell: bash
+        run: |
+          # 发布后在隔离前缀安装该平台包并跑一次，
+          # 防“bin 缺失/二进制损坏/命名错位”静默发布
+          # （平台包走 optionalDependency，装不上 npm 不报错，
+          #  用户侧 omni 会以“平台包未安装”暴露）
+          VER=$(node -p "require('./package.json').version")
+          PKG_NAME=$(node -p "require('./packages/npm/${{ matrix.npmPkg }}/package.json').name")
+          TEST_PREFIX=$(mktemp -d)
+          npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org >/dev/null 2>&1
+          # 平台包 bin 路径经 npm root 推导（Windows 全局布局无 lib/ 层，不硬编码）
+          STEM="$(npm root -g --prefix "$TEST_PREFIX")/$PKG_NAME/bin/${{ matrix.binName }}"
+          test -x "$STEM" || { echo "✘ 平台包 bin 缺失或不可执行: $STEM"; rm -rf "$TEST_PREFIX"; exit 1; }
+          "$STEM" --version
+          rm -rf "$TEST_PREFIX"
+
       - name: npm pack (omni-<version>.tgz, linux-x64 only)
         if: matrix.artifact == 'omni-linux-x64'
         shell: bash

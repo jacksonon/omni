@@ -13,6 +13,7 @@ import {
   cardInnerWidth,
   cardTitleLine,
   toolCardLines,
+  truncateToWidth,
   wrapText,
   type DiffHalfKind,
   type ToolCardLine,
@@ -314,7 +315,16 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
  *   ╰───────────────────╯
  */
 /**
- * 菜单面板行（/theme /permission /variants /model /session 等）：圆角方框 + 选项列表。
+ * 扁平面板行（菜单/命令输出面板，同联想下拉风格——无圆角边框）：
+ * 行首 1 空格 + 文本截断兜底 + 补空格铺满整行（总宽恒 = width）。
+ */
+function flatPanelLine(text: string, width: number): string {
+  const t = truncateToWidth(text, width - 1);
+  return ` ${t}${' '.repeat(Math.max(0, width - 1 - visualWidth(t)))}`;
+}
+
+/**
+ * 菜单面板行（/theme /permission /variants /model /session 等）：扁平面板 + 选项列表。
  * 选项超面板高度时**窗口滚动**（同联想浮层 suggestBox 模式）：`menu.scrollTop` 记录
  * 窗口首项下标，渲染时收敛到合法区间且**选中项恒在窗口内**（交互层 ↑/↓ 移动
  * selectedIndex，这里兜底跟随滚动——连续按键逐帧重绘即连续滚动）；窗口外上下各一条
@@ -326,7 +336,6 @@ export function menuPanelRows(
   lang: TuiLang = 'zh',
   maxVisible?: number
 ): Row[] {
-  const inner = cardInnerWidth(contentWidth);
   // 窗口大小：全部放得下就不滚；否则按预算收缩（至少 1 行，且不超过选项总数）
   const win = maxVisible === undefined ? menu.options.length : Math.max(1, Math.min(maxVisible, menu.options.length));
   // 滚动位置收敛：选中项必须保持在窗口内（交互层已维护，这里兜底外部状态变更）
@@ -337,10 +346,14 @@ export function menuPanelRows(
   menu.scrollTop = top;
   const above = top; // 窗口上方还有的项数
   const below = Math.max(0, menu.options.length - (top + win)); // 窗口下方还有的项数
-  const rows: Row[] = [{ text: cardTitleLine(menu.title, '', inner), style: { fg: 'cyan' } }];
+  // 顶部留白行（空格，空文本高度 0 不能用）：标题不贴面板顶边（用户要求）
+  const rows: Row[] = [
+    { text: ' ', style: {} },
+    { text: flatPanelLine(menu.title, contentWidth), style: { fg: 'cyan', bold: true } },
+  ];
   if (above > 0) {
     rows.push({
-      text: cardContentLine(tf(lang, 'suggest.hint', { arrow: '↑', n: above }), inner),
+      text: flatPanelLine(tf(lang, 'suggest.hint', { arrow: '↑', n: above }), contentWidth),
       style: { dim: true },
     });
   }
@@ -349,7 +362,7 @@ export function menuPanelRows(
     if (opt.group) {
       // 分组头行：dim、不可选中（不渲染光标/✓，不登记 menuIdx——点击忽略）
       rows.push({
-        text: cardContentLine(opt.label, inner),
+        text: flatPanelLine(opt.label, contentWidth),
         style: { dim: true },
       });
       continue;
@@ -357,50 +370,46 @@ export function menuPanelRows(
     const cursor = k === menu.selectedIndex ? '› ' : '  ';
     const check = opt.value === menu.currentValue ? ' ✓' : '';
     rows.push({
-      text: cardContentLine(`${cursor}${opt.label}${check}`, inner),
+      text: flatPanelLine(`${cursor}${opt.label}${check}`, contentWidth),
       style: k === menu.selectedIndex ? { fg: 'cyan', bold: true } : {},
       menuIdx: k,
     });
   }
   if (below > 0) {
     rows.push({
-      text: cardContentLine(tf(lang, 'suggest.hint', { arrow: '↓', n: below }), inner),
+      text: flatPanelLine(tf(lang, 'suggest.hint', { arrow: '↓', n: below }), contentWidth),
       style: { dim: true },
     });
   }
-  rows.push({ text: cardContentLine(t(lang, 'menu.hint'), inner), style: { dim: true } });
-  rows.push({ text: cardBottomLine(inner), style: { dim: true } });
+  rows.push({ text: flatPanelLine(t(lang, 'menu.hint'), contentWidth), style: { dim: true } });
   return rows;
 }
 
 /**
- * 命令输出面板行（所有 / 命令的独立窗口）：圆角方框 + 标题 + 输出行 + 滚动提示。
- * 内容行按面板宽折行（每行恰好 1 个终端行，边框不被撑破），超高时垂直滚动
+ * 命令输出面板行（所有 / 命令的独立窗口）：扁平面板 + 标题 + 输出行 + 滚动提示。
+ * 内容行按面板宽折行（每行恰好 1 个终端行），超高时垂直滚动
  * （panel.scroll 由交互层 ↑/↓ 调整，这里 clamp 到合法区间并回写）。
  */
 export function cmdPanelRows(panel: CmdPanel, contentWidth: number, footerTop: number, lang: TuiLang = 'zh'): Row[] {
-  const inner = cardInnerWidth(contentWidth);
-  // 可见主体行数：面板总高（主体 + 标题 1 + 提示 1 + 底边 1）不得超过 footerTop - 2
-  // （footerTop = 灰色块顶部——面板永不遮住输入区/placeholder，内容超高时滚动查看）
-  const maxVisible = Math.max(2, footerTop - 5);
+  // 可见主体行数：面板总高（留白 1 + 标题 1 + 主体 + 提示 1）≤ footerTop - 1（顶 ≥1、底贴灰块）
+  const maxVisible = Math.max(2, footerTop - 4);
   // 长行折行成多行（内容完整可滚动查看，不截断）；源行之间不插空行（保持紧凑）
   const body: string[] = [];
   for (const raw of panel.lines) {
-    for (const seg of wrapText(raw, inner - 1)) body.push(seg);
+    for (const seg of wrapText(raw, contentWidth - 1)) body.push(seg);
   }
   const total = body.length;
   const scroll = Math.min(Math.max(0, panel.scroll), Math.max(0, total - maxVisible));
   panel.scroll = scroll;
   const visible = body.slice(scroll, scroll + maxVisible);
-  const rows: Row[] = [{ text: cardTitleLine(panel.title, '', inner), style: { fg: 'cyan' } }];
-  if (visible.length === 0) rows.push({ text: cardContentLine(t(lang, 'cmdpanel.none'), inner), style: { dim: true } });
-  for (const t of visible) rows.push({ text: cardContentLine(t, inner), style: {} });
+  const rows: Row[] = [{ text: flatPanelLine(panel.title, contentWidth), style: { fg: 'cyan', bold: true } }];
+  if (visible.length === 0) rows.push({ text: flatPanelLine(t(lang, 'cmdpanel.none'), contentWidth), style: { dim: true } });
+  for (const t of visible) rows.push({ text: flatPanelLine(t, contentWidth), style: {} });
   const remain = total - (scroll + maxVisible);
   rows.push({
-    text: cardContentLine(remain > 0 ? tf(lang, 'cmdpanel.hint', { n: remain }) : t(lang, 'cmdpanel.close'), inner),
+    text: flatPanelLine(remain > 0 ? tf(lang, 'cmdpanel.hint', { n: remain }) : t(lang, 'cmdpanel.close'), contentWidth),
     style: { dim: true },
   });
-  rows.push({ text: cardBottomLine(inner), style: { dim: true } });
   return rows;
 }
 

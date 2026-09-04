@@ -59,7 +59,7 @@ import {
 import type { RenderContext } from '@opentui/core';
 import { execFileSync } from 'node:child_process';
 import { openInEditor } from '../agent/report.js';
-import { commandSuggestions, commandGroup, confirmMenu, findCommand, scheduleCmdPanelAutoClose, type CommandGroupId, type TuiCommand } from './commands.js';
+import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { logCrash } from './crashlog.js';
 import { dim } from '../ui.js';
 import { t, tf } from './i18n.js';
@@ -188,7 +188,7 @@ export interface TuiTree {
   input: TextareaRenderable | null;
   /** 模型行 / 思考强度 / 会话平均速率 / 输入输出 / 缓存（repaintTree 每次刷新内容） */
   footerModel: TextRenderable | null;
-  /** 模式前缀（Build/Plan，独立着色：Build 绿 / Plan 蓝；repaintTree 每次按 planMode 刷新） */
+  /** 模式前缀（Build/Plan，独立着色：Build 青 / Plan 洋红，避开思考级别色阶；repaintTree 每次按 planMode 刷新） */
   footerMode: TextRenderable | null;
   /** 思考级别（`· medium`，按级别强度着色 effortColor；未设置思考级别时为空） */
   footerEffort: TextRenderable | null;
@@ -223,11 +223,15 @@ export interface TuiTree {
   /** 命令面板浮层（/theme alert：绝对定位居中，不占用内容流） */
   menuOverlay: BoxRenderable | null;
   menuCells: TextRenderable[];
+  /** 菜单浮层左侧深灰竖线（同输入区蓝线写法，独立渲染列） */
+  menuBar: TextRenderable | null;
   /** 菜单浮层内部行 → 选项下标映射（-1 = 标题/提示/底边行，不可点击；鼠标点击命中用） */
   menuRowMap: number[];
   /** 命令输出面板浮层（所有 / 命令的独立窗口：绝对定位居中，不占用内容流/不参与滚动） */
   cmdPanelOverlay: BoxRenderable | null;
   cmdPanelCells: TextRenderable[];
+  /** 命令输出面板左侧深灰竖线（同输入区蓝线写法，独立渲染列） */
+  cmdPanelBar: TextRenderable | null;
   /** 轨迹面板浮层（/trace 右侧栏：绝对定位右缘，宽 TRACE_W；展开时内容宽度收缩） */
   traceBox: BoxRenderable | null;
   traceCells: TextRenderable[];
@@ -365,7 +369,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     contentCol.add(input);
 
     // 模型行（输入框下方，灰色块内）：模式/模型/级别/均值/输入输出/缓存
-    // （无数据段隐藏；超宽按 缓存→输入输出 顺序隐藏；模式前缀 Build 绿 / Plan 蓝独立着色，
+    // （无数据段隐藏；超宽按 缓存→输入输出 顺序隐藏；模式前缀 Build 青 / Plan 洋红独立着色，
     // 级别按强度着色）。文件夹与上下文已移出灰块，见下方 metaRow。
     const modelRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
@@ -466,8 +470,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   root.add(omniTitle);
 
   // 命令联想（输入 / 时）与 @ 提及文件选择共用这个浮层：**独立浮层**——绝对定位 +
-  // 扁平无边框面板（命令面板风格：标题 + 分组头 + 选项行整行高亮），悬停在输入框
-  // （灰色块）上方，不占内容流、不挤动对话（用户要求独立界面、非当前对话流）。非模态：
+  // 输入区同款风格（与输入区同底色 footerBg + 左侧深灰竖线 ▍ + 与输入区同宽，见 repaintTree），
+  // 悬停在输入框（灰色块）上方，不占内容流、不挤动对话（用户要求独立界面、非当前对话流）。非模态：
   // 不拦截输入，用户可继续打字（列表按最新文本过滤，无匹配自动隐藏）；↑/↓ 高亮、
   // Tab/Enter 填入、鼠标点击某项填入。位置（top/left）与宽度由 repaintTree 每帧重算。
   const suggestBox = new BoxRenderable(ctx, {
@@ -475,8 +479,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     zIndex: 9, // 低于 /theme 面板浮层（10），高于内容流
     flexDirection: 'column',
     visible: false,
-    // 扁平无边框 + 整体背景：行文本手动补空格铺满整行，选中行底色全宽高亮
-    backgroundColor: theme.suggestBg,
+    // 扁平无边框 + 输入区同底：行内逐行绘制左侧深灰 ▍（同输入区蓝线写法）+ 文本补空格铺满整宽
+    backgroundColor: theme.footerBg,
     paddingX: 0,
   });
   root.add(suggestBox);
@@ -489,15 +493,24 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
 
   // 命令面板浮层（/theme alert）：绝对定位居中（top/left 每帧重算），zIndex 高于内容；
   // 独立于会话流——菜单不占内容行、不参与滚动（用户要求「额外显示一个 alert」）。
-  // **面板底色**：菜单/设置面板的圆角边框是行文本（╭─╮），行本身无背景——透明会
-  // 透出对话流文字（用户反馈 command/设置界面与对话流文本重合看不清），整体填主题面板底色。
+  // **输入区同款风格**：整体填输入区底色（不透明浮于对话流之上）+ 行内逐行左侧深灰 ▍
+  // （同输入区蓝线写法，见 applyPanelRowToCell）；居中但比原来大（panelW 上限 56）。
   const menuOverlay = new BoxRenderable(ctx, {
     position: 'absolute',
     zIndex: 10,
     visible: false,
-    backgroundColor: theme.suggestBg,
+    flexDirection: 'row',
+    backgroundColor: theme.footerBg,
   });
   root.add(menuOverlay);
+  // 左侧深灰竖线（同输入区蓝线写法：独立渲染列逐行 ▍，颜色换深灰 suggestBorder）+
+  // 内容列（卡片行纯文本，经 applyRowToCell 渲染；行内不拼 chunk，避免宽字符错位）
+  const menuBar = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+  menuBar.fg = parseColor(theme.suggestBorder);
+  menuBar.bg = parseColor(theme.footerBg);
+  menuOverlay.add(menuBar);
+  const menuContent = new BoxRenderable(ctx, { flexDirection: 'column' });
+  menuOverlay.add(menuContent);
   // 细胞池预分配**充足**行数：窗口滚动后菜单面板行数 = 标题 1 + 窗口（≤12）+
   // 上下提示 ≤2 + 操作提示 1 + 底边 1 ≤ 17；60 行覆盖超高视口（与 cmdPanel 同策略）。
   // 池不足时超出部分不渲染 = 面板「展示不全」（用户实测反馈：/session 面板有提示行
@@ -505,26 +518,34 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   const menuCells: TextRenderable[] = [];
   for (let i = 0; i < 60; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    menuOverlay.add(c);
+    menuContent.add(c);
     menuCells.push(c);
   }
 
   // 命令输出面板浮层（所有 / 命令的独立窗口）：绝对定位居中（top/left 每帧重算），
   // 与 /theme 菜单浮层同级（zIndex 10，二者不同时打开）。细胞池预分配充足行数
   // （可见主体行 ≤ 视口-6，60 行覆盖超高视口；不参与内容流/滚动）。
-  // **面板底色**：输出行（cardContentLine）无独立背景，透明会透出对话流文字
-  // （用户反馈 command 界面与对话流文本重合看不清）——整体填主题面板底色。
+  // **输入区同款风格**：整体填输入区底色（不透明浮于对话流之上）+ 行内逐行左侧深灰 ▍；
+  // 居中但比原来大（panelW 上限 88）。
   const cmdPanelOverlay = new BoxRenderable(ctx, {
     position: 'absolute',
     zIndex: 10,
     visible: false,
-    backgroundColor: theme.suggestBg,
+    flexDirection: 'row',
+    backgroundColor: theme.footerBg,
   });
   root.add(cmdPanelOverlay);
+  // 左侧深灰竖线（同菜单浮层/输入区蓝线写法）+ 内容列
+  const cmdPanelBar = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+  cmdPanelBar.fg = parseColor(theme.suggestBorder);
+  cmdPanelBar.bg = parseColor(theme.footerBg);
+  cmdPanelOverlay.add(cmdPanelBar);
+  const cmdPanelContent = new BoxRenderable(ctx, { flexDirection: 'column' });
+  cmdPanelOverlay.add(cmdPanelContent);
   const cmdPanelCells: TextRenderable[] = [];
   for (let i = 0; i < 60; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    cmdPanelOverlay.add(c);
+    cmdPanelContent.add(c);
     cmdPanelCells.push(c);
   }
 
@@ -655,9 +676,11 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     suggestRowMap: [],
     menuOverlay,
     menuCells,
+    menuBar,
     menuRowMap: [],
     cmdPanelOverlay,
     cmdPanelCells,
+    cmdPanelBar,
     traceBox,
     traceCells,
     traceRect: null,
@@ -792,24 +815,29 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 实现：根 justifyContent 改为 center、底部固定块去掉 marginTop:auto
   // （否则 auto 边距吸收全部自由空间、justifyContent 失效），横幅显示、状态栏隐藏
   // （「模型 X · 就绪」在居中 hero 布局下是冗余的——模型已在灰块内模型行展示）。
-  // 菜单/设置/命令面板/ask 打开时退出 hero（浮层定位与快照断言都按底部钉住布局）；
+  // 菜单/命令输出面板打开时**保持 hero**（浮层按 heroOffset 钳制到居中灰块上缘，
+  // 像联想下拉一样是输入区的上延——用户要求打开面板不得把输入区拉到底部）；
+  // ask 打开时仍退出 hero（ask 面板是 bottomBlock 内的流式节点，按底部钉住布局渲染）；
   // 首条消息进入（lines 非空）后逐帧自动恢复到底部钉住布局。
   const hero =
     !!opts?.withInput &&
     state.lines.length === 0 &&
-    !state.menu &&
-    !state.cmdPanel &&
     !state.ask;
   let heroOffset = 0; // hero 模式下灰色块相对「底部钉住」位置上移的行数（浮层/命中区按此换算）
   if (hero && tree.omniTitle && tree.bottomBlock) {
-    // 居中组（自上而下）：大号字标（OMNI_BANNER = HERO_LINES 行）+ 间距(1) +
-    // 底部固定块[灰色块 inputLines+4  + 待发送区 pendingRows + ask 面板] + 灰块外底行(1)。
+    // 居中组（自上而下）：状态栏 marginTop(1)——hero 隐藏「就绪」后空文本高 0 但
+    // margin 仍占 1 行（visible=false 不摘除布局节点，探针实测）+ 大号字标
+    //（OMNI_BANNER = HERO_LINES 行）+ 间距(1) + 底部固定块[灰色块 inputLines+4 +
+    // 待发送区 pendingRows + ask 面板] + 灰块外底行(margin 1 + 行 1)。
     const inputLines = Math.max(1, state.inputLines);
     const askRows = state.ask ? state.ask.options.length + 4 : 0;
-    const groupH = HERO_LINES + 1 + pendingRows + askRows + (inputLines + 4) + 2;
-    const groupTop = Math.max(1, Math.floor(((height ?? 24) - groupH) / 2));
-    // 灰色块顶 = 组顶 + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 5 - pendingRows - inputLines
-    const grayTopCentered = groupTop + HERO_LINES + 1;
+    const groupH = 1 + HERO_LINES + 1 + pendingRows + askRows + (inputLines + 4) + 2;
+    // 居中偏移 = 内容盒（视口 - 根 paddingY 2）剩余空间的一半，**round 而非 floor**：
+    // yoga 对半行居中做四舍五入（floor 会在奇数剩余时把灰块算低 1 行 → 联想浮层
+    // 与输入区之间漏出 1 行缝隙；40 例宽高矩阵探针实测，见 scripts/probe-tmp/dbg-hero-formula.ts）
+    const groupTop = Math.max(1, 1 + Math.round(((height ?? 24) - 2 - groupH) / 2));
+    // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - inputLines
+    const grayTopCentered = groupTop + 1 + HERO_LINES + 1;
     const grayTopBottom = (height ?? 24) - 7 - pendingRows - inputLines;
     heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
     tree.root.justifyContent = 'center';
@@ -961,7 +989,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const modelText = `${state.model}${state.provider ? ` ${state.provider}` : ''}`;
   const effortText = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
   if (tree.footerModel && tree.footerMode) {
-    // 模式前缀按模式着色（Build 绿 / Plan 蓝，与主题强调色一致）
+    // 模式前缀按模式着色（Build 青 / Plan 洋红，避开思考级别色阶）
     tree.footerMode.content = modeText;
     tree.footerMode.fg = parseColor(state.planMode ? themeFor(state).modePlan : themeFor(state).modeBuild);
     tree.footerModel.content = modelText;
@@ -1068,24 +1096,24 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   tree.status.visible = hero ? false : opts?.withInput ? height >= 11 : height >= 4;
   tree.status.content = state.status;
 
-  // 联想/提及浮层（命令面板风格）：扁平无边框面板 + 标题行（Commands/esc）+
-  // 命令分组头（会话/模型/智能体/系统）+ 选项行（名称左、白字；描述右对齐、dim）+
-  // 上下「还有 N 个」提示行。选中行桃色整行高亮（深字）。
-  // items 全量匹配，窗口 = picker.window 行；↑/↓ 可滚动到全部。面板底部悬停在
-  // 灰色块上方 1 行。选择/点击逻辑只认 items 下标（标题/分组/提示行映射 -1，不可选中）。
+  // 联想/提及浮层（输入区同款风格）：扁平无边框 + 输入区同底色 + 左侧深灰竖线 ▍ +
+  // 与输入区同宽（像输入区的上延）+ 标题行（Commands/esc）+
+  // 选项行（名称左 + 描述空格分隔）+ 上下「还有 N 个」提示行。选中行除竖线外整行桃色高亮（深字）。
+  // items 全量匹配，窗口 = picker.window 行；↑/↓ 可滚动到全部。面板底部**贴住**灰色块
+  //（间距 0）。选择/点击逻辑只认 items 下标（标题/提示行映射 -1，不可选中）。
   const sug = state.cmdSuggest;
   const men = state.mention;
   const picker = sug ?? men; // 二选一：/ 命令联想优先；@ 提及仅在非 / 文本时出现
   let suggestTotal = 0;
   if (tree.suggestBox) {
-    tree.suggestBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
+    tree.suggestBox.backgroundColor = theme.footerBg; // 输入区同底（主题切换跟随）
     const visible = !!picker && picker.items.length > 0;
     tree.suggestBox.visible = visible;
-    // 行结构（与 rowMap 对齐）：head | hint? | (group? + item)* | hint?
+    // 行结构（与 rowMap 对齐）：pad（顶部留白，标题不贴面板顶边）| head | hint? | item* | hint?
     type SugRow =
+      | { kind: 'pad' }
       | { kind: 'head' }
       | { kind: 'hint'; top: boolean; n: number }
-      | { kind: 'group'; group: CommandGroupId }
       | { kind: 'item'; itemIdx: number };
     let builtRows: SugRow[] = [];
     if (visible && picker) {
@@ -1107,34 +1135,23 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       picker.window = win; // 交互层（↑/↓ 滚动）读它
       const above = top; // 窗口上方还有的项数
       const below = Math.max(0, picker.items.length - (top + win)); // 窗口下方还有的项数
-      // 组装行：标题 + [↑ 提示?] + (分组头? + 选项)* + [↓ 提示?]
-      const rows: SugRow[] = [{ kind: 'head' }];
+      // 组装行：顶部留白 + 标题 + [↑ 提示?] + 选项* + [↓ 提示?]（无分组头，用户要求移除 section 组标题）
+      const rows: SugRow[] = [{ kind: 'pad' }, { kind: 'head' }];
       if (above > 0) rows.push({ kind: 'hint', top: true, n: above });
-      let lastGroup: CommandGroupId | null = null;
       for (let k = top; k < top + win; k++) {
-        if (!men) {
-          const g = commandGroup(findCommand(picker.items[k]!) ?? { name: picker.items[k]! } as TuiCommand);
-          if (g !== lastGroup) {
-            rows.push({ kind: 'group', group: g });
-            lastGroup = g;
-          }
-        }
         rows.push({ kind: 'item', itemIdx: k });
       }
       if (below > 0) rows.push({ kind: 'hint', top: false, n: below });
-      // 内部行 → items 下标映射（-1 = 标题/分组/提示行，不可选中/点击）
+      // 内部行 → items 下标映射（-1 = 标题/提示行，不可选中/点击）
       const rowMap: number[] = rows.map((r) => (r.kind === 'item' ? r.itemIdx : -1));
       tree.suggestRowMap = rowMap;
       suggestTotal = rows.length;
-      // 行装配（扁平命令面板风格）：标题 / 分组头 / 选项（名称左白字 + 描述右对齐 dim）/ 提示。
-      // 描述先截 DESC_COLS 列参与度量；面板按最长行自适应（无边框，左右各 1 列手动内边距），上限视口 - 2。
+      // 行装配：标题 / 选项（名称左 + 描述**空格分隔**，不右对齐）/ 提示
       const vw = width ?? 80;
-      const DESC_COLS = 32;
       const lang = state.language;
       type SugLine =
         | { kind: 'head' }
         | { kind: 'hint'; text: string }
-        | { kind: 'group'; text: string }
         | { kind: 'item'; left: string; right: string; itemIdx: number; selected: boolean };
       const lines: SugLine[] = [];
       for (const r of rows) {
@@ -1142,12 +1159,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
           lines.push(r);
           continue;
         }
-        if (r.kind === 'hint') {
-          lines.push({ kind: 'hint', text: tf(lang, 'suggest.hint', { arrow: r.top ? '↑' : '↓', n: r.n }) });
+        if (r.kind === 'pad') {
+          // 顶部留白行：空文本（hint 分支渲染为竖线 + 整行底色空白）
+          lines.push({ kind: 'hint', text: '' });
           continue;
         }
-        if (r.kind === 'group') {
-          lines.push({ kind: 'group', text: t(lang, `cmdgroup.${r.group}`) });
+        if (r.kind === 'hint') {
+          lines.push({ kind: 'hint', text: tf(lang, 'suggest.hint', { arrow: r.top ? '↑' : '↓', n: r.n }) });
           continue;
         }
         const k = r.itemIdx;
@@ -1158,23 +1176,22 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
           continue;
         }
         const cmd = findCommand(picker.items[k]!);
-        const descFull = lang === 'en' && cmd?.descriptionEn ? cmd.descriptionEn : cmd?.description ?? '';
-        const cutD = fitCount(descFull, DESC_COLS);
-        const desc = cutD >= descFull.length ? descFull : `${descFull.slice(0, cutD)}…`;
+        // 描述不预截断（DESC_COLS 32 列是「面板自适应定宽」时代的遗留）——渲染层按行
+        // 剩余宽截断（truncTo line.right），面板全宽/hero 0.75 宽下简介可读到完整
+        const desc = lang === 'en' && cmd?.descriptionEn ? cmd.descriptionEn : cmd?.description ?? '';
         lines.push({ kind: 'item', left: `/${picker.items[k]}`, right: desc, itemIdx: k, selected });
       }
-      // 度量：标题按 `标题 + esc` 计；选项按 `名称 + 2空格 + 描述` 计
       const headTitle = t(lang, men ? 'suggest.filesTitle' : 'suggest.commandsTitle');
-      let longest = visualWidth(headTitle) + 3 + visualWidth('esc');
-      for (const l of lines) {
-        if (l.kind === 'item') longest = Math.max(longest, visualWidth(l.left) + 2 + visualWidth(l.right));
-        else if (l.kind === 'group' || l.kind === 'hint') longest = Math.max(longest, visualWidth(l.text));
-      }
-      const innerW = Math.max(12, Math.min(vw - 2, longest));
-      tree.suggestBox.width = innerW + 2; // 两侧各 1 列手动内边距（文本补空格，选中行底色铺满整行）
-      // 无边框 → 末行在灰色块上方 1 行，顶部 ≥0；左对齐输入框文字列（left 2 + 手动 1 空格 = x=3）
-      tree.suggestBox.top = Math.max(0, footerTop - suggestTotal - 1);
-      tree.suggestBox.left = 2;
+      // 与输入区同宽同左：正常模式 footer 撑满（视口 - 根 padding 2）；hero 居中模式
+      // footer 为可用宽 0.75 居中（mountTree hero 分支同公式）——下拉像输入区的上延。
+      const availW = Math.max(24, vw - CONTENT_PAD);
+      const heroFooter = hero && !!tree.footerBox;
+      const footerW = heroFooter ? Math.max(32, Math.round(availW * 0.75)) : Math.max(16, vw - CONTENT_PAD);
+      tree.suggestBox.width = footerW;
+      // hero 水平居中与 yoga 同式：内容盒左 1 + round(剩余/2)（floor 半列差 1 → 与输入区错开）
+      tree.suggestBox.left = heroFooter ? Math.max(1, 1 + Math.round((vw - 2 - footerW) / 2)) : 1;
+      // 无边框 → 末行**贴住灰色块**（间距 0），顶部 ≥0
+      tree.suggestBox.top = Math.max(0, footerTop - suggestTotal);
       // 可点击区域 = 面板全部行：行 i → 事件坐标 y = top + i
       tree.suggestRect = { top: tree.suggestBox.top, bottom: tree.suggestBox.top + suggestTotal - 1 };
       const padTo = (s: string, w: number): string => s + ' '.repeat(Math.max(0, w - visualWidth(s)));
@@ -1183,7 +1200,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const cut = fitCount(s, w - 1);
         return `${s.slice(0, Math.max(0, cut))}…`;
       };
-      const fullRow = (content: string): string => ` ${padTo(content, innerW)} `;
+      // 行宽恒为 footerW：首列深灰 ▍（同输入区蓝线写法，颜色换深灰）+ 1 列空格 + 内容铺满
+      const barFg = parseColor(theme.suggestBorder);
+      const barBg = parseColor(theme.footerBg);
+      const restW = Math.max(8, footerW - 1); // ▍ 之后的内容列（空格 + 文本 + 填充）
+      const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: barFg, bg: barBg, attributes: 0 };
       for (let i = 0; i < tree.suggestCells.length; i++) {
         const cell = tree.suggestCells[i];
         const line = lines[i];
@@ -1194,36 +1215,41 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         try {
           if (line.kind === 'head') {
-            // 标题左 + esc 右对齐
+            // 标题左 + esc 右对齐（铺满整宽）
+            const title = truncTo(headTitle, restW - 1 - 3);
+            const headPad = padTo(title, restW - 1 - 3);
             cell.content = new StyledText([
-              { __isChunk: true as const, text: ` ${padTo(headTitle, innerW - visualWidth('esc'))}`, fg: parseColor(theme.suggestText), attributes: TextAttributes.BOLD },
-              { __isChunk: true as const, text: 'esc ', fg: parseColor(theme.footerDim), attributes: 0 },
+              barChunk,
+              { __isChunk: true as const, text: ` ${headPad}`, fg: parseColor(theme.suggestText), bg: barBg, attributes: TextAttributes.BOLD },
+              { __isChunk: true as const, text: 'esc', fg: parseColor(theme.footerDim), bg: barBg, attributes: 0 },
             ]);
           } else if (line.kind === 'hint') {
             // 提示行：dim，不可选中/点击
+            const body = truncTo(line.text, restW - 1);
             cell.content = new StyledText([
-              { __isChunk: true as const, text: fullRow(line.text), fg: parseColor(theme.suggestText), attributes: TextAttributes.DIM },
-            ]);
-          } else if (line.kind === 'group') {
-            // 分组头：紫色，不可选中/点击
-            cell.content = new StyledText([
-              { __isChunk: true as const, text: fullRow(line.text), fg: parseColor(theme.suggestGroup), attributes: TextAttributes.BOLD },
+              barChunk,
+              { __isChunk: true as const, text: ` ${padTo(body, restW - 1)}`, fg: parseColor(theme.suggestText), bg: barBg, attributes: TextAttributes.DIM },
             ]);
           } else {
-            // 选项行：名称左（选中整行桃底深字）+ 描述右对齐 dim（选中同深字）
+            // 选项行：名称左（选中除竖线外整行桃底深字）+ 描述**空格分隔、不右对齐**
+            // （用户要求：右侧文本和左侧命令用空格分割即可，不做列对齐）
             const selected = line.selected;
-            const nameW = visualWidth(line.left);
-            const right = truncTo(line.right, Math.max(0, innerW - nameW - 2));
-            const gap = ' '.repeat(Math.max(2, innerW - nameW - visualWidth(right)));
-            const rowText = ` ${line.left}${gap}${right} `;
+            const left = truncTo(line.left, Math.max(4, restW - 5));
+            const rightAvail = Math.max(0, restW - 3 - visualWidth(left));
+            const right = rightAvail >= 2 ? truncTo(line.right, rightAvail) : '';
+            const body = ` ${left}  ${right}`;
+            // 补齐到 restW（与标题/提示行同式铺满整行；旧式 restW-1-body 使短简介行差 1 列不满宽）
+            const trail = ' '.repeat(Math.max(0, restW - visualWidth(body)));
             if (selected) {
               cell.content = new StyledText([
-                { __isChunk: true as const, text: rowText, fg: parseColor(theme.suggestSelFg), bg: parseColor(theme.suggestSelBg), attributes: 0 },
+                barChunk,
+                { __isChunk: true as const, text: `${body}${trail}`, fg: parseColor(theme.suggestSelFg), bg: parseColor(theme.suggestSelBg), attributes: 0 },
               ]);
             } else {
               cell.content = new StyledText([
-                { __isChunk: true as const, text: ` ${line.left}${gap}`, fg: parseColor(theme.suggestText), attributes: 0 },
-                { __isChunk: true as const, text: `${right} `, fg: parseColor(theme.suggestText), attributes: TextAttributes.DIM },
+                barChunk,
+                { __isChunk: true as const, text: ` ${left}  `, fg: parseColor(theme.suggestText), bg: barBg, attributes: 0 },
+                { __isChunk: true as const, text: `${right}${trail}`, fg: parseColor(theme.suggestText), bg: barBg, attributes: TextAttributes.DIM },
               ]);
             }
           }
@@ -1241,22 +1267,36 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 绝对定位、水平垂直居中、zIndex 高于内容；每帧按视口重算位置，行内容原地更新
   // （细胞池复用，不重建 TextRenderable）。
   if (tree.menuOverlay) {
-    tree.menuOverlay.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到），面板底色跟随刷新
+    tree.menuOverlay.backgroundColor = theme.footerBg; // 输入区同底（主题切换跟随），不透明浮于对话流之上
     const menu = state.menu;
     if (!menu) {
       tree.menuOverlay.visible = false;
       tree.menuRowMap = [];
     } else {
-      const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 44);
-      // 窗口滚动预算：面板总高（标题 1 + 窗口 + 上下提示 ≤2 + 操作提示 1 + 底边 1）≤ footerTop - 2
-      // （footerTop = 灰色块顶部——面板永不遮住输入区）；上限 12 行（联想浮层 8 行更紧凑）
-      const menuMaxVisible = Math.max(2, Math.min(12, footerTop - 7));
+      // 与输入区同宽同左、底边贴住灰色块（footerTop = 灰块顶，hero 居中模式按 heroOffset
+      // 钳到居中灰块上缘）——像联想下拉一样是输入区的上延（用户要求：不居中显示、
+      // 打开面板不得把输入区拉到底部）；超高时 menuMaxVisible 内部滚动
+      const vwMenu = width ?? 80;
+      const heroFooter = hero && !!tree.footerBox;
+      const footerW = heroFooter
+        ? Math.max(32, Math.round(Math.max(24, vwMenu - CONTENT_PAD) * 0.75))
+        : Math.max(16, vwMenu - CONTENT_PAD);
+      const panelW = Math.max(12, footerW - 1); // 卡片宽 = 输入区宽 - 左侧竖线 1 列
+      // 窗口滚动预算：留白 1 + 标题 1 + 窗口 + 上下提示 ≤2 + 操作提示 1 ≤ footerTop - 1
+      //（顶 ≥1、底贴灰块）→ 窗口 ≤ footerTop - 6；不滚动时更宽松
+      const menuMaxVisible = Math.max(2, Math.min(12, footerTop - 6));
       const panelRows = menuPanelRows(menu, panelW, state.language, menuMaxVisible);
       tree.menuOverlay.visible = true;
-      // 底边钳制在灰色块上方（同 cmdPanel 面板）：内容少时居中，多时贴灰块上缘
-      const centeredTopMenu = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
-      tree.menuOverlay.top = Math.min(centeredTopMenu, Math.max(1, footerTop - panelRows.length - 1));
-      tree.menuOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
+      tree.menuOverlay.top = Math.max(1, footerTop - panelRows.length);
+      tree.menuOverlay.left = heroFooter ? Math.max(1, 1 + Math.round((vwMenu - 2 - footerW) / 2)) : 1;
+      tree.menuOverlay.width = panelW + 1; // 显式宽度（竖线 1 列 + 卡片 panelW）= 输入区同宽
+      // 左侧深灰竖线：按面板行数同步（同输入区蓝线按 inputLines 同步）
+      if (tree.menuBar) {
+        tree.menuBar.height = panelRows.length;
+        tree.menuBar.content = Array(panelRows.length).fill(ACCENT_BAR).join('\n');
+        tree.menuBar.fg = parseColor(theme.suggestBorder);
+        tree.menuBar.bg = parseColor(theme.footerBg);
+      }
       // 菜单行 → 选项下标映射（点击命中用；标题 0 / 提示 / 底边 = -1）：
       // 直接取每行自带的 menuIdx（窗口滚动后行与下标不再连续，逐行标记最稳）；
       // 事件坐标 y = overlay.top + 1 + i（与联想浮层 suggestRect 同一坐标系：浮层顶边框占 1 行）
@@ -1282,20 +1322,30 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 命令输出面板浮层（所有 / 命令的独立窗口）：绝对定位、水平垂直居中；
   // 行内容原地更新（细胞池复用）。超高时 cmdPanelRows 折行 + 垂直滚动。
   if (tree.cmdPanelOverlay) {
-    tree.cmdPanelOverlay.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到），面板底色跟随刷新
+    tree.cmdPanelOverlay.backgroundColor = theme.footerBg; // 输入区同底（主题切换跟随），不透明浮于对话流之上
     const panel = state.cmdPanel;
     if (!panel) {
       tree.cmdPanelOverlay.visible = false;
     } else {
-      const panelW = Math.min(Math.max(20, (width ?? 80) - CONTENT_PAD), 72);
+      // 与输入区同宽同左、底边贴住灰色块（同菜单浮层；hero 居中模式保持 hero 不拉底）
+      const vwPanel = width ?? 80;
+      const heroFooter = hero && !!tree.footerBox;
+      const footerW = heroFooter
+        ? Math.max(32, Math.round(Math.max(24, vwPanel - CONTENT_PAD) * 0.75))
+        : Math.max(16, vwPanel - CONTENT_PAD);
+      const panelW = Math.max(12, footerW - 1); // 卡片宽 = 输入区宽 - 左侧竖线 1 列
       const panelRows = cmdPanelRows(panel, panelW, footerTop, state.language);
       tree.cmdPanelOverlay.visible = true;
-      // 面板底边钳制在灰色块上方（footerTop = 灰块顶）：内容少时保持居中，内容多时
-      // 贴灰块上缘向上生长——面板永不遮住输入区（此前居中定位会压住输入行/placeholder，
-      // 用户「输入提示看不见」的根因；快照场景 43 n) 段帧级实锤）
-      const centeredTop43 = Math.max(1, Math.floor(((height ?? 24) - panelRows.length) / 2));
-      tree.cmdPanelOverlay.top = Math.min(centeredTop43, Math.max(1, footerTop - panelRows.length - 1));
-      tree.cmdPanelOverlay.left = Math.max(1, Math.floor(((width ?? 80) - panelW) / 2));
+      tree.cmdPanelOverlay.top = Math.max(1, footerTop - panelRows.length);
+      tree.cmdPanelOverlay.left = heroFooter ? Math.max(1, 1 + Math.round((vwPanel - 2 - footerW) / 2)) : 1;
+      tree.cmdPanelOverlay.width = panelW + 1; // 显式宽度（竖线 1 列 + 卡片 panelW）= 输入区同宽
+      // 左侧深灰竖线：按面板行数同步
+      if (tree.cmdPanelBar) {
+        tree.cmdPanelBar.height = panelRows.length;
+        tree.cmdPanelBar.content = Array(panelRows.length).fill(ACCENT_BAR).join('\n');
+        tree.cmdPanelBar.fg = parseColor(theme.suggestBorder);
+        tree.cmdPanelBar.bg = parseColor(theme.footerBg);
+      }
       for (let i = 0; i < tree.cmdPanelCells.length; i++) {
         const cell = tree.cmdPanelCells[i];
         if (i >= panelRows.length) {
@@ -1404,7 +1454,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.toastBox.left = Math.max(1, (width ?? 80) - (w + 2) - 1); // 右缘贴视口右边界
       tree.toastCell.visible = true;
       tree.toastCell.content = shown;
-      const fg = toast.type === 'success' ? theme.modeBuild : toast.type === 'error' ? theme.cardErrDim : theme.suggestText;
+      // 成功用 diffAdd 绿（✓ 语义色；不随 modeBuild 青——模式色只属于模型行前缀与 $ 提示符）
+      const fg = toast.type === 'success' ? theme.diffAdd : toast.type === 'error' ? theme.cardErrDim : theme.suggestText;
       tree.toastCell.fg = parseColor(fg);
       tree.toastBox.visible = true;
     }

@@ -1,7 +1,7 @@
 {
   "name": "omnicode-darwin-arm64",
   "version": "0.5.6",
-  "description": "omnicode 原生二进制（macOS arm64，含 TUI）",
+  "description": "Omni（@right-ai/omni）macOS arm64 平台组件，请勿直接安装",
   "license": "BSD-3-Clause",
   "os": ["darwin"],
   "cpu": ["arm64"],

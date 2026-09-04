@@ -31,8 +31,8 @@ export interface TuiTheme {
   footerDim: string;
   /**
    * 模式前缀文字色（模型行左侧 Build/Plan）：
-   * Build（默认执行模式）绿色（构建/执行感）、Plan（/plan 计划模式）蓝色（思考/规划感），
-   * 与主题强调色一致——/plan 切换时模式前缀颜色随之变化，视觉反馈即时。
+   * Build（默认执行模式）青色、Plan（/plan 计划模式）洋红粉——避开思考级别的
+   * 绿/琥珀/橙/红/紫 专用色阶（否则 Build 绿与 low 绿、级别色相互混淆）。
    */
   modeBuild: string;
   modePlan: string;
@@ -106,8 +106,8 @@ const DARK_THEME: TuiTheme = {
   accentBlue: '#3b82f6',
   footerText: '#d4d4d8',
   footerDim: '#9ca3af',
-  modeBuild: '#4ade80', // Build：绿色（green-400）
-  modePlan: '#3b82f6', // Plan：主题强调蓝（同 accentBlue）
+  modeBuild: '#22d3ee', // Build：青色（cyan-300）——避开思考级别色阶（原绿与 low 绿重合）
+  modePlan: '#f472b6', // Plan：洋红粉（pink-400）——与 Build 青互异、避开思考级别色阶
   inputText: '#e2e8f0',
   placeholder: '#6b7280',
   contentText: '#e2e8f0',
@@ -149,8 +149,8 @@ const LIGHT_THEME: TuiTheme = {
   accentBlue: '#2563eb', // 稍深蓝，保证浅底对比度
   footerText: '#3f3f46', // zinc-700
   footerDim: '#71717a', // zinc-500
-  modeBuild: '#16a34a', // Build：绿色（green-600，浅底对比够）
-  modePlan: '#2563eb', // Plan：主题强调蓝（同 accentBlue）
+  modeBuild: '#0891b2', // Build：青色（cyan-600，浅底对比够）——避开思考级别色阶
+  modePlan: '#db2777', // Plan：洋红粉（pink-600，浅底对比够）——避开思考级别色阶
   inputText: '#27272a',
   placeholder: '#9ca3af', // zinc-400
   contentText: '#27272a', // 内容区文字改深色（修复浅底白字）

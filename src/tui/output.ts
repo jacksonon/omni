@@ -106,6 +106,11 @@ export class TuiOutput implements Output {
   private thinkingShown = false;
   private thinkingStart = 0;
   private thinkingLineIdx = -1;
+  /** 兼容兜底（模型把思考直接写进 content）：contentThoughtMode = 当前回答处在
+   *  「以思考标记开头的模型思考文本」模式（onAnswer 折叠进思考模块）；
+   *  contentThoughtIdx = 承载该内容的 thinking 行下标（onAnswerEnd 复位）。 */
+  private contentThoughtMode = false;
+  private contentThoughtIdx = -1;
   /** 当次对话轮（onTurnStart → onTurnEnd）内每次 LLM 请求的 token 用量（onUsage 按
    *  请求顺序收集；onTurnEnd 组装成 tokens 模块插入对话流——收起=汇总/展开=逐次明细） */
   private turnUsages: TokenUsage[] = [];
@@ -260,6 +265,27 @@ export class TuiOutput implements Output {
   }
 
   onAnswer(text: string): void {
+    // 兼容兜底：部分本地模型（ollama 等）不输出 reasoning 字段，把思考直接写进 content
+    // 并以思考标记（thought/thinking/reasoning/<thinking>）开头——若按 answer 平铺会污染
+    // 对话流（裸 "thought" 字面量 + 一大段思考正文）。识别后折叠进思考模块（头行
+    // `- Thought:` + 可点击展开），与 reasoning 字段的展示路径对齐；正常模型（走
+    // reasoning 字段 / content 不以思考标记开头）走下方原 answer 路径，完全不受影响。
+    if (!this.contentThoughtMode && /^(?:thought|thinking|reasoning)[\s:：]|<thinking>/i.test(text)) {
+      this.contentThoughtMode = true;
+      this.contentThoughtIdx = this.state.lines.length;
+      // 剥离模型自带的思考标记字面量（thought\n / thinking: / <thinking> 等）——仅展示层，
+      // 落盘 content 保持原样（会话文件/上下文不回改）；空则留空行待后续 chunk 追加
+      const stripped = text.replace(/^(?:thought|thinking|reasoning)[\s:：]*\n?|<thinking>\s*\n?/i, '');
+      pushLine(this.state, { kind: 'thinking', text: stripped, thinkingRunning: false });
+      this.schedulePaint();
+      return;
+    }
+    if (this.contentThoughtMode) {
+      // 后续 chunk 追加进同一思考模块（appendLine 找最后一个 thinking 行）
+      appendLine(this.state, 'thinking', text);
+      this.schedulePaint();
+      return;
+    }
     appendLine(this.state, 'answer', text);
     this.schedulePaint();
   }
@@ -268,6 +294,8 @@ export class TuiOutput implements Output {
     this.state.generating = false;
     this.state.liveTokens = 0;
     this.state.liveGenMs = 0;
+    this.contentThoughtMode = false;
+    this.contentThoughtIdx = -1;
     this.schedulePaint();
   }
 
@@ -672,6 +700,8 @@ export class TuiOutput implements Output {
     this.thinkingShown = false;
     this.thinkingStart = 0;
     this.thinkingLineIdx = -1;
+    this.contentThoughtMode = false;
+    this.contentThoughtIdx = -1;
     this.schedulePaint();
   }
 

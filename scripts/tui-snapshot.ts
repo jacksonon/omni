@@ -1237,10 +1237,19 @@ async function main(): Promise<void> {
     console.error('✗ 场景 17 菜单行仍内联在内容流（应移到 alert 浮层）');
     process.exit(1);
   }
+  // 与输入区同宽同左 + 底边贴住灰色块（用户要求菜单面板不再居中、打开面板不把输入区
+  // 拉到底部——hero 下跟随 0.75 居中输入区、普通下全宽，统一对比 footerBox 实际几何）
   const top17 = tree17e.menuOverlay.top as number;
   const left17 = tree17e.menuOverlay.left as number;
-  if (typeof top17 !== 'number' || typeof left17 !== 'number' || left17 < 5 || left17 > 15) {
-    console.error(`✗ 场景 17 浮层未居中: top=${top17} left=${left17}（panelW=44 时 left 应在 10 附近）`);
+  const w17 = tree17e.menuOverlay.width as number;
+  const h17 = tree17e.menuOverlay.height as number;
+  const fb17 = tree17e.footerBox!;
+  if (
+    left17 !== (fb17.screenX as number) ||
+    w17 !== (fb17.width as number) ||
+    top17 + h17 !== (fb17.screenY as number)
+  ) {
+    console.error(`✗ 场景 17 菜单浮层未贴住输入区: top=${top17} h=${h17} left=${left17} w=${w17}（footer x=${fb17.screenX} y=${fb17.screenY} w=${fb17.width}）`);
     process.exit(1);
   }
   // 关闭面板 → 浮层隐藏
@@ -1492,18 +1501,20 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：标题 + 会话分组头 + 前 6 条（组内注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 29 个」提示行
-  const checks19 = ['命令', 'esc', '会话', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 29 个'];
+  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 29 个」提示行
+  //（无分组头——用户要求移除 section 组标题）
+  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 29 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
     process.exit(1);
   }
-  // 选中行桃色整行高亮（首个选项行 bg = suggestSelBg + 深字），分组头紫色
+  // 选中行桃色整行高亮（首个选项行 bg = suggestSelBg + 深字；无分组头后首选项 = cell[1]）
   const themeMod19 = await import('../src/tui/theme.js');
   const { parseColor: parseColor19 } = await import('@opentui/core');
   const theme19 = themeMod19.themeFor(s19);
   const toInts19 = (c: unknown): number[] => ((c as { toInts?: () => number[] }).toInts?.() ?? []).slice(0, 3);
+  // 选中行 = cell[2]（cell[0] 顶部留白、cell[1] 标题行）
   const selCell19 = (tree19.suggestCells?.[2]?.content as { chunks?: { text: string; fg?: unknown; bg?: unknown }[] })?.chunks ?? [];
   const selBgInts = toInts19(parseColor19((theme19 as unknown as { suggestSelBg: string }).suggestSelBg));
   if (!selCell19.some((c) => JSON.stringify(toInts19(c.bg)) === JSON.stringify(selBgInts) && String(c.text).includes('/clear'))) {
@@ -1540,8 +1551,10 @@ async function main(): Promise<void> {
   }
   const top19 = tree19.suggestBox.top as number;
   const left19 = tree19.suggestBox.left as number;
-  if (typeof top19 !== 'number' || typeof left19 !== 'number' || left19 !== 2 || top19 < 1) {
-    console.error(`✗ 场景 19 联想浮层定位错误: top=${top19} left=${left19}（应 left=2、top≥1）`);
+  const width19 = tree19.suggestBox.width as number;
+  // 与输入区同宽同左（64 宽视口：宽 62、左 1，与灰块同左缘）
+  if (typeof top19 !== 'number' || typeof left19 !== 'number' || left19 !== 1 || width19 !== 62 || top19 < 1) {
+    console.error(`✗ 场景 19 联想浮层定位错误: top=${top19} left=${left19} width=${width19}（应 left=1、width=62、top≥1）`);
     process.exit(1);
   }
   const footerTop19 = 20 - 6 - s19.inputLines; // 底部块顶部（0-based；根底内边距 1 + 灰色块 inputLines+4、无排队区）
@@ -1591,7 +1604,7 @@ async function main(): Promise<void> {
     console.log(frame19s);
     process.exit(1);
   }
-  console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 分组 + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/扁平浮层/不挤动内容区）');
+  console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 无分组头 + 描述空格分隔 + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/扁平浮层/不挤动内容区）');
 
   // 场景 20：会话标题 —— 首轮对话后模型生成，**不显示在对话流里**，改为终端窗口/标签页标题（OSC 0）
   const { cleanTitle } = await import('../src/agent/title.js');
@@ -3974,19 +3987,19 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 37 面板未全量列出 20 个会话: options=${s37h.menu?.options.length}`);
     process.exit(1);
   }
-  // h1) 窗口渲染：maxVisible=5 → 标题 + 5 选项 + 下方提示 + 操作提示 + 底边 = 9 行；menuIdx 逐行标记
+  // h1) 窗口渲染：maxVisible=5 → 留白 + 标题 + 5 选项 + 下方提示 + 操作提示 = 9 行；menuIdx 逐行标记
   const rowsH = rows37.menuPanelRows(s37h.menu, 44, 'zh', 5);
   if (rowsH.length !== 9) {
     console.error(`✗ 场景 37 窗口行数错误: ${rowsH.length}（期望 9）`);
     process.exit(1);
   }
   const idxH = rowsH.map((r: { menuIdx?: number }) => r.menuIdx ?? -1);
-  if (JSON.stringify(idxH) !== JSON.stringify([-1, 0, 1, 2, 3, 4, -1, -1, -1])) {
+  if (JSON.stringify(idxH) !== JSON.stringify([-1, -1, 0, 1, 2, 3, 4, -1, -1])) {
     console.error(`✗ 场景 37 窗口行映射错误: ${JSON.stringify(idxH)}`);
     process.exit(1);
   }
-  if (!String(rowsH[6]!.text).includes('↓ 还有 15 个')) {
-    console.error(`✗ 场景 37 窗口下方提示缺失: ${String(rowsH[6]!.text)}`);
+  if (!String(rowsH[7]!.text).includes('↓ 还有 15 个')) {
+    console.error(`✗ 场景 37 窗口下方提示缺失: ${String(rowsH[7]!.text)}`);
     process.exit(1);
   }
   // h2) 滚动收敛：↓ 15 次后选中项 15，渲染时窗口跟随（scrollTop 11，选项 15 在窗口内）+ 上下提示
@@ -3997,12 +4010,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const idxH2 = rowsH2.map((r: { menuIdx?: number }) => r.menuIdx ?? -1);
-  if (JSON.stringify(idxH2) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
+  if (JSON.stringify(idxH2) !== JSON.stringify([-1, -1, -1, 11, 12, 13, 14, 15, -1, -1])) {
     console.error(`✗ 场景 37 滚动后行映射错误: ${JSON.stringify(idxH2)}`);
     process.exit(1);
   }
-  if (!String(rowsH2[1]!.text).includes('↑ 还有 11 个') || !String(rowsH2[7]!.text).includes('↓ 还有 4 个')) {
-    console.error(`✗ 场景 37 滚动后上下提示缺失: ${String(rowsH2[1]!.text)} / ${String(rowsH2[7]!.text)}`);
+  if (!String(rowsH2[2]!.text).includes('↑ 还有 11 个') || !String(rowsH2[8]!.text).includes('↓ 还有 4 个')) {
+    console.error(`✗ 场景 37 滚动后上下提示缺失: ${String(rowsH2[2]!.text)} / ${String(rowsH2[8]!.text)}`);
     process.exit(1);
   }
   // h3) 数字键 = 窗口内第 N 项：scrollTop 5 时按 2 → selectedIndex 6（列表按 updated 倒序：many-19 → many-0，第 6 个 = many-13）
@@ -4016,9 +4029,10 @@ async function main(): Promise<void> {
   // h4) 渲染层集成：repaintTree 后浮层 menuRowMap 含窗口行映射（点击命中窗口内选项）
   const t37h = await createTestRenderer({ width: 64, height: 20 });
   const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
-  await repaintTree(t37h.renderer, tree37h, s37h, 64, 20);
-  // 灰块外底行（meta+间距）占 2 行 → 菜单窗口容纳 5 个选项（11..15）
-  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
+  await repaintTree(t37h.renderer, tree37h, s37h, { withInput: true });
+  // 会话列表 20 项 + 无对话（hero 居中）→ footerTop = 12 - heroOffset(2) = 10 →
+  // 窗口 max(2, min(12, 10-6)) = 4；选中项 15 收敛到窗口底（scrollTop 12，选项 12..15）
+  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, -1, 12, 13, 14, 15, -1, -1])) {
     console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
     process.exit(1);
   }
@@ -4028,19 +4042,19 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 37 菜单浮层细胞池不足: ${tree37h.menuCells.length}（需要 ≥17）`);
     process.exit(1);
   }
-  // h6) 帧级断言：窗口内选项、上下提示、底边全部真实渲染（池容量足够的直接证据）。
-  //     注意窗口 options[11..16] = 会话 8..3（升序 title 与降序 updated 反向映射）——
+  // h6) 帧级断言：窗口内选项、上下提示全部真实渲染（池容量足够的直接证据；扁平无底边）。
+  //     注意 hero 居中下窗口 = options[12..15] = 会话 7..4（升序 title 与降序 updated 反向映射）——
   //     「会话 15/9/0」等窗口外标签不得泄漏进帧
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
-  // 灰块外底行（meta+间距）占 2 行 → 窗口 5 个选项（11..15 = 会话 8..4）→ 下方提示「↓ 还有 4 个」
-  for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 4 个', '╰']) {
+  // hero 居中窗口 4 个选项（12..15 = 会话 7..4）→ 上下提示「↑ 还有 12 个 / ↓ 还有 4 个」
+  for (const expect of ['会话 7 ·', '会话 4 ·', '↑ 还有 12 个', '↓ 还有 4 个']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
-  // 窗口 5 行（11..15），窗口外为 15/9/2
+  // 窗口 4 行（12..15），窗口外为 15/9/2
   for (const outside of ['会话 9 ·', '会话 2 ·', '会话 15 ·']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
@@ -4808,9 +4822,9 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  // f) 命令面板/审批卡/设置面板英文提示（lang 参数）
+  // f) 命令面板/审批卡/设置面板英文提示（lang 参数）——扁平面板提示行是最后一行
   const cRows43 = cmdPanelRows({ title: 'test', lines: ['l1', 'l2', 'l3'], scroll: 0 }, 60, 20, 'en');
-  if (!cRows43[cRows43.length - 2]!.text.includes('Esc close')) {
+  if (!cRows43[cRows43.length - 1]!.text.includes('Esc close')) {
     console.error('✗ 场景 43 cmdPanelRows 英文提示错误');
     process.exit(1);
   }
@@ -4893,12 +4907,12 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const overlayTop43 = (tree43.menuOverlay!.top ?? 0) as number;
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, -1, -1])) {
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, -1, 0, 1, -1])) {
     console.error(`✗ 场景 43 菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  // 点击 English 行（无边框浮层：标题 top、中文 top+1、English top+2）→ 选中并确认切换
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: overlayTop43 + 2 }, tree43, s43, 64, noopPaint);
+  // 点击 English 行（扁平底浮层：留白 top、标题 top+1、中文 top+2、English top+3）→ 选中并确认切换
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: overlayTop43 + 3 }, tree43, s43, 64, noopPaint);
   if (s43.language !== 'en' || s43.languageSave !== 'en' || s43.menu !== null) {
     console.error(`✗ 场景 43 菜单点击未选中确认 English: ${JSON.stringify({ language: s43.language, languageSave: s43.languageSave, menu: s43.menu })}`);
     process.exit(1);
@@ -4929,12 +4943,12 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43c = (tree43.menuOverlay!.top ?? 0) as number;
-  // 主题菜单：标题 top、跟随系统 top+1、亮色 top+2、深色 top+3、提示 top+4、底边 top+5
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, -1, -1])) {
+  // 主题菜单：留白 top、标题 top+1、跟随系统 top+2、亮色 top+3、深色 top+4、提示 top+5
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, -1, 0, 1, 2, -1])) {
     console.error(`✗ 场景 43 主题菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  await t43.mockMouse.click(30, top43c + 2);
+  await t43.mockMouse.click(30, top43c + 3);
   if (s43.themeMode !== 'light') {
     console.error(`✗ 场景 43 菜单点击未切换主题: ${s43.themeMode}`);
     process.exit(1);
@@ -4947,21 +4961,21 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43d = (tree43.menuOverlay!.top ?? 0) as number;
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, 3, -1, -1])) {
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, -1, 0, 1, 2, 3, -1])) {
     console.error(`✗ 场景 43 设置菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  // 点「语言」（top+1）→ menu 转换为语言面板（不误关）
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43d + 1 }, tree43, s43, 64, noopPaint);
+  // 点「语言」（top+2，留白+标题后首项）→ menu 转换为语言面板（不误关）
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43d + 2 }, tree43, s43, 64, noopPaint);
   if (s43.menu === null || s43.menu.id !== 'language') {
     console.error(`✗ 场景 43 点语言未转换到语言面板: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
-  // 语言面板内点「中文」（top+1，当前 en 高亮 English）→ 切换回 zh
+  // 语言面板内点「中文」（top+2，当前 en 高亮 English）→ 切换回 zh
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43f = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43f + 1 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43f + 2 }, tree43, s43, 64, noopPaint);
   if (s43.language !== 'zh' || s43.menu !== null) {
     console.error(`✗ 场景 43 语言面板内点击未切换: ${JSON.stringify({ language: s43.language, menu: s43.menu })}`);
     process.exit(1);
@@ -4971,29 +4985,29 @@ async function main(): Promise<void> {
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43h = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43h + 2 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43h + 3 }, tree43, s43, 64, noopPaint);
   if (s43.menu === null || s43.menu.id !== 'theme') {
     console.error(`✗ 场景 43 点主题未转换到主题面板: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
-  // 点「当次 token 统计」（重新打开设置菜单，top+3）→ 无编辑器面板：选择即切换开关 + 菜单关闭
+  // 点「当次 token 统计」（重新打开设置菜单，top+4）→ 无编辑器面板：选择即切换开关 + 菜单关闭
   const tokensBefore43 = s43.showTokens;
   openSettingsMenu43(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43i = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43i + 3 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43i + 4 }, tree43, s43, 64, noopPaint);
   if (s43.menu !== null || s43.showTokens === tokensBefore43) {
     console.error(`✗ 场景 43 点 tokens 未切换开关并关闭菜单: ${JSON.stringify({ menu: s43.menu, showTokens: s43.showTokens, before: tokensBefore43 })}`);
     process.exit(1);
   }
-  // 点「环境诊断」（重新打开设置菜单，top+4）→ 无编辑器面板且需 ctx 执行：
+  // 点「环境诊断」（重新打开设置菜单，top+5）→ 无编辑器面板且需 ctx 执行：
   // 只记录 doctorPending 意图 + 关闭菜单（interactive 每轮命令分发前消费执行诊断）
   openSettingsMenu43(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43j = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43j + 4 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43j + 5 }, tree43, s43, 64, noopPaint);
   if (s43.menu !== null || s43.doctorPending !== true) {
     console.error(`✗ 场景 43 点 doctor 未记录意图并关闭菜单: ${JSON.stringify({ menu: s43.menu, doctorPending: s43.doctorPending })}`);
     process.exit(1);
@@ -5015,7 +5029,7 @@ async function main(): Promise<void> {
   await t43.renderOnce();
   const top43g = (tree43.menuOverlay!.top ?? 0) as number;
   handleTuiMouseEvent(
-    { type: 'down', button: 0, x: 30, y: top43g + 2 },
+    { type: 'down', button: 0, x: 30, y: top43g + 3 },
     tree43,
     s43,
     64,
@@ -5944,6 +5958,88 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 50 通过：面板提示不进会话流');
+
+  // =========================================================================
+  // 场景 51：联想浮层贴住输入区（hero 居中 + 底部钉住两模式）——面板底行 = 灰块顶 - 1
+  //（间距 0），左缘/宽度与灰块一致。hero 居中公式与 yoga 对齐（round 半行向上 +
+  // 隐藏状态栏 marginTop 仍占 1 行），奇数剩余空间不得差出 1 行/1 列。
+  // =========================================================================
+  {
+    const cases51: Array<[number, number, string]> = [
+      [64, 24, '/m'], // 纵向偶剩余 + 横向奇剩余（round 半列向上）
+      [64, 20, '/m'], // 纵向奇剩余（floor 会差 1 行出现缝隙；多行输入 query 含 \n 匹配不到命令，联想不打开）
+      [80, 25, '/m'], // 横向奇剩余 + 更大视口
+    ];
+    for (const [w51, h51, text51] of cases51) {
+      const s51 = createTuiState();
+      s51.model = 'mock';
+      const t51 = await createTestRenderer({ width: w51, height: h51 });
+      const tree51 = mountTree(t51.renderer, s51, { withInput: true });
+      await t51.renderOnce();
+      tree51.input?.setText(text51);
+      repaintTree(t51.renderer, tree51, s51, { withInput: true });
+      await t51.renderOnce();
+      const sb51 = tree51.suggestBox!;
+      const fb51 = tree51.footerBox!;
+      if (!sb51.visible || !s51.cmdSuggest) {
+        console.error(`✗ 场景 51 联想面板未打开（${w51}x${h51}）`);
+        process.exit(1);
+      }
+      const gap51 = (fb51.screenY as number) - (tree51.suggestRect!.bottom as number) - 1;
+      if (gap51 !== 0) {
+        console.error(`✗ 场景 51 联想面板与输入区间距应为 0（实为 ${gap51}，${w51}x${h51}）:\n${t51.captureCharFrame()}`);
+        process.exit(1);
+      }
+      if ((sb51.left as number) !== (fb51.screenX as number) || (sb51.width as number) !== (fb51.width as number)) {
+        console.error(
+          `✗ 场景 51 联想面板未与输入区对齐（left ${sb51.left}/${fb51.screenX}，width ${sb51.width}/${fb51.width}，${w51}x${h51}）`,
+        );
+        process.exit(1);
+      }
+    }
+    // 菜单/命令输出面板：同宽同左 + 底边贴住灰色块；hero（无对话）下打开面板
+    // **不得把输入区拉到底部**（面板跟随居中输入区，像联想下拉一样是输入区的上延）
+    const cmd51 = await import('../src/tui/commands.js');
+    const st51 = await import('../src/tui/state.js');
+    for (const hero51 of [true, false]) {
+      const s51b = createTuiState();
+      s51b.model = 'mock';
+      if (!hero51) pushLine(s51b, { kind: 'user', text: '你好' });
+      const t51b = await createTestRenderer({ width: 64, height: 24 });
+      const tree51b = mountTree(t51b.renderer, s51b, { withInput: true });
+      await t51b.renderOnce();
+      const y51 = tree51b.footerBox!.screenY as number;
+      const assertPinned51 = (box: { top: unknown; left: unknown; width: unknown; height: unknown }, label: string) => {
+        const fb = tree51b.footerBox!;
+        if (
+          (box.left as number) !== (fb.screenX as number) ||
+          (box.width as number) !== (fb.width as number) ||
+          (box.top as number) + (box.height as number) !== (fb.screenY as number)
+        ) {
+          console.error(
+            `✗ 场景 51 ${label}未贴住输入区（hero=${hero51}）: top=${box.top} h=${box.height} left=${box.left} w=${box.width}` +
+              `（footer x=${fb.screenX} y=${fb.screenY} w=${fb.width}）`,
+          );
+          process.exit(1);
+        }
+      };
+      cmd51.openThemeMenu(s51b);
+      repaintTree(t51b.renderer, tree51b, s51b, { withInput: true });
+      await t51b.renderOnce();
+      if ((tree51b.footerBox!.screenY as number) !== y51) {
+        console.error(`✗ 场景 51 打开菜单移动了输入区（hero=${hero51}）: ${y51} → ${tree51b.footerBox!.screenY}`);
+        process.exit(1);
+      }
+      assertPinned51(tree51b.menuOverlay!, '菜单浮层');
+      cmd51.closeMenu(s51b);
+      st51.openCmdPanel(s51b, '/status');
+      st51.pushCmdLine(s51b, '模型 mock');
+      repaintTree(t51b.renderer, tree51b, s51b, { withInput: true });
+      await t51b.renderOnce();
+      assertPinned51(tree51b.cmdPanelOverlay!, '命令输出面板');
+    }
+  }
+  console.log('✓ 场景 51 通过：联想/菜单/输出面板贴住输入区（hero 居中/底部钉住，间距 0 + 不拉底输入区）');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

@@ -1734,7 +1734,6 @@ export function openThemeMenu(state: TuiState): void {
     currentValue: current,
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.theme.status');
 }
 
 /**
@@ -1803,7 +1802,6 @@ export function openPermissionMenu(state: TuiState): void {
     currentValue: current,
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.permission.status');
 }
 
 /**
@@ -1847,7 +1845,6 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
     currentValue: '',
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.session.status');
 }
 
 /** 模型菜单条目：label 附元数据摘要（上下文/输出上限），value = 切换名 */
@@ -1905,7 +1902,6 @@ export function openModelMenu(
     currentValue: current,
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.model.status');
 }
 
 /** 打开思考级别面板（/variants）：字符串级别 + 命名 variants（1.0 P0-3）混合列表；
@@ -1945,7 +1941,6 @@ export function openVariantsMenu(
     currentValue: current,
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.variants.status');
 }
 
 /** 环境诊断（/settings doctor）：输出 Node/Bun/API 连通性/配置健康检查报告到命令面板 */
@@ -1974,7 +1969,6 @@ export function openSettingsMenu(state: TuiState): void {
     currentValue: '',
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.settings.status');
 }
 
 /** 打开语言面板（/settings language 或设置菜单选择语言）：中文 / English，Enter 确认即切换 */
@@ -1987,7 +1981,6 @@ export function openLanguageMenu(state: TuiState): void {
     currentValue: state.language,
     scrollTop: 0,
   };
-  state.status = t(state.language, 'menu.language.status');
 }
 
 /** 确认当前选项：按面板 id 分发处理（theme → 切换 themeMode；permission → 切换权限档位；variants → 思考级别），然后关闭面板 */
