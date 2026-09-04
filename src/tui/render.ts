@@ -987,7 +987,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
   // 灰块外底行：左[文件夹全路径] …… 右[输入/输出 · 缓存 · 上下文用量]（左右与输入区对齐）
-  // 左侧：全路径、无图标（loading 已移入模型行速率右侧，回答中也保持显示）；超宽头部截断保尾部。
+  // 左侧：全路径、无图标（loading 已移入模型行速率右侧，回答中也保持显示）；窄屏放不下
+  // 全路径时退化为当前文件夹名（basename），再放不下头部截断。
   // 右侧：输入/输出 · 缓存（从模型行移入，dim 色）+ 上下文用量（迷你条 + 用量）。
   // 注意：宽度按本地字符串计算——TextRenderable.content 读回的不是 string。
   const loadingNow = state.loading && state.loadingIndex >= 0;
@@ -1019,7 +1020,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     else { showIO = false; rightW -= wIO + 1; }
   }
   const leftAvail = Math.max(8, (width ?? 80) - 6 - rightW);
-  const leftText = truncatePathHead(folderFull, leftAvail);
+  // 窄屏退化（用户要求）：全路径放不下时只显示当前文件夹名（basename + 分支）——
+  // 头部截断的 `…/a/b/cd` 信息量低；basename 也放不下再头部截断
+  const folderName = state.cwd.split('/').filter(Boolean).pop() ?? state.cwd;
+  const folderBase = `${folderName}${state.gitBranch ? ` (${state.gitBranch})` : ''}`;
+  const leftText =
+    visualWidth(folderFull) <= leftAvail ? folderFull
+    : visualWidth(folderBase) <= leftAvail ? folderBase
+    : truncatePathHead(folderBase, leftAvail);
   if (tree.metaLeft) {
     tree.metaLeft.content = leftText;
     tree.metaLeft.fg = parseColor(theme.footerDim);

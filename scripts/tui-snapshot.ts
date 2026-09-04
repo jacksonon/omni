@@ -679,6 +679,19 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
+  // 窄屏 + 长路径：全路径放不下 → 退化为当前文件夹名（basename，用户要求），
+  // 不显示头部截断的 /w/…；26 列时全路径 22 列 > 可用 20、basename 19 列放下
+  const s13b2 = createTuiState();
+  s13b2.cwd = '/w/verylongfoldernameX';
+  pushLine(s13b2, { kind: 'user', text: '你好' });
+  const t13y = await createTestRenderer({ width: 26, height: 20 });
+  mountTree(t13y.renderer, s13b2, { withInput: true });
+  await t13y.renderOnce();
+  const frame13y = t13y.captureCharFrame();
+  if (!frame13y.includes('verylongfoldernameX') || frame13y.includes('/w/')) {
+    console.error(`✗ 场景 13 窄屏文件夹应只显示 basename: ${JSON.stringify(frame13y.split('\n').filter((l) => l.includes('foldername')))}`);
+    process.exit(1);
+  }
   // 统计事件累计：TuiOutput 各事件（onTurnStart/onToolStep/onLlmLap/onToolsLap/onUsage）累加进 state
   const s13b = createTuiState();
   s13b.cwd = '/w/s13';
