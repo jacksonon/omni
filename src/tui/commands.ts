@@ -64,14 +64,13 @@ import { applyProjectMemoryPending } from '../agent/memory.js';
 import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
-import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig, persistStatuslineToConfig } from '../config/write.js';
+import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
 import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
-import { STATUSLINE_DEFAULT, STATUSLINE_SEGMENTS, type StatuslineSegment } from './layout.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
 import { refreshTrace } from './trace.js';
 import { setTerminalTitle } from '../ui.js';
-import { openCmdPanel, pushCmdLine, pushLine, type StatuslinePanel, type TuiLine, type TuiState, type TuiThemeMode } from './state.js';
+import { openCmdPanel, pushCmdLine, pushLine, type TuiLine, type TuiState, type TuiThemeMode } from './state.js';
 import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
 
 /** 命令执行上下文（interactive.ts 组装） */
@@ -195,6 +194,8 @@ export interface TuiCommand {
   descriptionEn?: string;
   /** 额外别名（如 /quit） */
   aliases?: string[];
+  /** 联想面板分组 id（缺省归 system；render 按 COMMAND_GROUP_ORDER 排序展示） */
+  group?: CommandGroupId;
   /**
    * 执行型命令：run() 完成后面板短暂停留确认后**自动收起**（无需按 Esc）——
    * 适用于「做了某事 + 一句确认」的命令（/undo /init /rename 等）；
@@ -1041,19 +1042,14 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'settings',
-    description: '设置（/settings statusline 配置底部状态行：空格勾选 · ←/→ 排序 · a 对齐 · Enter 保存生效；/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
-    descriptionEn: 'Settings (/settings statusline · /settings language · /settings theme · /settings tokens · /settings doctor)',
+    description: '设置（/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
+    descriptionEn: 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor)',
     run: async (ctx) => {
       // /settings：列出可用设置项（面板选择后打开对应设置编辑器）；
-      // /settings statusline：直接打开底部状态行编辑器（多选 + 排序面板）；
       // /settings language：直接打开语言面板；/settings theme：直接打开主题面板；
       // /settings tokens：切换当次 token 统计显示（静默，同原 /tokens）；
       // /settings doctor：执行环境诊断（输出到命令面板，同原 /doctor）
       const args = (ctx.args ?? '').trim();
-      if (/^statusline(?:\s|$)/.test(args)) {
-        openStatuslinePanel(ctx.state);
-        return;
-      }
       if (/^language(?:\s|$)/.test(args)) {
         openLanguageMenu(ctx.state);
         return;
@@ -1074,7 +1070,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
         openSettingsMenu(ctx.state);
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：statusline 底部状态行 · language 界面语言 · theme 主题 · tokens 当次 token 统计 · doctor 环境诊断）` });
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：language 界面语言 · theme 主题 · tokens 当次 token 统计 · doctor 环境诊断）` });
     },
   },
   {
@@ -1663,6 +1659,22 @@ export function findCommand(name: string): TuiCommand | undefined {
   return TUI_COMMANDS.find((c) => c.name === n || c.aliases?.includes(n));
 }
 
+/** / 联想面板分组（顺序即展示顺序；命令未显式分组归 system） */
+export type CommandGroupId = 'session' | 'model' | 'agent' | 'system';
+export const COMMAND_GROUP_ORDER: CommandGroupId[] = ['session', 'model', 'agent', 'system'];
+const COMMAND_GROUPS: Record<string, CommandGroupId> = {
+  session: 'session', resume: 'session', fork: 'session', send: 'session', clear: 'session',
+  compact: 'session', rename: 'session', export: 'session', status: 'session', context: 'session',
+  rewind: 'session', undo: 'session', redo: 'session', diff: 'session',
+  model: 'model', models: 'model', variants: 'model',
+  agents: 'agent', orchestrate: 'agent', goal: 'agent', skill: 'agent', trace: 'agent',
+  plan: 'agent', thinking: 'agent', review: 'agent', spec: 'agent',
+};
+/** 命令所属分组（条目 group 字段优先，未设查表，缺省 system） */
+export function commandGroup(cmd: TuiCommand): CommandGroupId {
+  return cmd.group ?? COMMAND_GROUPS[cmd.name] ?? 'system';
+}
+
 /**
  * 命令联想（输入框以 / 开头时）：按 / 后面的前缀过滤注册表（名字与别名都匹配）。
  * 空查询返回全部命令；无匹配返回空数组（联想列表自动隐藏）。
@@ -1672,10 +1684,17 @@ export function findCommand(name: string): TuiCommand | undefined {
  */
 export function commandSuggestions(query: string): TuiCommand[] {
   const q = query.toLowerCase();
-  if (!q) return TUI_COMMANDS;
-  return TUI_COMMANDS.filter(
-    (c) => c.name.startsWith(q) || c.aliases?.some((a) => a.startsWith(q))
-  );
+  const list = !q
+    ? [...TUI_COMMANDS]
+    : TUI_COMMANDS.filter(
+      (c) => c.name.startsWith(q) || c.aliases?.some((a) => a.startsWith(q))
+    );
+  // 联想面板按分组展示：组顺序固定，组内保持注册表顺序（稳定排序）
+  const rank = (c: TuiCommand): number => COMMAND_GROUP_ORDER.indexOf(commandGroup(c));
+  return list
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
+    .map(({ c }) => c);
 }
 
 /** 主题选项（/settings theme 面板） */
@@ -1946,7 +1965,6 @@ export function openSettingsMenu(state: TuiState): void {
     id: 'settings',
     title: t(state.language, 'menu.settings.title'),
     options: [
-      { label: t(state.language, 'settings.statusline'), value: 'statusline' },
       { label: t(state.language, 'settings.language'), value: 'language' },
       { label: t(state.language, 'settings.theme'), value: 'theme' },
       { label: t(state.language, 'settings.tokens'), value: 'tokens' },
@@ -1970,110 +1988,6 @@ export function openLanguageMenu(state: TuiState): void {
     scrollTop: 0,
   };
   state.status = t(state.language, 'menu.language.status');
-}
-
-/**
- * 打开状态行编辑器面板（/settings statusline）：
- * 列出全部段（按当前显示顺序），勾选态来自 state.statusline；
- * 空格 勾选/取消 · ←/→ 排序 · `a` 切换对齐（左/中/右）· Enter 保存生效 · Esc 取消（见 handleSettingsPanelKey）。
- */
-export function openStatuslinePanel(state: TuiState): void {
-  const order = state.statusline && state.statusline.length > 0 ? state.statusline : STATUSLINE_DEFAULT;
-  const en = state.language === 'en';
-  state.settingsPanel = {
-    items: STATUSLINE_SEGMENTS.map((sg) => ({
-      id: sg.id,
-      label: en ? sg.labelEn : sg.label,
-      enabled: order.includes(sg.id),
-    })),
-    selected: 0,
-    align: state.statuslineAlign, // 工作副本：Enter 保存后写入 state.statuslineAlign 并持久化
-  };
-  state.status = en
-    ? 'Status line: Space toggle · ←/→ reorder · a align · Enter save · Esc cancel'
-    : '状态行：空格 勾选/取消 · ←/→ 排序 · a 对齐 · Enter 保存生效 · Esc 取消';
-}
-
-/** 交换数组中两个下标（状态行排序用） */
-function swapItems<T>(arr: T[], a: number, b: number): void {
-  const tmp = arr[a];
-  arr[a] = arr[b]!;
-  arr[b] = tmp!;
-}
-
-/**
- * 处理状态行面板键盘输入（interactive.ts 在全局 keypress 里调用；返回是否消费了按键）。
- * ↑/↓：移动高亮 · 空格：勾选/取消 · ←/→：排序（移动选中项）· `a`：循环切换对齐
- * （left → center → right）· Enter：保存生效 · Esc：取消。
- */
-export function handleSettingsPanelKey(key: TuiKey, state: TuiState): boolean {
-  const panel = state.settingsPanel;
-  if (!panel) return false;
-  const items = panel.items;
-  const sel = panel.selected;
-  switch (key.name) {
-    case 'up':
-      if (items.length > 0) panel.selected = (sel - 1 + items.length) % items.length;
-      return true;
-    case 'down':
-      if (items.length > 0) panel.selected = (sel + 1) % items.length;
-      return true;
-    case 'space':
-      if (items[sel]) items[sel]!.enabled = !items[sel]!.enabled;
-      return true;
-    case 'a':
-      // 对齐循环：left → center → right → left（面板底部行即时高亮）
-      panel.align = panel.align === 'left' ? 'center' : panel.align === 'center' ? 'right' : 'left';
-      return true;
-    case 'left':
-      // ←：选中项左移一位（与前面一项交换顺序）
-      if (sel > 0) {
-        swapItems(items, sel, sel - 1);
-        panel.selected = sel - 1;
-      }
-      return true;
-    case 'right':
-      // →：选中项右移一位
-      if (sel < items.length - 1) {
-        swapItems(items, sel, sel + 1);
-        panel.selected = sel + 1;
-      }
-      return true;
-    case 'return':
-    case 'kpenter':
-    case 'linefeed':
-      saveStatusline(state);
-      return true;
-    case 'escape':
-    case 'esc':
-      closeStatuslinePanel(state);
-      return true;
-    default:
-      return false;
-  }
-}
-
-/**
- * 保存状态行（Enter）：按当前勾选与顺序应用到 state.statusline（footer 统计行
- * 立即按新配置重绘）、对齐方式应用到 state.statuslineAlign（footer 位置即时变化），
- * 并记录待持久化意图（interactive 每轮写入配置文件）。
- * **只生效不弹提示面板**（用户要求「做完设置不需要 pop 显示」）。
- */
-export function saveStatusline(state: TuiState): void {
-  const panel = state.settingsPanel;
-  if (!panel) return;
-  state.statusline = panel.items.filter((it) => it.enabled).map((it) => it.id);
-  state.statuslineSave = [...state.statusline]; // 待落盘意图（interactive 消费）
-  state.statuslineAlign = panel.align; // 对齐即时生效（render.ts infoRow 位置）
-  state.statuslineAlignSave = panel.align; // 待落盘意图（随 statusline 一起持久化）
-  state.settingsPanel = null;
-  state.status = '';
-}
-
-/** 取消状态行编辑：关闭面板，不改变任何配置 */
-export function closeStatuslinePanel(state: TuiState): void {
-  state.settingsPanel = null;
-  state.status = '';
 }
 
 /** 确认当前选项：按面板 id 分发处理（theme → 切换 themeMode；permission → 切换权限档位；variants → 思考级别），然后关闭面板 */
@@ -2126,13 +2040,9 @@ export function confirmMenu(state: TuiState): void {
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.session', { label }) }, '/session');
   } else if (menu.id === 'settings') {
     // 设置菜单：选择后打开对应设置编辑器。
-    // statusline → settingsPanel 接管（关闭设置菜单；状态栏提示由 openStatuslinePanel 设置，不清空）；
     // language → menu 直接转换为语言面板（新面板接管，不关闭——否则语言面板闪现即关，
     // 用户反馈「单独点击语言没反应」的根因）
-    if (opt.value === 'statusline') {
-      openStatuslinePanel(state);
-      state.menu = null;
-    } else if (opt.value === 'language') {
+    if (opt.value === 'language') {
       openLanguageMenu(state);
     } else if (opt.value === 'theme') {
       openThemeMenu(state);
@@ -2162,9 +2072,6 @@ export function confirmMenu(state: TuiState): void {
     return;
   }
   state.menu = null;
-  // 设置编辑器已接管状态栏提示（openStatuslinePanel 设置了操作说明），不再清空；
-  // 其余单选面板确认后清空状态栏
-  if (state.settingsPanel) return;
   state.status = '';
 }
 

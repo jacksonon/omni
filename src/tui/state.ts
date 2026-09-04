@@ -43,6 +43,8 @@ export interface TurnTokens {
   model?: string;
   durMs?: number;
   genMs?: number;
+  /** 本轮首 token 均值（毫秒；多步请求取均值；无数据/旧历史为 null → 不显示该段） */
+  firstTokenAvg?: number | null;
 }
 
 /** 工具卡片状态：执行中 / 成功 / 失败 */
@@ -198,21 +200,7 @@ export interface TuiAsk {
 }
 
 /**
- * 状态行设置面板（/settings statusline）：多选 + 排序编辑 + 对齐方式。
- * 不同于单选面板（TuiMenu）——每项可勾选/取消（空格）、可排序（←/→）、
- * `a` 循环切换对齐（左/中/右）、Enter 保存并生效、Esc 取消。渲染复用菜单浮层（menuOverlay）。
- */
-export interface StatuslinePanel {
-  /** 全部段（顺序即当前显示顺序）；enabled=false 的段不显示 */
-  items: { id: string; label: string; enabled: boolean }[];
-  /** 高亮项下标（↑/↓ 移动；空格勾选/取消；←/→ 排序） */
-  selected: number;
-  /** 对齐方式（工作副本；Enter 保存后写入 state.statuslineAlign 并持久化） */
-  align: 'left' | 'center' | 'right';
-}
-
-/**
- * 会话运行统计（footer 统计行数据源）：
+ * 会话运行统计（模型行中间段与 turn-footer 的数据源）：
  *   · turns —— 轮数（onTurnStart，交互每轮用户提交 / 单次任务各 1 次）
  *   · steps —— 工具调用总次数（onToolStep）
  *   · llmMs —— LLM 流式请求累计墙钟（onLlmLap）
@@ -230,22 +218,6 @@ export interface SessionStats {
   /** 纯生成耗时累计（lastContentAt - firstTokenAt，排除首 token 等待；tok/s = completion / genMs） */
   genMs: number;
   cached: number;
-}
-
-/**
- * 实时流式生成状态（流式响应进行中）：
- * 由 onStreamProgress 实时写入，流结束 / 取消时置 null。
- * 供 footer 状态行在流式期间实时渲染高精度 tok/s 与输出 token。
- */
-export interface LiveStreamStats {
-  /** 当前纯生成耗时（now - firstTokenAt，毫秒） */
-  liveGenMs: number;
-  /** 当前流式已生成的 token 估算/实际数 */
-  streamTokens: number;
-  /** 当前流式的实时速率（tok/s） */
-  tps: number;
-  /** 当前流式的首 token 延迟（firstTokenAt - llmT0，毫秒） */
-  firstTokenMs: number;
 }
 
 /**
@@ -399,10 +371,12 @@ export interface TuiState {
   restoreHint: string | null;
   /** 会话累计 token 用量（footer 右下角显示，来自每次响应的 usage） */
   tokens: TokenUsage;
-  /** 流式生成实时进度（正在流式生成时非 null；流结束/取消置 null） */
-  liveStream: LiveStreamStats | null;
-  /** 会话内保留的上次瞬时速率（模型行右侧常驻；流式中为实时值，结束后保留最后一次） */
-  lastTps: number;
+  /** 当前工作目录的 git 分支（非 git 目录为 null；TuiOutput 每轮刷新） */
+  gitBranch: string | null;
+  /** 当前流式的已生成 token / 纯生成耗时（onStreamProgress 写入，onLlmLap 折入累计后清零；
+   * 底部会话平均速率含这部分增量，保证回答中与回答完同一口径） */
+  liveTokens: number;
+  liveGenMs: number;
   /**
    * 会话运行统计（footer 统计行：首 token/速率/缓存命中/输入输出）。
    * 由 TuiOutput 按事件累加（onLlmLap/onToolsLap/onUsage）。
@@ -425,33 +399,6 @@ export interface TuiState {
   detectedTheme: 'dark' | 'light';
   /** 当前打开的命令面板（null = 无面板；打开时键盘事件由面板消费） */
   menu: TuiMenu | null;
-  /**
-   * 状态行设置面板（/settings statusline；null = 无）。与 menu 互斥（同用菜单浮层）；
-   * 打开时键盘事件由 handleSettingsPanelKey 消费（interactive.ts 先于输入框拦截）。
-   */
-  settingsPanel: StatuslinePanel | null;
-  /**
-   * 底部状态行（输入区域下方的对话信息）显示哪些段、什么顺序：段 id 数组
-   * （speed/cache/tokens/context）。来自配置 statusline（tui-entry 初始化）；
-   * /settings statusline 保存后立即生效（buildFooterStats 按它拼行）。空数组 = 不显示。
-   */
-  statusline: string[];
-  /**
-   * 状态行**对齐方式**（输入区域下方统计行的水平位置）：left/center/right。
-   * 来自配置 statuslineAlign（tui-entry 初始化，默认 center）；/settings statusline
-   * 面板 `a` 键循环切换，Enter 保存立即生效（render.ts infoRow justifyContent）。
-   */
-  statuslineAlign: 'left' | 'center' | 'right';
-  /**
-   * 待持久化的状态行段顺序（/settings statusline Enter 保存时写入，interactive 每轮
-   * 消费并写入配置文件——应用已即时生效，这里只负责落盘；与 sessionPick 同模式）。
-   */
-  statuslineSave: string[] | null;
-  /**
-   * 待持久化的状态行对齐方式（/settings statusline Enter 保存时写入，interactive 每轮
-   * 消费并随 statusline 一起写入配置文件；与 statuslineSave 同模式）。
-   */
-  statuslineAlignSave: 'left' | 'center' | 'right' | null;
   /**
    * 界面语言（/settings 语言面板切换；来自配置 language，tui-entry 初始化）。
    * 切换后界面 chrome 即时按新语言重绘（rows/render/output/commands 全部经 t()/tf()）。
@@ -650,8 +597,9 @@ export function createTuiState(): TuiState {
     activeVariant: null,    sessionTitle: null,
     restoreHint: null,
     tokens: { prompt: 0, completion: 0, total: 0 },
-    liveStream: null,
-    lastTps: 0,
+    gitBranch: null,
+    liveTokens: 0,
+    liveGenMs: 0,
     stats: { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
     // 最近一次 LLM 请求的 prompt token（= 当前上下文大小，onUsage 每次覆盖）+
     // 当前模型 context 上限（config limit.context；interactive 按端点解析）
@@ -660,11 +608,6 @@ export function createTuiState(): TuiState {
     themeMode: 'system',
     detectedTheme: 'dark',
     menu: null,
-    settingsPanel: null,
-    statusline: ['speed', 'cache', 'tokens', 'context'],
-    statuslineAlign: 'center',
-    statuslineSave: null,
-    statuslineAlignSave: null,
     language: 'zh',
     languageSave: null,
     modelSave: null,

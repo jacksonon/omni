@@ -54,8 +54,14 @@ export interface TuiTheme {
   suggestBg: string;
   /** 命令联想/提及浮层圆角边框色（面板整体有背景 + 圆角 12 风格） */
   suggestBorder: string;
-  /** 命令联想/提及浮层普通项文字色（选中项用 accentBlue） */
+  /** 命令联想/提及浮层普通项文字色（选中项用 suggestSelBg/suggestSelFg 整行高亮） */
   suggestText: string;
+  /** 联想浮层选中行底色（整行桃色高亮，对标命令面板风格） */
+  suggestSelBg: string;
+  /** 联想浮层选中行文字色（桃底深字，保证可读） */
+  suggestSelFg: string;
+  /** 联想浮层分组头文字色（紫色分组名） */
+  suggestGroup: string;
   /**
    * 工具卡片块底色（执行中/进行中）：**超淡黄**（amber-50，两主题统一）。
    * 结果到达后按状态换底色——成功 → 淡绿（cardOkBg）、失败 → 淡红（cardErrBg）；
@@ -109,6 +115,9 @@ const DARK_THEME: TuiTheme = {
   suggestBg: '#27272a', // 比 footer 深一档（zinc-800），浮层从灰块中浮出
   suggestBorder: '#52525b', // zinc-600：圆角边框略亮于面板底，勾出圆角轮廓
   suggestText: '#e2e8f0',
+  suggestSelBg: '#e8a87c', // 选中行桃色整行高亮（#E8A87C salmon）
+  suggestSelFg: '#1c1917', // 桃底深字（stone-900）
+  suggestGroup: '#b392f0', // 分组头紫色（命令面板风格）
   cardBg: '#3f3f46', // 工具卡片块底色（执行中）：**淡灰**（zinc-700）——用户要求「淡灰色背景，不要高对比的彩色」
   cardDim: '#e4e4e7', // 灰底上的文字：浅灰（zinc-200）——深底配浅字统一感
   cardOkBg: '#3f3f46', // 执行成功：**淡灰**（与执行中同色）——成功/执行中/失败统一灰底，靠状态色/标记区分
@@ -149,6 +158,9 @@ const LIGHT_THEME: TuiTheme = {
   suggestBg: '#ffffff', // 亮色下浮层用白底，与淡灰 footer 区分
   suggestBorder: '#a1a1aa', // zinc-400：亮色下圆角边框用中灰
   suggestText: '#27272a',
+  suggestSelBg: '#c2703d', // 亮色下选中行深桃色（浅底对比够）+ 白字
+  suggestSelFg: '#ffffff',
+  suggestGroup: '#7c3aed', // 分组头紫色（violet-600，浅底可读）
   cardBg: '#e4e4e7', // 工具卡片块底色：**淡灰**（zinc-200）——用户要求「淡灰色背景，不要高对比的彩色」
   cardDim: '#27272a', // 灰底上的文字：深灰（zinc-800）——浅底配深字统一感
   cardOkBg: '#e4e4e7', // 执行成功：**淡灰**（与执行中同色）——统一灰底，靠状态/标记区分

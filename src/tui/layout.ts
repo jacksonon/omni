@@ -7,7 +7,7 @@ import type { MdChunk } from './markdown.js';
 import type { TuiTheme } from './theme.js';
 import { charWidth, visualWidth } from './width.js';
 import type { Row } from './rows.js';
-import type { LiveStreamStats, SessionStats, TuiState } from './state.js';
+import type { SessionStats } from './state.js';
 import type { TokenUsage } from '../output/types.js';
 
 /** 内容区可用宽度 = 视口宽 - paddingX(2)（无根边框） */
@@ -39,149 +39,66 @@ export function formatToolDur(ms: number): string {
 }
 
 /**
- * 状态行段（footer 统计行的可配置单元）：id 是配置/持久化键（/settings statusline
- * 按 id 勾选与排序），label/labelEn 是面板显示名（中/英），build/buildEn 生成该段
- * 文本（不含 `| ` 分隔；按界面语言 state.language 选择——/settings 语言切换即时生效）。
- * x = 上下文信息：lastPrompt = 最近一次 LLM 请求的 prompt token（来自流末 chunk 的
- * usage ——「LLM 消息内」拿到的当前上下文大小）；contextLimit = 当前模型 context 上限
- * （config limit.context；未知为 0）。
- * live = 流式进行中的实时状态（若非 null，代表正处于流式生成，包含实时 tps 与累积估算 token）。
+ * 会话累计平均速率（输入区中间段用；含正在生成的 token/耗时，保证回答中与回答完同一口径）：
+ * completion 累计 / 纯生成耗时累计（genMs，无则回退 llmMs - 首 token 等待，1ms 下限防除零）。
  */
-export interface StatuslineSegment {
-  id: string;
-  label: string;
-  labelEn: string;
-  build(
-    s: SessionStats,
-    t: TokenUsage,
-    x: { lastPrompt: number; contextLimit: number },
-    live?: LiveStreamStats | null
-  ): string;
-  buildEn(
-    s: SessionStats,
-    t: TokenUsage,
-    x: { lastPrompt: number; contextLimit: number },
-    live?: LiveStreamStats | null
-  ): string;
+export function sessionAvgRate(
+  s: SessionStats,
+  t: TokenUsage,
+  live?: { streamTokens: number; liveGenMs: number } | null
+): number {
+  // 全无计时数据（无请求、无 live）→ 无法计算，报 0（调用方隐藏），避免 1ms 下限造出离谱峰值
+  if (s.llmMs <= 0 && s.genMs <= 0 && (!live || live.liveGenMs <= 0)) return 0;
+  const comp = t.completion + (live?.streamTokens ?? 0);
+  const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
+  const gen = baseGen + (live?.liveGenMs ?? 0);
+  return gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
 }
 
-/** 全部可用状态行段（顺序 = 默认显示顺序） */
-export const STATUSLINE_SEGMENTS: StatuslineSegment[] = [
-  {
-    id: 'speed',
-    label: '首token/速率',
-    labelEn: 'First token/Rate',
-    build: (s, t, _x, live) => {
-      const firstAvg = live && live.firstTokenMs != null
-        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
-        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      // 底部始终显示本 session 累计平均（含正在生成的 token/耗时）：completion 累计 / 纯生成耗时累计
-      const comp = t.completion + (live?.streamTokens ?? 0);
-      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const gen = baseGen + (live?.liveGenMs ?? 0);
-      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
-      return `首 token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
-    },
-    buildEn: (s, t, _x, live) => {
-      const firstAvg = live && live.firstTokenMs != null
-        ? (s.firstTokenSum + live.firstTokenMs) / (s.firstTokenCount + 1) / 1000
-        : (s.firstTokenCount > 0 ? s.firstTokenSum / s.firstTokenCount / 1000 : 0);
-      const comp = t.completion + (live?.streamTokens ?? 0);
-      const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-      const gen = baseGen + (live?.liveGenMs ?? 0);
-      const rate = gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
-      return `First token ${firstAvg.toFixed(1)}s · ${rate} tok/s`;
-    },
-  },
-  {
-    id: 'cache',
-    label: '缓存命中',
-    labelEn: 'Cache hit',
-    // 网关未返回缓存字段（会话累计 cached=0）时整段隐藏，不显示易误会的 0%
-    build: (s, t) => (s.cached > 0 ? `缓存 ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%` : ''),
-    buildEn: (s, t) => (s.cached > 0 ? `Cache ${t.prompt > 0 ? Math.min(100, Math.round((s.cached / t.prompt) * 100)) : 0}%` : ''),
-  },
-  {
-    id: 'tokens',
-    label: '输入/输出',
-    labelEn: 'In/Out',
-    build: (_s, t, _x, live) => {
-      const comp = t.completion + (live ? live.streamTokens : 0);
-      return `输入 ${formatCompact(t.prompt)} · 输出 ${formatCompact(comp)}`;
-    },
-    buildEn: (_s, t, _x, live) => {
-      const comp = t.completion + (live ? live.streamTokens : 0);
-      return `In ${formatCompact(t.prompt)} · Out ${formatCompact(comp)}`;
-    },
-  },
-  {
-    id: 'context',
-    label: '上下文',
-    labelEn: 'Context',
-    // 当前上下文大小 = 最近一次 LLM 请求的 prompt token（usage.prompt，来自 LLM 响应）；
-    // 模型配置了 context 上限（limit.context）时附 `/{上限}`（如 45K/128K）
-    build: (_s, _t, x) =>
-      `上下文 ${formatCompact(x.lastPrompt || 0)}${x.contextLimit > 0 ? `/${formatCompact(x.contextLimit)}` : ''}`,
-    buildEn: (_s, _t, x) =>
-      `Context ${formatCompact(x.lastPrompt || 0)}${x.contextLimit > 0 ? `/${formatCompact(x.contextLimit)}` : ''}`,
-  },
-];
+/** 根据当前上下文 token 与上限计算用量百分比（无用量/未知上限返回 0） */
+export function contextPercent(lastPrompt: number, contextLimit: number): number {
+  if (lastPrompt <= 0 || contextLimit <= 0) return 0;
+  return Math.min(100, Math.round((lastPrompt / contextLimit) * 100));
+}
 
-/** 根据当前上下文 token 与上限计算圆环图标与格式化文本（5 档 Unicode 环） */
-export function formatContextRing(lastPrompt: number, contextLimit: number): { ring: string; text: string; percent: number } {
-  if (lastPrompt <= 0) {
-    return { ring: '○', text: '0', percent: 0 };
+/** 迷你进度条（width 格，█/░，终端各 1 列）：`██████░░░░` */
+export function formatMiniBar(percent: number, width = 10): string {
+  const p = Math.max(0, Math.min(100, percent));
+  const filled = Math.max(0, Math.min(width, Math.round((p / 100) * width)));
+  return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+}
+
+/** 长路径尾部保留截断（`…/a/b/cd`）：文件夹全路径超宽时头部省略、保留有信息量的尾部 */
+export function truncatePathHead(text: string, max: number): string {
+  if (max < 2 || visualWidth(text) <= max) return text;
+  let cols = 1; // 留 1 列给 …
+  let i = text.length;
+  while (i > 0) {
+    const w = charWidth(text[i - 1]);
+    if (cols + w > max) break;
+    cols += w;
+    i--;
   }
-  const ratio = contextLimit > 0 ? lastPrompt / contextLimit : 0;
-  const pct = Math.min(100, Math.round(ratio * 100));
-  let ring = '○';
-  if (pct > 75) ring = '●';
-  else if (pct > 50) ring = '◕';
-  else if (pct > 25) ring = '◑';
-  else if (pct > 0) ring = '◔';
-
-  const text = contextLimit > 0
-    ? `${formatCompact(lastPrompt)}/${formatCompact(contextLimit)}`
-    : `${formatCompact(lastPrompt)}`;
-  return { ring, text, percent: pct };
+  let tail = text.slice(i);
+  // 不切出半个代理对（emoji 后半）
+  while (tail.length > 0) {
+    const code = tail.charCodeAt(0);
+    if (code >= 0xdc00 && code <= 0xdfff) tail = tail.slice(1);
+    else break;
+  }
+  return `…${tail}`;
 }
 
-/** 默认状态行段顺序（未配置 / 非法时回退：上下文已移入输入区模型行常驻显示，底部默认不重复占用） */
+/** 右侧上下文用量文本：`18.3K/128K (19%)`（无上限只显示用量；无用量返回空串即隐藏） */
+export function formatContextUsage(lastPrompt: number, contextLimit: number): string {
+  if (lastPrompt <= 0) return '';
+  const used = formatCompact(lastPrompt);
+  if (contextLimit <= 0) return used;
+  return `${used}/${formatCompact(contextLimit)} (${contextPercent(lastPrompt, contextLimit)}%)`;
+}
+
+/** 状态行默认段（配置兼容保留：底部状态行已移除，`statusline` 配置被忽略；服务端仍下发默认值） */
 export const STATUSLINE_DEFAULT: string[] = ['speed', 'cache', 'tokens'];
-
-/**
- * 构建 footer 统计行（用户要求的格式，各段以 `| ` 分隔）：
- *   `7 轮 · 41 步| LLM 10m58s · 工具调用 7s| 首 token 平均 6.5s · 112 tok/s| 缓存命中 97%| 输入 3M tok · 输出 44.2K tok`
- * 数据来自 state.stats（TuiOutput 按事件累计）+ state.tokens（onUsage 累计）。
- * 段的选择与顺序由 state.statusline 决定（/settings statusline 配置：空格勾选、←/→ 排序、
- * Enter 保存并立即生效）；未知 id 丢弃；空数组（用户全部取消）→ 返回空串（不显示状态行）。
- */
-export function buildFooterStats(state: TuiState): string {
-  const order = state.statusline ?? STATUSLINE_DEFAULT;
-  const en = state.language === 'en';
-  // 上下文信息传给 context 段：最近一次 LLM 请求的 prompt（当前上下文）+ 模型 context 上限
-  const x = { lastPrompt: state.lastPromptTokens, contextLimit: state.contextLimit };
-  const segs = order
-    .map((id) => STATUSLINE_SEGMENTS.find((x) => x.id === id))
-    .filter((x): x is StatuslineSegment => !!x)
-    .map((sg) => (en ? sg.buildEn(state.stats, state.tokens, x, state.liveStream) : sg.build(state.stats, state.tokens, x, state.liveStream)))
-    .filter((seg) => seg.length > 0); // 空段（如无缓存数据时的 cache 段）直接丢弃，不占分隔符
-  return segs.join('| ');
-}
-
-/** 统计行按可用宽度段级截断：优先保留左侧（首 token/缓存段），超宽丢弃右侧段并加 … */
-export function fitFooterStats(text: string, width: number): string {
-  if (width < 4 || visualWidth(text) <= width) return text;
-  const segs = text.split('| ');
-  let out = '';
-  for (const seg of segs) {
-    const cand = out ? `${out}| ${seg}` : seg;
-    if (visualWidth(cand) > width) break;
-    out = cand;
-  }
-  if (!out) return truncateMiddle(text, width);
-  return out === text ? text : `${out}…`;
-}
 
 /**
  * 把显示列偏移（0-based，相对行首）换算成字符下标（UTF-16 码元）。

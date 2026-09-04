@@ -24,7 +24,7 @@ import { CONTENT_PAD, STREAM_CURSOR, colToChar, formatCompact, formatToolDur, us
 import { visualWidth } from './width.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { TRACE_W } from './trace.js';
-import { SPINNER_FRAMES, type CmdPanel, type StatuslinePanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
+import { SPINNER_FRAMES, type CmdPanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
 
 /** 行样式（对应 createTextAttributes 的字段） */
 export interface RowStyle {
@@ -429,49 +429,6 @@ export function approvalPanelRows(
 }
 
 /**
- * 状态行设置面板（/settings statusline）：圆角方框 + 勾选列表（✓/☐）+ 对齐行 + 操作提示。
- * 与菜单面板（menuPanelRows）同款边框结构，渲染在菜单浮层（menuOverlay）里——
- * 独立于会话流。高亮项 › 青色加粗；勾选 ✓ / 未勾选 ☐；←/→ 调整顺序；
- * 对齐行显示当前对齐（`a` 键循环切换，当前值青色加粗）。
- */
-export function settingsPanelRows(panel: StatuslinePanel, contentWidth: number, lang: TuiLang = 'zh'): Row[] {
-  const inner = cardInnerWidth(contentWidth);
-  const rows: Row[] = [{ text: cardTitleLine(t(lang, 'settings.title'), '', inner), style: { fg: 'cyan' } }];
-  for (let i = 0; i < panel.items.length; i++) {
-    const it = panel.items[i]!;
-    const cursor = i === panel.selected ? '› ' : '  ';
-    const check = it.enabled ? '✓' : '☐';
-    rows.push({
-      text: cardContentLine(`${cursor}${check} ${it.label}`, inner),
-      style: i === panel.selected ? { fg: 'cyan', bold: true } : {},
-    });
-  }
-  // 对齐行：`对齐： 左侧 / 居中 / 右侧`（当前值青色加粗；`a` 键循环切换）
-  const alignPrefix = t(lang, 'statusline.align');
-  const options: { label: string; value: 'left' | 'center' | 'right' }[] = [
-    { label: t(lang, 'statusline.align.left'), value: 'left' },
-    { label: t(lang, 'statusline.align.center'), value: 'center' },
-    { label: t(lang, 'statusline.align.right'), value: 'right' },
-  ];
-  const chunks: { text: string; fg?: string; bold?: boolean; dim?: boolean }[] = [{ text: `${alignPrefix}: `, dim: true }];
-  options.forEach((o, i) => {
-    if (i > 0) chunks.push({ text: ' / ' });
-    const active = o.value === panel.align;
-    chunks.push({ text: o.label, fg: active ? 'cyan' : undefined, bold: active, dim: !active });
-  });
-  // 行尾补空格到内容宽（与其它行同宽，面板底边整齐）
-  const used = chunks.reduce((a, c) => a + visualWidth(c.text), 0);
-  if (used < inner) chunks.push({ text: ' '.repeat(inner - used) });
-  rows.push({ text: '', style: {}, chunks });
-  rows.push({
-    text: cardContentLine(t(lang, 'settings.hint'), inner),
-    style: { dim: true },
-  });
-  rows.push({ text: cardBottomLine(inner), style: { dim: true } });
-  return rows;
-}
-
-/**
  * 把行内代码文本解析为磁盘上真实存在的本地文件（绝对路径或相对 cwd）。
  * 只认**文件**（目录不算可点击链接）；去掉结尾常见标点（散文里 `` `path` `` 后
  * 常跟逗号/句号/括号等——`src/foo.ts,` 应命中 `src/foo.ts`）；不存在/含换行返回 null。
@@ -626,8 +583,10 @@ export function buildBody(state: TuiState, width: number): Row[] {
       const compSum = usages.reduce((acc, u) => acc + u.completion, 0);
       const genMs = line.tokens.genMs ?? line.tokens.durMs ?? 0;
       const rate = genMs > 0 ? Math.round(compSum / (genMs / 1000)) : 0;
+      const ftAvg = line.tokens.firstTokenAvg;
+      const ftStr = ftAvg != null && ftAvg > 0 ? ` · 首 token ${(ftAvg / 1000).toFixed(1)}s` : '';
       const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
-      const buildText = `Build · ${model}${durStr ? ` · ${durStr}` : ''}${rateStr}`;
+      const buildText = `Build · ${model}${durStr ? ` · ${durStr}` : ''}${ftStr}${rateStr}`;
 
       // 第一行：Build 元信息
       body.push({
@@ -635,7 +594,7 @@ export function buildBody(state: TuiState, width: number): Row[] {
         style: {},
         chunks: [
           { text: 'Build', fg: theme.accentBlue, bold: true },
-          { text: ` · ${model}${durStr ? ` · ${durStr}` : ''}${rateStr}`, dim: true },
+          { text: ` · ${model}${durStr ? ` · ${durStr}` : ''}${ftStr}${rateStr}`, dim: true },
         ],
         tokensIdx: li,
       });
@@ -827,7 +786,7 @@ export function computeRows(
   // ask_user 提问面板（输入区上方）：❓ 问题行 1 + 每选项 1 行 + 自定义行 1 + 确认行 1 +
   // 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
   const askRows = opts?.withInput && state.ask ? state.ask.options.length + 4 : 0;
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 统计行间距(1) + 统计行(1) + 待发送区(pendingRows) + ask 面板(askRows)
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 待发送区(pendingRows) + ask 面板(askRows)
   const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + askRows : 2));
   const total = body.length;
 

@@ -28,9 +28,9 @@ import { EventRecorder } from '../agent/events.js';
 import { refreshTrace } from './trace.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
-import { handleMenuKey, handleSettingsPanelKey, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
+import { handleMenuKey, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
-import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistStatuslineToConfig, persistVariantToConfig } from '../config/write.js';
+import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 
 function findProviderForModel(endpoints: ModelEndpoint[], model: string): string | undefined {
   return endpoints.find((endpoint) => endpoint.name === model)?.provider;
@@ -154,14 +154,14 @@ export async function runTuiInteractive(
     messages.push(...msgs);
     runOpts.sessionPath = file;
     savedCount = persistableMessages(messages).length; // 已落盘历史不重复追加
-    // 会话级累计按历史重建：先清零再回放（usage/durMs/genMs 经 onUsage/onLlmLap 累加，
-    // 底部状态行 = 全会话平均）；不清零会把新旧两份叠加。首 token（firstTokenSum/Count）
-    // 无持久化、回放传 null，保持 0 等下一轮新消息再展示；lastTps 同理清零。
+    // 会话级累计按历史重建：先清零再回放（usage/durMs/genMs/firstTokenMs 经 onUsage/onLlmLap 累加，
+    // 每轮 turn-footer 含首 token 均值）；不清零会把新旧两份叠加。
+    // 旧历史无 firstTokenMs → 该轮不显示首 token 段。
     state.stats = { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 };
     state.tokens = { prompt: 0, completion: 0, total: 0 };
     state.lastPromptTokens = 0;
-    state.lastTps = 0;
-    state.liveStream = null;
+    state.liveTokens = 0;
+    state.liveGenMs = 0;
     // 快照旧记录器（恢复失败时保留原内存事件，不打断会话恢复流程）
     const oldEvents = runOpts.events;
     runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
@@ -185,6 +185,7 @@ export async function runTuiInteractive(
           model?: string;
           durMs?: number;
           genMs?: number;
+          firstTokenMs?: number;
         };
         if (ext.reasoning) out.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
         if (typeof m.content === 'string' && m.content) {
@@ -198,7 +199,7 @@ export async function runTuiInteractive(
             total: ext.usage.total ?? (ext.usage.prompt + ext.usage.completion),
             cached: ext.usage.cached ?? 0,
           });
-          if (ext.durMs) out.onLlmLap(ext.durMs, null, ext.genMs);
+          if (ext.durMs) out.onLlmLap(ext.durMs, typeof ext.firstTokenMs === 'number' ? ext.firstTokenMs : null, ext.genMs);
         }
       }
     }
@@ -285,7 +286,7 @@ export async function runTuiInteractive(
     }
     // Ctrl+X 进入前缀（无模态浮层时；ask 提问面板由 onAskKey 先消费按键，避免冲突）：
     // 状态栏显示绑定键提示，再按一次绑定键触发 / 再按 Esc/其它键取消。
-    if (key.ctrl && key.name === 'x' && !state.menu && !state.settingsPanel && !state.ask) {
+    if (key.ctrl && key.name === 'x' && !state.menu && !state.ask) {
       state.shortcutPrefix = true;
       state.status = t(state.language, 'shortcut.hint');
       key.preventDefault();
@@ -301,20 +302,6 @@ export async function runTuiInteractive(
       // 菜单确认（Enter/数字）后：确认提示进面板，短暂停留后自动收起（无需按 Esc 关闭）
       if (!state.menu && state.cmdPanel && state.cmdPanel.lines.length > 0) {
         scheduleCmdPanelAutoClose(state, session);
-      }
-      paintNow();
-      return;
-    }
-    // 状态行设置面板（/settings statusline）：空格 勾选/取消 · ←/→ 排序 · ↑/↓ 移动高亮 ·
-    // Enter 保存生效 · Esc 取消。消费的按键 preventDefault（不进输入框）；Enter 保存后
-    // 确认进命令面板 → 短暂停留自动收起（执行型动作，无需按 Esc）。
-    if (state.settingsPanel) {
-      const handled = handleSettingsPanelKey(key, state);
-      if (handled) {
-        key.preventDefault();
-        if (!state.settingsPanel && state.cmdPanel && state.cmdPanel.lines.length > 0) {
-          scheduleCmdPanelAutoClose(state, session);
-        }
       }
       paintNow();
       return;
@@ -646,23 +633,6 @@ export async function runTuiInteractive(
       }
     };
     for (;;) {
-      // /settings statusline 保存意图：应用已即时生效（state.statusline/statuslineAlign 更新，
-      // footer 统计行与对齐位置立即按新配置重绘）——这里把配置**持久化**到配置文件
-      // （下次会话同样生效）；成功静默（用户要求「做完设置不需要 pop 显示」），失败才弹警告面板
-      if (state.statuslineSave) {
-        const order = state.statuslineSave;
-        const align = state.statuslineAlignSave;
-        state.statuslineSave = null;
-        state.statuslineAlignSave = null;
-        const cfg = runOpts.cfg;
-        if (cfg) {
-          const res = persistStatuslineToConfig(order, cfg, align ?? undefined);
-          if (!res.ok) {
-            pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings statusline');
-          }
-          await session.paint();
-        }
-      }
       // /settings 语言保存意图：界面已即时生效（state.language 更新，全部界面 chrome
       // 按新语言重绘）——这里把配置**持久化**到配置文件（下次会话同样生效）；
       // 成功静默，失败才弹警告面板

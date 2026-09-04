@@ -3,10 +3,10 @@
  *
  * 事件 → 状态写入 → schedulePaint（30ms 节流合并突发）→ paint() 重建渲染树。
  */
+import { execSync } from 'node:child_process';
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
-import type { HookEventName } from '../hooks/index.js';
-import type { Output, StreamProgress, TokenUsage, ToolResultDetail } from '../output/types.js';
+import type { HookEventName } from '../hooks/index.js';import type { Output, StreamProgress, TokenUsage, ToolResultDetail } from '../output/types.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
@@ -111,6 +111,8 @@ export class TuiOutput implements Output {
   private turnUsages: TokenUsage[] = [];
   private turnLlmMs = 0;
   private turnGenMs = 0;
+  private turnFirstTokenSum = 0;
+  private turnFirstTokenCount = 0;
 
   /** 更新当前流式思考行的实时耗时（头行 `· N.Ns`；spinner 定时器每 200ms + write 时调用） */
   private refreshThinkingMs(): void {
@@ -163,7 +165,6 @@ export class TuiOutput implements Output {
     this.stopSpinner();
     this.state.spinnerIndex = -1;
     this.state.status = '';
-    this.state.liveStream = null;
     this.schedulePaint();
   }
 
@@ -235,7 +236,6 @@ export class TuiOutput implements Output {
     // 执行中这一类文本」——思考状态由头行 ⠋ thinking · 耗时 直观表达）。
     this.state.spinnerIndex = 0;
     this.state.generating = false;
-    this.state.liveStream = null;
     this.state.status = ''; // 思考中不显示状态栏文案
     this.startSpinner('');
     // 收到消息开始思考：**立即显示 thinking 模块头行**（loading + thinking + 实时耗时），
@@ -253,8 +253,9 @@ export class TuiOutput implements Output {
   }
 
   onStreamProgress(progress: StreamProgress): void {
-    this.state.liveStream = progress;
-    if (progress.tps > 0) this.state.lastTps = progress.tps;
+    // 流式增量暂存（底部会话平均速率含这部分；onLlmLap 折入累计后清零，避免重复计数）
+    this.state.liveTokens = progress.streamTokens;
+    this.state.liveGenMs = progress.liveGenMs;
     this.schedulePaint();
   }
 
@@ -265,7 +266,8 @@ export class TuiOutput implements Output {
 
   onAnswerEnd(): void {
     this.state.generating = false;
-    this.state.liveStream = null;
+    this.state.liveTokens = 0;
+    this.state.liveGenMs = 0;
     this.schedulePaint();
   }
 
@@ -288,22 +290,29 @@ export class TuiOutput implements Output {
     this.turnUsages = []; // 新一轮：重置当次 token 收集
     this.turnLlmMs = 0;
     this.turnGenMs = 0;
+    this.turnFirstTokenSum = 0;
+    this.turnFirstTokenCount = 0;
+    this.refreshGitBranch(); // 左侧文件夹分支每轮刷新一次（分支切换即时跟上，又不至于每帧 spawn）
     this.schedulePaint();
   }
 
   onLlmLap(llmMs: number, firstTokenMs: number | null, genMs?: number): void {
     // LLM 请求墙钟累计 + 首 token 延迟累计（平均 = sum/count）+ 纯生成耗时（tok/s 用）
-    this.state.liveStream = null;
     this.state.stats.llmMs += llmMs;
     this.turnLlmMs += llmMs;
     if (firstTokenMs !== null) {
       this.state.stats.firstTokenSum += firstTokenMs;
       this.state.stats.firstTokenCount += 1;
+      this.turnFirstTokenSum += firstTokenMs;
+      this.turnFirstTokenCount += 1;
     }
     if (genMs !== undefined) {
       this.state.stats.genMs += genMs;
       this.turnGenMs += genMs;
     }
+    // 本轮流式增量已折入累计：清零 live 暂存（后到的 usage 事件不再重复计入底部均值）
+    this.state.liveTokens = 0;
+    this.state.liveGenMs = 0;
     this.schedulePaint();
   }
 
@@ -604,6 +613,19 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
+  /** 左侧文件夹后的 git 分支（非 git 目录为 null 则不显示；每轮刷新一次，TTL 兜底） */
+  private gitBranchAt = 0;
+  refreshGitBranch(): void {
+    if (Date.now() - this.gitBranchAt < 5000) return;
+    this.gitBranchAt = Date.now();
+    try {
+      const out = execSync('git rev-parse --abbrev-ref HEAD', { cwd: this.state.cwd, timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      this.state.gitBranch = out && out !== 'HEAD' ? out : null;
+    } catch {
+      this.state.gitBranch = null;
+    }
+  }
+
   onTurnEnd(): void {
     // 兜底清理回合视觉（思考中/执行中阶段被取消时，onStreamStart/onToolResult 的清空
     // 不会执行——状态栏会残留「⠋ 思考中」+ spinner 定时器继续跑，用户反馈 ESC 后仍显示）
@@ -624,12 +646,15 @@ export class TuiOutput implements Output {
           model: this.state.model,
           durMs: this.turnLlmMs,
           genMs: this.turnGenMs,
+          firstTokenAvg: this.turnFirstTokenCount > 0 ? this.turnFirstTokenSum / this.turnFirstTokenCount : null,
         },
       });
     }
     this.turnUsages = [];
     this.turnLlmMs = 0;
     this.turnGenMs = 0;
+    this.turnFirstTokenSum = 0;
+    this.turnFirstTokenCount = 0;
     pushLine(this.state, { kind: 'meta', text: '' });
     this.schedulePaint();
   }

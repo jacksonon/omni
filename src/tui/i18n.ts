@@ -65,6 +65,12 @@ const ZH: Record<string, string> = {
   'pending.steer': ' · ⚡ {s} 打断',
   'pending.more': '  · 还有 {n} 条…',
   'suggest.hint': '  {arrow} 还有 {n} 个（↑/↓ 滚动）',
+  'suggest.commandsTitle': '命令',
+  'suggest.filesTitle': '文件',
+  'cmdgroup.session': '会话',
+  'cmdgroup.model': '模型',
+  'cmdgroup.agent': '智能体',
+  'cmdgroup.system': '系统',
   'shortcut.hint': 'Ctrl-X 快捷键：t 主题 · p 权限 · m 模型 · v 思考级别 · s 设置 · l 计划 · h 思考 · u 撤销 · r 重做 · c 清空 · ? 帮助（Esc 取消）',
 
   // 状态栏 / 帮助（output.ts）
@@ -160,6 +166,12 @@ const EN: Record<string, string> = {
   'pending.steer': ' · ⚡ {s} steer',
   'pending.more': '  · {n} more…',
   'suggest.hint': '  {arrow} {n} more (↑/↓ scroll)',
+  'suggest.commandsTitle': 'Commands',
+  'suggest.filesTitle': 'Files',
+  'cmdgroup.session': 'Session',
+  'cmdgroup.model': 'Model',
+  'cmdgroup.agent': 'Agent',
+  'cmdgroup.system': 'System',
   'shortcut.hint': 'Ctrl-X: t theme · p permission · m model · v level · s settings · l plan · h thinking · u undo · r redo · c clear · ? help (Esc cancel)',
 
   'status.ready': 'Model {model} · Ready',

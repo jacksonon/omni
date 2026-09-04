@@ -627,31 +627,49 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 12 通过：多行命令折叠为单行摘要 + 卡片色块完整不乱码');
 
-  // 场景 13：footer 统计行（轮次/步数/耗时/首 token/速率/缓存命中/输入输出）——灰色块下方整行
+  // 场景 13：输入区模型行（左文件夹 · 模式/模型/均值/输入输出/缓存 …… 右上下文用量）
   const s13 = createTuiState();
   s13.version = '0.1.0';
   s13.model = 'grok-4.5';
+  s13.cwd = '/w/s13'; // 确定性：左侧显示全路径，不受执行机器目录名影响
   s13.tokens = { prompt: 1234, completion: 567, total: 1801 };
-  s13.stats.cached = 617; // 有缓存数据 → cache 段显示（无数据时整段隐藏，见场景 1 断言）
+  s13.stats.cached = 617; // 有缓存数据；64 列下按预算隐藏（缓存→输入输出→上下文顺序）
   pushLine(s13, { kind: 'user', text: '你好' });
   s13.status = '任务完成';
   const r13 = await render(s13);
-  console.log('=== 场景 13：footer 统计行（窄屏段级截断）===');
+  console.log('=== 场景 13：输入区模型行（窄屏按序隐藏）===');
   console.log(r13.frame);
-  const checks13 = ['grok-4.5', '首 token', '缓存 50%', '…'];
+  // 64 列：左侧 + 模型 + 输入输出 + 缓存全显；首 token 只在每轮 Build 行，不在输入区
+  const checks13 = ['grok-4.5', '/w/s13', '输入 1.2K', '输出 567', '缓存 50%'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
-    console.error(`✗ 场景 13 footer 缺少: ${missing13.join(', ')}`);
+    console.error(`✗ 场景 13 模型行缺少: ${missing13.join(', ')}`);
     process.exit(1);
   }
-  // 窄屏段级截断：段顺序 speed→cache→tokens→context，从**右侧**段丢弃（保留左侧 + … 标记）；
-  // 64 列下前三段超预算 → 输入/输出 与 上下文 段被省略
-  if (r13.frame.includes('输入 1.2K tok') || r13.frame.includes('上下文')) {
-    console.error('✗ 场景 13 窄屏未从右侧截断统计行（应省略输入/输出与上下文段）');
+  for (const ban of ['首 token', '◔']) {
+    if (r13.frame.includes(ban)) {
+      console.error(`✗ 场景 13 不应显示「${ban}」（已移入 turn-footer / 旧圆环已移除）`);
+      process.exit(1);
+    }
+  }
+  // 44 列窄屏：超宽按 缓存→输入输出→上下文 顺序隐藏，左侧与模型恒保留
+  const t13n = await createTestRenderer({ width: 44, height: 20 });
+  mountTree(t13n.renderer, s13, { withInput: true });
+  await t13n.renderOnce();
+  const frame13n = t13n.captureCharFrame();
+  if (!frame13n.includes('grok-4.5') || !frame13n.includes('/w/s13')) {
+    console.error('✗ 场景 13 窄屏左侧与模型被隐藏（应恒保留）');
     process.exit(1);
+  }
+  for (const ban of ['缓存 50%', '输入 1.2K', '输出 567']) {
+    if (frame13n.includes(ban)) {
+      console.error(`✗ 场景 13 窄屏不应显示「${ban}」（应按预算隐藏）`);
+      process.exit(1);
+    }
   }
   // 统计事件累计：TuiOutput 各事件（onTurnStart/onToolStep/onLlmLap/onToolsLap/onUsage）累加进 state
   const s13b = createTuiState();
+  s13b.cwd = '/w/s13';
   const t13b = await createTestRenderer({ width: 120, height: 20 });
   const tree13b = mountTree(t13b.renderer, s13b, { withInput: true });
   const fakeSession13 = {
@@ -673,33 +691,42 @@ async function main(): Promise<void> {
   out13.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
   await out13.flush();
   const frame13 = t13b.captureCharFrame();
-  // 期望：首 token 平均 0.5s · 700 tok/s| 缓存命中 77%| 输入 1.3K tok · 输出 350 tok| 上下文 300
-  //（tok/s = 输出 350 / 生成耗时 0.5s——排除首 token 等待，非 llmMs 全墙钟；
-  //  上下文 = 最后一次请求的 prompt token = 300）
-  const expect13 = '首 token 0.5s · 700 tok/s| 缓存 77%| 输入 1.3K · 输出 350| 上下文 300';
-  if (!frame13.includes(expect13)) {
-    console.error(`✗ 场景 13 统计累计不符\n期望: ${expect13}\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
+  // 模型行中部 = 会话平均（输出 350 / 生成耗时 0.5s = 700 tok/s，排除首 token 等待）· 输入输出 · 缓存 77%；
+  // 右侧 = 迷你条 + 上下文（最后一次请求 prompt 300，无上限只显示用量）
+  for (const want of ['700 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '░░░░░░░░░░ 300']) {
+    if (!frame13.includes(want)) {
+      console.error(`✗ 场景 13 统计累计不符，缺少「${want}」\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
+      process.exit(1);
+    }
+  }
+  // 每轮 Build 行带首 token（本轮唯一请求首 token 500ms → 0.5s）
+  out13.onTurnEnd();
+  await fakeSession13.paint();
+  const frame13t = t13b.captureCharFrame();
+  if (!frame13t.includes('首 token 0.5s')) {
+    console.error(`✗ 场景 13 turn-footer 缺少首 token 段`);
     process.exit(1);
   }
-  // 用户示例格式验证（示例值：首 token 6.5s · 127 tok/s| 缓存 97%| 输入 3M · 输出 44.2K| 上下文 45K/128K）
+  // 用户示例格式验证（模型行中部 + 右侧；均值 = 输出 44.2K / 生成耗时 349.1s ≈ 127）
   const s13c = createTuiState();
   s13c.model = 'mock';
-  pushLine(s13c, { kind: 'user', text: '你好' }); // 有会话内容 → 非 hero 模式（hero 隐藏统计行）
+  s13c.cwd = '/w/s13';
+  pushLine(s13c, { kind: 'user', text: '你好' }); // 有会话内容 → 非 hero 模式
   s13c.tokens = { prompt: 3_000_000, completion: 44_200, total: 3_044_200, cached: 2_910_000 };
   s13c.stats = { turns: 7, steps: 41, llmMs: 394_642, toolsMs: 7_000, firstTokenSum: 45_500, firstTokenCount: 7, genMs: 349_142, cached: 2_910_000 };
   s13c.lastPromptTokens = 45_000; // 当前上下文（最近一次请求 prompt）
-  s13c.contextLimit = 128_000; // 模型 context 上限 → `上下文 45K/128K`
+  s13c.contextLimit = 128_000; // 模型 context 上限 → `45K/128K (35%)`
   const t13c = await createTestRenderer({ width: 120, height: 20 });
   const tree13c = mountTree(t13c.renderer, s13c, { withInput: true });
   await t13c.renderOnce();
   const frame13c = t13c.captureCharFrame();
-  // 用户示例格式验证（示例值；tok/s = 输出 44.2K / 生成耗时 349.1s ≈ 127）
-  const expect13c = '首 token 6.5s · 127 tok/s| 缓存 97%| 输入 3M · 输出 44.2K| 上下文 45K/128K';
-  if (!frame13c.includes(expect13c)) {
-    console.error(`✗ 场景 13 示例格式不符\n期望: ${expect13c}\n实际帧:\n${frame13c}`);
-    process.exit(1);
+  for (const want of ['127 tok/s', '缓存 97%', '输入 3M', '输出 44.2K', '████░░░░░░ 45K/128K (35%)']) {
+    if (!frame13c.includes(want)) {
+      console.error(`✗ 场景 13 示例格式不符，缺少「${want}」\n实际帧:\n${frame13c}`);
+      process.exit(1);
+    }
   }
-  console.log('✓ 场景 13 通过：footer 统计行（窄屏截断/事件累计/完整示例格式）渲染正确');
+  console.log('✓ 场景 13 通过：输入区模型行（窄屏隐藏/事件累计/完整示例格式）渲染正确');
 
   // 场景 14：用户消息左侧蓝色细线（▍≈3px）+ 白色文本 + 灰色背景——折行后每行都保留
   const s14 = createTuiState();
@@ -944,13 +971,14 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 15 思考级别 high 颜色错误: ${JSON.stringify(effortFg15())}（应 orange-400 [251,146,60]）`);
     process.exit(1);
   }
-  // 上下文圆环与用量在模型行常驻展示（◔ 15.5K/128K）
+  // 上下文用量在模型行最右展示（迷你条 + `15.5K/128K (12%)`）
+  s15.cwd = '/w/omni'; // 确定性：左侧显示全路径
   s15.lastPromptTokens = 15500;
   s15.contextLimit = 128000;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  if (!tree15.footerContext?.visible || !JSON.stringify(tree15.footerContext.content).includes('◔') || !JSON.stringify(tree15.footerContext.content).includes('15.5K/128K')) {
-    console.error(`✗ 场景 15 上下文圆环与容量未在模型行正确展示: ${JSON.stringify(tree15.footerContext?.content)}`);
+  if (!tree15.metaCtx?.visible || !JSON.stringify(tree15.metaCtx.content).includes('█░░░░░░░░░') || !JSON.stringify(tree15.metaCtx.content).includes('15.5K/128K (12%)')) {
+    console.error(`✗ 场景 15 上下文用量未在模型行最右正确展示: ${JSON.stringify(tree15.metaCtx?.content)}`);
     process.exit(1);
   }
   s15.reasoningEffort = 'custom-level';
@@ -961,46 +989,49 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
-  // b2) 输入区域模型行内、思考级别右侧 loading（用户要求「loading esc 放到输入区域
-  //    模型思考级别右侧」）：未运行隐藏；运行中转圈（帧随 loadingIndex 换）；
-  //    Esc/会话结束（loading=false）清空消失
-  if (!tree15.footerLoading) {
-    console.error('✗ 场景 15 loading 节点未创建');
+  // b2) 左侧文件夹 / loading（回答中隐藏文件夹只显示 spinner，结束恢复）：
+  //    未运行显示全路径；运行中只显示 spinner 帧；结束恢复文件夹
+  if (!tree15.metaLeft) {
+    console.error('✗ 场景 15 footerLeft 节点未创建');
     process.exit(1);
   }
-  const loadingText15 = (t: unknown): string => {
-    const c = (t as { content?: unknown }).content;
-    const chunks = (c as { chunks?: { text: string }[] })?.chunks;
-    return (chunks ?? []).map((ch) => ch.text).join('');
-  };
-  if (loadingText15(tree15.footerLoading) !== '') {
-    console.error(`✗ 场景 15 未运行时 loading 应为空: ${JSON.stringify(loadingText15(tree15.footerLoading))}`);
+  const leftText15 = (): string => JSON.stringify(tree15.metaLeft?.content) ?? '';
+  if (!leftText15().includes('/w/omni')) {
+    console.error(`✗ 场景 15 未运行时左侧应显示文件夹: ${leftText15()}`);
+    process.exit(1);
+  }
+  s15.gitBranch = 'main';
+  repaintTree(t15.renderer, tree15, s15, { withInput: true });
+  await t15.renderOnce();
+  if (!leftText15().includes('/w/omni (main)')) {
+    console.error(`✗ 场景 15 git 目录左侧应显示分支: ${leftText15()}`);
     process.exit(1);
   }
   s15.loading = true;
   s15.loadingIndex = 2;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  const frame15load = t15.captureCharFrame();
-  const frameLines15 = frame15load.split('\n');
-  const modelRow15 = frameLines15.findIndex((l) => l.includes('mock'));
-  const statsRow15 = frameLines15.findIndex((l) => l.includes('首 token'));
   const loadChar15 = SPINNER_FRAMES[2];
-  const loadRow15 = frameLines15.findIndex((l) => l.includes(loadChar15));
-  // loading 内容 = `· ⠹`（分隔符「·」只在 loading 显示时出现，思考级别与 loading 之间）
-  if (loadingText15(tree15.footerLoading) !== `· ${loadChar15}`) {
-    console.error(`✗ 场景 15 loading 帧内容错误: ${JSON.stringify(loadingText15(tree15.footerLoading))}（应 · ${loadChar15}）`);
+  if (leftText15().includes('/w/omni') || !leftText15().includes(loadChar15)) {
+    console.error(`✗ 场景 15 运行中左侧应只显示 loading（隐藏文件夹）: ${leftText15()}`);
     process.exit(1);
   }
-  // loading 应在**模型行**（灰色块内那行），不在统计行——思考级别右侧
-  if (loadRow15 !== modelRow15) {
-    console.error(`✗ 场景 15 loading 应位于模型行内思考级别右侧（model=${modelRow15} stats=${statsRow15} load=${loadRow15}）`);
+  const frame15load = t15.captureCharFrame();
+  const frameLines15 = frame15load.split('\n');
+  // loading 在灰块外底行（灰块底边 ╯ 下隔 1 行），且该行无文件夹
+  const grayBottom15 = frameLines15.findIndex((l) => l.includes('╯'));
+  const loadRow15 = (() => {
+    const rows = frameLines15.map((l, i) => ({ i, l }));
+    return rows.find((r) => r.l.includes(loadChar15))?.i ?? -1;
+  })();
+  if (process.env.OMNI_DBG) console.error('[dbg15]', frameLines15.map((l, i) => `${i}:${JSON.stringify(l.slice(0, 30))}`).filter((e) => e.includes('⠹') || /^\d+:.*╯/.test(e)).join('\n'));
+  if (grayBottom15 < 0 || loadRow15 !== grayBottom15 + 2) {
+    console.error(`✗ 场景 15 loading 应位于灰块外底行（grey=${grayBottom15} load=${loadRow15}）`);
     console.log(frame15load);
     process.exit(1);
   }
-  // loading 应位于该行模型文本之后（列 > 模型文本列）
-  if (loadRow15 < 0 || frameLines15[loadRow15]!.indexOf(loadChar15) <= frameLines15[loadRow15]!.indexOf('mock')) {
-    console.error('✗ 场景 15 loading 应位于模型行、模型文本之后');
+  if (frameLines15[loadRow15]!.includes('/w/omni')) {
+    console.error('✗ 场景 15 运行中底行不应显示文件夹');
     console.log(frame15load);
     process.exit(1);
   }
@@ -1008,43 +1039,8 @@ async function main(): Promise<void> {
   s15.loadingIndex = -1;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  if (loadingText15(tree15.footerLoading) !== '') {
-    console.error('✗ 场景 15 会话结束（loading=false）后 loading 应清空');
-    process.exit(1);
-  }
-  // b3) loading 右侧「esc」取消提示（思考级别右侧、loading 之后）：运行中显示（跟随 loading）、结束后消失
-  if (!tree15.footerEsc) {
-    console.error('✗ 场景 15 footerEsc 节点未创建');
-    process.exit(1);
-  }
-  const escText15 = loadingText15; // 同款 chunks 文本提取
-  if (escText15(tree15.footerEsc) !== '') {
-    console.error(`✗ 场景 15 未运行时 esc 提示应为空: ${JSON.stringify(escText15(tree15.footerEsc))}`);
-    process.exit(1);
-  }
-  s15.loading = true;
-  s15.loadingIndex = 2;
-  repaintTree(t15.renderer, tree15, s15, { withInput: true });
-  await t15.renderOnce();
-  if (escText15(tree15.footerEsc) !== 'esc interrupt') {
-    console.error(`✗ 场景 15 运行中 esc interrupt 提示应显示: ${JSON.stringify(escText15(tree15.footerEsc))}`);
-    process.exit(1);
-  }
-  const escFrame15 = t15.captureCharFrame();
-  const escModelRow15 = escFrame15.split('\n').findIndex((l) => l.includes('mock'));
-  const escLine15 = escFrame15.split('\n')[escModelRow15];
-  if (!escLine15 || !escLine15.includes('esc interrupt') || !escLine15.includes(SPINNER_FRAMES[2])) {
-    console.error('✗ 场景 15 运行中模型行应含 loading + esc interrupt 提示（思考级别右侧）');
-    console.log(escFrame15);
-    process.exit(1);
-  }
-  // b4) loading 与思考级别之间的「·」分隔符：只在 loading 显示时出现（esc interrupt 紧跟 loading）
-  const sepPos15 = escLine15.indexOf('·');
-  const loadPos15 = escLine15.indexOf(SPINNER_FRAMES[2]);
-  const escPos15 = escLine15.indexOf('esc interrupt');
-  if (sepPos15 < 0 || loadPos15 < 0 || escPos15 < 0 || !(sepPos15 < loadPos15 && loadPos15 < escPos15)) {
-    console.error(`✗ 场景 15 「· ⠹ esc interrupt」顺序/分隔符异常: ${escLine15}`);
-    console.log(escFrame15);
+  if (!leftText15().includes('/w/omni')) {
+    console.error('✗ 场景 15 会话结束（loading=false）后左侧应恢复文件夹');
     process.exit(1);
   }
   // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）
@@ -1429,9 +1425,9 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 35、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
-  // 面板是圆角方框（整体背景 + rounded 圆角 12 风格）：border=true + borderStyle='rounded'
-  if (!tree19.suggestBox || tree19.suggestBox.border !== true || tree19.suggestBox.borderStyle !== 'rounded') {
-    console.error(`✗ 场景 19 联想面板未启用圆角边框: border=${tree19.suggestBox?.border} style=${tree19.suggestBox?.borderStyle}`);
+  // 扁平命令面板（无边框，标题 + 分组 + 选项整行高亮）：border 应关闭
+  if (!tree19.suggestBox || (tree19.suggestBox as { border?: unknown }).border === true) {
+    console.error(`✗ 场景 19 联想面板应为扁平无边框: border=${(tree19.suggestBox as { border?: unknown })?.border}`);
     process.exit(1);
   }
   // b) 前缀过滤：'/th' → 只剩 thinking（/t 会同时命中 thinking 与 tokens——tokens 已并入 /settings）
@@ -1496,20 +1492,32 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：只显示前 6 条（permission/plan/thinking/exit/clear/undo）+ 底部「↓ 还有 29 个」提示行
-  const checks19 = ['/permission', '切换安全权限', '/plan', '计划模式（只读调研，不修改文件）', '/thinking', '开/关思考过程展示', '/exit', '退出 TUI', '/clear', '清空对话上下文', '/undo', '撤销本次会话的 write_file 修改（all = 全部撤销）', '↓ 还有 29 个'];
+  // 紧凑窗口：标题 + 会话分组头 + 前 6 条（组内注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 29 个」提示行
+  const checks19 = ['命令', 'esc', '会话', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 29 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
     process.exit(1);
   }
-  // 圆角方框面板：帧内出现 ╭（面板顶/左边框）与 ╰（底/左边框）——圆角边框真实渲染
-  if (!frame19.includes('╭') || !frame19.includes('╰')) {
-    console.error('✗ 场景 19 联想面板未渲染圆角边框（应见 ╭╰）');
+  // 选中行桃色整行高亮（首个选项行 bg = suggestSelBg + 深字），分组头紫色
+  const themeMod19 = await import('../src/tui/theme.js');
+  const { parseColor: parseColor19 } = await import('@opentui/core');
+  const theme19 = themeMod19.themeFor(s19);
+  const toInts19 = (c: unknown): number[] => ((c as { toInts?: () => number[] }).toInts?.() ?? []).slice(0, 3);
+  const selCell19 = (tree19.suggestCells?.[2]?.content as { chunks?: { text: string; fg?: unknown; bg?: unknown }[] })?.chunks ?? [];
+  const selBgInts = toInts19(parseColor19((theme19 as unknown as { suggestSelBg: string }).suggestSelBg));
+  if (!selCell19.some((c) => JSON.stringify(toInts19(c.bg)) === JSON.stringify(selBgInts) && String(c.text).includes('/clear'))) {
+    console.error(`✗ 场景 19 选中行无桃色整行高亮: ${JSON.stringify(selCell19.map((c) => ({ t: String(c.text).slice(0, 12), fg: toInts19(c.fg), bg: toInts19(c.bg) })))}`);
+    process.exit(1);
+  }
+  // 扁平无边框：联想浮层不再画圆角边框（灰块输入区边框仍在，帧内 ╭╯ 来自输入区而非浮层——
+  // 断言浮层节点 border 关闭即覆盖，帧断言只看面板内容）
+  if (!tree19.suggestBox || (tree19.suggestBox as { border?: unknown }).border === true) {
+    console.error('✗ 场景 19 联想面板应为扁平无边框');
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/compact', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/spec', '/preset', '/settings', '/model', '/status', '/context', '/export', '/config', '/mcp', '/diff', '/rename', '/fork', '/send', '/memory-apply', '/resume', '/session', '/redo', '/trace', '/help']) {
+  for (const hidden of ['/init', '/skill', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/spec', '/preset', '/settings', '/model', '/models', '/config', '/mcp', '/diff', '/rewind', '/rename', '/fork', '/send', '/resume', '/session', '/redo', '/trace', '/help', '/permission', '/plan', '/thinking', '/exit', '/memory-apply']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -1525,7 +1533,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // e2) 独立浮层：绝对定位悬停在输入框（灰色块）上方，不占内容流
-  //     （0-based 屏幕行：底部块顶 = 20 - 8 - (inputLines+5) = 11，浮层底应在其上方）
+  //     （0-based 屏幕行：底部块顶 = 20 - 6 - inputLines = 13，浮层底应在其上方）
   if (!tree19.suggestRect) {
     console.error('✗ 场景 19 联想浮层未记录 suggestRect（应可鼠标点击）');
     process.exit(1);
@@ -1536,7 +1544,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 19 联想浮层定位错误: top=${top19} left=${left19}（应 left=2、top≥1）`);
     process.exit(1);
   }
-  const footerTop19 = 20 - 8 - s19.inputLines; // 底部块顶部（0-based；圆角边框 +2 行、输入/模型间距 1、统计行间距 1、无排队区）
+  const footerTop19 = 20 - 6 - s19.inputLines; // 底部块顶部（0-based；根底内边距 1 + 灰色块 inputLines+4、无排队区）
   if (tree19.suggestRect.bottom >= footerTop19) {
     console.error(`✗ 场景 19 联想浮层未浮在输入框上方: ${JSON.stringify(tree19.suggestRect)}（底部块顶=${footerTop19}）`);
     process.exit(1);
@@ -1567,7 +1575,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 19 滚动前置失败（无联想列表）');
     process.exit(1);
   }
-  s19s.cmdSuggest.selected = 21; // 模拟交互层 ↑/↓ 循环后选中窗口外条目（/export，35 个命令时下标 21）
+  s19s.cmdSuggest.selected = 21; // 模拟交互层 ↑/↓ 循环后选中窗口外条目（智能体组 orchestrate）
   s19s.cmdSuggest.top = 0;
   repaintTree(t19s.renderer, tree19s, s19s, { withInput: true });
   await t19s.renderOnce();
@@ -1577,12 +1585,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const frame19s = t19s.captureCharFrame();
-  // 滚动后：出现上下提示行、窗口外命令（/review 等）不渲染、选中项（/export，下标 20）在窗口内
-  if (!frame19s.includes('↑ 还有') || !frame19s.includes('↓ 还有') || frame19s.includes('/review') || !frame19s.includes('/export')) {
-    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见 ↑/↓ 还有 N 个、无 /review、含选中项 /export）');
+  // 滚动后：出现上下提示行、窗口外命令（/review 等）不渲染、选中项（/orchestrate）在窗口内
+  if (!frame19s.includes('↑ 还有') || !frame19s.includes('↓ 还有') || frame19s.includes('/review') || !frame19s.includes('/orchestrate')) {
+    console.error('✗ 场景 19 滚动后窗口/提示行错误（应见 ↑/↓ 还有 N 个、无 /review、含选中项 /orchestrate）');
+    console.log(frame19s);
     process.exit(1);
   }
-  console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/圆角浮层/不挤动内容区）');
+  console.log('✓ 场景 19 通过：/ 联想列表（全量 items + 分组 + 窗口/提示行 + ↑/↓ 滚动到全部 + 前缀过滤/无匹配隐藏/扁平浮层/不挤动内容区）');
 
   // 场景 20：会话标题 —— 首轮对话后模型生成，**不显示在对话流里**，改为终端窗口/标签页标题（OSC 0）
   const { cleanTitle } = await import('../src/agent/title.js');
@@ -1631,8 +1640,8 @@ async function main(): Promise<void> {
     console.error('✗ 场景 20 渲染帧不应包含会话标题（已改为窗口标题）');
     process.exit(1);
   }
-  if (!r20.frame.includes('首 token')) {
-    console.error('✗ 场景 20 footer 统计行缺失');
+  if (!r20.frame.includes('/Users/alice/work/omni')) {
+    console.error('✗ 场景 20 灰块外底行缺失（左侧应显示文件夹全路径）');
     process.exit(1);
   }
   if (!r20.frame.includes('你好') || !r20.frame.includes('输入消息，Enter 发送')) {
@@ -3761,27 +3770,28 @@ async function main(): Promise<void> {
   const frame36 = t36.captureCharFrame();
   console.log('=== 场景 36：@ 提及文件选择（圆角浮层）===');
   console.log(frame36);
-  const checks36 = ['📁 src/', '📄 README.md', '📄 package.json'];
+  const checks36 = ['📁 src/', '📄 README.md', '📄 package.json', '文件'];
   const missing36 = checks36.filter((c) => !frame36.includes(c));
   if (missing36.length) {
     console.error(`✗ 场景 36 提及列表渲染缺: ${missing36.join(', ')}`);
     process.exit(1);
   }
-  if (!frame36.includes('╭') || !frame36.includes('╰')) {
-    console.error('✗ 场景 36 提及浮层未渲染圆角边框（应见 ╭╰）');
+  // 扁平无边框：提及浮层与 / 联想共用浮层，border 应关闭
+  if (!tree36.suggestBox || (tree36.suggestBox as { border?: unknown }).border === true) {
+    console.error('✗ 场景 36 提及浮层应为扁平无边框');
     process.exit(1);
   }
-  if (!tree36.suggestBox || !tree36.suggestBox.visible || tree36.suggestBox.borderStyle !== 'rounded') {
-    console.error('✗ 场景 36 提及浮层未显示或未用圆角边框');
+  if (!tree36.suggestBox || !tree36.suggestBox.visible) {
+    console.error('✗ 场景 36 提及浮层未显示');
     process.exit(1);
   }
   if (s36.cmdSuggest !== null) {
     console.error('✗ 场景 36 提及出现时不应同时显示命令联想');
     process.exit(1);
   }
-  // 浮层底在灰色块（inputLines=1 → 底部块顶 = 20 - 7 - 1 = 12）上方 1 行以上
+  // 浮层底在灰色块（inputLines=1 → 底部块顶 = 20 - 5 - 1 = 14）上方 1 行以上
   const rect36 = tree36.suggestRect;
-  if (!rect36 || rect36.bottom >= 12) {
+  if (!rect36 || rect36.bottom >= 14) {
     console.error(`✗ 场景 36 提及浮层未悬停在输入框上方: ${JSON.stringify(rect36)}`);
     process.exit(1);
   }
@@ -4007,7 +4017,7 @@ async function main(): Promise<void> {
   const t37h = await createTestRenderer({ width: 64, height: 20 });
   const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
   await repaintTree(t37h.renderer, tree37h, s37h, 64, 20);
-  // 输入/模型间距 +1 行后 footerTop 下移 1 行 → 菜单窗口少容纳 1 个选项（11..15）
+  // 灰块外底行（meta+间距）占 2 行 → 菜单窗口容纳 5 个选项（11..15）
   if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, 11, 12, 13, 14, 15, -1, -1, -1])) {
     console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
     process.exit(1);
@@ -4019,18 +4029,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // h6) 帧级断言：窗口内选项、上下提示、底边全部真实渲染（池容量足够的直接证据）。
-  //     注意窗口 options[11..15] = 会话 8..4（升序 title 与降序 updated 反向映射）——
-  //     「会话 15/9/3」等窗口外标签不得泄漏进帧
+  //     注意窗口 options[11..16] = 会话 8..3（升序 title 与降序 updated 反向映射）——
+  //     「会话 15/9/0」等窗口外标签不得泄漏进帧
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
-  // 间距 +1 行后窗口少 1 行（选项 11..15 = 会话 8..4）→ 下方提示「↓ 还有 4 个」
+  // 灰块外底行（meta+间距）占 2 行 → 窗口 5 个选项（11..15 = 会话 8..4）→ 下方提示「↓ 还有 4 个」
   for (const expect of ['会话 8 ·', '会话 4 ·', '↑ 还有 11 个', '↓ 还有 4 个', '╰']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
-  // 窗口 5 行（11..15），窗口外为 2/9/15
+  // 窗口 5 行（11..15），窗口外为 15/9/2
   for (const outside of ['会话 9 ·', '会话 2 ·', '会话 15 ·']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
@@ -4127,11 +4137,10 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 38 通过：执行型命令 autoClose 标记 + 自动收起（身份/无会话/空面板边界）');
 
-  // 场景 39：/settings statusline —— 底部状态行配置（多选 + 排序 + 保存生效 + 持久化）
-  console.log('=== 场景 39：/settings statusline（状态行配置）===');
+  // 场景 39：状态行面板已移除 —— /settings 无 statusline 项；新 helper 单元覆盖 + 持久化兼容保留
+  console.log('=== 场景 39：状态行移除（设置项删除/helper 单测/持久化兼容）===');
   const cmd39 = await import('../src/tui/commands.js');
   const layout39 = await import('../src/tui/layout.js');
-  const sprRows39 = (await import('../src/tui/rows.js')).settingsPanelRows;
   const { persistStatuslineToConfig } = await import('../src/config/write.js');
   // a) /settings 已注册 + 联想可发现（settings 出现在联想列表）
   const settingsCmd = cmd39.findCommand('settings');
@@ -4139,199 +4148,64 @@ async function main(): Promise<void> {
     console.error('✗ 场景 39 /settings 未注册或不可联想');
     process.exit(1);
   }
-  // b) openStatuslinePanel：面板列出全部段，勾选态来自当前 state.statusline（默认全勾）
+  // b) 状态行面板已移除：openStatuslinePanel / handleSettingsPanelKey / settingsPanelRows 不再导出；
+  //    /settings statusline 落到未知设置警告；设置菜单只剩 4 项（language/theme/tokens/doctor）
   const s39 = createTuiState();
-  cmd39.openStatuslinePanel(s39);
-  if (!s39.settingsPanel || s39.settingsPanel.items.length !== 4 || !s39.settingsPanel.items.every((it) => it.enabled)) {
-    console.error(`✗ 场景 39 状态行面板初始化错误: ${JSON.stringify(s39.settingsPanel)}`);
+  if ('openStatuslinePanel' in cmd39 || 'handleSettingsPanelKey' in cmd39) {
+    console.error('✗ 场景 39 状态行面板函数应已删除');
     process.exit(1);
   }
-  // b0) 对齐：默认 center（跟随 state.statuslineAlign）
-  if (s39.settingsPanel.align !== 'center' || s39.statuslineAlign !== 'center') {
-    console.error(`✗ 场景 39 对齐默认值错误: panel=${s39.settingsPanel.align} state=${s39.statuslineAlign}`);
+  const rows39mod = await import('../src/tui/rows.js');
+  if ('settingsPanelRows' in rows39mod) {
+    console.error('✗ 场景 39 settingsPanelRows 应已删除');
     process.exit(1);
   }
-  // 自定义 statusline（去掉 cache/context）→ 面板勾选态反映它（items 按段定义顺序列出，顺序由 ←/→ 编辑）
-  s39.statusline = ['tokens', 'speed'];
-  cmd39.openStatuslinePanel(s39);
-  const byId39 = Object.fromEntries(s39.settingsPanel!.items.map((it) => [it.id, it.enabled]));
-  if (byId39.cache !== false || byId39.context !== false || byId39.tokens !== true || s39.settingsPanel!.items[0]!.id !== 'speed') {
-    console.error(`✗ 场景 39 面板未反映自定义 statusline: ${JSON.stringify(s39.settingsPanel)}`);
+  if ('settingsPanel' in s39 || 'statusline' in s39 || 'statuslineAlign' in s39) {
+    console.error('✗ 场景 39 TuiState 不应再有 statusline 相关字段');
     process.exit(1);
   }
-  // c) 键盘操作：↑/↓ 移动高亮 · 空格勾选/取消 · ←/→ 排序 · Enter 保存生效 · Esc 取消
-  const key39 = (name: string) => ({ name, sequence: '', preventDefault: () => {}, stopPropagation: () => {} } as never);
-  // 当前 statusline=['tokens','speed']（cache/context 未勾选）；面板 items 按
-  // STATUSLINE_SEGMENTS 顺序 = [speed✓, cache☐, tokens✓, context☐]，selected=0
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 1=cache
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 2=tokens
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 3=context
-  cmd39.handleSettingsPanelKey(key39('space'), s39); // 空格取消勾选 context（本来就 ☐，无变化）
-  cmd39.handleSettingsPanelKey(key39('up'), s39); // 2=tokens
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // 3=context（回原位）
-  cmd39.handleSettingsPanelKey(key39('up'), s39); // 2=tokens
-  cmd39.handleSettingsPanelKey(key39('space'), s39); // 空格取消勾选 tokens
-  if (s39.settingsPanel!.items.find((it) => it.id === 'tokens')!.enabled) {
-    console.error('✗ 场景 39 空格未取消勾选');
+  // c) 新 helper 单元断言：sessionAvgRate / formatMiniBar / formatContextUsage / contextPercent
+  const avg39 = layout39.sessionAvgRate(
+    { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 },
+    { prompt: 10000, completion: 73700, total: 83700 },
+    null
+  );
+  if (avg39 !== 115) { // 73700 / 638.5s ≈ 115（排除首 token 等待的纯生成口径）
+    console.error(`✗ 场景 39 sessionAvgRate 错误: ${avg39}（应 115）`);
     process.exit(1);
   }
-  // ← 把 tokens 左移一位（selected 跟随）→ [speed, tokens, cache, context]，selected=1(tokens)
-  cmd39.handleSettingsPanelKey(key39('left'), s39);
-  const orderAfterLeft = s39.settingsPanel!.items.map((it) => it.id);
-  if (orderAfterLeft[1] !== 'tokens' || orderAfterLeft[2] !== 'cache') {
-    console.error(`✗ 场景 39 ← 排序错误: ${JSON.stringify(orderAfterLeft)}`);
+  // 全无计时数据 → 0（调用方隐藏，不造离谱峰值）
+  const avg039 = layout39.sessionAvgRate(
+    { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 },
+    { prompt: 1234, completion: 567, total: 1801 },
+    null
+  );
+  if (avg039 !== 0) {
+    console.error(`✗ 场景 39 零数据均值应为 0: ${avg039}`);
     process.exit(1);
   }
-  // → 移回 → [speed, cache, tokens, context]，selected=2(tokens)
-  cmd39.handleSettingsPanelKey(key39('right'), s39);
-  const orderAfterRight = s39.settingsPanel!.items.map((it) => it.id);
-  if (orderAfterRight[2] !== 'tokens') {
-    console.error(`✗ 场景 39 → 排序错误: ${JSON.stringify(orderAfterRight)}`);
+  // live 增量纳入均值：(73700+1500)/(638.5+2)s ≈ 117
+  const avgLive39 = layout39.sessionAvgRate(
+    { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 },
+    { prompt: 10000, completion: 73700, total: 83700 },
+    { streamTokens: 1500, liveGenMs: 2000 }
+  );
+  if (avgLive39 !== 117) {
+    console.error(`✗ 场景 39 live 增量均值错误: ${avgLive39}（应 117）`);
     process.exit(1);
   }
-  // `a` 循环切换对齐：center → right → left（面板工作副本，未保存不落 state）
-  cmd39.handleSettingsPanelKey(key39('a'), s39);
-  if (s39.settingsPanel!.align !== 'right') {
-    console.error(`✗ 场景 39 a 键对齐切换错误（应 center→right）: ${s39.settingsPanel!.align}`);
+  if (layout39.formatMiniBar(0) !== '░░░░░░░░░░' || layout39.formatMiniBar(100) !== '██████████' || layout39.formatMiniBar(35) !== '████░░░░░░') {
+    console.error(`✗ 场景 39 迷你条错误: ${layout39.formatMiniBar(35)}`);
     process.exit(1);
   }
-  cmd39.handleSettingsPanelKey(key39('a'), s39);
-  if (s39.settingsPanel!.align !== 'left') {
-    console.error(`✗ 场景 39 a 键对齐切换错误（应 right→left）: ${s39.settingsPanel!.align}`);
+  if (layout39.contextPercent(45000, 128000) !== 35 || layout39.contextPercent(0, 128000) !== 0 || layout39.contextPercent(100, 0) !== 0) {
+    console.error('✗ 场景 39 contextPercent 错误');
     process.exit(1);
   }
-  // 未保存：state.statuslineAlign 不变
-  if (s39.statuslineAlign !== 'center') {
-    console.error(`✗ 场景 39 未保存时对齐不应应用到 state: ${s39.statuslineAlign}`);
+  if (layout39.formatContextUsage(45000, 128000) !== '45K/128K (35%)' || layout39.formatContextUsage(300, 0) !== '300' || layout39.formatContextUsage(0, 128000) !== '') {
+    console.error(`✗ 场景 39 上下文用量文本错误: ${layout39.formatContextUsage(45000, 128000)}`);
     process.exit(1);
   }
-  // Esc 取消：关闭面板、不改变 state.statusline、不落盘意图
-  cmd39.handleSettingsPanelKey(key39('escape'), s39);
-  if (s39.settingsPanel !== null || s39.statuslineSave !== null || JSON.stringify(s39.statusline) !== JSON.stringify(['tokens', 'speed'])) {
-    console.error('✗ 场景 39 Esc 取消应关闭面板且不改配置');
-    process.exit(1);
-  }
-  if (s39.statuslineAlign !== 'center' || s39.statuslineAlignSave !== null) {
-    console.error('✗ 场景 39 Esc 取消后对齐不应改变');
-    process.exit(1);
-  }
-  // d) Enter 保存生效：state.statusline 按「启用 + 当前顺序」更新，statuslineSave 记录待落盘；
-  //    对齐（`a` 切到 right）随保存应用 + 记录 statuslineAlignSave
-  s39.statusline = ['speed', 'cache', 'tokens', 'context']; // 恢复默认全段
-  cmd39.openStatuslinePanel(s39); // items = [speed✓ cache✓ tokens✓ context✓]（STATUSLINE_SEGMENTS 顺序），selected=0
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=1 → cache
-  cmd39.handleSettingsPanelKey(key39('a'), s39); // align: center → right
-  cmd39.handleSettingsPanelKey(key39('space'), s39); // 取消 cache
-  cmd39.handleSettingsPanelKey(key39('down'), s39); // selected=2 → tokens
-  cmd39.handleSettingsPanelKey(key39('right'), s39); // tokens 与 context 交换 → [speed cache context tokens]，selected=3(tokens)
-  cmd39.handleSettingsPanelKey(key39('return'), s39);
-  const saved39 = s39.statusline;
-  if (s39.settingsPanel !== null || !s39.statuslineSave || JSON.stringify(s39.statuslineSave) !== JSON.stringify(saved39)) {
-    console.error(`✗ 场景 39 Enter 保存后状态错误: panel=${JSON.stringify(s39.settingsPanel)} save=${JSON.stringify(s39.statuslineSave)}`);
-    process.exit(1);
-  }
-  // 期望：cache 被取消（空格）；tokens 与 context 交换后启用项顺序 = speed context tokens
-  // （context 仍启用——排序不改变勾选态；←/→ 只移动顺序）
-  if (JSON.stringify(saved39) !== JSON.stringify(['speed', 'context', 'tokens'])) {
-    console.error(`✗ 场景 39 保存结果错误（应 speed/context/tokens）: ${JSON.stringify(saved39)}`);
-    process.exit(1);
-  }
-  // 对齐随保存生效：state.statuslineAlign = right  + statuslineAlignSave = right（待落盘）
-  if (s39.statuslineAlign !== 'right' || s39.statuslineAlignSave !== 'right') {
-    console.error(`✗ 场景 39 对齐未随保存生效: align=${s39.statuslineAlign} save=${s39.statuslineAlignSave}`);
-    process.exit(1);
-  }
-  // buildFooterStats 按新配置拼行（去掉 cache；context 移到 tokens 前）
-  s39.stats = { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 };
-  s39.tokens = { prompt: 10000, completion: 73700, total: 83700 };
-  s39.lastPromptTokens = 4200; // 当前上下文（context 段）
-  s39.contextLimit = 128000; // 模型 context 上限 → `上下文 4.2K/128K`
-  const statsLine39 = layout39.buildFooterStats(s39);
-  if (
-    !statsLine39.includes('首 token 6.5s · 115 tok/s') ||
-    !statsLine39.includes('上下文 4.2K/128K') ||
-    !statsLine39.includes('输入 10K · 输出 73.7K') ||
-    statsLine39.includes('缓存') ||
-    statsLine39.includes('LLM') ||
-    statsLine39.includes('轮 ·')
-  ) {
-    console.error(`✗ 场景 39 buildFooterStats 未按新配置拼行: ${JSON.stringify(statsLine39)}`);
-    process.exit(1);
-  }
-  // 单段配置（只留缓存）→ 只拼该段
-  s39.statusline = ['cache'];
-  if (layout39.buildFooterStats(s39) !== '缓存 97%') {
-    console.error(`✗ 场景 39 单段配置拼行错误: ${JSON.stringify(layout39.buildFooterStats(s39))}`);
-    process.exit(1);
-  }
-  // 全部取消 → 空串（状态行不显示）
-  s39.statusline = [];
-  if (layout39.buildFooterStats(s39) !== '') {
-    console.error('✗ 场景 39 空 statusline 应返回空串（不显示状态行）');
-    process.exit(1);
-  }
-  // e) 渲染：状态行面板经菜单浮层渲染（✓/☐ 勾选 + 对齐行 + 标题 + 操作提示）；
-  //    用高视口（30 行）避免面板与底部灰色块重叠把行字符交错（渲染在菜单浮层上）
-  const s39r = createTuiState();
-  s39r.version = '0.1.0';
-  s39r.model = 'mock';
-  s39r.statusline = ['speed', 'context']; // cache/tokens 未勾选 → ☐
-  cmd39.openStatuslinePanel(s39r);
-  const r39 = await render(s39r, 30);
-  const frame39 = r39.frame;
-  if (
-    !frame39.includes('设置：状态行') ||
-    !frame39.includes('› ✓ 首token/速率') ||
-    !frame39.includes('✓ 上下文') ||
-    !frame39.includes('☐ 缓存命中') ||
-    !frame39.includes('☐ 输入/输出') ||
-    !frame39.includes('空格 勾选/取消') ||
-    !frame39.includes('对齐:') // 对齐行（当前值居中高亮）
-  ) {
-    console.error('✗ 场景 39 状态行面板渲染错误（缺标题/勾选项/对齐行/提示行）');
-    console.log(frame39);
-    process.exit(1);
-  }
-  // 对齐行高亮当前值：默认 center → 「对齐: 左侧 / 居中 / 右侧」中 居中 为青色加粗；
-  // 按 a 切到 right → 右侧 高亮（chunks fg 断言）
-  const rows39p = sprRows39!(s39r.settingsPanel!, 44, 'zh');
-  const alignRow39 = rows39p.find((r) => r.chunks?.some((c) => c.text.includes('对齐')));
-  if (!alignRow39) {
-    console.error('✗ 场景 39 面板对齐行缺失');
-    process.exit(1);
-  }
-  const centerChunk = alignRow39.chunks!.find((c) => c.text === '居中');
-  if (!centerChunk || centerChunk.fg !== 'cyan' || !centerChunk.bold) {
-    console.error(`✗ 场景 39 居中未高亮: ${JSON.stringify(alignRow39.chunks)}`);
-    process.exit(1);
-  }
-  s39r.settingsPanel!.align = 'right';
-  const rows39p2 = sprRows39!(s39r.settingsPanel!, 44, 'zh');
-  const alignRow39b = rows39p2.find((r) => r.chunks?.some((c) => c.text.includes('对齐')));
-  const rightChunk = alignRow39b!.chunks!.find((c) => c.text === '右侧');
-  if (!rightChunk || rightChunk.fg !== 'cyan' || !rightChunk.bold) {
-    console.error(`✗ 场景 39 切 right 后右侧未高亮: ${JSON.stringify(alignRow39b!.chunks)}`);
-    process.exit(1);
-  }
-  // e2) 对齐即时生效：footer 统计行位置随 statuslineAlign 变化（左/中/右列偏移）
-  const t39a = await createTestRenderer({ width: 64, height: 20 });
-  const tree39a = mountTree(t39a.renderer, s39r, { withInput: true });
-  await t39a.renderOnce();
-  const statsLineCol39 = async (st: typeof s39r): Promise<number> => {
-    repaintTree(t39a.renderer, tree39a, st, { withInput: true });
-    await t39a.renderOnce(); // 测试渲染器需要显式重绘一帧（repaintTree 只更新树值）
-    return t39a.captureCharFrame().split('\n').find((l) => l.includes('首 token'))!.indexOf('首 token');
-  };
-  const colCenter39 = await statsLineCol39({ ...s39r });
-  s39r.statuslineAlign = 'right';
-  const colRight39 = await statsLineCol39(s39r);
-  s39r.statuslineAlign = 'left';
-  const colLeft39 = await statsLineCol39(s39r);
-  if (!(colLeft39 < colCenter39 && colCenter39 < colRight39)) {
-    console.error(`✗ 场景 39 对齐未生效: left=${colLeft39} center=${colCenter39} right=${colRight39}`);
-    process.exit(1);
-  }
-  s39r.statuslineAlign = 'center'; // 还原
   // f) persistStatuslineToConfig：写入配置文件 statusline + statuslineAlign 字段（纯 JSON 自动改写；JSONC 跳过）
   const dir39 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-snap39-'));
   const file39 = path.join(dir39, 'omni.json');
@@ -4360,7 +4234,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   fs.rmSync(dir39, { recursive: true, force: true });
-  console.log('✓ 场景 39 通过：/settings statusline（注册/面板勾选与排序/空格 勾选/←→ 排序/Enter 保存生效/持久化/渲染）');
+  console.log('✓ 场景 39 通过：状态行移除（无面板/无字段/设置项删除/helper 单测/持久化兼容保留）');
 
   // 场景 40：待发送消息管理（queue/steer 统一列表）——入队顺序（steer 插最前）/选择/
   // 排序/删除/编辑（handlePendingKey）/消费顺序（shift 天然打断优先）+ 渲染徽标与选中高亮
@@ -4865,26 +4739,31 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 缺失 key 未回退 key 本身');
     process.exit(1);
   }
-  // b) footer 统计行按语言：buildFooterStats 读 state.language 选 build/buildEn
+  // b) 模型行中部分段按语言：中文（输入/输出/缓存）· 英文（In/Out/Cache）
   const s43f = createTuiState();
-  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 0, cached: 900 };
+  s43f.cwd = '/w/s43';
+  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 2000, cached: 900 };
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
-  s43f.statusline = ['speed', 'cache'];
-  const zhLine43 = buildFooterStats(s43f);
-  if (!zhLine43.includes('首 token 0.5s') || !zhLine43.includes('缓存 30%')) {
-    console.error(`✗ 场景 43 中文统计行错误: ${zhLine43}`);
+  const t43f = await createTestRenderer({ width: 120, height: 20 });
+  const tree43f = mountTree(t43f.renderer, s43f, { withInput: true });
+  await t43f.renderOnce();
+  const zhLine43 = t43f.captureCharFrame();
+  if (!zhLine43.includes('250 tok/s') || !zhLine43.includes('缓存 30%') || !zhLine43.includes('输入 3K') || !zhLine43.includes('输出 500')) {
+    console.error(`✗ 场景 43 中文模型行中部错误`);
     process.exit(1);
   }
   s43f.language = 'en';
-  const enLine43 = buildFooterStats(s43f);
-  if (!enLine43.includes('First token 0.5s') || !enLine43.includes('Cache 30%') || zhLine43 === enLine43) {
-    console.error(`✗ 场景 43 英文统计行错误: ${enLine43}`);
+  repaintTree(t43f.renderer, tree43f, s43f, { withInput: true });
+  await t43f.renderOnce();
+  const enLine43 = t43f.captureCharFrame();
+  if (!enLine43.includes('Cache 30%') || !enLine43.includes('In 3K') || !enLine43.includes('Out 500') || zhLine43 === enLine43) {
+    console.error(`✗ 场景 43 英文模型行中部错误`);
     process.exit(1);
   }
   // c) 设置菜单含语言/主题/tokens/doctor 项 + 打开语言面板：高亮当前语言
   const s43 = createTuiState();
   openSettingsMenu(s43);
-  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 5 || s43.menu.options[1]?.value !== 'language' || s43.menu.options[2]?.value !== 'theme' || s43.menu.options[3]?.value !== 'tokens' || s43.menu.options[4]?.value !== 'doctor') {
+  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 4 || s43.menu.options[0]?.value !== 'language' || s43.menu.options[1]?.value !== 'theme' || s43.menu.options[2]?.value !== 'tokens' || s43.menu.options[3]?.value !== 'doctor') {
     console.error(`✗ 场景 43 设置菜单缺语言/主题/tokens/doctor 项: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
@@ -4940,15 +4819,16 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 approvalPanelRows 英文提示错误');
     process.exit(1);
   }
-  const stRows43 = settingsPanelRows({ items: [{ id: 'rounds', label: 'Rounds/Steps', enabled: true }], selected: 0 }, 44, 'en');
-  if (!stRows43.some((r) => r.text.includes('Settings: Status line')) || !stRows43.some((r) => r.text.includes('Space ·'))) {
-    console.error('✗ 场景 43 settingsPanelRows 英文错误');
+  // 设置面板已移除（settingsPanelRows 删除）：断言不再导出
+  const rows43mod = await import('../src/tui/rows.js');
+  if ('settingsPanelRows' in rows43mod) {
+    console.error('✗ 场景 43 settingsPanelRows 应已删除');
     process.exit(1);
   }
   // g) 联想 descriptionEn：25 条命令都配了英文描述（英文模式渲染层取 descriptionEn）
   //    /theme /tokens /doctor 已并入 /settings（二级菜单）——设置命令带完整英文描述
   const settingsCmd43 = findCommand43('settings');
-  if (!settingsCmd43?.descriptionEn || settingsCmd43.descriptionEn !== 'Settings (/settings statusline · /settings language · /settings theme · /settings tokens · /settings doctor)') {
+  if (!settingsCmd43?.descriptionEn || settingsCmd43.descriptionEn !== 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor)') {
     console.error('✗ 场景 43 settings 命令缺 descriptionEn');
     process.exit(1);
   }
@@ -5059,32 +4939,20 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 菜单点击未切换主题: ${s43.themeMode}`);
     process.exit(1);
   }
-  // m) 设置菜单点击转换链路（此前快照只测 openLanguageMenu/openStatuslinePanel 直达路径，
+  // m) 设置菜单点击转换链路（此前快照只测 openLanguageMenu 直达路径，
   //    未测 settings 菜单点击——用户反馈「点状态行没反应/点语言打开状态行操作页」的盲区）：
-  //    点「状态行」→ settingsPanel 接管（设置菜单关闭）；点「语言」→ menu 转换为语言面板
-  //    （不误关）；语言面板内再点击切换生效
+  //    4 项（状态行已移除）：点「语言」→ menu 转换为语言面板（不误关）；语言面板内再点击切换生效
   const { openSettingsMenu: openSettingsMenu43 } = await import('../src/tui/commands.js');
   openSettingsMenu43(s43); // 当前语言 en：菜单标题/选项应为英文
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43d = (tree43.menuOverlay!.top ?? 0) as number;
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, 3, 4, -1, -1])) {
+  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, 0, 1, 2, 3, -1, -1])) {
     console.error(`✗ 场景 43 设置菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
-  // 点「状态行」（top+1）→ 设置菜单关闭 + settingsPanel 打开
+  // 点「语言」（top+1）→ menu 转换为语言面板（不误关）
   handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43d + 1 }, tree43, s43, 64, noopPaint);
-  if (s43.menu !== null || s43.settingsPanel === null || s43.settingsPanel.items.length !== 4) {
-    console.error(`✗ 场景 43 点状态行未打开状态行编辑器: ${JSON.stringify({ menu: s43.menu, items: s43.settingsPanel?.items.length })}`);
-    process.exit(1);
-  }
-  // 点「语言」（重新打开设置菜单，top+2）→ menu 转换为语言面板（不误关）
-  s43.settingsPanel = null;
-  openSettingsMenu43(s43);
-  repaintTree(t43.renderer, tree43, s43, { withInput: true });
-  await t43.renderOnce();
-  const top43e = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43e + 2 }, tree43, s43, 64, noopPaint);
   if (s43.menu === null || s43.menu.id !== 'language') {
     console.error(`✗ 场景 43 点语言未转换到语言面板: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
@@ -5098,34 +4966,34 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 语言面板内点击未切换: ${JSON.stringify({ language: s43.language, menu: s43.menu })}`);
     process.exit(1);
   }
-  // 点「主题」（重新打开设置菜单，top+3）→ menu 转换为主题面板（/theme 并入 /settings 二级菜单）
+  // 点「主题」（重新打开设置菜单，top+2）→ menu 转换为主题面板（/theme 并入 /settings 二级菜单）
   openSettingsMenu43(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43h = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43h + 3 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43h + 2 }, tree43, s43, 64, noopPaint);
   if (s43.menu === null || s43.menu.id !== 'theme') {
     console.error(`✗ 场景 43 点主题未转换到主题面板: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
-  // 点「当次 token 统计」（重新打开设置菜单，top+4）→ 无编辑器面板：选择即切换开关 + 菜单关闭
+  // 点「当次 token 统计」（重新打开设置菜单，top+3）→ 无编辑器面板：选择即切换开关 + 菜单关闭
   const tokensBefore43 = s43.showTokens;
   openSettingsMenu43(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43i = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43i + 4 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43i + 3 }, tree43, s43, 64, noopPaint);
   if (s43.menu !== null || s43.showTokens === tokensBefore43) {
     console.error(`✗ 场景 43 点 tokens 未切换开关并关闭菜单: ${JSON.stringify({ menu: s43.menu, showTokens: s43.showTokens, before: tokensBefore43 })}`);
     process.exit(1);
   }
-  // 点「环境诊断」（重新打开设置菜单，top+5）→ 无编辑器面板且需 ctx 执行：
+  // 点「环境诊断」（重新打开设置菜单，top+4）→ 无编辑器面板且需 ctx 执行：
   // 只记录 doctorPending 意图 + 关闭菜单（interactive 每轮命令分发前消费执行诊断）
   openSettingsMenu43(s43);
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43j = (tree43.menuOverlay!.top ?? 0) as number;
-  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43j + 5 }, tree43, s43, 64, noopPaint);
+  handleTuiMouseEvent({ type: 'down', button: 0, x: 30, y: top43j + 4 }, tree43, s43, 64, noopPaint);
   if (s43.menu !== null || s43.doctorPending !== true) {
     console.error(`✗ 场景 43 点 doctor 未记录意图并关闭菜单: ${JSON.stringify({ menu: s43.menu, doctorPending: s43.doctorPending })}`);
     process.exit(1);
@@ -5829,6 +5697,7 @@ async function main(): Promise<void> {
     // a) 空状态渲染：横幅可见、统计行隐藏、状态栏隐藏
     const s47 = createTuiState();
     s47.model = 'mock';
+    s47.cwd = '/w/hero';
     s47.status = '模型 mock · 就绪';
     const t47 = await createTestRenderer({ width: 64, height: 20 });
     const tree47 = mountTree(t47.renderer, s47, { withInput: true });
@@ -5858,6 +5727,11 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 47 hero 下状态栏不应显示:\n${frame47}`);
       process.exit(1);
     }
+    // 初始态（未发送消息）左侧不显示文件夹
+    if (frame47.includes('📁')) {
+      console.error(`✗ 场景 47 hero 下不应显示文件夹:\n${frame47}`);
+      process.exit(1);
+    }
     // 输入区垂直居中：灰色块首行 y 应明显高于底部（20 行视口下 < 16）
     const grayTopY47 = frame47.split('\n').findIndex((l) => l.includes('输入消息'));
     if (grayTopY47 < 0 || grayTopY47 >= 16) {
@@ -5883,12 +5757,12 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 47 hero 输入区未收窄到 75%（╮ 在最后列 ${lastCol47}，期望 <57 即有左右留白）`);
       process.exit(1);
     }
-    // b) 首条消息进入 → 退出 hero：横幅隐藏、统计行恢复、状态栏恢复
+    // b) 首条消息进入 → 退出 hero：横幅隐藏、输入区模型行恢复（含左侧文件夹）
     pushLine(s47, { kind: 'user', text: '你好' });
     repaintTree(t47.renderer, tree47, s47, { withInput: true });
     await t47.renderOnce();
     const frame47b = t47.captureCharFrame();
-    if (tree47.omniTitle!.visible || tree47.infoRow?.visible === false || !frame47b.includes('首 token')) {
+    if (tree47.omniTitle!.visible || !frame47b.includes('/w/hero')) {
       console.error(`✗ 场景 47 首条消息后未退出 hero:\n${frame47b}`);
       process.exit(1);
     }
@@ -5972,12 +5846,12 @@ async function main(): Promise<void> {
   console.log('✓ 场景 48 通过：右上角 toast（拖选复制/模型切换/命令结果/错误统一提示）');
 
   // =========================================================================
-  // 场景 49：流式实时 TPS 速率与用量高精度计算
+  // 场景 49：会话平均速率 + 流式增量暂存 + 每轮首 token
   // =========================================================================
   {
-    console.log('=== 场景 49：流式实时 TPS 速率与用量高精度计算 ===');
+    console.log('=== 场景 49：会话平均速率与每轮首 token ===');
     const { estimateTokens } = await import('../src/agent/messages.js');
-    const { buildFooterStats } = await import('../src/tui/layout.js');
+    const layout49 = await import('../src/tui/layout.js');
     const { TuiOutput } = await import('../src/tui/output.js');
 
     // 1. estimateTokens 高精度分词
@@ -5990,35 +5864,22 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // 2. TuiState + footer 实时渲染
+    // 2. sessionAvgRate：沉淀 100tok/2s=50；live 增量 (100+150)/(2+1)s=83
     const s49 = createTuiState();
     s49.stats.firstTokenCount = 1;
     s49.stats.firstTokenSum = 1000;
     s49.stats.genMs = 2000;
     s49.tokens.completion = 100;
-
-    // 非流式状态（历史沉淀统计）
-    const idleStats = buildFooterStats(s49);
-    if (!idleStats.includes('50 tok/s') || !idleStats.includes('输出 100')) {
-      console.error(`✗ 场景 49 非流式 footer 统计错误: ${idleStats}`);
+    if (layout49.sessionAvgRate(s49.stats, s49.tokens, null) !== 50) {
+      console.error('✗ 场景 49 沉淀均值错误（应 50）');
+      process.exit(1);
+    }
+    if (layout49.sessionAvgRate(s49.stats, s49.tokens, { streamTokens: 150, liveGenMs: 1000 }) !== 83) {
+      console.error('✗ 场景 49 live 增量均值错误（应 83）');
       process.exit(1);
     }
 
-    // 流式进行中（底部为 session 累计平均含 live 增量；瞬时速率走模型行 footerTps）
-    s49.liveStream = {
-      liveGenMs: 1000,
-      streamTokens: 150,
-      tps: 150,
-      firstTokenMs: 600,
-    };
-    const liveStats = buildFooterStats(s49);
-    // 累计平均：(100+150)/(2000+1000)ms = 250/3s ≈ 83 tok/s；输出含 live 增量 250；首 token (1000+600)/2 = 0.8s
-    if (!liveStats.includes('83 tok/s') || !liveStats.includes('输出 250') || !liveStats.includes('首 token 0.8s')) {
-      console.error(`✗ 场景 49 流式 live footer 统计错误: ${liveStats}`);
-      process.exit(1);
-    }
-
-    // 3. TuiOutput 生命周期
+    // 3. TuiOutput 生命周期：流式增量暂存 → lap 折入累计并清零 → 每轮首 token 进 turn-footer
     const mockSession = {
       paint: async () => {},
       stop: async () => {},
@@ -6026,31 +5887,63 @@ async function main(): Promise<void> {
       onKeyPress: () => () => {},
     };
     const out49 = new TuiOutput(s49, { showThinking: true }, mockSession);
-    out49.onStreamProgress({
-      liveGenMs: 500,
-      streamTokens: 60,
-      tps: 120,
-      firstTokenMs: 500,
-    });
-    if (!s49.liveStream || s49.liveStream.tps !== 120) {
-      console.error('✗ 场景 49 onStreamProgress 未正确写入 liveStream');
+    out49.onTurnStart();
+    out49.onStreamProgress({ liveGenMs: 500, streamTokens: 60, tps: 120, firstTokenMs: 500 });
+    if (s49.liveTokens !== 60 || s49.liveGenMs !== 500) {
+      console.error('✗ 场景 49 onStreamProgress 未暂存流式增量');
       process.exit(1);
     }
-    if (s49.lastTps !== 120) {
-      console.error(`✗ 场景 49 瞬时速率未保留 lastTps: ${s49.lastTps}`);
+    out49.onLlmLap(1000, 500, 500);
+    if (s49.liveTokens !== 0 || s49.liveGenMs !== 0) {
+      console.error('✗ 场景 49 onLlmLap 未清零流式暂存（会重复计数）');
       process.exit(1);
     }
-    out49.onAnswerEnd();
-    if (s49.liveStream !== null) {
-      console.error('✗ 场景 49 onAnswerEnd 未清空 liveStream');
-      process.exit(1);
-    }
-    if (s49.lastTps !== 120) {
-      console.error(`✗ 场景 49 会话内瞬时速率未保留: ${s49.lastTps}`);
+    out49.onUsage({ prompt: 1000, completion: 200, total: 1200, cached: 0 });
+    out49.onTurnEnd();
+    const tokLine49 = s49.lines.find((l) => l.kind === 'tokens');
+    if (!tokLine49?.tokens || tokLine49.tokens.firstTokenAvg !== 500) {
+      console.error(`✗ 场景 49 turn-footer 首 token 均值错误: ${JSON.stringify(tokLine49?.tokens)}`);
       process.exit(1);
     }
   }
-  console.log('✓ 场景 49 通过：流式实时 TPS 速率与用量高精度计算');
+  console.log('✓ 场景 49 通过：会话平均速率 + 流式增量暂存 + 每轮首 token');
+
+  // =========================================================================
+  // 场景 50：命令/设置面板不污染会话流（提示只进面板与状态栏，不写 state.lines）
+  // =========================================================================
+  {
+    console.log('=== 场景 50：面板提示不进会话流 ===');
+    const cmd50 = await import('../src/tui/commands.js');
+    const s50 = createTuiState();
+    pushLine(s50, { kind: 'user', text: '你好' });
+    const linesBefore = s50.lines.length;
+    // 打开各类面板：主题/权限/语言/设置菜单/联想（均只应改 menu/status，不碰 lines）
+    cmd50.openThemeMenu(s50);
+    cmd50.openPermissionMenu(s50);
+    cmd50.openLanguageMenu(s50);
+    cmd50.openSettingsMenu(s50);
+    s50.cmdSuggest = { query: '', items: ['theme', 'exit'], top: 0, selected: 0, window: 2 };
+    s50.mention = { atIndex: 0, query: '', items: ['src/'], top: 0, selected: 0, window: 1 };
+    if (s50.lines.length !== linesBefore) {
+      console.error(`✗ 场景 50 打开面板污染了会话流: ${linesBefore} → ${s50.lines.length}`);
+      process.exit(1);
+    }
+    // /session 空列表走 warn 面板（pushCmdLine → cmdPanel 浮层），同样不进 lines
+    // （隔离 XDG 到空目录，保证无历史会话命中空列表分支）
+    const oldXdg50 = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-snap50-'));
+    await cmd50.openSessionMenu(s50, null);
+    process.env.XDG_CONFIG_HOME = oldXdg50;
+    if (s50.lines.length !== linesBefore) {
+      console.error('✗ 场景 50 /session 空列表污染了会话流');
+      process.exit(1);
+    }
+    if (!s50.cmdPanel) {
+      console.error('✗ 场景 50 /session 空列表提示应进命令面板浮层');
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 50 通过：面板提示不进会话流');
 
   console.log('\n✓✓ TUI 快照断言全部通过');
   process.exit(0);

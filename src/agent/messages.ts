@@ -18,7 +18,8 @@ export interface AssistantUsage {
 }
 
 /** 把流式累积的 tool_calls（按 index 分组）组装成 assistant 消息。
- *  reasoning / usage / model / durMs / genMs 可选——供持久化用（web 刷新后恢复 thinking 与 turn-footer 展示），
+ *  reasoning / usage / model / durMs / genMs / firstTokenMs 可选——供持久化用
+ *  （web 刷新后恢复 thinking 与 turn-footer 展示，含每轮首 token 均值），
  *  调用方应在发送到 API 前去除（loop.ts 的 requestMessages 负责剥离）。
  *  subagent 等不传这些字段时，其 assistant 消息不带该字段——不会被 API 拒绝。 */
 export function buildAssistantMessage(
@@ -31,6 +32,7 @@ export function buildAssistantMessage(
     model?: string;
     durMs?: number;
     genMs?: number;
+    firstTokenMs?: number | null;
   }
 ): ChatCompletionAssistantMessageParam {
   const assistantMsg: ChatCompletionAssistantMessageParam = {
@@ -64,10 +66,14 @@ export function buildAssistantMessage(
   if (typeof meta?.genMs === 'number' && meta.genMs > 0) {
     (assistantMsg as unknown as Record<string, unknown>).genMs = Math.round(meta.genMs);
   }
+  // 首 token 延迟随消息持久化——恢复历史时 turn-footer 的「首 token」段有数可算
+  if (typeof meta?.firstTokenMs === 'number' && meta.firstTokenMs > 0) {
+    (assistantMsg as unknown as Record<string, unknown>).firstTokenMs = Math.round(meta.firstTokenMs);
+  }
   return assistantMsg;
 }
 
-const NON_STANDARD_FIELDS = ['reasoning', 'reasoningMs', 'usage', 'model', 'durMs', 'genMs'];
+const NON_STANDARD_FIELDS = ['reasoning', 'reasoningMs', 'usage', 'model', 'durMs', 'genMs', 'firstTokenMs'];
 
 /** 从消息中剥离非标准字段（reasoning / reasoningMs / usage / model 等），返回新数组（不修改原数组）。
  *  用于 API 发送前清洗——避免非标准字段被网关拒绝。 */

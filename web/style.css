@@ -508,9 +508,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 @keyframes send-ring-spin { to { transform: rotate(360deg); } }
 .composer-note { width: 100%; max-width: var(--composer-width); min-height: 16px; padding-top: 5px; color: var(--text-caption); font-size: 11px; line-height: 16px; text-align: center; }
-/* 输入区下方状态行（token 统计，同 TUI footer stats；段位由设置 → 状态栏配置） */
-.composer-status { width: 100%; max-width: var(--composer-width); margin: 0 auto; padding-top: 3px; color: var(--text-caption); font: 11px/16px var(--mono); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.empty-session .composer-status { display: none; }
+/* 输入区下方元信息行：左[文件夹/loading] · 中[输入输出/缓存] …… 右[上下文用量] */
+.composer-meta { display: flex; align-items: center; gap: 8px; width: 100%; max-width: var(--composer-width); margin: 0 auto; padding-top: 3px; color: var(--text-caption); font: 11px/16px var(--mono); white-space: nowrap; overflow: hidden; }
+.empty-session .composer-meta { display: none; }
+.meta-mid { flex: none; overflow: hidden; text-overflow: ellipsis; opacity: .9; margin-left: auto; }
+.meta-ctx { display: inline-flex; align-items: center; gap: 7px; flex: none; font-weight: 600; }
+.meta-mid.hidden + .meta-ctx { margin-left: auto; }
+/* 上下文渐变进度条：宽度过渡 + 流光动画 */
+.ctx-track { width: 72px; height: 6px; border-radius: 999px; background: var(--line-2); overflow: hidden; flex: none; }
+.ctx-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--ctx-color, var(--blue, #3b82f6)), color-mix(in srgb, var(--ctx-color, var(--blue, #3b82f6)) 55%, white)); box-shadow: 0 0 8px color-mix(in srgb, var(--ctx-color, var(--blue, #3b82f6)) 55%, transparent); transition: width .5s ease; position: relative; overflow: hidden; }
+.ctx-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 25%, rgba(255, 255, 255, .5) 50%, transparent 75%); transform: translateX(-100%); animation: ctx-shine 2.4s ease-in-out infinite; }
+@keyframes ctx-shine { 55% { transform: translateX(100%); } 100% { transform: translateX(100%); } }
 .hero-heading, .hero-workspace, .hero-glow { display: none; }
 .empty-session .conversation-header { display: none; }
 .empty-session .scroll-body { justify-content: center; overflow-y: auto; }
@@ -564,50 +572,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .model-pill #composer-model-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden; }
 .model-pill #composer-model-label > span { flex: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .model-pill #composer-model-label > span:first-child { flex: 1 1 auto; }
-/* 瞬时速率（模型 pill 内右侧常驻，流式生成中显示实时 tok/s） */
-.model-pill .live-tps { color: var(--blue, #3b82f6); font-family: var(--mono); font-size: 11px; font-weight: 600; }
-/* 胶囊内各段统一用 · 分隔（模型名内已是 ·，context/速率经 ::before 补；hidden 时整段含分隔符一起隐藏） */
-.model-pill #composer-ctx-ring-wrap:not(.hidden)::before,
-.model-pill .live-tps:not(.hidden)::before { content: '·'; opacity: .45; }
-.model-pill .live-tps:not(.hidden)::before { margin-right: 6px; }
-
-/* 上下文容量微圆环（模型 pill 内左侧常驻） */
-.ctx-ring-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 3.5px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ring-color, var(--text-tertiary));
-  margin-right: 2px;
-  flex-shrink: 0;
-  user-select: none;
-}
-.ctx-ring-wrap.hidden { display: none; }
-.ctx-ring-svg {
-  width: 14px;
-  height: 14px;
-  transform: rotate(-90deg);
-  display: block;
-  flex-shrink: 0;
-}
-.ctx-ring-bg {
-  fill: none;
-  stroke: var(--line-2, #3f3f46);
-  stroke-width: 4;
-  opacity: .6;
-}
-.ctx-ring-fill {
-  fill: none;
-  stroke: var(--ring-color, var(--blue, #3b82f6));
-  stroke-width: 4;
-  stroke-linecap: round;
-  transition: stroke-dasharray .3s var(--ease), stroke .2s var(--ease);
-}
-.ctx-ring-label {
-  line-height: 1;
-  font-weight: 500;
-}
+/* 会话平均速率（模型 pill 内，`· 167 tok/s`；无数据时隐藏） */
+.model-pill .avg-rate { color: var(--text-caption); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.model-pill .avg-rate:not(.hidden)::before { content: '·'; opacity: .45; margin-right: 6px; }
 
 /* 旧类名兼容隐藏（计划开关与旧设置按钮） */
 .plan-toggle.hidden, .mode-button.hidden { display: none !important; }

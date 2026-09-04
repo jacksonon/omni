@@ -739,12 +739,13 @@ export async function runAgent(
     const genMs = firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined;
 
     // 组装 assistant 消息并追加进历史（reasoning + reasoningMs + usage + model 一并持久化——
-    // web/TUI/console 恢复后回放 thinking 块与 turn-footer 统计）
+    // web/TUI/console 恢复后回放 thinking 块与 turn-footer 统计；firstTokenMs 落盘供 turn-footer 首 token 段）
     const assistantMsg = buildAssistantMessage(content, toolCalls, reasoning, reasoningMs, {
       usage: usageMeta,
       model,
       durMs,
       genMs,
+      firstTokenMs: firstTokenAt !== null ? firstTokenAt - llmT0 : null,
     });
     messages.push(assistantMsg);
 
