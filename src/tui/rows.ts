@@ -541,6 +541,13 @@ export function buildBody(state: TuiState, width: number): Row[] {
       if (lastRow && lastRow.cardId !== undefined && lastRow.cardId !== line.card.id) {
         pushGap(1);
       }
+      // ask_user 不渲染成色块卡片（用户要求无灰色背景）：问题在输入区上方的提问面板里
+      // 已有完整交互（问题/选项/自定义输入），流内只留一行 dim 问题记录——无底色，
+      // 与其它非主要模块（思考/meta）融合
+      if (line.card.name === 'ask_user') {
+        body.push({ text: line.card.summary, style: rowStyle('meta'), cardId: line.card.id });
+        continue;
+      }
       // 工具调用卡片：颜色背景块（命令/执行缩略/结果缩略），收起/展开由
       // card.expanded 决定（点击切换）。执行中（status=running）时把当前 spinner
       // 帧传进卡片——执行中行只显示动画 loading、**无「执行中…」文字**（用户要求）；

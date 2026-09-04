@@ -5778,6 +5778,23 @@ async function main(): Promise<void> {
     }
   }
   console.log('✓ 场景 45 通过：ask_user 竖向勾选列表（队列串行/渲染与预算/↑↓空格勾选/Enter 提交/自定义/鼠标/工具结果）');
+  // f) 流内 ask_user 工具**不渲染成色块卡片**（用户要求无灰色背景）：一行 dim 问题记录，
+  //    无任何带 bg 的 chunk（问题已在输入区上方面板交互）
+  {
+    const s45c = createTuiState();
+    pushLine(s45c, { kind: 'user', text: '你好' });
+    pushLine(s45c, {
+      kind: 'tool',
+      text: '? 下一步做什么？',
+      card: { id: 1, name: 'ask_user', summary: '? 下一步做什么？', status: 'ok', output: ['已选择：写代码'], expanded: false },
+    });
+    const rows45c = buildBody(s45c, 80);
+    const ask45c = rows45c.filter((r) => r.cardId !== undefined);
+    if (ask45c.length !== 1 || !ask45c[0]!.text.includes('下一步做什么') || ask45c[0]!.chunks?.some((c) => c.bg)) {
+      console.error(`✗ 场景 45 ask_user 流内行应无底色纯文本: ${JSON.stringify(ask45c)}`);
+      process.exit(1);
+    }
+  }
 
   console.log('=== 场景 46：Ctrl+X 前缀快捷键（opencode 风格）===');
   const { TUI_SHORTCUTS, matchShortcutKey } = await import('../src/tui/shortcuts.js');

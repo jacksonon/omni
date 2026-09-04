@@ -2,6 +2,7 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-04（第二百四十五次）**：**流内 ask_user 工具不再渲染成色块卡片**——用户反馈「ask user 还是有灰色背景」（截图实锤：流内 `? 问题` 行带整行底色块——那是 ask_user 的工具卡片，244 次只去了面板底色）。改动（`rows.ts`）：`card.name === 'ask_user'` 分支跳过 `toolCardLines` 色块渲染 → 一行 dim 问题记录（`card.summary`，无任何 bg chunk，与思考/meta 融合；问题交互已在输入区上方面板完成）。**快照**：场景 45 新增 f 断言（ask_user 卡 → 单行无 bg）。**验证**：typecheck ✓ · tui:snapshot 全绿。
 - **2026-09-04（第二百四十四次）**：**ask 面板补输入区同款底色**——用户要求「ask 需要一个背景色，像 command 的面板一样」（241 次去底色去过头了）。改动（`render.ts`）：askBox 挂 `backgroundColor: theme.footerBg`（命令/菜单面板同款输入区底色，无边框保持扁平），refresh 每帧跟随主题切换；快照场景 45 断言 askBox 底色 = footerBox 底色（toInts 对比）。**验证**：typecheck ✓ · tui:snapshot 全绿。
 - **2026-09-04（第二百四十三次）**：**对话流 Build/Plan 头行与输入区模式色一致**——用户要求「tui 对话流中的 build/plan 颜色需要和输入区域的 build/plan 模式颜色一致」。改动：a) `state.ts` `TurnTokens` 新增 `plan?: boolean`（创建时快照——历史轮不随当前模式漂移）；b) `output.ts` tokens 行创建时写入 `plan: state.planMode`；c) `rows.ts` tokens 头行：`Build`（原 accentBlue 蓝，与输入区 Build 青 #22d3ee 不一致）→ 按本轮模式快照显示 `Plan`/`Build` 标签 + `theme.modePlan`/`theme.modeBuild` 色（与模型行前缀同源）。**快照**：场景 13m 新增——Build 头行 = modeBuild 青、plan=true 头行 = Plan + modePlan 洋红。**验证**：typecheck ✓ · tui:snapshot 全绿。
 
