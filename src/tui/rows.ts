@@ -683,12 +683,14 @@ export function buildBody(state: TuiState, width: number): Row[] {
         ? !state.collapsedThinking.has(li)
         : state.expandedThinking.has(li);
       if (expanded) {
-        // 展开态头行（向右缩进 2 格，不与正文顶格）：`  - Thought: · 2.8s` / `  ⠋ Thought: · 2.8s`
+        // 展开态头行（向右缩进 2 格，不与正文顶格）：`  - Thought: · 2.8s` / `  ⠹ Thought: · 2.8s`
         const time = line.thinkingMs != null ? ` · ${formatToolDur(line.thinkingMs)}` : '';
+        // 思考中恒显示 loading 动画（用户要求不显示沙漏 ⏳）：spinnerIndex 空闲时（流式
+        // reasoning 阶段 onStreamStart 已停 spinner）回退会话级 loading 帧（200ms 定时器照转）
         const prefix = line.thinkingRunning
           ? state.spinnerIndex >= 0
             ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
-            : '⏳'
+            : SPINNER_FRAMES[Math.max(0, state.loadingIndex) % SPINNER_FRAMES.length]
           : '-';
         body.push({
           text: `  ${prefix} Thought:${time}`,
@@ -719,11 +721,12 @@ export function buildBody(state: TuiState, width: number): Row[] {
           }
         }
       } else {
-        // 收起态头行（向右缩进 2 格）：`  + Thought:` / `  ⠋ Thought:`
+        // 收起态头行（向右缩进 2 格）：`  + Thought:` / `  ⠹ Thought:`（思考中恒 loading
+        // 动画——不显示沙漏 ⏳，spinnerIndex 空闲时回退会话级 loading 帧）
         const prefix = line.thinkingRunning
           ? state.spinnerIndex >= 0
             ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length]
-            : '⏳'
+            : SPINNER_FRAMES[Math.max(0, state.loadingIndex) % SPINNER_FRAMES.length]
           : '+';
         body.push({
           text: `  ${prefix} Thought:`,

@@ -1763,6 +1763,19 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 21 思考完头行应为 - Thought: · time: ${JSON.stringify(doneHead21?.text)}`);
     process.exit(1);
   }
+  // a2c) **思考中恒 loading 动画（不显示沙漏 ⏳）**（用户要求）：spinnerIndex=-1（流式
+  //      reasoning 阶段 onStreamStart 已停 spinner）时回退会话级 loading 帧——仍为 spinner 帧
+  s21a2.lines[0]!.thinkingRunning = true;
+  s21a2.spinnerIndex = -1;
+  s21a2.loadingIndex = 5;
+  const rows21a2e = computeRows(s21a2, { height: 20, width: 64 }, { withInput: true });
+  const runHead21e = rows21a2e.find((r) => r.text.includes('Thought:'));
+  const loadChar21e = SPINNER_FRAMES[5 % SPINNER_FRAMES.length];
+  if (!runHead21e || !runHead21e.text.includes(`${loadChar21e} Thought:`) || runHead21e.text.includes('⏳')) {
+    console.error(`✗ 场景 21 思考中 spinner 空闲应回退 loading 帧动画（不显示 ⏳）: ${JSON.stringify(runHead21e?.text)}`);
+    process.exit(1);
+  }
+  s21a2.spinnerIndex = 3; // 还原（后续 a2b 收起态断言用）
   // a2b) **收起态（点击单条收起）思考中 = loading 而非 + 号**（用户要求「收起时正在思考，
   //      左侧不显示 + 号，而是应该显示 loading」）：collapsedThinking 记录该条 + running
   //      → 头行 `⠸ Thought:`（spinner 帧，无时间）；思考完 → `+ Thought:`
