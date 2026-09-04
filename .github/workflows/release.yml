@@ -119,15 +119,32 @@ jobs:
           # 防“bin 缺失/二进制损坏/命名错位”静默发布
           # （平台包走 optionalDependency，装不上 npm 不报错，
           #  用户侧 omni 会以“平台包未安装”暴露）
+          # publish 与 install 间隔极短时 registry CDN 未同步会 404（v0.7.13 首跑秒败
+          # 的根因）——区分两种失败：安装失败按同步延迟轮询重试（~4 分钟），
+          # 安装成功但 bin 缺失/不可执行是真打包缺陷，立即失败并打印目录便于诊断
           VER=$(node -p "require('./package.json').version")
           PKG_NAME=$(node -p "require('./packages/npm/${{ matrix.npmPkg }}/package.json').name")
           TEST_PREFIX=$(mktemp -d)
-          npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org >/dev/null 2>&1
+          trap 'rm -rf "$TEST_PREFIX"' EXIT
           # 平台包 bin 路径经 npm root 推导（Windows 全局布局无 lib/ 层，不硬编码）
-          STEM="$(npm root -g --prefix "$TEST_PREFIX")/$PKG_NAME/bin/${{ matrix.binName }}"
-          test -x "$STEM" || { echo "✘ 平台包 bin 缺失或不可执行: $STEM"; rm -rf "$TEST_PREFIX"; exit 1; }
-          "$STEM" --version
-          rm -rf "$TEST_PREFIX"
+          ROOT="$(npm root -g --prefix "$TEST_PREFIX")"
+          STEM="$ROOT/$PKG_NAME/bin/${{ matrix.binName }}"
+          for i in $(seq 1 16); do
+            if npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              if [ -x "$STEM" ]; then
+                "$STEM" --version
+                exit 0
+              fi
+              echo "✘ 平台包安装成功但 bin 缺失或不可执行: $STEM"
+              ls -la "$ROOT/$PKG_NAME" 2>/dev/null || true
+              ls -la "$ROOT/$PKG_NAME/bin" 2>/dev/null || true
+              exit 1
+            fi
+            echo "… registry 未同步（第 $i/16 次），15s 后重试 $PKG_NAME@$VER"
+            sleep 15
+          done
+          echo "✘ 重试超时：registry 上始终取不到 $PKG_NAME@$VER"
+          exit 1
 
       - name: npm pack (omni-<version>.tgz, linux-x64 only)
         if: matrix.artifact == 'omni-linux-x64'
