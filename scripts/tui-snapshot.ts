@@ -627,19 +627,19 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 12 通过：多行命令折叠为单行摘要 + 卡片色块完整不乱码');
 
-  // 场景 13：输入区模型行（左文件夹 · 模式/模型/均值/输入输出/缓存 …… 右上下文用量）
+  // 场景 13：输入区模型行（模式/模型/均值 + loading）+ 灰块外底行（左文件夹 …… 右输入/输出 · 缓存 · 上下文）
   const s13 = createTuiState();
   s13.version = '0.1.0';
   s13.model = 'grok-4.5';
   s13.cwd = '/w/s13'; // 确定性：左侧显示全路径，不受执行机器目录名影响
   s13.tokens = { prompt: 1234, completion: 567, total: 1801 };
-  s13.stats.cached = 617; // 有缓存数据；64 列下按预算隐藏（缓存→输入输出→上下文顺序）
+  s13.stats.cached = 617; // 有缓存数据；64 列下底行全显，超窄（24 列）按预算隐藏（缓存→输入输出顺序）
   pushLine(s13, { kind: 'user', text: '你好' });
   s13.status = '任务完成';
   const r13 = await render(s13);
   console.log('=== 场景 13：输入区模型行（窄屏按序隐藏）===');
   console.log(r13.frame);
-  // 64 列：左侧 + 模型 + 输入输出 + 缓存全显；首 token 只在每轮 Build 行，不在输入区
+  // 64 列：底行 = 文件夹 + 输入/输出 + 缓存全显；首 token 只在每轮 Build 行，不在输入区
   const checks13 = ['grok-4.5', '/w/s13', '输入 1.2K', '输出 567', '缓存 50%'];
   const missing13 = checks13.filter((c) => !r13.frame.includes(c));
   if (missing13.length) {
@@ -652,18 +652,30 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  // 44 列窄屏：超宽按 缓存→输入输出→上下文 顺序隐藏，左侧与模型恒保留
+  // 44 列窄屏：模型行只余 模式/模型/级别（输入输出/缓存已移入灰块外底行右侧，
+  // 44 列下底行仍放得下——左侧文件夹截断保尾部）；模型恒保留
   const t13n = await createTestRenderer({ width: 44, height: 20 });
   mountTree(t13n.renderer, s13, { withInput: true });
   await t13n.renderOnce();
   const frame13n = t13n.captureCharFrame();
-  if (!frame13n.includes('grok-4.5') || !frame13n.includes('/w/s13')) {
-    console.error('✗ 场景 13 窄屏左侧与模型被隐藏（应恒保留）');
+  const checks13n = ['grok-4.5', '/w/s13', '输入 1.2K', '输出 567', '缓存 50%'];
+  const missing13n = checks13n.filter((c) => !frame13n.includes(c));
+  if (missing13n.length) {
+    console.error(`✗ 场景 13 窄屏缺少: ${missing13n.join(', ')}`);
+    process.exit(1);
+  }
+  // 24 列超窄：右侧段放不下（文件夹最小 8 列）→ 按 缓存→输入输出 顺序隐藏
+  const t13x = await createTestRenderer({ width: 24, height: 20 });
+  mountTree(t13x.renderer, s13, { withInput: true });
+  await t13x.renderOnce();
+  const frame13x = t13x.captureCharFrame();
+  if (!frame13x.includes('grok-4.5') || !frame13x.includes('/w/s13')) {
+    console.error('✗ 场景 13 超窄屏左侧与模型被隐藏（应恒保留）');
     process.exit(1);
   }
   for (const ban of ['缓存 50%', '输入 1.2K', '输出 567']) {
-    if (frame13n.includes(ban)) {
-      console.error(`✗ 场景 13 窄屏不应显示「${ban}」（应按预算隐藏）`);
+    if (frame13x.includes(ban)) {
+      console.error(`✗ 场景 13 超窄屏不应显示「${ban}」（应按预算隐藏）`);
       process.exit(1);
     }
   }
@@ -691,8 +703,8 @@ async function main(): Promise<void> {
   out13.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
   await out13.flush();
   const frame13 = t13b.captureCharFrame();
-  // 模型行中部 = 会话平均（输出 350 / 生成耗时 0.5s = 700 tok/s，排除首 token 等待）· 输入输出 · 缓存 77%；
-  // 右侧 = 迷你条 + 上下文（最后一次请求 prompt 300，无上限只显示用量）
+  // 模型行 = 会话平均（输出 350 / 生成耗时 0.5s = 700 tok/s，排除首 token 等待）；
+  // 灰块外底行右侧 = 输入/输出 · 缓存 77% + 迷你条 + 上下文（最后一次请求 prompt 300，无上限只显示用量）
   for (const want of ['700 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '░░░░░░░░░░ 300']) {
     if (!frame13.includes(want)) {
       console.error(`✗ 场景 13 统计累计不符，缺少「${want}」\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
@@ -707,7 +719,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 13 turn-footer 缺少首 token 段`);
     process.exit(1);
   }
-  // 用户示例格式验证（模型行中部 + 右侧；均值 = 输出 44.2K / 生成耗时 349.1s ≈ 127）
+  // 用户示例格式验证（底行右侧 + 模型行；均值 = 输出 44.2K / 生成耗时 349.1s ≈ 127）
   const s13c = createTuiState();
   s13c.model = 'mock';
   s13c.cwd = '/w/s13';
@@ -726,7 +738,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-  console.log('✓ 场景 13 通过：输入区模型行（窄屏隐藏/事件累计/完整示例格式）渲染正确');
+  console.log('✓ 场景 13 通过：模型行 + 底行输入输出/缓存/上下文（44 全显/24 超窄隐藏/事件累计/完整示例格式）渲染正确');
 
   // 场景 14：用户消息左侧蓝色细线（▍≈3px）+ 白色文本 + 灰色背景——折行后每行都保留
   const s14 = createTuiState();
@@ -989,15 +1001,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   s15.reasoningEffort = 'medium'; // 还原，后续 loading 断言不受影响
-  // b2) 左侧文件夹 / loading（回答中隐藏文件夹只显示 spinner，结束恢复）：
-  //    未运行显示全路径；运行中只显示 spinner 帧；结束恢复文件夹
-  if (!tree15.metaLeft) {
-    console.error('✗ 场景 15 footerLeft 节点未创建');
+  // b2) loading 移入模型行速率右侧（`· ⠹ esc interrupt`），灰块外底行左侧恒显示文件夹：
+  //    未运行显示全路径、loading 段隐藏；运行中模型行显示 spinner+esc 打断提示、左侧仍显示文件夹；结束 loading 消失
+  if (!tree15.metaLeft || !tree15.footerLoad) {
+    console.error('✗ 场景 15 metaLeft / footerLoad 节点未创建');
     process.exit(1);
   }
   const leftText15 = (): string => JSON.stringify(tree15.metaLeft?.content) ?? '';
   if (!leftText15().includes('/w/omni')) {
     console.error(`✗ 场景 15 未运行时左侧应显示文件夹: ${leftText15()}`);
+    process.exit(1);
+  }
+  if (JSON.stringify(tree15.footerLoad.visible) !== 'false') {
+    console.error('✗ 场景 15 未运行时 loading 段应隐藏');
     process.exit(1);
   }
   s15.gitBranch = 'main';
@@ -1012,26 +1028,31 @@ async function main(): Promise<void> {
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
   const loadChar15 = SPINNER_FRAMES[2];
-  if (leftText15().includes('/w/omni') || !leftText15().includes(loadChar15)) {
-    console.error(`✗ 场景 15 运行中左侧应只显示 loading（隐藏文件夹）: ${leftText15()}`);
+  // 左侧**不再**隐藏文件夹（loading 已移入模型行）
+  if (!leftText15().includes('/w/omni (main)')) {
+    console.error(`✗ 场景 15 运行中左侧应仍显示文件夹: ${leftText15()}`);
+    process.exit(1);
+  }
+  // loading 段可见：spinner 帧 + esc 打断提示（zh 默认）
+  const loadContent15 = JSON.stringify(tree15.footerLoad.content);
+  if (JSON.stringify(tree15.footerLoad.visible) !== 'true' || !loadContent15.includes(loadChar15) || !loadContent15.includes('esc 打断')) {
+    console.error(`✗ 场景 15 运行中模型行应显示 spinner+esc 打断提示: visible=${JSON.stringify(tree15.footerLoad.visible)} content=${loadContent15}`);
     process.exit(1);
   }
   const frame15load = t15.captureCharFrame();
   const frameLines15 = frame15load.split('\n');
-  // loading 在灰块外底行（灰块底边 ╯ 下隔 1 行），且该行无文件夹
+  // loading 在模型行（灰块内部最后一行：底边 ╯ 上隔 1 行）
   const grayBottom15 = frameLines15.findIndex((l) => l.includes('╯'));
-  const loadRow15 = (() => {
-    const rows = frameLines15.map((l, i) => ({ i, l }));
-    return rows.find((r) => r.l.includes(loadChar15))?.i ?? -1;
-  })();
-  if (process.env.OMNI_DBG) console.error('[dbg15]', frameLines15.map((l, i) => `${i}:${JSON.stringify(l.slice(0, 30))}`).filter((e) => e.includes('⠹') || /^\d+:.*╯/.test(e)).join('\n'));
-  if (grayBottom15 < 0 || loadRow15 !== grayBottom15 + 2) {
-    console.error(`✗ 场景 15 loading 应位于灰块外底行（grey=${grayBottom15} load=${loadRow15}）`);
+  const loadRow15 = frameLines15.findIndex((l) => l.includes(loadChar15));
+  if (process.env.OMNI_DBG) console.error('[dbg15]', frameLines15.map((l, i) => `${i}:${JSON.stringify(l.slice(0, 40))}`).join('\n'));
+  if (grayBottom15 < 0 || loadRow15 !== grayBottom15 - 1) {
+    console.error(`✗ 场景 15 loading 应位于模型行（灰块底边 ╯ 上方 1 行）: grey=${grayBottom15} load=${loadRow15}`);
     console.log(frame15load);
     process.exit(1);
   }
-  if (frameLines15[loadRow15]!.includes('/w/omni')) {
-    console.error('✗ 场景 15 运行中底行不应显示文件夹');
+  // 灰块外底行（╯ 下隔 1 行）仍显示文件夹
+  if (!frameLines15[grayBottom15 + 2]?.includes('/w/omni')) {
+    console.error('✗ 场景 15 运行中灰块外底行应显示文件夹');
     console.log(frame15load);
     process.exit(1);
   }
@@ -1039,8 +1060,12 @@ async function main(): Promise<void> {
   s15.loadingIndex = -1;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
   await t15.renderOnce();
-  if (!leftText15().includes('/w/omni')) {
-    console.error('✗ 场景 15 会话结束（loading=false）后左侧应恢复文件夹');
+  if (JSON.stringify(tree15.footerLoad.visible) !== 'false') {
+    console.error('✗ 场景 15 会话结束（loading=false）后 loading 段应隐藏');
+    process.exit(1);
+  }
+  if (!leftText15().includes('/w/omni (main)')) {
+    console.error('✗ 场景 15 会话结束后左侧应恢复文件夹');
     process.exit(1);
   }
   // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）
@@ -1706,6 +1731,16 @@ async function main(): Promise<void> {
   const headerRows21 = rows21.filter((r) => r.text.trim().startsWith('- Thought:'));
   if (headerRows21.length !== 2 || !rows21.some((r) => r.text.includes('- Thought: · 3.2s')) || !rows21.some((r) => r.text.includes('- Thought: · 1.5s'))) {
     console.error(`✗ 场景 21 展开态缺 - Thought: 头行/思考时间: ${JSON.stringify(headerRows21.map((r) => r.text))}`);
+    process.exit(1);
+  }
+  // a3) **思考正文续行保持缩进**（用户要求「续行与 Thought 正文对齐，不顶格」）：
+  //     长句按 width-4 折行后每个视觉行（含续行）都带 4 格前缀——不会与左侧顶格错位
+  const s21w = createTuiState();
+  pushLine(s21w, { kind: 'thinking', text: '长句折行测试 ' + 'word '.repeat(40) + '结论', thinkingMs: 1000 });
+  const rows21w = buildBody(s21w, 64);
+  const contRows21w = rows21w.filter((r) => r.text.includes('word') || r.text.includes('结论'));
+  if (contRows21w.length < 4 || contRows21w.some((r) => !r.text.startsWith('    '))) {
+    console.error(`✗ 场景 21 思考续行未保持缩进（应每视觉行都带 4 格前缀）: ${JSON.stringify(contRows21w.map((r) => r.text.slice(0, 14)))}`);
     process.exit(1);
   }
   // a2) **思考中头行 = loading + thinking + 实时耗时**（用户要求）：thinkingRunning=true

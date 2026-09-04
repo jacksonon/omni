@@ -704,9 +704,18 @@ export function buildBody(state: TuiState, width: number): Row[] {
         if (line.text) {
           // 头行与思考正文之间留 1 行空行间距（用户要求：thought 和 具体的thinking 内容也需要间距）
           body.push({ text: '', style: {}, chunks: [], thinkingIdx: li });
+          // 缩进前缀不能只加在逻辑行首——wrapRow 按宽度折行后续行不带前缀（顶格），
+          // 长句续行会与 Thought 正文错位（用户要求续行也与正文同缩进）。
+          // 因此按 width-4 折行，再给每个视觉行（含续行）统一加 4 格前缀。
+          const innerW = Math.max(1, width - 4);
           for (const seg of line.text.split('\n')) {
-            const indentSeg = seg ? `    ${seg}` : '';
-            body.push(...wrapRow({ text: indentSeg, style: rowStyle(line.kind), thinkingIdx: li }, width));
+            if (!seg) {
+              body.push({ text: '', style: {}, chunks: [], thinkingIdx: li });
+              continue;
+            }
+            for (const r of wrapRow({ text: seg, style: rowStyle(line.kind), thinkingIdx: li }, innerW)) {
+              body.push({ ...r, text: `    ${r.text}` });
+            }
           }
         }
       } else {

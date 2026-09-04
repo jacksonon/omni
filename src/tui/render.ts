@@ -21,24 +21,23 @@
  *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
- *   ▍ Build · grok-4.5 demo · medium · ⠹ esc interrupt │ 模型行（模式/模型/组/级别 + 思考级别右侧 loading/esc interrupt）
+ *   ▍ Build · grok-4.5 demo · medium · ⠹ esc interrupt │ 模型行（模式/模型/组/级别 + 速率右侧 loading/esc 打断提示）
  *   ╰──────────────────────────────╯
  *   首 token 平均 6.5s · 112 tok/s| …    ← 统计行（仅统计内容，对齐可配；loading/esc 已入模型行）
- *
  * 灰色块（输入框 + 模型行，淡灰色背景，四边 16px 圆角）与对话流区分；
  * 左侧**蓝色细线（▍，与对话流用户消息同款）**贴左缘、**竖跨整个灰色背景**（含上下
  * 圆角边框行，用户要求：高度 = 边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4，
  * 显式 height 钉住 + marginTop/Bottom:-1 溢出到边框行，不撑大灰块）；高度低（paddingY 0，
  * 输入框与模型行之间留 1 行间距，灰块 = 圆角边框 2 + 输入 inputLines + 间距 1 + 模型 1 = inputLines+4）。
  * 模型行（**左对齐**——用户要求从右侧移到左侧显示）显示当前模型 + 思考强度（思考强度用稍淡颜色）
- * + 思考级别右侧的 loading/esc interrupt（会话进行中转圈 + esc 打断提示，`·` 分隔符仅 loading 时显示）。
+ * + 速率右侧的 loading/esc 打断提示（会话进行中转圈 + `esc interrupt`，`·` 分隔符仅 loading 时显示）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
  *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
  *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/⚡）；
  * 可 ↑/↓ 选中、←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc/继续输入退出。
  * 发送/取消按钮已移除（TUI 无点击交互）。
- * footer 统计行在灰色块下方（不在灰色背景里，水平居中，整行统计：轮次/步数/LLM 与
- * 工具耗时/首 token/速率/缓存命中/输入输出，超宽按段从右截断）。
+ * 灰块外底行（输入区下方）：左[文件夹] …… 右[输入/输出 · 缓存 · 上下文用量]——
+ * 输入/输出与缓存从模型行移到右侧上下文用量左侧（dim 色），回答中左侧也保持显示文件夹。
  * 通过 marginTop:auto 吸收剩余空间，始终固定在视口最底部。单次任务模式
  * （无输入框）时仅状态栏，无灰色块与统计行。
  *
@@ -177,16 +176,16 @@ export interface TuiTree {
   footerBox: BoxRenderable | null;
   /** 灰块外底行（文件夹/上下文，输入区下方，左右分别与输入区对齐） */
   metaRow: BoxRenderable | null;
-  /** 灰块外底行左侧：文件夹（`📁 名 (分支)`）/ 回答中只显示 loading spinner */
+  /** 灰块外底行左侧：文件夹（`📁 名 (分支)`）；回答中也保持显示（loading 已移入模型行） */
   metaLeft: TextRenderable | null;
-  /** 灰块外底行弹性间隔（把右侧上下文推到行尾，与输入区右对齐） */
+  /** 灰块外底行弹性间隔（把右侧段推到行尾，与输入区右对齐） */
   metaSpacer: BoxRenderable | null;
   /** 灰块外底行右侧：上下文用量（迷你条 + `18.3K/128K (19%)`；无用量时隐藏） */
   metaCtx: TextRenderable | null;
   /** 灰色块左侧蓝色细线（▍，与对话流用户消息同款）：紧贴左缘、竖跨整个灰色背景（含上下边框行） */
   blueLine: TextRenderable | null;
   input: TextareaRenderable | null;
-  /** 模型行 / 思考强度 / 会话平均速率 / 输入输出 / 缓存（repaintTree 每次刷新内容） */
+  /** 模型行 / 思考强度 / 会话平均速率 / loading+esc 打断提示（repaintTree 每次刷新内容） */
   footerModel: TextRenderable | null;
   /** 模式前缀（Build/Plan，独立着色：Build 青 / Plan 洋红，避开思考级别色阶；repaintTree 每次按 planMode 刷新） */
   footerMode: TextRenderable | null;
@@ -194,9 +193,11 @@ export interface TuiTree {
   footerEffort: TextRenderable | null;
   /** 会话累计平均速率（`· 167 tok/s`，含 live 增量；无数据时隐藏） */
   footerAvg: TextRenderable | null;
-  /** 输入/输出精简文本（`· 输入 X · 输出 Y`；无数据时隐藏） */
+  /** loading + esc 打断提示（`· ⠹ esc interrupt`；会话进行中显示在速率右侧，spinner 帧随 loadingIndex 推进） */
+  footerLoad: TextRenderable | null;
+  /** 输入/输出精简文本（`输入 X · 输出 Y`；灰块外底行右侧、上下文用量左侧；无数据时隐藏） */
   footerIO: TextRenderable | null;
-  /** 缓存命中（`· 缓存 N%`；无缓存数据时隐藏） */
+  /** 缓存命中（`缓存 N%`；灰块外底行右侧、上下文用量左侧；无缓存数据时隐藏） */
   footerCache: TextRenderable | null;
   /** 待发送消息区（输入框上方小视图：显示 queue/steer 消息，回合结束后按序发送；可选中/排序/删除/编辑） */
   queueBox: BoxRenderable | null;
@@ -280,12 +281,14 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   let footerMode: TextRenderable | null = null;
   let footerEffort: TextRenderable | null = null;
   let footerAvg: TextRenderable | null = null;
-  let footerIO: TextRenderable | null = null;
-  let footerCache: TextRenderable | null = null;
+  let footerLoad: TextRenderable | null = null;
   let metaRow: BoxRenderable | null = null;
   let metaLeft: TextRenderable | null = null;
   let metaSpacer: BoxRenderable | null = null;
   let metaCtx: TextRenderable | null = null;
+  /** 输入/输出 · 缓存（灰块外底行右侧、上下文用量左侧；随 metaRow 创建） */
+  let footerIO: TextRenderable | null = null;
+  let footerCache: TextRenderable | null = null;
   let queueBox: BoxRenderable | null = null;
   const queueCells: TextRenderable[] = [];
   let askBox: BoxRenderable | null = null;
@@ -393,21 +396,18 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerAvg = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     footerAvg.fg = parseColor(theme.footerDim);
     modelRow.add(footerAvg);
-    // 输入/输出精简文本（`· 输入 X · 输出 Y`）
-    footerIO = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    footerIO.fg = parseColor(theme.footerDim);
-    modelRow.add(footerIO);
-    // 缓存命中（`· 缓存 N%`，无缓存数据时隐藏）
-    footerCache = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    footerCache.fg = parseColor(theme.footerDim);
-    modelRow.add(footerCache);
+    // loading + esc 打断提示（`· ⠹ esc interrupt`）：会话进行中显示在速率右侧，
+    // spinner 帧随 loadingIndex 推进（repaintTree 刷新）；会话结束隐藏
+    footerLoad = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerLoad.fg = parseColor(theme.footerDim);
+    modelRow.add(footerLoad);
     contentCol.add(modelRow);
 
     footerBox.add(contentCol);
   }
 
-  // 灰块外底行（输入区下方）：左[文件夹/loading] …… 右[上下文用量]，
-  // 左右分别与输入区（灰块内容列）对齐。回答中左侧隐藏文件夹只显示 spinner。
+  // 灰块外底行（输入区下方）：左[文件夹全路径] …… 右[输入/输出 · 缓存 · 上下文用量]，
+  // 左右分别与输入区（灰块内容列）对齐。loading 不再占据左侧（已移入模型行速率右侧）。
   if (opts?.withInput) {
     metaRow = new BoxRenderable(ctx, {
       flexDirection: 'row',
@@ -425,6 +425,14 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     metaRow.add(metaLeft);
     metaSpacer = new BoxRenderable(ctx, { flexDirection: 'row', flexGrow: 1 });
     metaRow.add(metaSpacer);
+    // 输入/输出（`输入 X · 输出 Y`）+ 缓存（`缓存 N%`）：**在上下文用量左侧**——
+    // 从模型行移到灰块外底行右侧（dim 色，与上下文同排；无数据各段隐藏）
+    footerIO = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerIO.fg = parseColor(theme.footerDim);
+    metaRow.add(footerIO);
+    footerCache = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerCache.fg = parseColor(theme.footerDim);
+    metaRow.add(footerCache);
     metaCtx = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     metaCtx.fg = parseColor(theme.footerDim);
     metaRow.add(metaCtx);
@@ -657,6 +665,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerMode,
     footerEffort,
     footerAvg,
+    footerLoad,
     footerIO,
     footerCache,
     queueBox,
@@ -950,25 +959,53 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       }
     }
   }
-  // 灰块外底行：左[文件夹全路径/loading] …… 右[上下文用量]（左右与输入区对齐）
-  // 左侧：全路径、无图标；回答中隐藏路径只显示 spinner，结束恢复；超宽头部截断保尾部。
+  // 灰块外底行：左[文件夹全路径] …… 右[输入/输出 · 缓存 · 上下文用量]（左右与输入区对齐）
+  // 左侧：全路径、无图标（loading 已移入模型行速率右侧，回答中也保持显示）；超宽头部截断保尾部。
+  // 右侧：输入/输出 · 缓存（从模型行移入，dim 色）+ 上下文用量（迷你条 + 用量）。
   // 注意：宽度按本地字符串计算——TextRenderable.content 读回的不是 string。
   const loadingNow = state.loading && state.loadingIndex >= 0;
+  const en = state.language === 'en';
   const lastPrompt = state.lastPromptTokens || 0;
   const contextLimit = state.contextLimit || 0;
   const ctxUsage = formatContextUsage(lastPrompt, contextLimit);
   const ctxText = ctxUsage ? `${formatMiniBar(contextPercent(lastPrompt, contextLimit))} ${ctxUsage}` : '';
   const folderFull = `${state.cwd}${state.gitBranch ? ` (${state.gitBranch})` : ''}`;
-  // 左侧可用 = 行宽 - 根边距(2) - 行 margin(4) - 右侧段 - gap；超宽截头部
-  const leftAvail = Math.max(8, (width ?? 80) - 6 - (ctxText ? visualWidth(ctxText) + 1 : 0));
-  const leftText = loadingNow
-    ? SPINNER_FRAMES[state.loadingIndex % SPINNER_FRAMES.length]
-    : truncatePathHead(folderFull, leftAvail);
+  // 右侧段文本（空串 = 隐藏）：输入/输出 / 缓存（无缓存数据不显示）
+  const hasIO = state.tokens.prompt > 0 || state.tokens.completion > 0;
+  const ioText = hasIO
+    ? (en
+      ? `In ${formatCompact(state.tokens.prompt)} · Out ${formatCompact(state.tokens.completion)}`
+      : `输入 ${formatCompact(state.tokens.prompt)} · 输出 ${formatCompact(state.tokens.completion)}`)
+    : '';
+  const cachePct = state.tokens.prompt > 0 ? Math.min(100, Math.round((state.stats.cached / state.tokens.prompt) * 100)) : 0;
+  const cacheText = state.stats.cached > 0 ? (en ? `Cache ${cachePct}%` : `缓存 ${cachePct}%`) : '';
+  // 宽度预算：左侧可用 = 行宽 - 根边距(2) - 行 margin(4) - 右侧段；文件夹最小 8 列，
+  // 仍溢出时按 缓存→输入输出 顺序隐藏（上下文恒保留）
+  const wCtx = ctxText ? visualWidth(ctxText) : 0;
+  const wIO = visualWidth(ioText);
+  const wCache = visualWidth(cacheText);
+  let showIO = ioText !== '';
+  let showCache = cacheText !== '';
+  let rightW = (showIO ? wIO + 1 : 0) + (showCache ? wCache + 1 : 0) + (ctxText ? wCtx + 1 : 0);
+  while ((showCache || showIO) && (width ?? 80) - 6 - rightW < 8) {
+    if (showCache) { showCache = false; rightW -= wCache + 1; }
+    else { showIO = false; rightW -= wIO + 1; }
+  }
+  const leftAvail = Math.max(8, (width ?? 80) - 6 - rightW);
+  const leftText = truncatePathHead(folderFull, leftAvail);
   if (tree.metaLeft) {
     tree.metaLeft.content = leftText;
-    tree.metaLeft.fg = parseColor(loadingNow ? theme.accentBlue : theme.footerDim);
+    tree.metaLeft.fg = parseColor(theme.footerDim);
     // 初始态（未发送消息）不显示文件夹，有对话内容才出现
     tree.metaLeft.visible = state.lines.length > 0;
+  }
+  if (tree.footerIO) {
+    tree.footerIO.content = ioText;
+    tree.footerIO.visible = showIO;
+  }
+  if (tree.footerCache) {
+    tree.footerCache.content = cacheText;
+    tree.footerCache.visible = showCache;
   }
   if (tree.metaCtx) {
     tree.metaCtx.content = ctxText;
@@ -982,9 +1019,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.metaCtx.fg = parseColor(color);
     }
   }
-  // 模型行（输入框下方，灰色块内）：模式/模型/级别/均值/输入输出/缓存
-  // 中部段无数据时隐藏；超宽按 缓存→输入输出 顺序隐藏（模型/均值恒保留）。
-  const en = state.language === 'en';
+  // 模型行（输入框下方，灰色块内）：模式/模型/级别/均值 + loading/esc 打断提示
+  //（会话进行中显示在速率右侧，`· ⠹ esc interrupt`——`·` 分隔符仅 loading 时显示）
   const modeText = `${t(state.language, state.planMode ? 'footer.mode.plan' : 'footer.mode.build')} ·`;
   const modelText = `${state.model}${state.provider ? ` ${state.provider}` : ''}`;
   const effortText = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';

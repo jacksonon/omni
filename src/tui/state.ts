@@ -310,7 +310,7 @@ export interface TuiState {
    */
   bannerHue: number;
   /**
-   * 统计行左侧 loading（会话进行中一直转；Esc 取消/会话结束消失）：
+   * 模型行 loading + esc 打断提示（会话进行中一直转；Esc 取消/会话结束消失）：
    * loading = 是否显示；loadingIndex = 当前帧（-1 = 隐藏）。由 TuiOutput
    * 的 startLoading/stopLoading 维护（独立于状态栏 spinner——流式期间
    * spinnerIndex 会被置 -1，loading 不受影响）。

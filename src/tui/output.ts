@@ -131,12 +131,12 @@ export class TuiOutput implements Output {
   /** 当前 spinner 状态栏文案后缀（现在恒为空——思考/执行阶段状态栏都不写文案，
    *  只靠 spinnerIndex 推进卡片/头行 loading 帧；startSpinner 设置） */
   private spinnerLabel = '';
-  /** 统计行左侧 loading 定时器（200ms 一帧；独立于状态栏 spinner——流式期间
+  /** 模型行 loading（footerLoad）定时器（200ms 一帧；独立于状态栏 spinner——流式期间
    * spinnerIndex 会被置 -1 但 loading 不受影响，会话进行中一直转） */
   private loadingTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
-   * 会话进行中（interactive 每轮 runAgent 前 / 单任务模式）调用：统计行左侧
+   * 会话进行中（interactive 每轮 runAgent 前 / 单任务模式）调用：模型行显示
    * 显示 loading 并开始转圈；Esc 取消或会话结束 stopLoading 后消失。
    */
   startLoading(): void {
@@ -161,7 +161,7 @@ export class TuiOutput implements Output {
   }
 
   /**
-   * 取消当前回合的视觉反馈（右侧 loading + 状态栏 spinner/文案）——Esc 取消
+   * 取消当前回合的视觉反馈（模型行 loading + 状态栏 spinner/文案）——Esc 取消
    * 取消时**同步立即**调用（不等 runAgent 返回：逐 chunk abort 至多延迟一个 chunk
    * 间隔，期间 loading 不立即停、「思考中」残留会让用户以为取消没生效——用户反馈）。
    */
