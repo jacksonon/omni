@@ -1,7 +1,7 @@
 import { createTestRenderer, KeyCodes } from '@opentui/core/testing';
-import { mountTree, onAskKeyPress } from '/Users/os/Downloads/omni/src/tui/render.js';
-import { createTuiState } from '/Users/os/Downloads/omni/src/tui/state.js';
-import { TuiOutput } from '/Users/os/Downloads/omni/src/tui/output.js';
+import { mountTree, onAskKeyPress } from '../../src/tui/render.js';
+import { createTuiState } from '../../src/tui/state.js';
+import { TuiOutput } from '../../src/tui/output.js';
 import OpenAI from 'openai';
 async function main() {
   const client = new OpenAI({ baseURL: 'http://127.0.0.1:8787/v1', apiKey: 'sk-mock' });
@@ -10,10 +10,10 @@ async function main() {
   const session = { paint: async () => {} };
   const out = new TuiOutput(state, { showThinking: true }, session as never);
   const messages: any[] = [{ role: 'user', content: 'hi' }];
-  const { tools } = await import('/Users/os/Downloads/omni/src/tools/index.js');
-  const { createAskUserTool } = await import('/Users/os/Downloads/omni/src/tools/ask.js');
+  const { tools } = await import('../../src/tools/index.js');
+  const { createAskUserTool } = await import('../../src/tools/ask.js');
   const runOpts: any = { tools: [...tools, createAskUserTool(out.askUser.bind(out))], stream: true, maxSteps: 10, showThinking: true };
-  const { runAgent } = await import('/Users/os/Downloads/omni/src/agent/loop.js');
+  const { runAgent } = await import('../../src/agent/loop.js');
   const t = await createTestRenderer({ width: 80, height: 24 });
   const tree = mountTree(t.renderer, state, { withInput: true });
   const input: any = tree.input;

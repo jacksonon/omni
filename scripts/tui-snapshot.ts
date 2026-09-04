@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 1 仍显示根边框或 Omni 标题（已移除）');
     process.exit(1);
   }
-  // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（📁 .）
+  // 新卡片：无工具名标题（去掉「查看目录」），收起态 = **只显示完整的执行命令**（* List .）
   // ——执行结果/输出点击展开才显示，无执行缩略/结果缩略/点击展开提示（用户要求）
   const checks1 = ['你是谁？', '$ ls -la', '当前目录共 3 个文件', '任务完成', '输入消息，Enter 发送', '输入', 'mock'];
   // 无缓存数据时 cache 段整段隐藏（网关未返回缓存字段就不显示 0%）：空态 footer 不应出现「缓存」
@@ -1069,7 +1069,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // c) 待发送消息区（输入框正上方）：空列表隐藏；置入消息后显示标题（含 queue/steer 徽标计数）
-  //    + 消息行（queue `·` / steer `⚡` 徽标）+ 选中高亮（›）——**钉在灰色块正上方**
+  //    + 消息行（queue `·` / steer `↑` 徽标）+ 选中高亮（›）——**钉在灰色块正上方**
   if (!tree15.queueBox || JSON.stringify(tree15.queueBox.visible) !== 'false') {
     console.error('✗ 场景 15 空待发送时消息区应隐藏');
     process.exit(1);
@@ -1082,12 +1082,12 @@ async function main(): Promise<void> {
   await t15.renderOnce();
   const frame15 = t15.captureCharFrame();
   if (
-    !frame15.includes('⏳ 待发送（4 · ⚡ 1 打断）') ||
+    !frame15.includes('⏳ 待发送（4 · ↑ 1 打断）') ||
     !frame15.includes('· 第一条排队消息') ||
-    !frame15.includes('⚡ 打断消息') ||
+    !frame15.includes('↑ 打断消息') ||
     !frame15.includes('第四条排队消息')
   ) {
-    console.error('✗ 场景 15 待发送区渲染缺失（应显示标题含打断计数/queue·steer⚡徽标/消息行）');
+    console.error('✗ 场景 15 待发送区渲染缺失（应显示标题含打断计数/queue·steer↑徽标/消息行）');
     console.log(frame15);
     process.exit(1);
   }
@@ -1178,7 +1178,7 @@ async function main(): Promise<void> {
     console.log(frame15b);
     process.exit(1);
   }
-  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（Esc 取消+排队替代）+ 模型/思考强度行 + 待发送区渲染（⏳ 待发送/queue·steer⚡ 徽标/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
+  console.log('✓ 场景 15 通过：16px 圆角灰块（高度低，paddingY 0）+ 无按钮（Esc 取消+排队替代）+ 模型/思考强度行 + 待发送区渲染（⏳ 待发送/queue·steer↑ 徽标/› 选中/钉在灰块正上方）+ 输入增高同步 + 左侧蓝色细线（▍ 竖跨整个灰色背景含上下边框行）');
 
   // 场景 17：/theme 命令面板 —— openThemeMenu 打开面板 + handleMenuKey 选择/确认/取消 + 渲染
   const { closeMenu, handleMenuKey, openThemeMenu } = await import('../src/tui/commands.js');
@@ -3812,17 +3812,23 @@ async function main(): Promise<void> {
     console.error('✗ 场景 36 @ 后空白不应显示提及列表');
     process.exit(1);
   }
-  // d) 渲染：📁/📄 图标 + 路径 + 圆角方框（与 / 命令联想共用浮层，互斥出现）
+  // d) 渲染：裸路径（目录带尾 `/`，**精简无图标**——用户要求）+ 圆角方框（与 / 命令联想共用浮层，互斥出现）
   tree36.input?.setText('看看 @');
   await repaint36();
   const frame36 = t36.captureCharFrame();
   console.log('=== 场景 36：@ 提及文件选择（圆角浮层）===');
   console.log(frame36);
-  const checks36 = ['📁 src/', '📄 README.md', '📄 package.json', '文件'];
+  const checks36 = ['src/', 'README.md', 'package.json', '文件'];
   const missing36 = checks36.filter((c) => !frame36.includes(c));
   if (missing36.length) {
     console.error(`✗ 场景 36 提及列表渲染缺: ${missing36.join(', ')}`);
     process.exit(1);
+  }
+  for (const ban of ['📁', '📄']) {
+    if (frame36.includes(ban)) {
+      console.error(`✗ 场景 36 提及列表不应显示图标「${ban}」（精简风格）`);
+      process.exit(1);
+    }
   }
   // 扁平无边框：提及浮层与 / 联想共用浮层，border 应关闭
   if (!tree36.suggestBox || (tree36.suggestBox as { border?: unknown }).border === true) {
@@ -4381,15 +4387,15 @@ async function main(): Promise<void> {
   await t40.renderOnce();
   const frame40 = t40.captureCharFrame();
   if (
-    !frame40.includes('⏳ 待发送（2 · ⚡ 1 打断）') ||
-    !frame40.includes('⚡ 打断优先') ||
+    !frame40.includes('⏳ 待发送（2 · ↑ 1 打断）') ||
+    !frame40.includes('↑ 打断优先') ||
     !frame40.includes('› · 普通排队')
   ) {
     console.error('✗ 场景 40 待发送渲染缺失（标题/徽标/选中高亮）');
     console.log(frame40);
     process.exit(1);
   }
-  // 命中区域：选中行（下标 1）的 rect 指向 › ⚡ 打断优先 所在行
+  // 命中区域：选中行（下标 1）的 rect 指向 › ↑ 打断优先 所在行
   const y40 = [...tree40.pendingRects.entries()].find(([, idx]) => idx === 1)?.[0];
   if (y40 === undefined || !frame40.split('\n')[y40]?.includes('普通排队')) {
     console.error(`✗ 场景 40 pendingRects 未命中选中消息行（y=${y40}）`);
@@ -4780,7 +4786,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 i18n menu.hint 中英不符: ${JSON.stringify([ti18n('zh', 'menu.hint'), ti18n('en', 'menu.hint')])}`);
     process.exit(1);
   }
-  if (tfi18n('en', 'tokens.summary', { n: 3, in: '1.8K', out: '600', cached: '1.1K' }) !== '⚡ 3 LLM requests · In 1.8K · Out 600 · Cached 1.1K') {
+  if (tfi18n('en', 'tokens.summary', { n: 3, in: '1.8K', out: '600', cached: '1.1K' }) !== '3 LLM requests · In 1.8K · Out 600 · Cached 1.1K') {
     console.error('✗ 场景 43 tokens.summary 英文插值错误');
     process.exit(1);
   }
@@ -5108,8 +5114,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 44 turn 结束标记错误: ${JSON.stringify(turns44.map((t) => t.done))}（应 ✓/⚠）`);
     process.exit(1);
   }
-  if (!usr44[0]!.text.startsWith('列一下当前目录') || !usr44[1]!.text.startsWith('⚡ 改为查询文件内容')) {
-    console.error(`✗ 场景 44 user 行（interrupt ⚡ 前缀）错误: ${JSON.stringify(usr44.map((u) => u.text))}`);
+  if (!usr44[0]!.text.startsWith('列一下当前目录') || !usr44[1]!.text.startsWith('↑ 改为查询文件内容')) {
+    console.error(`✗ 场景 44 user 行（interrupt ↑ 前缀）错误: ${JSON.stringify(usr44.map((u) => u.text))}`);
     process.exit(1);
   }
   if (!tool44 || tool44.sub !== `✓ 320 字符 · ${fmtMs(750)}`) {
@@ -5192,11 +5198,11 @@ async function main(): Promise<void> {
   // 收紧窗口（budget 3 → contentRows 1）：选中末行 → scroll 钳到 T-1-s 保证选中行可见
   const s44s = createTuiState();
   refreshTrace(s44s, evs44);
-  s44s.traceSelected = 6; // 末行（轮 2 的 user ⚡ 行）
+  s44s.traceSelected = 6; // 末行（轮 2 的 user ↑ 行）
   const pl44c = tracePanelLines(s44s, 8, 3); // contentRows = 1
   const sel44c = pl44c.lines.find((l) => l.text.startsWith('› '));
   if (!sel44c || !sel44c.text.includes('改为查询文件内容')) {
-    console.error(`✗ 场景 44 选中行未滚入窗口（应显示末行 ⚡ user）: ${JSON.stringify(pl44c.lines.map((l) => l.text))}`);
+    console.error(`✗ 场景 44 选中行未滚入窗口（应显示末行 ↑ user）: ${JSON.stringify(pl44c.lines.map((l) => l.text))}`);
     process.exit(1);
   }
   // 选中行 + 有 detail：列表页**不内嵌**详情（点击进入详情页展示——用户要求页面导航），

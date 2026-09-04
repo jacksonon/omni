@@ -6,11 +6,11 @@
  * 渲染层 seiRow 高亮（重绘后行 chunks 命中选中的 bg）。
  */
 import { createTestRenderer } from '@opentui/core/testing';
-import { mountTree, repaintTree } from '/Users/os/Downloads/private/omni/src/tui/render.js';
-import { computeRows, markRowSelected, selectionMoved, selectionText } from '/Users/os/Downloads/private/omni/src/tui/rows.js';
-import { colToChar } from '/Users/os/Downloads/private/omni/src/tui/layout.js';
-import { createTuiState, pushLine } from '/Users/os/Downloads/private/omni/src/tui/state.js';
-import { themeFor } from '/Users/os/Downloads/private/omni/src/tui/theme.js';
+import { mountTree, repaintTree } from '../../src/tui/render.js';
+import { computeRows, markRowSelected, selectionMoved, selectionText } from '../../src/tui/rows.js';
+import { colToChar } from '../../src/tui/layout.js';
+import { createTuiState, pushLine } from '../../src/tui/state.js';
+import { themeFor } from '../../src/tui/theme.js';
 
 let ok = true;
 const check = (cond: boolean, msg: string): void => {
@@ -76,7 +76,7 @@ async function main() {
   check(tree.lastRows.length >= 2, `repaintTree 存 lastRows（≥2 行），实际 ${tree.lastRows.length}`);
 
   // down + drag + up：直接调 handleTuiMouseEvent（状态机在同一函数）
-  const { handleTuiMouseEvent } = await import('/Users/os/Downloads/private/omni/src/tui/render.js');
+  const { handleTuiMouseEvent } = await import('../../src/tui/render.js');
   handleTuiMouseEvent({ type: 'down', button: 0, x: 2, y: 1 }, tree, state, 64, async () => {});
   check(!!tree.sel, 'down 落下内容行 → 建立选区起点');
   handleTuiMouseEvent({ type: 'drag', button: 0, x: 6, y: 1 }, tree, state, 64, async () => {});

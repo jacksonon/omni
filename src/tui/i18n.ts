@@ -30,7 +30,7 @@ const ZH: Record<string, string> = {
   'statusline.context': '上下文 {used}{limit}',
 
   // 内容区（rows.ts）
-  'tokens.summary': '⚡ {n} 次 LLM 请求 · 输入 {in} · 输出 {out} · 缓存 {cached}',
+  'tokens.summary': '{n} 次 LLM 请求 · 输入 {in} · 输出 {out} · 缓存 {cached}',
   'tokens.item': '  - LLM 请求：输入 {in} · 输出 {out} · 缓存 {cached}',
   'scroll.topHint': '↑ 上方还有 {n} 行 · 滚轮/PgUp 上滚',
   'scroll.backHint': '↑ 已上滚 {n} 行 · 共 {total} 行 · End 回到最新',
@@ -63,7 +63,7 @@ const ZH: Record<string, string> = {
   'footer.effort': ' · {effort}',
   'footer.escInterrupt': 'esc 打断',
   'pending.title': '⏳ 待发送（{q}{s}）',
-  'pending.steer': ' · ⚡ {s} 打断',
+  'pending.steer': ' · ↑ {s} 打断',
   'pending.more': '  · 还有 {n} 条…',
   'suggest.hint': '  {arrow} 还有 {n} 个（↑/↓ 滚动）',
   'suggest.commandsTitle': '命令',
@@ -127,7 +127,7 @@ const EN: Record<string, string> = {
   'statusline.context.label': 'Context',
   'statusline.context': 'Context {used}{limit}',
 
-  'tokens.summary': '⚡ {n} LLM requests · In {in} · Out {out} · Cached {cached}',
+  'tokens.summary': '{n} LLM requests · In {in} · Out {out} · Cached {cached}',
   'tokens.item': '  - LLM request: In {in} · Out {out} · Cached {cached}',
   'scroll.topHint': '↑ {n} more lines above · Scroll/PgUp up',
   'scroll.backHint': '↑ Scrolled up {n} · {total} total · End to bottom',
@@ -158,7 +158,7 @@ const EN: Record<string, string> = {
   'footer.effort': ' · {effort}',
   'footer.escInterrupt': 'esc interrupt',
   'pending.title': '⏳ Pending ({q}{s})',
-  'pending.steer': ' · ⚡ {s} steer',
+  'pending.steer': ' · ↑ {s} steer',
   'pending.more': '  · {n} more…',
   'suggest.hint': '  {arrow} {n} more (↑/↓ scroll)',
   'suggest.commandsTitle': 'Commands',

@@ -221,7 +221,7 @@ export class ExecOutput implements Output {
   clearScrollback(): void {}
   showHelp(): void {}
   onHookOutput(event: string, lines: string[]): void {
-    for (const l of lines) this.log(dim(`⚡ hook[${event}] ${l}`));
+    for (const l of lines) this.log(dim(`hook[${event}] ${l}`));
   }
 }
 

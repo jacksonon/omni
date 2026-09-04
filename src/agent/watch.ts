@@ -111,7 +111,7 @@ export async function runWatch(
   /** 处理单个标记：跑一轮 agent → 按标记类型改写文件 */
   const processMarker = async (marker: AiMarker): Promise<void> => {
     const label = path.relative(cwd, marker.file);
-    onEvent(`⚡ ${label}:${marker.line} ${marker.mustFix ? 'AI!' : 'AI?'} ${marker.task.slice(0, 60) || '（无描述）'}`);
+    onEvent(`${label}:${marker.line} ${marker.mustFix ? 'AI!' : 'AI?'} ${marker.task.slice(0, 60) || '（无描述）'}`);
     // 独立消息上下文（每标记一轮，互不污染）
     const msgs: import('openai/resources/chat/completions').ChatCompletionMessageParam[] = [
       {

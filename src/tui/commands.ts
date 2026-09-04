@@ -1206,7 +1206,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
         pushCmdLine(ctx.state, { kind: 'meta', text: '正在拉取 models.dev 并重建快照…（无需 API Key）' });
         const res = await refreshModelContextSnapshot();
         if (res.ok) {
-          pushCmdLine(ctx.state, { kind: 'meta', text: `✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效` });
+          pushCmdLine(ctx.state, { kind: 'meta', text: `✓ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效` });
           pushCmdLine(ctx.state, { kind: 'meta', text: `已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）` });
         } else {
           pushCmdLine(ctx.state, { kind: 'warn', text: `✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）` });

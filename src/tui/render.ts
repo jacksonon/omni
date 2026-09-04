@@ -17,8 +17,8 @@
  *   💭 思考…
  *   ...（内容不足时此处留空）
  *   等待输入…                              ← 状态栏（灰块上方）
- *   ⏳ 待发送（3 · ⚡ 1 打断）  ← 待发送小视图（灰块正上方，钉底）：· queue / ⚡ steer
- *     · 排队消息 / ⚡ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
+ *   ⏳ 待发送（3 · ↑ 1 打断）  ← 待发送小视图（灰块正上方，钉底）：· queue / ↑ steer
+ *     · 排队消息 / ↑ 打断消息      ↑/↓ 选中 · ←/→ 排序 · Enter 编辑 · Del 删除
  *   ╭──────────────────────────────╮ ← 灰色块（16px 圆角；输入框 + 模型行）
  *   ▍ 输入消息，Enter 发送…         │ 多行输入框（▍ 蓝色细线贴左缘、竖跨整块）
  *   ▍ Build · grok-4.5 demo · medium · ⠹ esc interrupt │ 模型行（模式/模型/组/级别 + 速率右侧 loading/esc 打断提示）
@@ -33,7 +33,7 @@
  * + 速率右侧的 loading/esc 打断提示（会话进行中转圈 + `esc interrupt`，`·` 分隔符仅 loading 时显示）。
  * 运行中提交分流：Enter = queue（追加待发送列表末尾）；Cmd/Ctrl/Super/Option+Enter = steer
  *（插入最前，打断当前回合优先执行）；Esc 取消当前对话。待发送小视图显示在**灰色块正上方**
- *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/⚡）；
+ *（与灰块一起钉在视口底部，位置确定不随内容浮动），每条带 mode 徽标（·/↑）；
  * 可 ↑/↓ 选中、←/→ 排序、Enter 编辑、Backspace/Delete 删除、Esc/继续输入退出。
  * 发送/取消按钮已移除（TUI 无点击交互）。
  * 灰块外底行（输入区下方）：左[文件夹] …… 右[输入/输出 · 缓存 · 上下文用量]——
@@ -176,7 +176,7 @@ export interface TuiTree {
   footerBox: BoxRenderable | null;
   /** 灰块外底行（文件夹/上下文，输入区下方，左右分别与输入区对齐） */
   metaRow: BoxRenderable | null;
-  /** 灰块外底行左侧：文件夹（`📁 名 (分支)`）；回答中也保持显示（loading 已移入模型行） */
+  /** 灰块外底行左侧：文件夹全路径（分支）——精简无图标；回答中也保持显示（loading 已移入模型行） */
   metaLeft: TextRenderable | null;
   /** 灰块外底行弹性间隔（把右侧段推到行尾，与输入区右对齐） */
   metaSpacer: BoxRenderable | null;
@@ -1076,8 +1076,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.footerLoad.visible = false;
     }
   }
-  // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ⚡M 打断）」+ 每条消息带
-  // queue/steer 徽标（· 普通排队 / ⚡ 打断优先）+ 选中高亮（› 青色加粗）。
+  // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ↑M 打断）」+ 每条消息带
+  // queue/steer 徽标（· 普通排队 / ↑ 打断优先——精简 ASCII，用户要求去 emoji）+ 选中高亮（› 青色加粗）。
   // 空列表隐藏（不占布局）；行数预算 = pendingRows（computeRows/footerTop 同步减）。
   // 可点击：消息行 y → pending 下标存 pendingRects（鼠标点击选中，见 startTui）——
   // 消息行位于灰色块正上方（footerTop - visibleMsgs .. footerTop - 1）。
@@ -1098,7 +1098,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const m = state.pending[i]!;
         const t = m.text.replace(/\s+/g, ' ').trim();
         const selected = i === state.pendingSelected;
-        const badge = m.mode === 'steer' ? '⚡' : '·';
+        const badge = m.mode === 'steer' ? '↑' : '·';
         const body = `${selected ? '› ' : '  '}${badge} ${t.length > 38 ? `${t.slice(0, 37)}…` : t}`;
         const cell = tree.queueCells[idx++]!;
         cell.visible = true;
@@ -1209,7 +1209,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const k = r.itemIdx;
         const selected = k === picker.selected;
         if (men) {
-          const label = `${picker.items[k]!.endsWith('/') ? '📁 ' : '📄 '}${picker.items[k]}`;
+          // 精简无图标（用户要求）：目录自带尾 `/` 区分，文件裸路径
+          const label = `${picker.items[k]!}`;
           lines.push({ kind: 'item', left: label, right: '', itemIdx: k, selected });
           continue;
         }
@@ -1512,7 +1513,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 内容行 i 渲染在屏幕帧第 i+1 行（0-based 帧行）；终端上报 SGR wireY = 1-based
   // 行号，OpenTUI 解析后事件 y = wireY - 1 = 帧行。因此**事件 y = i + 1**——
   // rect 必须按事件坐标登记（旧实现用 i，与真实事件 y 差 1：单行收起模块
-  //（+ thinking / ⚡ 汇总）唯一一行永远点不中，需点别处触发重绘后恰巧命中）。
+  //（+ thinking / tokens 汇总）唯一一行永远点不中，需点别处触发重绘后恰巧命中）。
   tree.cardRects.clear();
   tree.thinkingRects.clear();
   tree.tokensRects.clear();

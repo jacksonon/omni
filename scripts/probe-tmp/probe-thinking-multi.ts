@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     await sleep(5); // spinner 帧间隙（真实环境思考前等待）
     out.thinking.write(`第 ${r} 轮思考内容第一段\n第二段`);
     out.thinking.finish();
-    out.onToolStep(r, 50, 'list_directory', '📁 .');
+    out.onToolStep(r, 50, 'list_directory', '* List .');
     out.onToolResult(true, 42, ['55 个文件']);
     out.onAnswer(`第 ${r} 轮回答`);
     out.onAnswerEnd();

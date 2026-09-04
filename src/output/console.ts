@@ -161,7 +161,7 @@ export class ConsoleOutput implements Output {
     }
 
     if (tool?.name === 'list_directory') {
-      // 图 1 风格：输出 📁 path (N items)
+      // 图 1 风格：输出 path (N items)
       let count = 0;
       if (preview && preview.length) {
         const first = preview[0] ?? '';
@@ -273,7 +273,7 @@ export class ConsoleOutput implements Output {
   /** hooks 输出回显（生命周期自动化）：dim 行打印到 stdout（不改写流程，仅提示） */
   onHookOutput(event: HookEventName, lines: string[]): void {
     if (!this.opts.stream) return;
-    for (const l of lines) console.log(dim(`⚡ hook[${event}] ${l}`));
+    for (const l of lines) console.log(dim(`hook[${event}] ${l}`));
   }
 
   /** 子代理进度事件（第六节 P1 可视化）：dim 行打印到 stderr（不污染 stdout 结果/管道） */

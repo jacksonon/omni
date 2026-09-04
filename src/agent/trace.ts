@@ -8,7 +8,7 @@
  * 折叠规则（foldTrace，按事件流式累积，输出按 seq 有序）：
  *   · turn/start → 开一回合（后续事件归入该回合；turn 号单调递增）
  *   · turn/end   → 回合收尾（reason 附在回合行尾；未配对 = 进行中）
- *   · user/message → 用户行（interrupt 标记 ⚡）
+ *   · user/message → 用户行（interrupt 标记 ↑）
  *   · request/header → 记为请求步（step 索引；tools 为空 = 纯对话请求）
  *   · assistant/message → 回答步（正文首行 + usage/耗时副信息）
  *   · tool/call + tool/result → 按 callId 配对成工具步（结果未到 = 进行中）
@@ -129,7 +129,7 @@ export function foldTrace(events: TrajEvent[]): TraceRow[] {
         rows.push({
           kind: 'user',
           turn: curTurn,
-          text: (e.source === 'interrupt' ? '⚡ ' : '') + eventText(e),
+          text: (e.source === 'interrupt' ? '↑ ' : '') + eventText(e),
           // 多行正文的其余行做详情（点击展开查看完整内容）
           detail: e.text.split('\n').length > 1 ? e.text.split('\n').slice(1) : undefined,
         });

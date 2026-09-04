@@ -56,7 +56,7 @@ export function createTodoWriteTool(runOpts: RunOptions): Tool {
       const done = list.filter((t) => t.status === 'completed').length;
       const active = list.filter((t) => t.status === 'in_progress').length;
       const pending = list.filter((t) => t.status === 'pending').length;
-      const summary = list.map((t, i) => `${t.status === 'completed' ? '✅' : t.status === 'in_progress' ? '⏳' : '⬜'} ${i + 1}. ${t.content}`).join('\n');
+      const summary = list.map((t, i) => `${t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '▸' : '·'} ${i + 1}. ${t.content}`).join('\n');
       return `已更新任务清单（共 ${list.length} 项：完成 ${done} · 进行中 ${active} · 待办 ${pending}）：\n${summary}`;
     },
   };

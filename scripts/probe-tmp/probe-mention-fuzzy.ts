@@ -7,9 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTestRenderer } from '@opentui/core/testing';
-import { mountTree, repaintTree } from '/Users/os/Downloads/omni/src/tui/render.js';
-import { insertMention, listMentionCandidates } from '/Users/os/Downloads/omni/src/tui/mention.js';
-import { createTuiState } from '/Users/os/Downloads/omni/src/tui/state.js';
+import { mountTree, repaintTree } from '../../src/tui/render.js';
+import { insertMention, listMentionCandidates } from '../../src/tui/mention.js';
+import { createTuiState } from '../../src/tui/state.js';
 
 let ok = true;
 const check = (cond: boolean, msg: string): void => {

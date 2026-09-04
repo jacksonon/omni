@@ -1,6 +1,6 @@
 import { createTestRenderer } from '@opentui/core/testing';
-import { mountTree, repaintTree } from '/Users/os/Downloads/omni/src/tui/render.js';
-import { createTuiState, pushLine } from '/Users/os/Downloads/omni/src/tui/state.js';
+import { mountTree, repaintTree } from '../../src/tui/render.js';
+import { createTuiState, pushLine } from '../../src/tui/state.js';
 
 async function frame(state: ReturnType<typeof createTuiState>, height: number, width: number, label: string): Promise<void> {
   const t = await createTestRenderer({ width, height });
@@ -29,8 +29,8 @@ async function main(): Promise<void> {
   pushLine(s2, { kind: 'thinking', text: '先看一下目录结构' });
   pushLine(s2, {
     kind: 'tool',
-    text: '📁 .',
-    card: { id: 1, name: 'list_directory', summary: '📁 .', status: 'running', output: [], expanded: false },
+    text: '* List .',
+    card: { id: 1, name: 'list_directory', summary: '* List .', status: 'running', output: [], expanded: false },
   });
   s2.status = '⠋ 执行中…';
   s2.spinnerIndex = 0;

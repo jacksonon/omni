@@ -524,7 +524,7 @@ export interface TuiState {
   /**
    * 待发送消息（运行中提交，显示在输入框正上方小视图——与灰色块一起钉在视口底部）：
    * 顺序即发送顺序——steer（打断）消息在插入时放最前（unshift），queue 追加在末尾，
-   * 回合结束后 interactive 按 shift() 消费（打断优先）。每条带 mode 徽标（· queue / ⚡ steer）；
+   * 回合结束后 interactive 按 shift() 消费（打断优先）。每条带 mode 徽标（· queue / ↑ steer）；
    * 用户在消息进入对话前可用 ↑/↓ 选中、←/→ 排序、Backspace/Delete 删除、Enter 编辑。
    */
   pending: PendingMessage[];

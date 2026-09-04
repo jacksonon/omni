@@ -5,12 +5,12 @@
  * 点击命中（x = 1 + 行内列）+ mockMouse 真实事件链路。
  */
 import { createTestRenderer } from '@opentui/core/testing';
-import { mountTree, repaintTree, handleTuiMouseEvent } from '/Users/os/Downloads/omni/src/tui/render.js';
-import { buildBody, collectFileLinks, resolveLocalFile } from '/Users/os/Downloads/omni/src/tui/rows.js';
-import { createTuiState } from '/Users/os/Downloads/omni/src/tui/state.js';
-import { pushLine } from '/Users/os/Downloads/omni/src/tui/state.js';
+import { mountTree, repaintTree, handleTuiMouseEvent } from '../../src/tui/render.js';
+import { buildBody, collectFileLinks, resolveLocalFile } from '../../src/tui/rows.js';
+import { createTuiState } from '../../src/tui/state.js';
+import { pushLine } from '../../src/tui/state.js';
 
-const ROOT = '/Users/os/Downloads/omni';
+const ROOT = path.resolve(import.meta.dirname ?? ".", "../../");
 let ok = true;
 const check = (cond: boolean, msg: string): void => {
   console.log(`${cond ? '✓' : '✗'} ${msg}`);
@@ -20,7 +20,7 @@ const check = (cond: boolean, msg: string): void => {
 async function main() {
   // —— 1. resolveLocalFile 检测 ——
   check(resolveLocalFile('src/version.ts', ROOT) === `${ROOT}/src/version.ts`, '相对路径存在 → 解析为绝对路径');
-  check(resolveLocalFile('/Users/os/Downloads/omni/package.json', ROOT) === '/Users/os/Downloads/omni/package.json', '绝对路径存在 → 原样返回');
+  check(resolveLocalFile('../../package.json', ROOT) === '../../package.json', '绝对路径存在 → 原样返回');
   check(resolveLocalFile('src/no-such-file.ts', ROOT) === null, '不存在的路径 → null');
   check(resolveLocalFile('src/tui', ROOT) === null, '目录 → null（只认文件）');
   check(resolveLocalFile('src/version.ts,', ROOT) === `${ROOT}/src/version.ts`, '结尾标点逗号 → 剥离后命中');

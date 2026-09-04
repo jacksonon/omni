@@ -130,7 +130,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .project-chevron { color: var(--text-caption); }
 .section-header { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; height: 36px; margin: 2px -4px 4px 0; padding-left: 4px; overflow: hidden; color: var(--text-tertiary); }
 .section-label { display: inline-flex; align-items: center; height: 28px; font-size: 12px; font-weight: 500; line-height: 1; color: var(--text-secondary); }
-.section-label::before { content: '📁'; margin-right: 4px; font-size: 13px; line-height: 1; }
 .session-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--surface-muted); color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
 .session-search { flex: 1; min-width: 28px; max-width: 28px; height: 28px; display: flex; align-items: center; margin-left: auto; overflow: hidden; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); transition: max-width .18s var(--ease), border-color .18s var(--ease), padding .18s var(--ease); }
 .session-search:focus-within { max-width: 160px; padding-right: 5px; border-color: var(--blue); }
@@ -540,7 +539,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .attach-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 2px; }
 .attach-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; min-height: 26px; padding: 2px 6px 2px 4px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); font-size: 12px; }
 .attach-chip img { flex: none; width: 22px; height: 22px; border-radius: 6px; object-fit: cover; }
-.attach-icon { flex: none; font-size: 12px; line-height: 1; }
 .attach-meta { min-width: 0; display: flex; align-items: baseline; gap: 5px; }
 .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach-size { flex: none; color: var(--text-caption); font-size: 10.5px; }
@@ -1623,11 +1621,6 @@ body.cmd-open::before {
 .mention-item:hover, .mention-item.selected {
   background: var(--surface-hover);
   padding-left: 18px;
-}
-.mention-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-  width: 18px;
 }
 .mention-label {
   font-size: 13px;

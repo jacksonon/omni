@@ -1029,7 +1029,7 @@ function userBlock(sessionId, text, attachments) {
         img.title = a.name || t('attach.image');
         row.appendChild(img);
       } else {
-        row.appendChild(el('span', 'bubble-file', (a.kind === 'text' ? '📄 ' : '📎 ') + (a.name || '')));
+        row.appendChild(el('span', 'bubble-file', a.name || ''));
       }
     });
     bubble.appendChild(row);
@@ -1143,8 +1143,6 @@ function renderAttachList() {
       const img = document.createElement('img');
       img.src = a.dataUrl; img.alt = a.name;
       chip.appendChild(img);
-    } else {
-      chip.appendChild(el('span', 'attach-icon', a.kind === 'text' ? '📄' : '📎'));
     }
     const meta = el('div', 'attach-meta');
     meta.appendChild(el('span', 'attach-name', a.name));
@@ -3018,7 +3016,7 @@ bus.on('toolsLap', (ev) => {
 bus.on('hook.output', (ev) => {
   if (!ev.lines || !ev.lines.length) return;
   if (ev.sessionId && ev.sessionId !== state.session) return;
-  metaLine(ev.sessionId || state.session, [`📎 ${ev.event || 'hook'}: ${ev.lines[0]}`]);
+  metaLine(ev.sessionId || state.session, [`${ev.event || 'hook'}: ${ev.lines[0]}`]);
 });
 
 bus.on('error', (ev) => {
@@ -3188,9 +3186,8 @@ async function renderMention(query) {
   mentionPop.innerHTML = '';
   mentionItems.forEach((item, i) => {
     const row = el('div', 'mention-item' + (i === 0 ? ' selected' : ''));
-    const icon = item.isDir ? '📁' : '📄';
     const label = item.isDir ? item.name + '/' : item.name;
-    row.innerHTML = '<span class="mention-icon">' + icon + '</span><span class="mention-label">' + esc(label) + '</span>';
+    row.innerHTML = '<span class="mention-label">' + esc(label) + '</span>';
     if (!item.isDir) {
       const sub = el('span', 'mention-path', item.path);
       row.appendChild(sub);
@@ -4034,7 +4031,7 @@ function renderQueueList() {
     row.appendChild(drag);
 
     // 徽标
-    const badge = el('span', 'qi-badge ' + (item.steer ? 'steer' : 'queue'), item.steer ? '⚡' : 'Q');
+    const badge = el('span', 'qi-badge ' + (item.steer ? 'steer' : 'queue'), item.steer ? '↑' : 'Q');
     row.appendChild(badge);
 
     // 文本（双击编辑）
@@ -4069,12 +4066,12 @@ function renderQueueList() {
     // 转 steer / 转 queue 按钮
     const toggleBtn = el('button', 'qi-btn', '');
     if (!item.steer) {
-      // Q → ⚡（转 steer）
+      // Q → ↑（转 steer）
       toggleBtn.title = '转为 steer 打断消息';
       toggleBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="currentColor" stroke="none"/></svg>';
       toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); toSteer(i); });
     } else {
-      // ⚡ → Q（转 queue）
+      // ↑ → Q（转 queue）
       toggleBtn.title = '转为排队消息';
       toggleBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" stroke-width="2"/></svg>';
       toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); toQueue(i); });
@@ -5385,7 +5382,6 @@ async function navigateDirPicker(p) {
     for (const name of data.dirs) {
       const item = el('button', 'dir-item');
       item.type = 'button';
-      item.appendChild(el('span', null, '📁'));
       item.appendChild(el('span', 'dir-name', name));
       item.addEventListener('click', () => navigateDirPicker(`${data.current}/${name}`.replace(/\/+/g, '/')));
       list.appendChild(item);

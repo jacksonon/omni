@@ -4,8 +4,8 @@
  * 并用真实 Textarea（mountTree 建树）验证 setText('') 清空生效。
  */
 import { createTestRenderer } from '@opentui/core/testing';
-import { mountTree, handleCtrlCKey } from '/Users/os/Downloads/omni/src/tui/render.js';
-import { createTuiState } from '/Users/os/Downloads/omni/src/tui/state.js';
+import { mountTree, handleCtrlCKey } from '../../src/tui/render.js';
+import { createTuiState } from '../../src/tui/state.js';
 
 async function main() {
   let ok = true;
