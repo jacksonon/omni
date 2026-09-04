@@ -4,7 +4,7 @@
  *   A   e2e：TUI runCommand('/goal 完成部署') 分发 → 过程行（目标/推导/迭代/判定/达成）
  *        出现在 state.lines **对话流**（不再是命令面板）
  *   B   cmdPanel 自动收起（runCommand 开空面板 → 无输出 → 清空，不弹面板）
- *   C   最终收尾行（✅ 目标达成 + [目标达成：第 2 轮]）在对话流
+ *   C   最终收尾行（✓ 目标达成 + [目标达成：第 2 轮]）在对话流
  *   D   子代理事件照常走 onSubagentEvent（对话流 worker 卡片路径不被破坏）
  *   E   CLI console 端 /goal 直接打印过程（dim 行，终端流即对话流）
  *
@@ -87,13 +87,13 @@ async function main(): Promise<void> {
 
     const texts = state.lines.map((l: TuiLine) => l.text);
     const find = (frag: string): boolean => texts.some((t) => t.includes(frag));
-    ok(find('🎯 目标：完成部署'), `A1 目标行在对话流（${JSON.stringify(texts.find((t) => t.includes('目标：')) ?? '无')}）`);
-    ok(find('🧠 推导验收标准'), 'A2 推导验收标准行在对话流');
-    ok(find('📋 验收标准：1) 功能完整可运行'), 'A3 验收标准条款行在对话流（流式累积）');
-    ok(find('🔁 第 1/5 轮') && find('🔁 第 2/5 轮'), 'A4 迭代进度行在对话流');
-    ok(find('🧪 验收判定（第 1 轮）：不满足：结果尚未完整'), 'A5 判定反馈行在对话流（流式累积）');
+    ok(texts.some((t) => t.startsWith('目标：完成部署')), `A1 目标行在对话流（${JSON.stringify(texts.find((t) => t.includes('目标：')) ?? '无')}）`);
+    ok(find('推导验收标准'), 'A2 推导验收标准行在对话流');
+    ok(find('验收标准：1) 功能完整可运行'), 'A3 验收标准条款行在对话流（流式累积）');
+    ok(find('第 1/5 轮') && find('第 2/5 轮'), 'A4 迭代进度行在对话流');
+    ok(find('验收判定（第 1 轮）：不满足：结果尚未完整'), 'A5 判定反馈行在对话流（流式累积）');
     ok(subagentEvts > 0, `D 子代理事件走 onSubagentEvent（${subagentEvts} 个，对话流卡片路径保留）`);
-    ok(find('✅ 目标达成（第 2 轮）'), 'C1 达成收尾行在对话流');
+    ok(find('✓ 目标达成（第 2 轮）'), 'C1 达成收尾行在对话流');
     ok(find('[目标达成：第 2 轮]'), `C2 达成标记在对话流（${texts.find((t) => t.includes('目标达成')) ?? '无'}）`);
 
     // B. 面板自动收起：无面板 / 空面板（过程不进面板）

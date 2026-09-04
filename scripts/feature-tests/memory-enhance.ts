@@ -83,10 +83,18 @@ export function memoryEnhanceSuite(): TestSuite {
       // 触发一次追加（模拟会话结束），触发 TTL 归档
       const ok = await appendGlobalMemory('- 本次新偏好');
       suite.assert(ok === true, '追加成功');
-      const raw = fs.readFileSync(gpath, 'utf8');
-      suite.assert(raw.includes('旧偏好 A'), '旧条目仍保留（TTL 只归档段落不删条目——去重防重复学习）');
-      suite.assert(raw.includes('新偏好 B'), '近期段落保留');
-      suite.assert(raw.includes('本次新偏好'), '新条目追加');
+      // 结构化布局（1.0 P1-2）：新写入全部进 memory/topics/<主题>.md（遗留 AGENTS.md 只读保留）
+      const { memoryTopicsDir, memoryIndexFile } = await import('../../src/agent/memory-topics.js');
+      const topicsRaw = (await fs.promises.readdir(memoryTopicsDir(), { recursive: true }).catch(() => [] as string[]))
+        .filter((f) => String(f).endsWith('.md'))
+        .map((f) => fs.readFileSync(path.join(memoryTopicsDir(), f as string), 'utf8'))
+        .join('\n');
+      const idxRaw = fs.existsSync(memoryIndexFile()) ? fs.readFileSync(memoryIndexFile(), 'utf8') : '';
+      const legacyRaw = fs.readFileSync(gpath, 'utf8');
+      const structured = `${topicsRaw}\n${idxRaw}`;
+      suite.assert(structured.includes('本次新偏好'), '新条目追加（结构化 topics/索引）');
+      suite.assert(legacyRaw.includes('旧偏好 A'), '旧条目仍保留（TTL 只归档段落不删条目——去重防重复学习）');
+      suite.assert(legacyRaw.includes('新偏好 B'), '近期段落保留');
       // applyMemoryTTL 纯函数：过期段落分离
       const secOld = `## 会话记忆（${oldDate}）\n\n- x\n`;
       const secNew = `## 会话记忆（${recent}）\n\n- y\n`;

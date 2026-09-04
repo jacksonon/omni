@@ -22,11 +22,14 @@ const SUMMARY_MAX_COLS = 120;
  * 工具调用摘要：一行人类可读描述。
  *
  * - run_command → `$ freebuff --continue ...`（shell 提示符风格；换行折叠为空格）
- * - read_file → `→ Read 路径`（对标 opencode；并行多读合并成 `→ Read N files` 在 TUI 层）
- * - write_file → `✏️ 路径`
- * - edit_file → `✎ 路径 · +A −D 行`（Claude Code Edit 风格摘要：路径 + 改动统计）
- * - list_directory → `📁 路径`
- * - search_code → `🔍 关键词`
+ * - read_file → `* Read 路径`（对标 opencode；并行多读合并成 `→ Explored — N reads` 在 TUI 层）
+ * - write_file → `← Write 路径`
+ * - edit_file → `← Edit 路径 · +A −D 行`（Claude Code Edit 风格摘要：路径 + 改动统计）
+ * - list_directory → `* List 路径`
+ * - search_code → `* Grep "关键词"`
+ * - 精简图标风格（用户要求）：全 ASCII 词前缀（`$` `*` `←` `→` `?`），不用 emoji——
+ *   web_fetch `* Fetch` / web_search `* Search` / skill `* Skill` / ask_user `? 问题` /
+ *   diagnose `* Check` / memory_search `* Recall` / memory_read `* Memory`
  * - 未知工具 → `k=v` 列表兜底
  *
  * 返回恒为单行（多行命令的 \n 折叠为空格），并按显示列数截断——多行摘要或超长
@@ -52,7 +55,7 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
       break;
     }
     case 'list_directory':
-      s = `📁 ${argStr(args, 'path') || '.'}`;
+      s = `* List ${argStr(args, 'path') || '.'}`;
       break;
     case 'search_code': {
       const pat = argStr(args, 'pattern');
@@ -62,21 +65,21 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
     }
     case 'web_fetch': {
       const url = argStr(args, 'url');
-      s = `🌐 ${url}`;
+      s = `* Fetch ${url}`;
       break;
     }
     case 'web_search': {
       const query = argStr(args, 'query');
-      s = `🔍 ${query}`;
+      s = `* Search ${query}`;
       break;
     }
     case 'skill': {
-      s = `📦 ${argStr(args, 'name')}`;
+      s = `* Skill ${argStr(args, 'name')}`;
       break;
     }
     case 'ask_user': {
       const q = argStr(args, 'question').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
-      s = `❓ ${q}`;
+      s = `? ${q}`;
       break;
     }
     case 'delegate': {
@@ -86,7 +89,7 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
       break;
     }
     case 'diagnose': {
-      s = `🩺 ${argStr(args, 'scope') || 'all'}`;
+      s = `* Check ${argStr(args, 'scope') || 'all'}`;
       break;
     }
     case 'todo_write': {
@@ -96,11 +99,11 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
       break;
     }
     case 'memory_search': {
-      s = `🧠 ${argStr(args, 'query')}`;
+      s = `* Recall ${argStr(args, 'query')}`;
       break;
     }
     case 'memory_read': {
-      s = `📖 ${argStr(args, 'path')}`;
+      s = `* Memory ${argStr(args, 'path')}`;
       break;
     }
     default:

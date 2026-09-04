@@ -93,15 +93,15 @@ export function coreSuite(): TestSuite {
     try {
       const { code, out } = await runCli('读取项目文件', baseEnv);
       suite.assert(code === 0, `进程退出码 0（实际 ${code}）`);
-      suite.assert(out.includes('→ Read'), `console 显示 read 调用（${out.includes('→ Read')}）`);
+      suite.assert(out.includes('→ Explored'), `console 显示 read 调用（${out.includes('→ Explored')}）`);
       suite.assert(out.includes('mock 端到端验证通过'), '任务完成');
     } finally {
       stop();
     }
-    // formatToolCall 纯函数：read_file → → Read 路径
+    // formatToolCall 纯函数：read_file → * Read 路径
     const { formatToolCall } = await import('../../src/output/format.js');
     const preview = formatToolCall('read_file', { path: 'src/foo.ts' });
-    suite.assert(preview.includes('→ Read src/foo.ts'), `formatToolCall 一行式（${preview}）`);
+    suite.assert(preview.includes('* Read src/foo.ts'), `formatToolCall 一行式（${preview}）`);
   });
 
   suite.test('计划模式：/plan 只读（不调用 run_command）', async () => {

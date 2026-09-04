@@ -801,7 +801,7 @@ export function computeRows(
   const pendingCount = state.pending.length;
   const pendingRows =
     opts?.withInput && pendingCount > 0 ? 1 + Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) : 0;
-  // ask_user 提问面板（输入区上方）：❓ 问题行 1 + 每选项 1 行 + 自定义行 1 + 确认行 1 +
+  // ask_user 提问面板（输入区上方）：? 问题行 1 + 每选项 1 行 + 自定义行 1 + 确认行 1 +
   // 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
   const askRows = opts?.withInput && state.ask ? state.ask.options.length + 4 : 0;
   // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 待发送区(pendingRows) + ask 面板(askRows)

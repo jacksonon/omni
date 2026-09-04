@@ -1034,45 +1034,47 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.footerEffort.content = effortText;
     tree.footerEffort.visible = effortText !== ''; // 空级别不占位（免得模型名后多出双空格 gap）
   }
-  // 中部各段文本（空串 = 隐藏）：均值 / 输入输出 / 缓存（无缓存数据不显示）
+  // 均值段文本（空串 = 隐藏）
   const avg = sessionAvgRate(state.stats, state.tokens, state.liveTokens > 0 || state.liveGenMs > 0
     ? { streamTokens: state.liveTokens, liveGenMs: state.liveGenMs }
     : null);
   const avgText = avg > 0 ? `· ${avg} tok/s` : '';
-  const hasIO = state.tokens.prompt > 0 || state.tokens.completion > 0;
-  const ioText = hasIO
-    ? (en
-      ? `· In ${formatCompact(state.tokens.prompt)} · Out ${formatCompact(state.tokens.completion)}`
-      : `· 输入 ${formatCompact(state.tokens.prompt)} · 输出 ${formatCompact(state.tokens.completion)}`)
-    : '';
-  const cachePct = state.tokens.prompt > 0 ? Math.min(100, Math.round((state.stats.cached / state.tokens.prompt) * 100)) : 0;
-  const cacheText = state.stats.cached > 0 ? (en ? `· Cache ${cachePct}%` : `· 缓存 ${cachePct}%`) : '';
+  // loading 段：`· ⠹ esc interrupt`（spinner 帧 accentBlue，其余 dim；整段仅会话进行中显示）
+  const loadHint = t(state.language, 'footer.escInterrupt');
+  const loadSpinner = SPINNER_FRAMES[Math.max(0, state.loadingIndex) % SPINNER_FRAMES.length];
+  const loadText = `· ${loadSpinner} ${loadHint}`;
   // 宽度预算：灰块内容列可用 ≈ 视口 - 根内边距(2) - 蓝线(1) - 内容列 padding(2) - 余量(1)；
-  // 模型/均值恒保留，超宽时按 缓存→输入输出 顺序从右向左逐个隐藏
+  // 模型恒保留，超宽时按 均值→loading 顺序从右向左逐个隐藏
   const avail = Math.max(20, (width ?? 80) - 6);
-  const wBase = visualWidth(modeText) + visualWidth(modelText)
-    + visualWidth(effortText) + visualWidth(avgText) + 4;
-  const wIO = visualWidth(ioText);
-  const wCache = visualWidth(cacheText);
-  let showIO = ioText !== '';
-  let showCache = cacheText !== '';
-  while (showIO || showCache) {
-    const total = (showIO ? wIO + 1 : 0) + (showCache ? wCache + 1 : 0);
-    if (wBase + total <= avail) break;
-    if (showCache) showCache = false;
-    else showIO = false;
+  const wBase = visualWidth(modeText) + visualWidth(modelText) + visualWidth(effortText) + 3;
+  const wAvg = visualWidth(avgText);
+  const wLoad = visualWidth(loadText);
+  let showAvg = avgText !== '';
+  let showLoad = loadingNow;
+  while ((showAvg || showLoad) && wBase + (showAvg ? wAvg + 1 : 0) + (showLoad ? wLoad + 1 : 0) > avail) {
+    if (showAvg) showAvg = false;
+    else showLoad = false;
   }
   if (tree.footerAvg) {
     tree.footerAvg.content = avgText;
-    tree.footerAvg.visible = avgText !== '';
+    tree.footerAvg.visible = showAvg;
   }
-  if (tree.footerIO) {
-    tree.footerIO.content = ioText;
-    tree.footerIO.visible = showIO;
-  }
-  if (tree.footerCache) {
-    tree.footerCache.content = cacheText;
-    tree.footerCache.visible = showCache;
+  if (tree.footerLoad) {
+    if (showLoad) {
+      try {
+        tree.footerLoad.content = new StyledText([
+          { __isChunk: true as const, text: '· ', fg: parseColor(theme.footerDim), attributes: 0 },
+          { __isChunk: true as const, text: loadSpinner, fg: parseColor(theme.accentBlue), attributes: 0 },
+          { __isChunk: true as const, text: ` ${loadHint}`, fg: parseColor(theme.footerDim), attributes: 0 },
+        ]);
+      } catch (e) {
+        logCrash('footer-load', e);
+      }
+      tree.footerLoad.visible = true;
+    } else {
+      tree.footerLoad.content = '';
+      tree.footerLoad.visible = false;
+    }
   }
   // 待发送消息区（输入框上方小视图）：标题行「⏳ 待发送（N · ⚡M 打断）」+ 每条消息带
   // queue/steer 徽标（· 普通排队 / ⚡ 打断优先）+ 选中高亮（› 青色加粗）。
@@ -1565,7 +1567,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const wrapperTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + 1 + i, i);
   }
-  // ask_user 提问面板（输入区上方）：**竖向勾选列表**——❓ 问题（单选/多选）+ 每行
+  // ask_user 提问面板（输入区上方）：**竖向勾选列表**——? 问题（单选/多选）+ 每行
   // 一个 `[x] A) 选项` + 自定义行（`[ ] 自定义：内容`，有内容自动勾选）+ `✓ 确认（Enter）`
   // 提交行 + 提示行（空间不足时提示行被截，确认行恒保留）。高亮行 `›` 前缀。
   // 输入框内容每帧同步为自定义内容（打字 = 自定义输入，字母/数字不拦截——勾选用空格）。
@@ -1581,7 +1583,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (tree.input) a.custom = tree.input.plainText;
       const aRows: { text: string; style: { dim?: boolean; bold?: boolean; fg?: string } }[] = [];
       const modeTag = a.multiple ? t(lang, 'ask.multiple') : t(lang, 'ask.single');
-      aRows.push({ text: `❓ ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { bold: true } });
+      aRows.push({ text: `? ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { bold: true } });
       const optCols = Math.max(10, (width ?? 80) - 8);
       for (let i = 0; i < a.options.length; i++) {
         const on = a.selected.has(i);

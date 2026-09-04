@@ -261,9 +261,9 @@ export async function runOrchestrate(
  * 判定反馈）→「验收判定器」LLM 判定达标（回答含「满足」且未被「不」否定即停），
  * 不满足的理由反馈进下一轮；--max 调整迭代上限（默认 5 防失控）。
  *
- * 输出（对话流程式叙事，无树形框线）：`🎯 目标` → `🧠 推导` → `📋 验收标准`
- * （流式）→ `⏱ 最大迭代` → 每轮 `🔁 第 i/N 轮` + worker 卡片（onSubagentEvent）
- * + `🧪 验收判定（流式）` → 不满足 `↻ 未达标…` / 达成 `✅ 目标达成（第 i 轮）`。
+ * 输出（对话流程式叙事，无树形框线，精简 ASCII 风格——无 emoji 前缀）：`目标` → `推导验收标准`
+ * （流式）→ `最大迭代` → 每轮 `第 i/N 轮` + worker 卡片（onSubagentEvent）
+ * + `验收判定（流式）` → 不满足 `↻ 未达标…` / 达成 `✓ 目标达成（第 i 轮）`。
  */
 export async function runGoal(
   raw: string,
@@ -279,16 +279,16 @@ export async function runGoal(
   const hooks = runOpts.hooks;
   const iterations = max ?? MAX_ITERATIONS;
 
-  opts.log(`🎯 目标：${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`);
+  opts.log(`目标：${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`);
 
   // 验收标准：--accept 显式指定，缺省由目标拆解器自动推导（不让用户手写判定条款）
   let acceptCriteria = accept;
   if (!acceptCriteria) {
-    opts.log('🧠 推导验收标准…');
+    opts.log('推导验收标准…');
     await opts.tick?.();
-    // 推导结果**流式**展示（sink 段：📋 前缀 + 拆解器输出逐字累积）
+    // 推导结果**流式**展示（sink 段：`验收标准` 前缀 + 拆解器输出逐字累积）
     const sink = opts.onStream?.();
-    sink?.start('📋 验收标准：');
+    sink?.start('验收标准：');
     acceptCriteria = await completeText(
       opts.client,
       opts.model,
@@ -301,18 +301,18 @@ export async function runGoal(
     // 推导失败（请求错误等）：降级以目标本身为验收依据，不阻塞任务
     if (!acceptCriteria || acceptCriteria.startsWith('（请求失败')) {
       acceptCriteria = task;
-      opts.log('⚠️ 验收标准推导失败，回退以目标本身为验收依据');
+      opts.log('验收标准推导失败，回退以目标本身为验收依据');
     }
   } else {
-    opts.log(`📋 验收标准：${acceptCriteria.slice(0, 80)}${acceptCriteria.length > 80 ? '…' : ''}`);
+    opts.log(`验收标准：${acceptCriteria.slice(0, 80)}${acceptCriteria.length > 80 ? '…' : ''}`);
   }
-  opts.log(`⏱ 最大迭代：${iterations} 次`);
+  opts.log(`最大迭代：${iterations} 次`);
   await opts.tick?.();
 
   let lastResult = '';
   let lastFeedback = '';
   for (let i = 1; i <= iterations; i++) {
-    opts.log(`🔁 第 ${i}/${iterations} 轮`);
+    opts.log(`第 ${i}/${iterations} 轮`);
     await opts.tick?.();
     // 每轮 prompt：目标 + 验收标准 + 上一轮结果 + 判定反馈（差距导向，不重复已完成工作）
     let prompt = `目标：${task}\n验收标准：${acceptCriteria}`;
@@ -334,7 +334,7 @@ export async function runGoal(
     // 验收判定：LLM 检查是否达标；结果**流式**展示（判定行直接以正文出现，无需 ✗/✓ 前缀——
     // 「满足/不满足」是正文首词）；不满足的理由存进 lastFeedback 驱动下一轮
     const sink = opts.onStream?.();
-    sink?.start(`🧪 验收判定（第 ${i} 轮）：`);
+    sink?.start(`验收判定（第 ${i} 轮）：`);
     const verdict = await completeText(
       opts.client,
       opts.model,
@@ -349,7 +349,7 @@ export async function runGoal(
     lastFeedback = `${met ? '满足' : '不满足'}（${verdict.replace(/\n/g, ' ').slice(0, 120)}）`;
     await opts.tick?.();
     if (met) {
-      opts.log(`✅ 目标达成（第 ${i} 轮）`);
+      opts.log(`✓ 目标达成（第 ${i} 轮）`);
       return `${answer}\n\n[目标达成：第 ${i} 轮]`;
     }
     opts.log('↻ 未达标，下一轮按判定反馈继续推进');

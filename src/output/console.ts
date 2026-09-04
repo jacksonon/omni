@@ -349,7 +349,7 @@ export class ConsoleOutput implements Output {
     try {
       const lines = options.map((o, i) => `  ${i + 1}. ${o}`);
       const ans = await rl.question(
-        `\n${cyan('❓')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
+        `\n${cyan('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
       );
       const t = ans.trim();
       if (!t) return null; // 空输入 = 取消

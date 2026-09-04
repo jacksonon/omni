@@ -149,7 +149,7 @@ const I18N_ZH = {
   'approval.allowed': '✓ 已允许',
   'approval.denied': '✗ 已拒绝',
   'approval.fromSession': '· 来自会话「{name}」',
-  'ask.head': '❓ 向用户提问',
+  'ask.head': '? 向用户提问',
   'ask.cancel': '取消',
   'ask.confirm': '确认',
   'ask.customPlaceholder': '自定义输入（可选）',
@@ -442,7 +442,7 @@ const I18N_EN = {
   'approval.allowed': '✓ Allowed',
   'approval.denied': '✗ Denied',
   'approval.fromSession': '· from session "{name}"',
-  'ask.head': '❓ Ask the user',
+  'ask.head': '? Ask the user',
   'ask.cancel': 'Cancel',
   'ask.confirm': 'Confirm',
   'ask.customPlaceholder': 'Custom input (optional)',
@@ -1534,18 +1534,18 @@ function formatToolArgs(name, a) {
   if ((name === 'read_file' || name === 'write_file' || name === 'edit_file') && a.path) return a.path;
   if (name === 'list_directory' && a.path) return a.path;
   if (name === 'search_code' && a.pattern) return a.pattern;
-  if (name === 'web_fetch' && a.url) return `🌐 ${a.url}`;
-  if (name === 'web_search' && a.query) return `🔍 ${a.query}`;
-  if (name === 'skill' && a.name) return `📦 ${a.name}`;
-  if (name === 'ask_user' && a.question) return `❓ ${String(a.question).split('\n').map((l) => l.trim()).find(Boolean) || ''}`;
+  if (name === 'web_fetch' && a.url) return `* Fetch ${a.url}`;
+  if (name === 'web_search' && a.query) return `* Search ${a.query}`;
+  if (name === 'skill' && a.name) return `* Skill ${a.name}`;
+  if (name === 'ask_user' && a.question) return `? ${String(a.question).split('\n').map((l) => l.trim()).find(Boolean) || ''}`;
   if (name === 'delegate' && a.task) return `→ ${a.agent ? `${a.agent} · ` : ''}${String(a.task).split('\n').map((l) => l.trim()).find(Boolean) || ''}`.slice(0, 120);
-  if (name === 'diagnose') return `🩺 ${a.scope || 'all'}`;
+  if (name === 'diagnose') return `* Check ${a.scope || 'all'}`;
   if (name === 'todo_write' && Array.isArray(a.todos)) {
     const done = a.todos.filter((t) => t && typeof t === 'object' && t.status === 'completed').length;
     return `☑ ${done}/${a.todos.length} 完成`;
   }
-  if (name === 'memory_search' && a.query) return `🧠 ${a.query}`;
-  if (name === 'memory_read' && a.path) return `📖 ${a.path}`;
+  if (name === 'memory_search' && a.query) return `* Recall ${a.query}`;
+  if (name === 'memory_read' && a.path) return `* Memory ${a.path}`;
   return JSON.stringify(a).slice(0, 120);
 }
 
