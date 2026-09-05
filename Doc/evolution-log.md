@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百五十六次）**：**获取中不再占上方状态盒**——“获取中”只由模型列表内联 loading 行呈现（空列表 bare 行 / 有内容追加行），上方盒子只保留失败/空结果终态（失败分支补显式取消隐藏）。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。
+- **2026-09-05（第二百五十五次）**：**修复模型列表获取中的上方空白视图**——`fetchProviderModels` 把 loading 文案包在 `<div class="spin">` 里，而 `.spin` 全局 `display:none`（只在 tool-card/cmd 面板等特定上下文显示），导致 bordered 的 `#p-fetch-result` 盒子显示为空白（成功后隐藏，看似闪现）。改纯文本行，与失败/空结果态一致；排查其余 `.spin` 用法无同类问题。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿（首次失败系残留探针进程占端口，清进程重跑通过）。
 - **2026-09-05（第二百五十四次）**：**技能页两处修正**——查看按钮窄屏下被挤成竖排：行内按钮加 `flex:none + nowrap`；新建改弹窗（头部与刷新并排，回车确认，Esc/遮罩/取消关闭），去行内底部表单。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。
 - **2026-09-05（第二百五十三次）**：**Web 设置新增 MCP/技能页**——设置原无 MCP/skill 入口（仅斜杠命令）。改动：a) **后端**（`src/web/server.ts`）：`GET /api/mcp`（配置+连接状态+工具/资源/提示词）、`GET /api/skills`（已发现技能+标签）、`POST /api/mcp add` 支持 `text` 字段（复用 `parseMcpAddArgs` 文本语法）、`/settings` 提示面板清单同步；b) **前端**：导航 + MCP 页（chips 列表+详情+增删+重连/登录+registry 安装，懒加载）+ 技能页（列表+全局/仅手动/子代理徽标+新建+查看走 `/skill show`），`/settings mcp|skills` 直达，修正 `/mcp` 联想描述的错误声明。**验证**：typecheck ✓ · node --check ✓ · web:sync ✓ · probe:web 全绿 · 新接口 e2e（空列表/add 文本语法/已连接工具/非法名400/remove/技能列表/非法技能名）全绿。
 - **2026-09-05（第二百五十二次）**：**Web 设置 · 关于按输入区风格重构**——版本/服务地址配消息流同款拷贝图标按钮（一键复制，右上角通知反馈）；工具列表由逗号文本改 pill chips（含计数）；语言行改跳转行（pill 当前值 + chevron，点击/回车直达通用面板）。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。

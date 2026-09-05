@@ -5948,10 +5948,8 @@ async function fetchProviderModels(group, silent) {
   const b = $('#p-baseurl').value.trim() || (group ? group.baseURL : '');
   if (!b) { if (!silent) notify(t('provider.noBaseURL'), 'error'); return null; }
   const fetchResult = $('#p-fetch-result');
-  if (fetchResult) {
-    fetchResult.classList.remove('hidden');
-    fetchResult.innerHTML = `<div class="spin">${t('provider.fetching')}</div>`;
-  }
+  // “获取中”不在上方状态盒显示——只由模型列表内联 loading 行呈现（空列表 bare 行 / 有内容追加行）；
+  // 上方盒子只保留失败/空结果两种终态展示。
   try {
     const data = await api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -5970,7 +5968,7 @@ async function fetchProviderModels(group, silent) {
     }
     return items;
   } catch (err) {
-    if (fetchResult) fetchResult.innerHTML = `<div>${t('provider.errFetch', { msg: esc(err.message) })}</div>`;
+    if (fetchResult) { fetchResult.classList.remove('hidden'); fetchResult.innerHTML = `<div>${t('provider.errFetch', { msg: esc(err.message) })}</div>`; }
     return null;
   }
 }
