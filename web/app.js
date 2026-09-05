@@ -520,7 +520,7 @@ const I18N_EN = {
   'header.details': 'Open details',
   'header.closeDetails': 'Close details',
   'header.chatTab': 'Chat',
-  'hero.tagline': 'Explore the unknown',
+  'hero.tagline': 'omni',
   'hero.preview': 'Preview',
   'hero.workspace': 'Current workspace',
   'composer.attach': 'Select files/images',
