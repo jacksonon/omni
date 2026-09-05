@@ -607,6 +607,39 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .permission-pop .pp-item.ask { --level-perm: var(--green); }
 .permission-pop .pp-item.safe { --level-perm: #ca8a04; }
 .permission-pop .pp-item.full { --level-perm: var(--red); }
+/* 设置 · 通用：权限列表静态内嵌（复用 permission-pop 项样式，去浮层定位/描边/阴影） */
+.permission-pop.set-static { position: static; width: auto; max-width: none; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+.permission-pop.set-static .pp-list { padding: 0; }
+/* 设置 · 通用：并发滑条（复用输入区 slider 结构，品牌蓝单色 + 去顶部外边距贴紧标题） */
+.cc-slider { --slider-grad: linear-gradient(90deg, #4176e6 0%, #6366f1 100%); --slider-glow: #4176e6; margin: 0 2px; }
+#cc-ticks span.active { color: #4176e6; }
+#cc-val { color: var(--text-secondary); font-weight: 600; }
+/* 设置 · 关于（输入区风格）：值 + 拷贝按钮 / 工具 chips / 语言跳转行 */
+.about-value { display: inline-flex; align-items: center; gap: 4px; flex: none; min-width: 0; }
+.tool-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-chip { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); color: var(--text-secondary); font: 12px/1 var(--mono); white-space: nowrap; }
+.about-pill { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); color: var(--text); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.setting-row.about-jump { cursor: pointer; }
+.setting-row.about-jump:hover { background: var(--surface-hover); }
+.setting-row.about-jump:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.about-chev { width: 14px; height: 14px; flex: none; color: var(--text-caption); }
+/* 设置 · MCP/技能页（复用模型配置列表风格：chips + 表单行） */
+.mcp-head { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
+.mcp-head .secondary-button { flex: none; }
+#mcp-chips { margin-bottom: 10px; }
+#mcp-chips:empty { margin-bottom: 0; }
+#mcp-detail { margin-bottom: 14px; }
+#mcp-detail.hidden { display: none; margin-bottom: 0; }
+.mcp-add-row { display: flex; gap: 8px; width: 100%; }
+.mcp-add-row .cfg-text { flex: 1; min-width: 0; }
+.mcp-add-row .primary-button { flex: none; }
+.mcp-kv { font: 12px/20px var(--mono); color: var(--text-secondary); overflow-wrap: anywhere; }
+.mc-badge.off { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
+.mc-badge.http { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
+.mc-badge.std { background: var(--surface-muted); color: var(--text-secondary); }
+.skill-badges { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
+/* 技能列表行内按钮：不压缩、不换行（窄屏下描述再长也不把「查看」挤成竖排） */
+#skill-list .secondary-button { flex: none; white-space: nowrap; }
 
 /* 让 composer-card 自身成为定位上下文（permission-pop 相对它） */
 .composer-card { overflow: visible; }

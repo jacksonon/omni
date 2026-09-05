@@ -192,6 +192,42 @@ const I18N_ZH = {
   'settings.workspaceSub': '智能体读写文件、执行命令所用的根目录。',
   'settings.apikeySub': '配置模型的端点、密钥、推理级别与上下文长度。支持 providers 分组（一个端点对应多个模型），与 omni.json 的 providers 字段一致，保存后写入全局配置文件。',
   'settings.aboutSub': '',
+  'settings.mcp': 'MCP 服务',
+  'settings.mcpSub': '外部工具服务器（本地命令 / 远端 HTTP）。增删写入全局配置并即时生效；未连接的服务器可重连。',
+  'settings.skills': '技能',
+  'settings.skillsSub': '模型按需加载的技能（SKILL.md）。新建写入项目 .agents/skills，刷新后即时发现；网络检索安装仍走 /skill find|add。',
+  'mcp.reconnect': '重连',
+  'mcp.empty': '还没有 MCP 服务器——下方添加，或输入区 /mcp add',
+  'mcp.addTitle': '添加服务器',
+  'mcp.addHint': '同 /mcp add 语法：命令 [参数]，或 --url <http> [--approval <mode>]。',
+  'mcp.namePh': '服务器名',
+  'mcp.cmdPh': '命令 [参数] 或 --url <http>',
+  'mcp.add': '添加',
+  'mcp.installTitle': '从 Registry 安装',
+  'mcp.installPh': 'registry id',
+  'mcp.install': '安装',
+  'mcp.login': '登录',
+  'mcp.delete': '删除',
+  'mcp.tools': '工具',
+  'mcp.resources': '资源',
+  'mcp.prompts': '提示词',
+  'mcp.unconnected': '未连接',
+  'mcp.stdio': '本地命令',
+  'mcp.http': '远端 HTTP',
+  'mcp.confirmDelete': '确定删除 MCP 服务器「{name}」？',
+  'mcp.count': '{n} 个服务器',
+  'mcp.reconnected': '已重连（当前 {n} 个工具）',
+  'skill.refresh': '刷新',
+  'skill.empty': '未发现技能——下方新建，或 /skill find 检索安装',
+  'skill.createTitle': '新建技能',
+  'skill.namePh': '技能名（小写字母/数字/连字符）',
+  'skill.descPh': '一句话描述（模型据此选用）',
+  'skill.create': '新建',
+  'skill.show': '查看',
+  'skill.global': '全局',
+  'skill.manual': '仅手动',
+  'skill.subagent': '子代理',
+  'skill.count': '{n} 个技能',
   'settings.permission': '权限级别',
   'settings.permissionDesc': '控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。',
   'settings.permSafe': 'safe · 危险操作询问',
@@ -313,6 +349,7 @@ const I18N_ZH = {
   'settings.version': '版本',
   'settings.server': '服务地址',
   'settings.tools': '可用工具',
+  'settings.toolsCount': '{n} 个工具',
   // 快捷键
   'settings.shortcuts': '快捷键',
   'settings.shortcutsSub': '查看并自定义所有键盘快捷键：点击「录制」按下组合键绑定，Backspace 清除，Esc 取消；冲突自动检测。',
@@ -365,7 +402,7 @@ const I18N_ZH = {
   'shortcut.openModelPanel': '打开模型面板',
   'shortcut.openModelPanelDesc': '切换模型与思考级别面板',
   'shortcut.cyclePermission': '循环切换权限',
-  'shortcut.cyclePermissionDesc': '只读 → 危险询问 → 全询问 → 全量直通（静默）',
+  'shortcut.cyclePermissionDesc': '只读 → 请求批准 → 帮我批准 → 完全访问（静默）',
   'shortcut.openSettings': '打开设置',
   'shortcut.openSettingsDesc': '打开设置弹窗',
   'shortcut.cheatsheet': '快捷键速查表',
@@ -562,6 +599,42 @@ const I18N_EN = {
   'settings.modelSub': 'Switch the model and reasoning depth.',
   'settings.workspaceSub': 'Root directory the agent reads/writes files and runs commands in.',
   'settings.apikeySub': 'Configure endpoints, keys, reasoning levels and context length. Supports providers groups (one endpoint with multiple models) — same fields as providers in omni.json, saved to the global config file.',
+  'settings.mcp': 'MCP servers',
+  'settings.mcpSub': 'External tool servers (local commands / remote HTTP). Changes are saved to the global config and take effect immediately; reconnect servers that failed.',
+  'settings.skills': 'Skills',
+  'settings.skillsSub': 'Skills the model loads on demand (SKILL.md). New skills go to the project .agents/skills and are discovered after refresh; use /skill find|add for registry installs.',
+  'mcp.reconnect': 'Reconnect',
+  'mcp.empty': 'No MCP servers yet — add one below or via /mcp add',
+  'mcp.addTitle': 'Add server',
+  'mcp.addHint': 'Same syntax as /mcp add: command [args], or --url <http> [--approval <mode>].',
+  'mcp.namePh': 'Server name',
+  'mcp.cmdPh': 'command [args] or --url <http>',
+  'mcp.add': 'Add',
+  'mcp.installTitle': 'Install from registry',
+  'mcp.installPh': 'registry id',
+  'mcp.install': 'Install',
+  'mcp.login': 'Login',
+  'mcp.delete': 'Delete',
+  'mcp.tools': 'Tools',
+  'mcp.resources': 'Resources',
+  'mcp.prompts': 'Prompts',
+  'mcp.unconnected': 'Not connected',
+  'mcp.stdio': 'Local command',
+  'mcp.http': 'Remote HTTP',
+  'mcp.confirmDelete': 'Delete MCP server "{name}"?',
+  'mcp.count': '{n} servers',
+  'mcp.reconnected': 'Reconnected ({n} tools now)',
+  'skill.refresh': 'Refresh',
+  'skill.empty': 'No skills found — create one below or via /skill find',
+  'skill.createTitle': 'New skill',
+  'skill.namePh': 'Skill name (lowercase, digits, hyphens)',
+  'skill.descPh': 'One-line description (used for selection)',
+  'skill.create': 'Create',
+  'skill.show': 'View',
+  'skill.global': 'Global',
+  'skill.manual': 'Manual only',
+  'skill.subagent': 'Subagent',
+  'skill.count': '{n} skills',
   'settings.permission': 'Permission level',
   'settings.permissionDesc': 'Confirmation policy before running commands: safe asks on risky ops, ask asks always, read is read-only.',
   'settings.permSafe': 'safe · ask on risky',
@@ -683,6 +756,7 @@ const I18N_EN = {
   'settings.version': 'Version',
   'settings.server': 'Server',
   'settings.tools': 'Available tools',
+  'settings.toolsCount': '{n} tools',
   'modal.rewindTitle': 'Session checkpoints (/rewind)',
   'modal.rewindSub': 'The workspace is snapshotted after every turn; roll files back to that turn\'s state (conversation is kept). The list also shows diffs against the current workspace.',
   'settings.language': 'Interface language',
@@ -744,7 +818,7 @@ const I18N_EN = {
   'shortcut.openModelPanel': 'Open model panel',
   'shortcut.openModelPanelDesc': 'Open the model & reasoning-level panel',
   'shortcut.cyclePermission': 'Cycle permission',
-  'shortcut.cyclePermissionDesc': 'read → safe → ask → full (silent)',
+  'shortcut.cyclePermissionDesc': 'read → ask → safe → full (silent)',
   'shortcut.openSettings': 'Open settings',
   'shortcut.openSettingsDesc': 'Open the settings dialog',
   'shortcut.cheatsheet': 'Shortcut cheatsheet',
@@ -848,11 +922,31 @@ function applyLanguage(lang) {
   updateComposerMeta();
   renderThemeOptions(state.status?.webTheme || getStoredTheme() || 'system');
   renderShortcutsSettings();
-  const lg = $('#set-language');
-  if (lg) lg.value = state.language;
+  renderLangOptions(); // 设置 · 通用语言分段（中文/English，与主题分段同风格）
   const aboutLang = $('#about-language');
   if (aboutLang) aboutLang.textContent = state.language === 'en' ? 'English' : '中文';
   return state.language;
+}
+
+/** 设置 · 通用语言分段（中文/English，主题 seg-group 同风格，点击即切换+落盘） */
+function renderLangOptions() {
+  const box = $('#lang-options');
+  if (!box) return;
+  box.innerHTML = '';
+  [['zh', '中文'], ['en', 'English']].forEach(([v, label]) => {
+    const b = el('button', 'seg-btn' + (state.language === v ? ' active' : ''), label);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      if (state.language === v) return;
+      applyLanguage(v);
+      api('/api/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ language: v }),
+      }).catch((err) => notify(t('err.lang', { msg: err.message }), 'error'));
+    });
+    box.appendChild(b);
+  });
 }
 
 function setEmptyState(empty) {
@@ -2396,7 +2490,55 @@ function togglePop(sel) {
   closeAllComposerPops();
   if (wasHidden) n.classList.remove('hidden');
 }
+/* 权限四档（放行程度升序，与输入区权限面板一致）：只读 < 请求批准 < 帮我批准 < 完全访问 */
+const PERM_TIERS = ['read', 'ask', 'safe', 'full'];
+function permMeta(v) {
+  return {
+    read: ['perm.read', 'perm.readDesc'],
+    ask: ['perm.ask', 'perm.askDesc'],
+    safe: ['perm.safe', 'perm.safeDesc'],
+    full: ['perm.fullTitle', 'perm.fullDesc'],
+  }[v] || ['perm.safe', 'perm.safeDesc'];
+}
+/** 权限档位行（输入区 pop 与设置 · 通用共用同一构造：图标 + 标题 + 描述 + 选中勾） */
+function makePermItem(v, perm) {
+  const [titleKey, descKey] = permMeta(v);
+  const btn = el('button', `pp-item ${v}` + (perm === v ? ' active' : '')); // 档位类：弹层内四项按程度配色
+  btn.type = 'button';
+  const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  ic.setAttribute('class', 'pp-icon');
+  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  u.setAttribute('href', '#i-shield');
+  ic.appendChild(u);
+  btn.appendChild(ic);
+  const main = el('div', 'pp-main');
+  main.appendChild(el('div', 'pp-title', t(titleKey)));
+  main.appendChild(el('div', 'pp-desc', t(descKey)));
+  btn.appendChild(main);
+  if (perm === v) {
+    const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ck.setAttribute('class', 'pp-check');
+    const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    cu.setAttribute('href', '#i-check');
+    ck.appendChild(cu);
+    btn.appendChild(ck);
+  }
+  btn.addEventListener('click', () => {
+    applySettings({ permission: v }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
+    closeAllComposerPops();
+  });
+  return btn;
+}
+/** 设置 · 通用权限列表（与输入区权限面板同一份四档，点击即切换） */
+function renderSettingsPermList() {
+  const box = $('#set-perm-list');
+  if (!box) return;
+  const perm = (state.status && state.status.permission) || 'safe';
+  box.innerHTML = '';
+  PERM_TIERS.forEach((v) => box.appendChild(makePermItem(v, perm)));
+}
 function renderPermissionPop() {
+  renderSettingsPermList(); // 设置页列表同源重绘（refreshStatus/语言切换/联动切换统一走这里）
   const st = state.status || {};
   const perm = st.permission || 'safe';
   const pop = $('#permission-pop');
@@ -2410,39 +2552,7 @@ function renderPermissionPop() {
   head.appendChild(more);
   pop.appendChild(head);
   const list = el('div', 'pp-list');
-  const items = [
-    { v: 'read', title: t('perm.read'), desc: t('perm.readDesc'), icon: 'i-shield' },
-    { v: 'safe', title: t('perm.safe'), desc: t('perm.safeDesc'), icon: 'i-shield' },
-    { v: 'ask', title: t('perm.ask'), desc: t('perm.askDesc'), icon: 'i-shield' },
-    { v: 'full', title: t('perm.fullTitle'), desc: t('perm.fullDesc'), icon: 'i-shield' },
-  ];
-  items.forEach((it) => {
-    const btn = el('button', `pp-item ${it.v}` + (perm === it.v ? ' active' : '')); // 档位类：弹层内四项按程度配色
-    btn.type = 'button';
-    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    ic.setAttribute('class', 'pp-icon');
-    const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    u.setAttribute('href', `#${it.icon}`);
-    ic.appendChild(u);
-    btn.appendChild(ic);
-    const main = el('div', 'pp-main');
-    main.appendChild(el('div', 'pp-title', it.title));
-    main.appendChild(el('div', 'pp-desc', it.desc));
-    btn.appendChild(main);
-    if (perm === it.v) {
-      const ck = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      ck.setAttribute('class', 'pp-check');
-      const cu = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      cu.setAttribute('href', '#i-check');
-      ck.appendChild(cu);
-      btn.appendChild(ck);
-    }
-    btn.addEventListener('click', () => {
-      applySettings({ permission: it.v }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
-      closeAllComposerPops();
-    });
-    list.appendChild(btn);
-  });
+  PERM_TIERS.forEach((v) => list.appendChild(makePermItem(v, perm)));
   pop.appendChild(list);
 }
 /** 渲染回合底部统计信息（Build / 模型 / 耗时 / tok/s / Tokens 消耗明细） */
@@ -2723,14 +2833,14 @@ function refreshStatus() {
     const topDot = $('#top-status-dot');
     if (topDot) topDot.title = s.cwd || '';
     $('#about-version').textContent = `v${s.version}`;
-    $('#about-tools').textContent = s.tools.join(', ');
+    renderAboutTools(s.tools);
     $('#about-server').textContent = `http://${location.host}`;
     $('#plan-mode').checked = state.planMode;
     const sp = $('#set-plan');
     if (sp) sp.checked = state.planMode;
-    $('#set-permission').value = s.permission || 'safe';
     const sc = $('#set-concurrency');
     if (sc) sc.value = String(s.concurrency || 3);
+    updateConcurrencySlider(s.concurrency || 3); // 并发滑条填充/刻度/读数同步
     fillModelConfigForm(s);
     applyLanguage(s.language || 'zh');
     // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
@@ -3579,11 +3689,11 @@ const SLASH_COMMANDS = [
   { name: '/goal', desc: '目标机制（自动推导验收标准并循环执行）' },
   { name: '/loop', desc: '/goal 别名' },
   { name: '/thinking', desc: '展开/收起全部思考过程' },
-  { name: '/skill', desc: '技能管理（列出/find/add/show）' },
+  { name: '/skill', desc: '技能管理（设置 → 技能页列表/新建/查看，或 find/add/show）' },
   { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
   { name: '/export', desc: '导出会话为 Markdown（直接下载文件）' },
   { name: '/config', desc: '查看配置文件路径' },
-  { name: '/mcp', desc: 'MCP 管理：reconnect / resources / prompts（设置面板可 add/remove/install/login）' },
+  { name: '/mcp', desc: 'MCP 管理（设置 → MCP 页可视化增删/重连/登录，或 resources/prompts/install）' },
   { name: '/rename', desc: '重命名会话（无参数弹窗输入，有参数直接改名）' },
   { name: '/session', desc: '会话切换面板（无参数打开面板，有参数直接跳转）' },
   { name: '/resume', desc: '会话切换面板（无参数打开面板，有参数直接跳转）' },
@@ -3777,13 +3887,44 @@ function openSettingsPane(arg) {
     general: 'general', '通用': 'general',
     theme: 'theme', '主题': 'theme',
     apikey: 'apikey', api: 'apikey', model: 'apikey', '模型': 'apikey', '模型配置': 'apikey',
+    mcp: 'mcp',
+    skills: 'skills', skill: 'skills', '技能': 'skills',
     shortcuts: 'shortcuts', shortcut: 'shortcuts', '快捷键': 'shortcuts',
     about: 'about', '关于': 'about',
   };
   const target = alias[a] || alias[a.split(/\s+/)[0]] || null;
   if (!target) return;
-  document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n.dataset.pane === target));
-  document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === target));
+  activateSettingsPane(target);
+  if (target === 'mcp') loadMcpPane();
+  else if (target === 'skills') loadSkillPane();
+}
+/** 设置面板直达某 pane（导航与内容同步切换） */
+function activateSettingsPane(pane) {
+  document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n.dataset.pane === pane));
+  document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
+}
+/** 设置 · 关于工具 chips（输入区 pill 同族外观 + 计数，替代逗号分隔纯文本） */
+function renderAboutTools(tools) {
+  const box = $('#about-tools');
+  const count = $('#about-tools-count');
+  const list = Array.isArray(tools) ? tools : [];
+  if (box) {
+    box.innerHTML = '';
+    list.forEach((name) => box.appendChild(el('span', 'tool-chip', String(name))));
+  }
+  if (count) count.textContent = t('settings.toolsCount', { n: list.length });
+}
+$('#about-copy-version').addEventListener('click', () => copyText($('#about-version').textContent || ''));
+$('#about-copy-server').addEventListener('click', () => copyText($('#about-server').textContent || ''));
+/* 关于 → 语言行：跳转到通用面板（与通用语言分段同一落点） */
+{
+  const gotoLang = $('#about-goto-lang');
+  if (gotoLang) {
+    gotoLang.addEventListener('click', () => activateSettingsPane('general'));
+    gotoLang.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activateSettingsPane('general'); }
+    });
+  }
 }
 /** 打开权限面板（composer 内联 pop） */
 function openPermissionPop() {
@@ -4028,7 +4169,7 @@ async function runSlashCommand(cmd) {
 /* ==== shortcuts-pure-start ====（纯函数块，供探针单测，勿引用 DOM） */
 const SHORTCUTS_STORAGE_KEY = 'omni-web-shortcuts-v1';
 const GROUP_IDS = ['sessions', 'view', 'clipboard', 'model', 'permission', 'system', 'commands'];
-const PERM_ORDER = ['read', 'safe', 'ask', 'full'];
+const PERM_ORDER = ['read', 'ask', 'safe', 'full'];
 
 /** 组合键解析：'Meta+Shift+M' → { mods:Set(['Meta','Shift']), key:'m' }；非法返回 null */
 function parseCombo(str) {
@@ -4571,7 +4712,8 @@ document.addEventListener('keydown', (e) => {
     const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
     let escConsumed = false;
-    if (!$('#mc-model-edit').classList.contains('hidden')) { closeMcModelEdit(); escConsumed = true; }
+    if (!$('#skill-create-modal').classList.contains('hidden')) { closeSkillCreate(); escConsumed = true; }
+    else if (!$('#mc-model-edit').classList.contains('hidden')) { closeMcModelEdit(); escConsumed = true; }
     else if (!$('#session-switch-modal').classList.contains('hidden')) { closeSessionSwitch(); escConsumed = true; }
     else if (!$('#shortcuts-modal').classList.contains('hidden')) { $('#shortcuts-modal').classList.add('hidden'); escConsumed = true; }
     if (!$('#rewind-modal').classList.contains('hidden')) { $('#rewind-modal').classList.add('hidden'); escConsumed = true; }
@@ -5193,11 +5335,279 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
     document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n === item));
     const pane = item.dataset.pane;
     document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
+    // MCP/技能页懒加载（打开即刷新，其它页不受影响）
+    if (pane === 'mcp') loadMcpPane();
+    else if (pane === 'skills') loadSkillPane();
   });
+});
+
+/* ---------------- 设置 · MCP/技能页（可视化管理：列表 + 增删 + 重连/登录 + 新建） ---------------- */
+let mcpServers = []; // GET /api/mcp 缓存（含连接状态与工具/资源/提示词）
+let mcpSel = null;   // 当前选中服务器名
+let skillList = [];  // GET /api/skills 缓存
+
+async function loadMcpPane() {
+  const chips = $('#mcp-chips');
+  if (!chips) return;
+  try {
+    const d = await api('/api/mcp');
+    mcpServers = Array.isArray(d.servers) ? d.servers : [];
+    if (!mcpServers.some((s) => s.name === mcpSel)) mcpSel = mcpServers.length ? mcpServers[0].name : null;
+    renderMcpChips();
+    renderMcpDetail();
+    const c = $('#mcp-count');
+    if (c) c.textContent = t('mcp.count', { n: mcpServers.length });
+    const empty = $('#mcp-empty');
+    if (empty) empty.classList.toggle('hidden', mcpServers.length > 0);
+  } catch (e) { notify(e.message, 'error'); }
+}
+
+/** MCP 服务器 chips（模型配置 provider chips 同风格：名 + 工具数 + ✕ 删除） */
+function renderMcpChips() {
+  const box = $('#mcp-chips');
+  if (!box) return;
+  box.innerHTML = '';
+  mcpServers.forEach((s) => {
+    const b = el('button', 'mc-chip' + (mcpSel === s.name ? ' active' : ''));
+    b.type = 'button';
+    b.dataset.server = s.name;
+    b.appendChild(el('span', 'mc-chip-name', s.name));
+    b.appendChild(el('span', 'mc-chip-count', String((s.tools || []).length)));
+    const del = el('span', 'mc-chip-del', '✕');
+    del.dataset.del = s.name;
+    del.title = t('mcp.confirmDelete', { name: s.name });
+    b.appendChild(del);
+    box.appendChild(b);
+  });
+}
+$('#mcp-chips')?.addEventListener('click', (e) => {
+  const target = e.target;
+  const del = target.closest ? target.closest('.mc-chip-del') : null;
+  if (del) {
+    const name = del.dataset.del;
+    if (!confirm(t('mcp.confirmDelete', { name }))) return;
+    mcpAction('remove', { name });
+    return;
+  }
+  const chip = target.closest ? target.closest('.mc-chip') : null;
+  if (!chip) return;
+  mcpSel = chip.dataset.server ?? '';
+  renderMcpChips();
+  renderMcpDetail();
+});
+
+/** 选中服务器详情（类型/端点 + 工具/资源/提示词 + 登录） */
+function renderMcpDetail() {
+  const box = $('#mcp-detail');
+  if (!box) return;
+  const s = mcpServers.find((x) => x.name === mcpSel) || null;
+  if (!s) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML = '';
+  const group = el('div', 'settings-group');
+  const addRow = (title, right) => {
+    const r = el('div', 'setting-row');
+    const info = el('div', 'setting-info');
+    info.appendChild(el('h4', null, title));
+    r.appendChild(info);
+    if (right) r.appendChild(right);
+    group.appendChild(r);
+  };
+  // 类型行：状态徽标 + 端点 + 登录（HTTP）
+  const badge = el('span', 'mc-badge ' + (!s.connected ? 'off' : s.type === 'http' ? 'http' : 'std'),
+    !s.connected ? t('mcp.unconnected') : t(s.type === 'http' ? 'mcp.http' : 'mcp.stdio'));
+  const endWrap = el('div', 'about-value');
+  endWrap.appendChild(badge);
+  const endpoint = s.type === 'http' ? (s.url || '') : [s.command].concat(s.args || []).filter(Boolean).join(' ');
+  if (endpoint) endWrap.appendChild(el('code', 'mono-value', endpoint));
+  if (s.type === 'http') {
+    const login = el('button', 'secondary-button', t('mcp.login'));
+    login.type = 'button';
+    login.addEventListener('click', () => mcpAction('login', { name: s.name }));
+    endWrap.appendChild(login);
+  }
+  addRow(s.name + (s.hasInstructions ? ' · instructions ✓' : ''), endWrap);
+  const tools = s.tools || [];
+  if (tools.length) addRow(`${t('mcp.tools')} · ${tools.length}`, el('div', 'mcp-kv', tools.slice(0, 30).join(', ') + (tools.length > 30 ? ' …' : '')));
+  const res = s.resources || [];
+  if (res.length) addRow(`${t('mcp.resources')} · ${res.length}`, el('div', 'mcp-kv', res.slice(0, 10).map((r) => r.uri).join('\n')));
+  const prompts = s.prompts || [];
+  if (prompts.length) addRow(`${t('mcp.prompts')} · ${prompts.length}`, el('div', 'mcp-kv', prompts.map((x) => x.name).join(', ')));
+  box.appendChild(group);
+}
+
+/** MCP 写操作（add/remove/login/install/reconnect）：落盘 + 重连 + 刷列表/状态 */
+async function mcpAction(action, body) {
+  try {
+    const r = await api('/api/mcp', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, ...(body || {}) }),
+    });
+    if (action === 'reconnect') notify(t('mcp.reconnected', { n: r.tools ?? 0 }), 'success');
+    else notify(r.message || r.persistMessage || t('notify.saved'), 'success');
+    await loadMcpPane();
+    await refreshStatus().catch(() => {});
+  } catch (e) { notify(e.message, 'error'); }
+}
+$('#btn-mcp-reconnect').addEventListener('click', () => mcpAction('reconnect', {}));
+$('#btn-mcp-add').addEventListener('click', async () => {
+  const name = $('#mcp-name').value.trim();
+  const text = $('#mcp-text').value.trim();
+  if (!name || !text) { notify(t('mcp.addHint'), 'error'); return; }
+  try {
+    const r = await api('/api/mcp', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', name, text }),
+    });
+    notify(r.persistMessage || t('notify.saved'), 'success');
+    $('#mcp-name').value = '';
+    $('#mcp-text').value = '';
+    mcpSel = name;
+    await loadMcpPane();
+    await refreshStatus().catch(() => {});
+  } catch (e) { notify(e.message, 'error'); }
+});
+$('#btn-mcp-install').addEventListener('click', async () => {
+  const id = $('#mcp-install-id').value.trim();
+  if (!id) return;
+  try {
+    const r = await api('/api/mcp', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'install', id }),
+    });
+    notify(r.message || t('notify.saved'), 'success');
+    $('#mcp-install-id').value = '';
+    if (r.name) mcpSel = r.name;
+    await loadMcpPane();
+    await refreshStatus().catch(() => {});
+  } catch (e) { notify(e.message, 'error'); }
+});
+
+/** 设置 · 技能列表（名 + 来源/行为徽标 + 描述，点击查看走 /skill show 面板） */
+async function loadSkillPane() {
+  const list = $('#skill-list');
+  if (!list) return;
+  try {
+    const d = await api('/api/skills');
+    skillList = Array.isArray(d.skills) ? d.skills : [];
+    list.innerHTML = '';
+    skillList.forEach((s) => {
+      const r = el('div', 'setting-row');
+      const info = el('div', 'setting-info');
+      const h = el('h4', null, s.name);
+      const badges = el('span', 'skill-badges');
+      if (s.global) badges.appendChild(el('span', 'mc-badge std', t('skill.global')));
+      if (s.manual) badges.appendChild(el('span', 'mc-badge off', t('skill.manual')));
+      if (s.subagent) badges.appendChild(el('span', 'mc-badge http', t('skill.subagent')));
+      h.appendChild(badges);
+      info.appendChild(h);
+      if (s.description) info.appendChild(el('p', null, s.description));
+      r.appendChild(info);
+      const view = el('button', 'secondary-button', t('skill.show'));
+      view.type = 'button';
+      view.addEventListener('click', () => runSlashCommand('/skill show ' + s.name));
+      r.appendChild(view);
+      list.appendChild(r);
+    });
+    const c = $('#skill-count');
+    if (c) c.textContent = t('skill.count', { n: skillList.length });
+    const empty = $('#skill-empty');
+    if (empty) empty.classList.toggle('hidden', skillList.length > 0);
+    list.classList.toggle('hidden', skillList.length === 0);
+  } catch (e) { notify(e.message, 'error'); }
+}
+$('#btn-skill-refresh').addEventListener('click', () => loadSkillPane());
+/* 新建技能弹窗（头部与刷新并排；回车确认，Esc/遮罩/取消关闭） */
+function openSkillCreate() {
+  const inp = $('#skill-name');
+  if (inp) inp.value = '';
+  const desc = $('#skill-desc');
+  if (desc) desc.value = '';
+  $('#skill-create-modal').classList.remove('hidden');
+  if (inp) setTimeout(() => inp.focus(), 0);
+}
+function closeSkillCreate() { $('#skill-create-modal').classList.add('hidden'); }
+$('#btn-skill-create').addEventListener('click', openSkillCreate);
+$('#btn-close-skill-create').addEventListener('click', closeSkillCreate);
+$('#btn-skill-cancel').addEventListener('click', closeSkillCreate);
+$('#skill-create-modal').addEventListener('click', (e) => { if (e.target === $('#skill-create-modal')) closeSkillCreate(); });
+[$('#skill-name'), $('#skill-desc')].forEach((n) => n && n.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('#btn-skill-create-confirm').click(); }
+}));
+$('#btn-skill-create-confirm').addEventListener('click', async () => {
+  const name = $('#skill-name').value.trim();
+  const description = $('#skill-desc').value.trim();
+  if (!name) { notify(t('skill.namePh'), 'error'); return; }
+  try {
+    await api('/api/skills/create', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    });
+    notify(t('notify.saved'), 'success');
+    closeSkillCreate();
+    await loadSkillPane();
+  } catch (e) { notify(e.message, 'error'); }
 });
 $('#set-plan').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
+
+/* 设置 · 通用并发滑条（复用输入区 slider 结构：1..16 档，拖动跟手、松手吸附落盘） */
+const CC_MIN = 1, CC_MAX = 16;
+const ccFillOf = (v) => ((Math.max(CC_MIN, Math.min(CC_MAX, v)) - CC_MIN) / (CC_MAX - CC_MIN)) * 100;
+/** 并发滑条全量同步（填充/thumb/刻度/读数；range 值幂等回写，拖动中调用无跳变） */
+function updateConcurrencySlider(v) {
+  const n = Math.max(CC_MIN, Math.min(CC_MAX, parseInt(v) || 3));
+  const wrap = $('#cc-slider');
+  if (wrap) wrap.style.setProperty('--fill', String(ccFillOf(n)));
+  const range = $('#set-concurrency');
+  if (range) range.value = String(n);
+  const dots = $('#cc-dots');
+  if (dots) dots.querySelectorAll('.slider-dot').forEach((d, i) => d.classList.toggle('active', i === n - CC_MIN));
+  const ticks = $('#cc-ticks');
+  if (ticks) ticks.querySelectorAll('span').forEach((sp) => sp.classList.toggle('active', sp.dataset.v === String(n)));
+  const val = $('#cc-val');
+  if (val) val.textContent = String(n);
+}
+function initConcurrencySlider() {
+  const range = $('#set-concurrency');
+  if (!range || range.dataset.init) return;
+  range.dataset.init = '1';
+  const steps = CC_MAX - CC_MIN;
+  const dots = $('#cc-dots');
+  if (dots) {
+    for (let i = 0; i <= steps; i++) {
+      const d = el('span', 'slider-dot');
+      d.style.left = `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      dots.appendChild(d);
+    }
+  }
+  const ticks = $('#cc-ticks');
+  if (ticks) {
+    [CC_MIN, CC_MAX].forEach((v) => {
+      const i = v - CC_MIN;
+      const sp = el('span', null, String(v));
+      sp.style.left = `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      sp.dataset.v = String(v);
+      sp.addEventListener('click', () => {
+        range.value = String(v);
+        range.dispatchEvent(new Event('change'));
+      });
+      ticks.appendChild(sp);
+    });
+  }
+  range.addEventListener('input', () => {
+    const wrap = $('#cc-slider');
+    if (wrap) wrap.classList.add('dragging');
+    updateConcurrencySlider(Number(range.value));
+  });
+  range.addEventListener('change', () => {
+    const wrap = $('#cc-slider');
+    if (wrap) wrap.classList.remove('dragging');
+  });
+  updateConcurrencySlider(Number(range.value) || 3);
+}
+initConcurrencySlider();
 
 $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
@@ -5218,20 +5628,10 @@ $('#btn-sidebar-toggle').addEventListener('click', () => {
 });
 $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.toggle('sidebar-open'));
 
-$('#set-permission').addEventListener('change', (e) => {
-  applySettings({ permission: e.target.value }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
-});
-$('#set-language').addEventListener('change', (e) => {
-  applyLanguage(e.target.value);
-  api('/api/settings', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ language: e.target.value }),
-  }).catch((err) => notify(t('err.lang', { msg: err.message }), 'error'));
-});
 $('#set-concurrency').addEventListener('change', (e) => {
-  const val = Math.max(1, Math.min(16, parseInt(e.target.value) || 3));
+  const val = Math.max(CC_MIN, Math.min(CC_MAX, parseInt(e.target.value) || 3));
   e.target.value = String(val);
+  updateConcurrencySlider(val);
   applySettings({ webConcurrency: val }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 /* ---------------- 模型配置（providers 分组：一个端点配置多个模型，设置面板「模型配置」tab） ---------------- */

@@ -147,6 +147,8 @@
         <button class="settings-nav-item active" type="button" data-pane="general"><svg><use href="#i-settings"/></svg><span data-i18n="settings.general">通用</span></button>
         <button class="settings-nav-item" type="button" data-pane="theme"><svg><use href="#i-palette"/></svg><span data-i18n="settings.theme">主题</span></button>
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
+        <button class="settings-nav-item" type="button" data-pane="mcp"><svg><use href="#i-cloud"/></svg><span data-i18n="settings.mcp">MCP 服务</span></button>
+        <button class="settings-nav-item" type="button" data-pane="skills"><svg><use href="#i-spark"/></svg><span data-i18n="settings.skills">技能</span></button>
         <button class="settings-nav-item" type="button" data-pane="shortcuts"><svg><use href="#i-keyboard"/></svg><span data-i18n="settings.shortcuts">快捷键</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
@@ -155,24 +157,25 @@
           <h3 class="settings-pane-title" data-i18n="settings.general">通用</h3>
           <p class="settings-pane-sub" data-i18n="settings.generalSub">会话运行的基础行为。</p>
           <div class="settings-group">
-            <div class="setting-row">
+            <div class="setting-row col">
               <div class="setting-info"><h4 data-i18n="settings.permission">权限级别</h4><p data-i18n="settings.permissionDesc">控制执行命令前的确认策略：safe 在危险操作前询问，ask 全部询问，read 仅只读。</p></div>
-              <select id="set-permission" class="setting-control"><option value="safe" data-i18n="settings.permSafe">safe · 危险操作询问</option><option value="full" data-i18n="settings.permFull">full · 全量直通</option><option value="ask" data-i18n="settings.permAsk">ask · 全部询问</option><option value="read" data-i18n="settings.permRead">read · 只读</option></select>
+              <div class="permission-pop set-static"><div id="set-perm-list" class="pp-list"></div></div>
             </div>
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.plan">计划模式</h4><p data-i18n="settings.planDesc">只调研并输出实施计划，不直接修改文件。</p></div>
-              <input type="checkbox" id="set-plan" class="toggle-switch" aria-label="计划模式">
+              <label class="plan-toggle" data-i18n-title="shortcut.planModeDesc" title="只读调研模式开关"><input type="checkbox" id="set-plan" aria-label="计划模式"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
             </div>
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.lang">语言</h4><p data-i18n="settings.langDesc">界面显示语言，保存后立即生效。</p></div>
-              <select id="set-language" class="setting-control">
-                <option value="zh">中文</option>
-                <option value="en">English</option>
-              </select>
+              <div id="lang-options" class="seg-group"></div>
             </div>
-            <div class="setting-row">
-              <div class="setting-info"><h4 data-i18n="settings.concurrency">并行会话上限</h4><p data-i18n="settings.concurrencyDesc">允许同时运行的会话数量（1-16），超过上限时新消息排队等待。</p></div>
-              <input type="number" id="set-concurrency" class="setting-control" style="width:100px" min="1" max="16" step="1">
+            <div class="setting-row col">
+              <div class="setting-info"><h4><span data-i18n="settings.concurrency">并行会话上限</span> · <span id="cc-val">3</span></h4><p data-i18n="settings.concurrencyDesc">允许同时运行的会话数量（1-16），超过上限时新消息排队等待。</p></div>
+              <div class="slider-wrap cc-slider" id="cc-slider">
+                <div class="slider-inner"><div class="slider-track"></div><div class="slider-fill"></div><div class="slider-dots" id="cc-dots"></div><div class="slider-thumb"></div></div>
+                <input type="range" id="set-concurrency" class="slider-input" min="1" max="16" step="1" value="3">
+              </div>
+              <div class="pop-ticks" id="cc-ticks"></div>
             </div>
           </div>
         </section>
@@ -252,6 +255,33 @@
           </div>
         </section>
 
+        <section class="settings-pane" data-pane="mcp">
+          <h3 class="settings-pane-title" data-i18n="settings.mcp">MCP 服务</h3>
+          <p class="settings-pane-sub" data-i18n="settings.mcpSub">外部工具服务器（本地命令 / 远端 HTTP）。增删写入全局配置并即时生效；未连接的服务器可重连。</p>
+          <div class="mcp-head"><span id="mcp-count" class="mc-models-count"></span><span style="flex:1"></span><button id="btn-mcp-reconnect" class="secondary-button" type="button" data-i18n="mcp.reconnect">重连</button></div>
+          <div id="mcp-chips" class="mc-chips"></div>
+          <div id="mcp-empty" class="mc-empty hidden" data-i18n="mcp.empty">还没有 MCP 服务器——下方添加，或输入区 /mcp add</div>
+          <div id="mcp-detail" class="hidden"></div>
+          <div class="settings-group">
+            <div class="setting-row col">
+              <div class="setting-info"><h4 data-i18n="mcp.addTitle">添加服务器</h4><p data-i18n="mcp.addHint">同 /mcp add 语法：命令 [参数]，或 --url &lt;http&gt; [--approval &lt;mode&gt;]。</p></div>
+              <div class="mcp-add-row"><input type="text" id="mcp-name" class="cfg-text" placeholder="服务器名" data-i18n-placeholder="mcp.namePh" autocomplete="off" spellcheck="false"><input type="text" id="mcp-text" class="cfg-text" placeholder="命令 [参数] 或 --url <http>" data-i18n-placeholder="mcp.cmdPh" autocomplete="off" spellcheck="false"><button id="btn-mcp-add" class="primary-button" type="button" data-i18n="mcp.add">添加</button></div>
+            </div>
+            <div class="setting-row col">
+              <div class="setting-info"><h4 data-i18n="mcp.installTitle">从 Registry 安装</h4></div>
+              <div class="mcp-add-row"><input type="text" id="mcp-install-id" class="cfg-text" placeholder="registry id" data-i18n-placeholder="mcp.installPh" autocomplete="off" spellcheck="false"><button id="btn-mcp-install" class="primary-button" type="button" data-i18n="mcp.install">安装</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="skills">
+          <h3 class="settings-pane-title" data-i18n="settings.skills">技能</h3>
+          <p class="settings-pane-sub" data-i18n="settings.skillsSub">模型按需加载的技能（SKILL.md）。新建写入项目 .agents/skills，刷新后即时发现；网络检索安装仍走 /skill find|add。</p>
+          <div class="mcp-head"><span id="skill-count" class="mc-models-count"></span><span style="flex:1"></span><button id="btn-skill-create" class="primary-button" type="button" data-i18n="skill.create">新建</button><button id="btn-skill-refresh" class="secondary-button" type="button" data-i18n="skill.refresh">刷新</button></div>
+          <div id="skill-empty" class="mc-empty hidden" data-i18n="skill.empty">未发现技能——下方新建，或 /skill find 检索安装</div>
+          <div id="skill-list" class="settings-group"></div>
+        </section>
+
         <section class="settings-pane" data-pane="shortcuts">
           <h3 class="settings-pane-title" data-i18n="settings.shortcuts">快捷键</h3>
           <p class="settings-pane-sub" data-i18n="settings.shortcutsSub">查看并自定义所有键盘快捷键：点击「录制」按下组合键绑定，Backspace 清除，Esc 取消；冲突自动检测。</p>
@@ -263,11 +293,11 @@
         <section class="settings-pane" data-pane="about">
           <h3 class="settings-pane-title" data-i18n="settings.about">关于</h3>
           <div class="settings-group">
-            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.version">版本</h4></div><code id="about-version" class="mono-value"></code></div>
-            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.server">服务地址</h4></div><code id="about-server" class="mono-value"></code></div>
-            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.tools">可用工具</h4><p id="about-tools" class="tools-list"></p></div></div>
-            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.language">界面语言</h4><p data-i18n="settings.languageDesc">设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。</p></div>
-              <div class="setting-control-static"><span id="about-language">中文</span></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.version">版本</h4></div><div class="about-value"><code id="about-version" class="mono-value"></code><button id="about-copy-version" class="msg-action-btn" type="button" data-i18n-title="msg.copy" title="复制" aria-label="复制"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></div></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.server">服务地址</h4></div><div class="about-value"><code id="about-server" class="mono-value"></code><button id="about-copy-server" class="msg-action-btn" type="button" data-i18n-title="msg.copy" title="复制" aria-label="复制"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></div></div>
+            <div class="setting-row col"><div class="setting-info"><h4><span data-i18n="settings.tools">可用工具</span> · <span id="about-tools-count"></span></h4></div><div id="about-tools" class="tool-chips"></div></div>
+            <div class="setting-row about-jump" id="about-goto-lang" role="button" tabindex="0"><div class="setting-info"><h4 data-i18n="settings.language">界面语言</h4><p data-i18n="settings.languageDesc">设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。</p></div>
+              <div class="about-value"><span id="about-language" class="about-pill">中文</span><svg class="about-chev"><use href="#i-chevron-right"/></svg></div>
             </div>
           </div>
         </section>
@@ -296,6 +326,21 @@
     <input type="text" id="sc-search" class="sw-search" placeholder="搜索功能或快捷键…" autocomplete="off" spellcheck="false" data-i18n-placeholder="shortcut.searchPlaceholder">
     <div id="shortcuts-body" class="shortcuts-body"></div>
     <p class="cheatsheet-hint" data-i18n="shortcut.cheatsheetHint">可在 设置 → 快捷键 重新绑定</p>
+  </div>
+</div>
+
+<div id="skill-create-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="skill-create-title">
+  <div class="modal-card">
+    <div class="modal-head"><h2 id="skill-create-title" data-i18n="skill.createTitle">新建技能</h2><button class="icon-button" id="btn-close-skill-create" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <input type="text" id="skill-name" class="cfg-text" placeholder="技能名" data-i18n-placeholder="skill.namePh" autocomplete="off" spellcheck="false">
+      <input type="text" id="skill-desc" class="cfg-text" placeholder="一句话描述" data-i18n-placeholder="skill.descPh" autocomplete="off" spellcheck="false">
+      <div class="dirpicker-actions">
+        <span class="dirpicker-spacer"></span>
+        <button class="secondary-button" id="btn-skill-cancel" type="button" data-i18n="modal.cancel">取消</button>
+        <button class="primary-button" id="btn-skill-create-confirm" type="button" data-i18n="skill.create">新建</button>
+      </div>
+    </div>
   </div>
 </div>
 

@@ -1447,7 +1447,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       // Web 端 /settings 由前端直接打开设置面板（见 app.js runSlashCommand 联动）；
       // 后端保留兜底：非 Web 客户端调用时给出面板位置提示，避免“未知命令”。
       const arg = cmd.slice('/settings'.length).trim();
-      const panes = ['general（通用）', 'theme（主题）', 'apikey（模型配置）', 'shortcuts（快捷键）', 'about（关于）'];
+      const panes = ['general（通用）', 'theme（主题）', 'apikey（模型配置）', 'mcp（MCP 服务）', 'skills（技能）', 'shortcuts（快捷键）', 'about（关于）'];
       if (!arg) {
         add('Web 设置面板已在前端打开（通用 / 主题 / 模型配置 / 快捷键 / 关于）。');
         add(`可用面板：${panes.join(' / ')}（用法：/settings <面板名>，如 /settings theme）`);
@@ -2302,6 +2302,28 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       /* ---------------- MCP 管理（1.0 P1-5 + web 对齐 add/remove/login/install）---------------- */
+      // 列表（设置 → MCP 页数据源）：配置 + 实时连接状态（工具/资源/提示词/instructions）
+      if (p === '/api/mcp' && req.method === 'GET') {
+        const servers = runOpts.mcpServers ?? {};
+        const byName = new Map((runOpts.mcpHandles ?? []).map((h) => [h.name, h]));
+        const out = Object.entries(servers).map(([name, c]) => {
+          const h = byName.get(name);
+          return {
+            name,
+            type: c.url ? 'http' : 'stdio',
+            command: c.command ?? null,
+            args: c.args ?? [],
+            url: c.url ?? null,
+            connected: !!h,
+            tools: h ? h.tools.map((t) => t.name) : [],
+            resources: h ? h.resources.map((r) => ({ uri: r.uri, name: r.name })) : [],
+            prompts: h ? h.prompts.map((x) => ({ name: x.name, description: x.description ?? '' })) : [],
+            hasInstructions: !!h?.instructions,
+          };
+        });
+        json(res, 200, { servers: out });
+        return;
+      }
       if (p === '/api/mcp' && req.method === 'POST') {
         const body = await readBody(req);
         const action = typeof body.action === 'string' ? body.action : '';
@@ -2319,7 +2341,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             const name2 = String(body.name ?? '').trim();
             if (!name2 || !/^[a-z][\w-]*$/i.test(name2)) throw new Error('服务器名不合法');
             let cfgNew: McpServerConfig | undefined;
-            if (typeof body.url === 'string' && body.url.trim()) cfgNew = { url: body.url.trim() };
+            if (typeof body.text === 'string' && body.text.trim()) {
+              // 设置页单行表单：复用 /mcp add 文本语法（<command> [args] | --url <url> [--approval …]）
+              const { parseMcpAddArgs } = await import('../config/write.js');
+              const parsed = parseMcpAddArgs(`${name2} ${body.text.trim()}`);
+              if (!parsed.ok) throw new Error(parsed.error);
+              cfgNew = parsed.cfg;
+            }
+            else if (typeof body.url === 'string' && body.url.trim()) cfgNew = { url: body.url.trim() };
             else if (typeof body.command === 'string' && body.command.trim())
               cfgNew = { command: body.command.trim(), args: Array.isArray(body.args) ? body.args.map(String) : undefined };
             if (!cfgNew) throw new Error('需要 url 或 command 字段');
@@ -2385,6 +2414,20 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         return;
       }
 
+      // 列表（设置 → 技能页数据源）：已发现技能（名称/描述/来源/标签）
+      if (p === '/api/skills' && req.method === 'GET') {
+        const skills = await discoverSkills();
+        json(res, 200, {
+          skills: skills.map((s) => ({
+            name: s.name,
+            description: s.description,
+            global: s.global,
+            manual: !!s.disableModelInvocation,
+            subagent: s.context === 'fork',
+          })),
+        });
+        return;
+      }
       if (p === '/api/skills/create' && req.method === 'POST') {
         const body = await readBody(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';

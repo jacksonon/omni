@@ -170,6 +170,13 @@ src/
                         #   /rename 走 REST（广播 title）/ /session·/resume 开切换面板（有参本地匹配直达）/ /clear 走后端但只通知不清面板；
                         #   纯文本命令（/status /context /diff /review 等）保留 cmd-panel；后端 /rename 广播 title、/fork 广播 session.created、
                         #   /settings 兜底提示面板位置（前端拦截为主）
+                        #   设置·通用输入区风格：权限四档内嵌列表（复用权限 pop 项样式）/ 计划复用 plan-toggle pill /
+                        #   语言复用主题式分段按钮 / 并发上限复用输入区渐变滑条（1-16，填充/thumb/刻度/读数同步）
+                        #   设置·关于输入区风格：版本/服务地址配消息流同款拷贝按钮 / 工具列表改 pill chips（含计数）/
+                        #   语言行改跳转行（chevron，直达通用面板）
+                        #   设置·MCP/技能页：MCP（chips 列表+详情+增删+重连/登录+registry 安装，GET /api/mcp；
+                        #   添加复用 /mcp add 文本语法）/ 技能（列表+徽标+新建，GET /api/skills；查看走 /skill show；
+                        #   列表行按钮不压缩不换行 / 新建改弹窗放头部与刷新并排）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
