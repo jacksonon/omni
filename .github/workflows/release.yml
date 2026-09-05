@@ -129,8 +129,11 @@ jobs:
           # 平台包 bin 路径经 npm root 推导（Windows 全局布局无 lib/ 层，不硬编码）
           ROOT="$(npm root -g --prefix "$TEST_PREFIX")"
           STEM="$ROOT/$PKG_NAME/bin/${{ matrix.binName }}"
-          for i in $(seq 1 16); do
-            if npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+          # v0.7.18 教训：安装失败输出被吞、统一按 404 重试——若失败原因不是 404
+          #（平台不匹配/鉴权/包损坏等），重试 16 次纯属浪费且掩盖根因。现在：非 404
+          # 直接打印完整错误退出；404 才按同步延迟重试（registry CDN 曾超过 4 分钟）。
+          for i in $(seq 1 24); do
+            ERR="$(npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org 2>&1)" && {
               if [ -x "$STEM" ]; then
                 "$STEM" --version
                 exit 0
@@ -139,8 +142,13 @@ jobs:
               ls -la "$ROOT/$PKG_NAME" 2>/dev/null || true
               ls -la "$ROOT/$PKG_NAME/bin" 2>/dev/null || true
               exit 1
+            }
+            if ! printf '%s' "$ERR" | grep -q "E404\|404 Not Found\|ETARGET"; then
+              echo "✘ 安装失败（非 registry 同步问题），直接退出："
+              printf '%s\n' "$ERR" | tail -20
+              exit 1
             fi
-            echo "… registry 未同步（第 $i/16 次），15s 后重试 $PKG_NAME@$VER"
+            echo "… registry 未同步（第 $i/24 次），15s 后重试 $PKG_NAME@$VER"
             sleep 15
           done
           echo "✘ 重试超时：registry 上始终取不到 $PKG_NAME@$VER"
