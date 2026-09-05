@@ -19,7 +19,7 @@ import {
   type ToolCardLine,
   type ToolCardRole,
 } from '../output/format.js';
-import { INLINE_CODE_FG, markdownToRows, type MdChunk } from './markdown.js';
+import { INLINE_CODE_FG, inlineMathToText, markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
 import { CONTENT_PAD, STREAM_CURSOR, colToChar, fitCount, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { visualWidth } from './width.js';
@@ -820,8 +820,10 @@ export function buildBody(state: TuiState, width: number): Row[] {
           // 缩进前缀不能只加在逻辑行首——wrapRow 按宽度折行后续行不带前缀（顶格），
           // 长句续行会与 Thought 正文错位（用户要求续行也与正文同缩进）。
           // 因此按 width-4 折行，再给每个视觉行（含续行）统一加 4 格前缀。
+          // 思考正文同样转行内数学（`$\rightarrow$` → `→`）：thinking 行不走 markdown，
+          // 行内 `$…$` 无人处理、用户误以为重载丢格式；纯文本替换、零样式变化
           const innerW = Math.max(1, width - 4);
-          for (const seg of line.text.split('\n')) {
+          for (const seg of inlineMathToText(line.text).split('\n')) {
             if (!seg) {
               body.push({ text: '', style: {}, chunks: [], thinkingIdx: li });
               continue;

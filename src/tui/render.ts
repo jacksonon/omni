@@ -67,6 +67,7 @@ import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, 
 import { effortColor, hslToHex, isLightTheme, modeCycleColor, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { editPending } from './pending.js';
+import { inlineMathToText } from './markdown.js';
 import { visualWidth } from './width.js';
 import {
   cmdPanelRows,
@@ -1278,7 +1279,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
           c2.visible = true;
           try {
             if (it.kind === 'think') {
-              const text = fitAsk(`💭 ${it.text}`, Math.max(8, panelW - 6));
+              // 思考行同样转行内数学（同对话流 thinking 行；fitAsk 截断前先转，宽度按转换后算）
+              const text = fitAsk(`💭 ${inlineMathToText(it.text)}`, Math.max(8, panelW - 6));
               const body = `  ${text}`;
               c2.content = new StyledText([
                 barChunk,

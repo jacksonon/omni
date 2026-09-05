@@ -104,6 +104,24 @@ export function latexToUnicode(input: string): string {
 }
 
 /**
+ * 行内数学 span 转纯文本（thinking 等非 markdown 行用）：只替换 `$…$` / `\(…\)` /
+ * `\[…\]` 数学 span（同 scanInline 的判定：显式定界恒转，`$…$` 按 isMathContent 守卫
+ * 防误伤价格），其余逐字保留——不碰加粗/行内代码等其它标记，零样式变化。
+ * 注意：行内代码里的 `$…$` 也会被转（与 scanInline 的"代码优先"不同）——thinking
+ * 行无代码着色可言，转换优先于字面保留。
+ */
+export function inlineMathToText(input: string): string {
+  return String(input ?? '').replace(
+    /\$([^$\n]+)\$|\\\(([^)\n]+)\\\)|\\\[([^[\]\n]+)\\\]/g,
+    (m: string, m1: string | undefined, m2: string | undefined, m3: string | undefined) => {
+      const raw = m1 ?? m2 ?? m3 ?? '';
+      if (m2 !== undefined || m3 !== undefined || isMathContent(raw)) return latexToUnicode(raw);
+      return m;
+    }
+  );
+}
+
+/**
  * 成对 `$…$` 内容是否按数学处理（防误伤价格文本）：
  * · 含 `\`（LaTeX 命令）→ 数学（`$\gg$`、`$\rightarrow$`）
  * · 无空格、≤40 字符且含字母 → 数学（`$x^2$`、`$a+b$`）

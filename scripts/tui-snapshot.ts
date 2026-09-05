@@ -15,7 +15,7 @@ import { countDiffLines, sideBySideDiff, toolCardLines } from '../src/output/for
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
 import type { TrajEvent } from '../src/agent/events.js';
 import { gateTool } from '../src/safety/policy.js';
-import { CODE_FG, DIFF_ADD_FG, DIFF_REM_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
+import { CODE_FG, DIFF_ADD_FG, DIFF_REM_FG, INLINE_CODE_FG, inlineMathToText, markdownToRows } from '../src/tui/markdown.js';
 import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect, type TuiSession } from '../src/tui/render.js';
 import { buildBody } from '../src/tui/rows.js';
 import { enqueuePending, handlePendingKey, movePending, removePending } from '../src/tui/pending.js';
@@ -376,6 +376,16 @@ async function main(): Promise<void> {
   }
   if (fgOf(4) !== CODE_FG) {
     console.error(`✗ 场景 6 普通围栏被 diff 着色污染: ${JSON.stringify(mdDiff[4].chunks[0])}`);
+    process.exit(1);
+  }
+  // 行内数学纯文本转换（thinking 等非 markdown 行用）：只转数学 span，其余逐字保留
+  const mathTxt = inlineMathToText('思考 $\\rightarrow$ 调用工具 $\\rightarrow$ 读取结果，价格 $5-$10 不动');
+  if (mathTxt !== '思考 → 调用工具 → 读取结果，价格 $5-$10 不动') {
+    console.error(`✗ 场景 6 行内数学转换错误: ${JSON.stringify(mathTxt)}`);
+    process.exit(1);
+  }
+  if (inlineMathToText(' Plain $x^2$ and \\(a\\ne b\\) ') !== ' Plain x^2 and a≠ b ') {
+    console.error('✗ 场景 6 显式定界/短变量数学未转换');
     process.exit(1);
   }
   console.log('✓ 场景 6 通过：加粗/行内代码/斜体/代码块/标题/引用样式正确，snake_case 不误伤');

@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百七十六次）**：**thinking 行内数学转换（`$\\rightarrow$` → `→`）**——用户在 TUI 看到 `思考 $\rightarrow$ 调用工具…` 没转义。根因：thinking 正文走裸文本不经过 `scanInline`，`$…$` 无人处理（answer 行正常）。修：新增纯文本 helper `inlineMathToText`（只转数学 span、同守卫防误伤价格，零样式变化），thinking 正文与 delegate 面板 💭 行接入。快照场景 6 加断言。**验证**：typecheck ✓ · tui:snapshot 全绿。
+
 - **2026-09-05（第二百七十五次）**：**session 面板行标题左 + 条数右对齐撑满**——用户嫌单条文本挤在左边。`TuiMenuOption.right` 右对齐尾段（`menuPanelRows` 左右撑满；session 传 `right=N 条`）。坑：`flatPanelLine` 内 `truncateToWidth` 实际只留 `width-2` 列（循环 `> width-1` 跳出再拼 `…`），按 -1 算把行尾 `条` 截成 `…`——预算改 -2。快照 37（h7 新格式 + h6 去 `·`）。**验证**：typecheck ✓ · tui:snapshot 全绿 · 字符帧确认右对齐。
 
 - **2026-09-05（第二百七十四次）**：**面板确认意图即时消费（修 /session 首次选择不加载）**——用户反馈首次 /session 回车不加载、第二次才加载。根因：confirmMenu 只记意图（sessionPick 等），消费在每轮循环开头——确认后必须再提交一次任意输入才生效，第二次输入既消费旧意图又开新面板。修：意图块抽成 `drainMenuIntents`（/session /rewind /mcp /skill /context，幂等、先清后做），确认路径（键盘 Enter/数字、鼠标点选经新增 `state.drainMenuIntents` 回调）立即排空；run 在飞时（`state.loading`）跳过、循环开头保留兜底；静默持久类意图（language/model/variantsSave）不动。快照 37 注释同步。**验证**：typecheck ✓ · tui:snapshot 全绿 · 真机 pty（/session→回车→选中回车，无二次输入直接"已继续会话"）。
