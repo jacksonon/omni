@@ -99,21 +99,32 @@ async function run(): Promise<void> {
   // 恢复的会话：把历史消息回放到 TUI（用户消息/思考块/纯文本回答；工具调用历史不重建卡片），
   // 让对话流与消息上下文一致——新一轮在历史之后继续。思考块（reasoning/reasoningMs 已随
   // assistant 消息持久化）一并回放，带「- thinking · 耗时」头行（旧会话无 reasoningMs → 无耗时）。
+  // 注意：仅回放出实际内容行才收尾 onTurnEnd——messages 里可能只有 system 脚手架
+  // （如 MCP instructions 在 attachRuntime 注入），此时无可见行，onTurnEnd 会推入
+  // 一行空 meta 导致 lines 非空、误杀 hero 居中（首帧居中闪一下即沉底）。
   if (messages.length > 0) {
+    let replayed = false;
     for (const m of messages) {
       if (m.role === 'user' && typeof m.content === 'string' && m.content) {
         output.onUserMessage(m.content);
+        replayed = true;
       } else if (m.role === 'assistant') {
         const ext = m as unknown as { reasoning?: string; reasoningMs?: number };
-        if (ext.reasoning) output.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
+        if (ext.reasoning) {
+          output.onThinkingRestored?.(ext.reasoning, ext.reasoningMs);
+          replayed = true;
+        }
         if (typeof m.content === 'string' && m.content) {
           output.onAnswer(m.content);
           output.onAnswerEnd();
+          replayed = true;
         }
       }
     }
-    output.onTurnEnd();
-    await output.flush().catch(() => {});
+    if (replayed) {
+      output.onTurnEnd();
+      await output.flush().catch(() => {});
+    }
   }
 
   try {

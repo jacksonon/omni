@@ -246,6 +246,12 @@ export interface OmniConfig {
    */
   contextCompressRatio?: number;
   /**
+   * 手动覆盖上下文窗口（/context <档位> 设置，单位 token；undefined/缺省 = 默认，
+   * 跟随当前模型的 limit.context 自动识别）。覆盖后压缩触发预算与用量显示分母
+   * 都按该值计算。档位：256/400/512/750/1000（K，即 256K…1000K tokens）。
+   */
+  contextLimit?: number;
+  /**
    * OpenTelemetry 导出（1.0 P1-11）：**默认关闭、opt-in 显式**。开启后按 OTLP/HTTP
    * JSON 协议导出 session/token/cost/tool activity 指标与 span 到 endpoint；
    * prompt/工具内容默认脱敏（redact=true 只发元数据，不含任何用户文本）。
@@ -631,6 +637,10 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.diagnoseAfterEdit === 'boolean') cfg.diagnoseAfterEdit = data.diagnoseAfterEdit;
   if (typeof data.contextCompressRatio === 'number' && Number.isFinite(data.contextCompressRatio)) {
     cfg.contextCompressRatio = Math.min(0.95, Math.max(0.3, data.contextCompressRatio));
+  }
+  // 手动覆盖上下文窗口（/context <档位>，单位 token；0/缺省/非法 = 默认跟随模型）
+  if (typeof data.contextLimit === 'number' && Number.isFinite(data.contextLimit) && data.contextLimit > 0) {
+    cfg.contextLimit = Math.floor(data.contextLimit);
   }
   if (data.telemetry && typeof data.telemetry === 'object' && !Array.isArray(data.telemetry)) {
     const t = data.telemetry as Record<string, unknown>;

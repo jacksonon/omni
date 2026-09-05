@@ -1,9 +1,9 @@
 /**
- * 轨迹投影层（阶段 1，纯函数——TUI 面板与 console 文本账本共用）。
+ * 轨迹投影层（阶段 1，纯函数——console/web 文本账本消费）。
  *
  * 设计：**事件日志是唯一事实源**（`src/agent/events.ts` 的 TrajEvent 序列），
  * 本文件只做**派生投影**——把事件序列折叠成人类可读的轨迹行（TraceRow），
- * 不持有状态、不依赖 UI（TUI 面板的截断/着色在 `src/tui/trace.ts` 侧再做）。
+ * 不持有状态、不依赖 UI。
  *
  * 折叠规则（foldTrace，按事件流式累积，输出按 seq 有序）：
  *   · turn/start → 开一回合（后续事件归入该回合；turn 号单调递增）

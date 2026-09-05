@@ -25,8 +25,8 @@
 - **OS 级沙箱**：`sandbox` 配置（`read-only` / `workspace-write` / `danger-full-access`）用 macOS `sandbox-exec` 或 Linux `bwrap` 包裹 `run_command`（拒绝写/网络；workspace-write 仅允许工作目录写），平台不支持时降级并提示
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
-- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、28 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/编排/循环任务/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/配置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
-- **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单（渐进披露：前 15 条 + "还有 N 个"），模型用 `skill` 工具按需加载；frontmatter 扩展（`disable-model-invocation` / `user-invocable` / `context: fork` 子代理执行 / `agent` / `background`）；`/skill` 命令列出（含标签）/ `find <词>` 网络检索 skills.sh / `add` 安装（本会话即时生效）/ `show <名>` 查看
+- **TUI 全屏界面**：内容区滚动、底部多行输入框交互模式（多轮对话）、Markdown 行式渲染（表格/列表/代码块）、工具卡片点击展开、**输入框 `@` 提及文件**（目录逐层浏览、Tab/Enter/点击插入）、31 个 `/` 命令（主题/权限/计划/思考折叠/撤销/重做/模型切换/思考级别/技能/记忆生成/子代理/编排/循环任务/MCP/压缩/导出/状态/上下文/恢复/改名/审查/diff/诊断/设置 等）——`/` 命令联想与 `@` 提及都是**圆角背景浮层**（悬停在输入框上方，非模态，可继续输入）
+- **技能系统（Agent Skill）**：自动发现 `.opencode/skills`、`.claude/skills`、`.agents/skills` 下的 SKILL.md（项目向上 + 全局），首轮注入技能清单（渐进披露：前 15 条 + "还有 N 个"），模型用 `skill` 工具按需加载；frontmatter 扩展（`disable-model-invocation` / `user-invocable` / `context: fork` 子代理执行 / `agent` / `background`）；`/skill` 打开选择面板（含标签）/ `find <词>` 网络检索 skills.sh / `add` 安装（本会话即时生效）/ `show <名>` 查看 / `create <名> [描述]` 新建 / `delete <名>` 删除
 - **记忆系统（AGENTS.md）**：项目记忆 + 全局记忆（`~/.config/omni/AGENTS.md`）级联加载（每次会话首轮自动注入，超长截断），`/init` 项目级 / `/init --global` 全局 / `/init <子目录>` 子目录层级生成，会话结束自动提取新偏好写入全局记忆（去重/矛盾合并 + TTL 归档）；渐进披露工具（`memory_search` / `memory_read`）；`AGENTS.override.md` / `TEAM_GUIDE.md` fallback + 32KB 合计预算；项目级自动写入生成待确认片段（`.omni/memory-pending.md`），`/memory-apply` 确认后应用
 - **会话持久化**：交互对话 JSONL 落盘（`~/.config/omni/sessions/`），`--continue` / `-r <id>` / `-l` / `/resume` 跨进程恢复，会话标题（终端窗口标题 + meta 落盘）；`/fork` 从历史某点分叉新会话（原会话保留），`/send <会话id> <消息>` 向指定会话发消息取结果（结果注入当前上下文）
 - **Hooks（生命周期自动化）**：在生命周期事件上挂 shell 命令——改写用户 prompt（`UserPromptSubmit`）、硬拦截工具调用（`PreToolUse`）、把工具后的输出回传模型（`PostToolUse`，如 lint 结果）、要求 agent 修完再停（`Stop`）、会话完成通知（`Notification`），另有 `SessionStart` 注入上下文、子代理 hooks（`SubagentStart`/`SubagentStop` + 子代理工具 Pre/Post）、`PreCompact`；JSON 协议（stdin 喂入 / stdout 返回），matcher 工具名通配，配置分层合并（全局+项目），stderr 捕获，超时/失败降级放行
@@ -383,7 +383,7 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/thinking` | 开/关思考过程展示（关闭后不再流式显示，完整思考仍落盘） |
 | `/model` | 切换模型；`/model <名称>`；`/model add <名称> [--base-url] [--api-key]`（添加并持久化） |
 | `/variants` | 切换模型思考级别（low/medium/high，持久化） |
-| `/settings` | 设置二级菜单：状态行 / 语言 / 主题 / token 统计 / 环境诊断 |
+| `/settings` | 设置二级菜单：状态行 / 语言 / 主题 / token 统计 / 环境诊断 / 帮助 / 模型快照 |
 | `/undo` · `/redo` | 撤销最近一次文件修改（`/undo all` 全量回滚）· 重做上次撤销 |
 | `/init` | 扫描项目生成 AGENTS.md（`/init --global` 全局记忆；已存在不覆盖） |
 | `/skill` | 技能管理：列表（含标签）/ `find <词>` 网络检索 / `add <repo> [--global]` 安装（本会话即时生效）/ `show <名>` 查看 |
@@ -392,18 +392,18 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/orchestrate` | 编排：fan-out 并行 delegate → 汇总 → 对抗审查 → 最终报告 |
 | `/goal`（别名 `/loop`） | 目标机制：自动推导验收标准并循环执行直至达标（含迭代日志与判定反馈） |
 | `/review` | 代码审查：typecheck + git diff → LLM 审查 |
-| `/status` · `/context` | 会话状态汇总 · 上下文用量与压缩建议 |
+| `/status` | 会话状态汇总（含上下文用量） |
 | `/session` | 列出当前目录历史会话并继续（`/session <id>` 前缀匹配；`all` 跨目录） |
 | `/resume` · `/rename` · `/fork` · `/send` · `/memory-apply` | 恢复历史会话 · 会话改名（窗口标题 + meta 落盘）· 从历史分叉新会话 · 向指定会话发消息取结果 · 应用待提交的项目记忆片段 |
 | `/export` | 导出会话为 Markdown（`.omni/export-<时间戳>.md`） |
-| `/trace` | 轨迹面板（右侧栏）：每轮 LLM 请求/工具/消息账本，点击推入详情页 |
-| `/diff` · `/config` | 未提交改动 · 配置路径与来源 |
-| `/mcp` | MCP 管理：列出服务器/工具/资源/提示词，`/mcp reconnect` 重连，`/mcp add <名> <command|--url>` 添加，`/mcp remove <名>` 移除，`/mcp login <名>` OAuth 登录，`/mcp install <id>` Registry 一键装 |
+| `/trace` | 轨迹文本账本（console/web）：每轮 LLM 请求/工具/消息事件序列折叠 |
+| `/diff` | 未提交改动 |
+| `/mcp` | MCP 管理：面板选择查看详情，列出服务器/工具/资源/提示词，`/mcp reconnect` 重连，`/mcp add <名> <command|--url>` 添加，`/mcp remove <名>` 移除，`/mcp login <名>` OAuth 登录，`/mcp install <id>` Registry 一键装 |
 | `/model fetch` | 拉取 `GET {baseURL}/models` 列出本地未登记的远端模型（Ollama/LM Studio/vLLM/任意 OpenAI 兼容网关） |
 | `/spec <特性>` | 规格三件套：`requirements.md`（EARS 验收条款）/ `design.md` / `tasks.md` 落盘 `.omni/specs/<slug>/`，任务同步会话清单 |
 | `/preset browser` | 一键安装浏览器自动化双雄（Playwright MCP + Chrome DevTools MCP）到全局配置——不自研浏览器栈 |
 | `/doctor`（console）/ `/settings doctor`（TUI） | 环境诊断：Node/bun 版本、API Key、端点连通性、配置/MCP/权限/模型 |
-| `/clear` · `/exit`（别名 `/quit`）· `/help` | 清屏 · 退出（autoMemory + 会话落盘）· 帮助 |
+| `/clear` · `/exit`（别名 `/quit`） | 清屏 · 退出（autoMemory + 会话落盘） |
 
 ### 安全与权限
 
@@ -433,8 +433,8 @@ npm run tui:snapshot                 # TUI 渲染快照
 - **TUI 不进全屏 / 点击无效？** 需要**真实 TTY**（管道/`script` 伪终端会回退 console 或禁用鼠标模式），
   且用 TUI 版产物（`npm run dev:tui` / TUI npm 包 / 原生二进制）。
 - **想看模型收到什么？** `OMNI_DEBUG=1 omni "任务"` 完整请求体打到 stderr。
-- **对话太长？** 自动摘要默认开启（`summarizeAt: 40`）；`/compact` 手动压缩、`/context` 看用量。
-- **配置不生效？** 按优先级检查更高层覆盖（环境变量 > 配置文件 > CLI 参数）；`/config` 看来源。
+- **对话太长？** 自动摘要默认开启（`summarizeAt: 40`）；`/compact` 手动压缩、`/status` 看用量。
+- **配置不生效？** 按优先级检查更高层覆盖（环境变量 > 配置文件 > CLI 参数）。
 - **无 Key 本地试跑？** `npm run mock`（端口 8787）+ `OMNI_BASE_URL=http://127.0.0.1:8787/v1 OMNI_API_KEY=sk-mock`。
 
 ## 架构

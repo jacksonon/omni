@@ -31,24 +31,24 @@ import {
 } from '../agent/rewind.js';
 import { truncateToWidth } from '../output/format.js';
 import {
+  createSkill,
   discoverSkills,
   loadSkillContent,
   parseSkillFindResults,
   parseSkillFrontmatter,
   refreshSkillInjections,
+  removeSkill,
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { collectDiff, detectCheckCommand, reviewCode, captureCommand } from '../agent/review.js';
 import {
-  configReport,
-  contextReport,
   detectScaffolds,
   doctorReport,
   exportSession,
+  fullStatusReport,
   memoryFilesFromMessages,
-  statusReport,
 } from '../agent/report.js';
 import {
   findSessionCandidates,
@@ -64,11 +64,10 @@ import { applyProjectMemoryPending } from '../agent/memory.js';
 import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
-import { parseModelAddArgs, parseMcpAddArgs, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
-import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { parseModelAddArgs, parseMcpAddArgs, persistContextLimitToConfig, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
+import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
-import { refreshTrace } from './trace.js';
 import { setTerminalTitle } from '../ui.js';
 import { openCmdPanel, pushCmdLine, pushLine, type TuiLine, type TuiState, type TuiThemeMode } from './state.js';
 import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
@@ -107,7 +106,7 @@ export interface TuiCommandContext {
   undoStack?: UndoStack;
   /** 会话文件路径（/status 显示；interactive 从 runOpts.sessionPath 传入） */
   sessionPath?: string;
-  /** 完整配置对象（/status /context /doctor /config 用；interactive 从 runOpts.cfg 传入） */
+  /** 完整配置对象（/status /context /doctor 用；interactive 从 runOpts.cfg 传入） */
   cfg?: OmniConfig;
   /** MCP 服务器配置（/mcp 列出/重连；interactive 从 runOpts.mcpServers 传入） */
   mcpServers?: Record<string, McpServerConfig>;
@@ -148,8 +147,8 @@ export interface TuiCommandContext {
    */
   onAddModel?: (endpoint: ModelEndpoint) => string | null;
   /**
-   * 轨迹事件记录器（/trace 面板与 /compact 事件用；interactive 从 runOpts.events 传入）。
-   * 面板数据源 = events.events（内存全量事件，含恢复的历史）。
+   * 轨迹事件记录器（/compact 事件用；interactive 从 runOpts.events 传入）。
+   * 事件源 = events.events（内存全量事件，含恢复的历史）。
    */
   events?: EventRecorder;
   /** Hooks 运行器（/clear 后 resetSessionStart；interactive 从 runOpts.hooks 传入） */
@@ -199,7 +198,7 @@ export interface TuiCommand {
   /**
    * 执行型命令：run() 完成后面板短暂停留确认后**自动收起**（无需按 Esc）——
    * 适用于「做了某事 + 一句确认」的命令（/undo /init /rename 等）；
-   * 需要阅读输出的列表型命令（/status /help /context /diff /review 等）不设此标记，面板保持打开。
+   * 需要阅读输出的列表型命令（/status /context /diff /review 等）不设此标记，面板保持打开。
    */
   autoClose?: boolean;
   run(ctx: TuiCommandContext): TuiCommandResult | Promise<TuiCommandResult>;
@@ -463,7 +462,7 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
   const name = parts[0] ?? '';
   const cmd = findCommand(name);
   if (!cmd) {
-    pushCmdLine(ctx.state, { kind: 'warn', text: `未知命令 /${name}（/help 查看可用命令）` });
+    pushCmdLine(ctx.state, { kind: 'warn', text: `未知命令 /${name}（/settings help 查看可用命令）` });
     return;
   }
   // 所有命令的输出统一进**独立面板**（不进对话流，用户要求 command 不影响对话流）：
@@ -485,7 +484,7 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
 export const TUI_COMMANDS: TuiCommand[] = [
   {
     name: 'permission',
-    description: '切换安全权限（低=只读 / 中=标准 / 高=谨慎 / 全量=直通）',
+    description: '切换安全权限（只读 / 请求批准 / 帮我批准 / 完全访问）',
     descriptionEn: 'Switch security level (read / safe / ask / full)',
     run: (ctx) => {
       // 未信任目录：强制只读，禁止提升档位（read 是工作区信任的硬约束，/permission 不能绕过）
@@ -642,33 +641,12 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'skill',
-    description: '技能管理：列出已发现 / find <词> 网络检索 / add <repo> [--skill <名>] [--global] 安装 / show <名> / 安装后本会话即时生效',
-    descriptionEn: 'Skill manager: list / find <query> / add <repo> [--skill <name>] [--global] / show <name> — immediate effect in current session',
+    description: '技能管理：面板选择查看 / find <词> 网络检索 / add <repo> [--skill <名>] [--global] 安装 / show <名> / create <名> [描述] 新建 / delete <名> 删除',
+    descriptionEn: 'Skill manager: panel select / find <query> / add <repo> [--skill <name>] [--global] / show <name> / create <name> [desc] / delete <name>',
     run: async (ctx) => {
       const args = (ctx.args ?? '').trim();
       if (!args) {
-        const skills = await discoverSkills();
-        if (skills.length === 0) {
-          pushCmdLine(ctx.state, {
-            kind: 'warn',
-            text: '未发现技能（.opencode/.claude/.agents/skills 下无 SKILL.md）。用 /skill find <关键词> 网络检索，或 /skill add <owner/repo> --skill <名称> 安装。',
-          });
-          return;
-        }
-        // 渐进披露：列表展示全部（不截断）
-        pushCmdLine(ctx.state, {
-          kind: 'meta',
-          text: `已发现 ${skills.length} 个技能（模型可用 skill 工具按 name 加载；/skill find 网络检索更多）：`,
-        });
-        for (const s of skills) {
-          const tags: string[] = [];
-          if (s.global) tags.push('全局');
-          if (s.disableModelInvocation) tags.push('仅手动');
-          if (s.context === 'fork') tags.push('子代理');
-          if (s.source) tags.push(s.source);
-          const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
-          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.name} — ${s.description}${tag}` });
-        }
+        await openSkillMenu(ctx.state);
         return;
       }
       const findM = args.match(/^find\s+(.+)$/);
@@ -741,26 +719,29 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       const showM = args.match(/^show\s+(\S+)$/);
       if (showM) {
-        const content = await loadSkillContent(showM[1]);
+        await pushSkillShow(ctx.state, showM[1]);
+        return;
+      }
+      const createM = args.match(/^create\s+(\S+)(?:\s+([\s\S]+))?$/);
+      if (createM) {
+        const r = createSkill(createM[1], (createM[2] ?? '').trim());
         pushCmdLine(ctx.state, {
-          kind: content ? 'meta' : 'warn',
-          text: content ? `技能「${showM[1]}」内容：` : `未找到技能「${showM[1]}」（/skill 查看已发现列表）`,
+          kind: r.ok ? 'meta' : 'warn',
+          text: r.ok ? `${r.message}（${r.path}，编辑 SKILL.md 后模型可用 skill 工具加载）` : r.message,
         });
-        if (content) {
-          // 解析 frontmatter 展示扩展字段
-          const fm = parseSkillFrontmatter(content);
-          const ext = [];
-          if (fm['disable-model-invocation']) ext.push('仅手动触发');
-          if (fm['user-invocable']) ext.push('用户可手动触发');
-          if (fm.context === 'fork') ext.push(`子代理执行${fm.agent ? `（agent=${fm.agent}）` : ''}${fm.background ? '·后台' : ''}`);
-          if (ext.length > 0) pushCmdLine(ctx.state, { kind: 'meta', text: `属性：${ext.join(' · ')}` });
-          pushCmdLine(ctx.state, { kind: 'answer', text: content });
-        }
+        if (r.ok) scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+        return;
+      }
+      const deleteM = args.match(/^delete\s+(\S+)$/);
+      if (deleteM) {
+        const r = await removeSkill(deleteM[1]);
+        pushCmdLine(ctx.state, { kind: r.ok ? 'meta' : 'warn', text: r.message });
+        if (r.ok) scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       pushCmdLine(ctx.state, {
         kind: 'warn',
-        text: '用法：/skill（列出已发现）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>] [--global]（安装，本会话即时生效）· /skill show <名称>（查看内容）',
+        text: '用法：/skill（面板选择查看）· /skill find <关键词>（网络检索）· /skill add <owner/repo> [--skill <名称>] [--global]（安装，本会话即时生效）· /skill show <名称>（查看内容）· /skill create <名称> [描述]（新建）· /skill delete <名称>（删除）',
       });
     },
   },
@@ -853,7 +834,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       pushCmdLine(ctx.state, {
         kind: 'meta',
-        text: '说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门，权限与主代理一致（定义子代理可配独立权限）。/orchestrate 并行编排、/goal 目标机制见 /help。',
+        text: '说明：模型可用 delegate 工具把独立子任务委托给子代理（隔离上下文，可嵌套）；子代理共用安全闸门，权限与主代理一致（定义子代理可配独立权限）。/orchestrate 并行编排、/goal 目标机制见 /settings help。',
       });
     },
   },
@@ -1042,13 +1023,16 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'settings',
-    description: '设置（/settings language 切换界面语言；/settings theme 切换主题；/settings tokens 显示 / 隐藏当次 token 统计；/settings doctor 环境诊断）',
-    descriptionEn: 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor)',
+    description: '设置（/settings language 界面语言；/settings theme 主题；/settings tokens 当次 token 统计；/settings doctor 环境诊断；/settings help 帮助；/settings models 模型能力快照）',
+    descriptionEn: 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor · /settings help · /settings models)',
     run: async (ctx) => {
       // /settings：列出可用设置项（面板选择后打开对应设置编辑器）；
       // /settings language：直接打开语言面板；/settings theme：直接打开主题面板；
       // /settings tokens：切换当次 token 统计显示（静默，同原 /tokens）；
-      // /settings doctor：执行环境诊断（输出到命令面板，同原 /doctor）
+      // /settings doctor：执行环境诊断（输出到命令面板，同原 /doctor）；
+      // /settings help：输出帮助（原顶层 /help 已移入）；
+      // /settings models [refresh]：模型能力快照状态/在线更新（原顶层 /models 已移入；
+      // refresh 直接在 run 内执行——run 有完整 ctx（含 paint），无需意图模式）。
       const args = (ctx.args ?? '').trim();
       if (/^language(?:\s|$)/.test(args)) {
         openLanguageMenu(ctx.state);
@@ -1066,11 +1050,35 @@ export const TUI_COMMANDS: TuiCommand[] = [
         await runDoctor(ctx);
         return;
       }
+      if (/^help(?:\s|$)/.test(args)) {
+        pushHelpText(ctx.state);
+        return;
+      }
+      if (/^models(?:\s|$)/.test(args)) {
+        const sub = args.slice('models'.length).trim();
+        if (!sub) {
+          pushModelsStatus(ctx.state);
+          return;
+        }
+        if (sub === 'refresh') {
+          pushCmdLine(ctx.state, { kind: 'meta', text: '正在拉取 models.dev 并重建快照…（无需 API Key）' });
+          const res = await refreshModelContextSnapshot();
+          if (res.ok) {
+            pushCmdLine(ctx.state, { kind: 'meta', text: `✓ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效` });
+            pushCmdLine(ctx.state, { kind: 'meta', text: `已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）` });
+          } else {
+            pushCmdLine(ctx.state, { kind: 'warn', text: `✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）` });
+          }
+          return;
+        }
+        pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令「${sub}」——可用：/settings models（状态）· /settings models refresh（在线更新）` });
+        return;
+      }
       if (!args) {
         openSettingsMenu(ctx.state);
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：language 界面语言 · theme 主题 · tokens 当次 token 统计 · doctor 环境诊断）` });
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未知设置「${args}」（可用：language 界面语言 · theme 主题 · tokens 当次 token 统计 · doctor 环境诊断 · help 帮助 · models 模型能力快照）` });
     },
   },
   {
@@ -1169,11 +1177,18 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'status',
-    description: '查看当前会话状态（模型/权限/token/会话）',
-    descriptionEn: 'View session status (model/permission/tokens/session)',
+    description: '查看当前会话状态（含上下文用量：模型/权限/token/会话/窗口/压缩预算）',
+    descriptionEn: 'View session status (model/permission/tokens/session/window/budget)',
     run: (ctx) => {
-      for (const line of statusReport({
-        model: ctx.model ?? ctx.state.model,
+      const model = ctx.model ?? ctx.state.model;
+      const curEp = (ctx.runOpts?.models ?? []).find((m) => m.name === model);
+      const contextWindow = describeModelContextWindow(
+        resolveContextLimit(ctx.cfg?.contextLimit, curEp?.limit?.context),
+        model,
+        curEp?.apiModel
+      );
+      for (const line of fullStatusReport({
+        model,
         permission: ctx.state.permission,
         planMode: ctx.state.planMode,
         reasoningEffort: ctx.state.reasoningEffort || undefined,
@@ -1184,52 +1199,39 @@ export const TUI_COMMANDS: TuiCommand[] = [
         trusted: ctx.runOpts?.trusted,
         memoryFiles: memoryFilesFromMessages(ctx.messages),
         globalMemory: ctx.messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
-        contextWindow: describeModelContextWindow(
-          (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model))?.limit?.context,
-          ctx.model ?? ctx.state.model,
-          (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model))?.apiModel
-        ),
+        contextWindow,
+      }, {
+        messages: ctx.messages,
+        summarizeAt: ctx.cfg?.summarizeAt ?? 40,
+        compressRatio: ctx.cfg?.contextCompressRatio,
       })) pushCmdLine(ctx.state, { kind: 'meta', text: line });
     },
   },
   {
-    name: 'models',
-    description: '模型能力快照：/models 查看状态 · /models refresh 在线更新（models.dev → 用户配置目录）',
-    descriptionEn: 'Model snapshot: /models status · /models refresh online',
-    run: async (ctx) => {
-      const arg = (ctx.args ?? '').trim();
-      if (!arg) {
-        const info = snapshotInfo();
-        pushCmdLine(ctx.state, { kind: 'meta', text: `模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）` });
-        pushCmdLine(ctx.state, { kind: 'meta', text: '/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）' });
-      } else if (arg === 'refresh') {
-        pushCmdLine(ctx.state, { kind: 'meta', text: '正在拉取 models.dev 并重建快照…（无需 API Key）' });
-        const res = await refreshModelContextSnapshot();
-        if (res.ok) {
-          pushCmdLine(ctx.state, { kind: 'meta', text: `✓ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效` });
-          pushCmdLine(ctx.state, { kind: 'meta', text: `已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）` });
-        } else {
-          pushCmdLine(ctx.state, { kind: 'warn', text: `✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）` });
-        }
-      } else {
-        pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）` });
-      }
-    },
-  },
-  {
     name: 'context',
-    description: '查看上下文用量（消息数/token 估算/已加载脚手架）',
-    descriptionEn: 'View context usage (messages/token estimate/scaffolds)',
+    description: '调整上下文窗口（面板选择，或 /context 256|400|512|750|1000 手动覆盖，单位 K；/context 默认 跟随模型自动）',
+    descriptionEn: 'Set context window (panel select, or /context 256|400|512|750|1000 override in K; /context default for auto)',
     run: (ctx) => {
-      const summarizeAt = ctx.cfg?.summarizeAt ?? 40;
-      const curEp = (ctx.runOpts?.models ?? []).find((m) => m.name === (ctx.model ?? ctx.state.model));
-      for (const line of contextReport(
-        ctx.messages,
-        summarizeAt,
-        describeModelContextWindow(curEp?.limit?.context, ctx.model ?? ctx.state.model, curEp?.apiModel),
-        ctx.cfg?.contextCompressRatio
-      ))
-        pushCmdLine(ctx.state, { kind: 'meta', text: line });
+      const raw = (ctx.args ?? '').trim();
+      const model = ctx.model ?? ctx.state.model;
+      if (!raw) {
+        const curEp = (ctx.runOpts?.models ?? []).find((m) => m.name === model);
+        openContextMenu(ctx.state, ctx.cfg?.contextLimit, curEp?.limit?.context);
+        return;
+      }
+      const parsed = parseContextSetArg(raw);
+      if (parsed.kind === 'error') {
+        pushCmdLine(ctx.state, { kind: 'warn', text: parsed.message });
+        return;
+      }
+      if (parsed.kind === 'clear') {
+        applyContextLimitChoice(ctx.state, ctx.cfg, ctx.runOpts, model, 'clear');
+        return;
+      }
+      if (parsed.kind === 'set') {
+        applyContextLimitChoice(ctx.state, ctx.cfg, ctx.runOpts, model, parsed.tokens);
+        return;
+      }
     },
   },
   {
@@ -1246,26 +1248,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
     },
   },
   {
-    name: 'config',
-    description: '查看/打开配置文件（TUI 下只显示路径，外部编辑后重启生效）',
-    descriptionEn: 'View config files (paths; edit externally, restart to apply)',
-    run: (ctx) => {
-      if (!ctx.cfg) {
-        pushCmdLine(ctx.state, { kind: 'warn', text: '配置信息不可用' });
-        return;
-      }
-      for (const line of configReport(ctx.cfg)) pushCmdLine(ctx.state, { kind: 'meta', text: line });
-      // TUI 全屏下不 spawn 编辑器（同一 TTY 冲突）；提示外部编辑
-      pushCmdLine(ctx.state, {
-        kind: 'meta',
-        text: '编辑后重启生效（/exit 退出后用 $EDITOR 修改，或直接改全局 ~/.config/omni/omni.json）',
-      });
-    },
-  },
-  {
     name: 'mcp',
-    description: '管理 MCP 服务器（列出/资源/提示词/增删/OAuth 登录）',
-    descriptionEn: 'Manage MCP servers (list/resources/prompts/add/remove/login)',
+    description: '管理 MCP 服务器（面板选择查看详情 · resources / prompts / read / get / add / remove / login / reconnect）',
+    descriptionEn: 'Manage MCP servers (panel select · resources/prompts/read/get/add/remove/login/reconnect)',
     run: async (ctx) => {
       const servers = ctx.mcpServers ?? {};
       const names = Object.keys(servers);
@@ -1277,31 +1262,12 @@ export const TUI_COMMANDS: TuiCommand[] = [
         await runMcpSub(ctx, sub, arg, servers, names, handles);
         return;
       }
-      if (names.length === 0) {
-        pushCmdLine(ctx.state, {
-          kind: 'warn',
-          text: '未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add <名称> <command> 或 --url <url> 添加；/mcp 查看全部子命令）',
-        });
+      if (sub) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令 /mcp ${sub}（可用：resources / prompts / read / get / add / remove / login / reconnect）` });
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'meta', text: `已配置 ${names.length} 个 MCP 服务器：${names.join('、')}` });
-      const toolList = ctx.tools ?? [];
-      // MCP 工具名带 server 前缀（server_tool）；delegate/skill 等基础工具不带下划线前缀区分
-      const mcpToolNames = toolList.filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
-      if (mcpToolNames.length > 0) {
-        pushCmdLine(ctx.state, { kind: 'meta', text: `已发现工具（${mcpToolNames.length}）：${mcpToolNames.map((t) => t.name).join('、')}` });
-      } else {
-        pushCmdLine(ctx.state, { kind: 'meta', text: '（尚未发现工具——服务器连接失败或未提供工具）' });
-      }
-      // 资源/提示词摘要
-      for (const h of handles) {
-        const bits: string[] = [];
-        if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
-        if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
-        if (h.instructions) bits.push('instructions ✓');
-        if (bits.length > 0) pushCmdLine(ctx.state, { kind: 'meta', text: `  ${h.name}：${bits.join(' · ')}` });
-      }
-      pushCmdLine(ctx.state, { kind: 'meta', text: '子命令：resources / prompts / read <server> <uri> / get <server> <模板> / add / remove <name> / login <name> / reconnect' });
+      // 无参：打开选择面板（服务器列表 + 重连全部），选中查看详情
+      openMcpMenu(ctx.state, servers, handles);
     },
   },
   {
@@ -1336,28 +1302,19 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'rewind',
-    description: '会话检查点：回滚工作区到任意历史回合（/rewind 列表 · /rewind <N> 恢复；文件回滚，对话保留）',
-    descriptionEn: 'Session checkpoints: roll back workspace files to any past turn (/rewind list · /rewind <N> restore)',
+    description: '会话检查点：回滚工作区到任意历史回合（/rewind 面板选择 · /rewind <N> 直接恢复；文件回滚，对话保留）',
+    descriptionEn: 'Session checkpoints: roll back workspace files to any past turn (/rewind panel · /rewind <N> direct restore)',
     run: async (ctx) => {
       // /rewind：会话检查点（P0）——每轮用户消息提交时自动快照工作区修改文件
-      // （.omni/checkpoints/<会话id>/，持久化——恢复会话后仍可用）。无参列出全部
-      // （含与当前工作区的差异统计 = 可视化 P1）；<N> 恢复（只回滚文件，对话历史
+      // （.omni/checkpoints/<会话id>/，持久化——恢复会话后仍可用）。无参打开选择面板
+      // （含与当前工作区的差异统计 = 可视化 P1）；<N> 直接恢复（只回滚文件，对话历史
       // 保留，恢复后注入 system 提示告知模型）。
       const arg = (ctx.args ?? '').trim();
-      const cps = await loadCheckpoints(ctx.sessionPath);
       if (!arg) {
-        if (cps.length === 0) {
-          pushCmdLine(ctx.state, { kind: 'warn', text: '暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）' });
-          return;
-        }
-        pushCmdLine(ctx.state, { kind: 'meta', text: `会话检查点（${cps.length} 个，/rewind <序号> 回滚；Δ = 与当前工作区的差异）：` });
-        for (const c of cps) {
-          const stats = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
-          const delta = stats.add === 0 && stats.rem === 0 ? '· 与当前一致' : `· Δ +${stats.add} −${stats.rem} 行`;
-          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${checkpointSummaryLine(c)} ${delta}` });
-        }
+        await openRewindMenu(ctx.state, ctx.sessionPath);
         return;
       }
+      const cps = await loadCheckpoints(ctx.sessionPath);
       const n = Number(arg);
       if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
         pushCmdLine(ctx.state, { kind: 'warn', text: `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）` });
@@ -1620,38 +1577,24 @@ export const TUI_COMMANDS: TuiCommand[] = [
       ctx.messages.push({ role: 'system', content: `[已执行 /redo] ${msg}。` });
     },
   },
-  {
-    name: 'trace',
-    description: '展开 / 收起右侧轨迹面板（每轮请求/工具/消息账本）',
-    descriptionEn: 'Toggle the right trace panel (per-turn request/tool/message ledger)',
-    run: (ctx) => {
-      // 右侧轨迹面板开关：刷新投影（数据源 = 事件记录器内存全量事件）后切换显示。
-      // 展开时内容宽度收缩（computeRows 读 state.traceOpen），对话流右移不盖面板。
-      if (ctx.events) refreshTrace(ctx.state, ctx.events.events);
-      ctx.state.traceOpen = !ctx.state.traceOpen;
-      if (!ctx.state.traceOpen) {
-        ctx.state.traceSelected = -1;
-        ctx.state.traceScroll = 0;
-        ctx.state.traceDetail = null;
-      }
-    },
-  },
-  {
-    name: 'help',
-    description: '显示帮助',
-    descriptionEn: 'Show help',
-    // 帮助文本输出到**命令面板**（独立窗口，不混进对话流——用户要求所有命令输出
-    // 弹窗展示；runCommand 已打开 /help 面板，这里只追加内容，按界面语言本地化）
-    run: (ctx) => {
-      const lang = ctx.state.language;
-      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.intro') }, '/help');
-      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.shortcuts') }, '/help');
-      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.commands') }, '/help');
-      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/help');
-      pushCmdLine(ctx.state, { kind: 'meta', text: t(lang, 'help.more') }, '/help');
-    },
-  },
 ];
+
+/** 帮助文本输出到命令面板（/settings help 与菜单 help 项共用；顶层 /help 已移入 settings） */
+export function pushHelpText(state: TuiState): void {
+  const lang = state.language;
+  pushCmdLine(state, { kind: 'meta', text: t(lang, 'help.intro') }, '/settings help');
+  pushCmdLine(state, { kind: 'meta', text: t(lang, 'help.shortcuts') }, '/settings help');
+  pushCmdLine(state, { kind: 'meta', text: t(lang, 'help.commands') }, '/settings help');
+  pushCmdLine(state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/settings help');
+  pushCmdLine(state, { kind: 'meta', text: t(lang, 'help.more') }, '/settings help');
+}
+
+/** 模型能力快照状态输出到命令面板（/settings models 共用；顶层 /models 已移入 settings） */
+export function pushModelsStatus(state: TuiState): void {
+  const info = snapshotInfo();
+  pushCmdLine(state, { kind: 'meta', text: `模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）` });
+  pushCmdLine(state, { kind: 'meta', text: '/settings models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）' });
+}
 
 /** 按名称（含别名）查找命令，未找到返回 undefined */
 export function findCommand(name: string): TuiCommand | undefined {
@@ -1666,8 +1609,8 @@ const COMMAND_GROUPS: Record<string, CommandGroupId> = {
   session: 'session', resume: 'session', fork: 'session', send: 'session', clear: 'session',
   compact: 'session', rename: 'session', export: 'session', status: 'session', context: 'session',
   rewind: 'session', undo: 'session', redo: 'session', diff: 'session',
-  model: 'model', models: 'model', variants: 'model',
-  agents: 'agent', orchestrate: 'agent', goal: 'agent', skill: 'agent', trace: 'agent',
+  model: 'model', variants: 'model',
+  agents: 'agent', orchestrate: 'agent', goal: 'agent', skill: 'agent',
   plan: 'agent', thinking: 'agent', review: 'agent', spec: 'agent',
 };
 /** 命令所属分组（条目 group 字段优先，未设查表，缺省 system） */
@@ -1704,12 +1647,12 @@ const THEME_OPTIONS: { label: string; value: TuiThemeMode }[] = [
   { label: '深色', value: 'dark' },
 ];
 
-/** 权限选项（/permission 面板）：低=read 只读 / 中=safe 标准（危险命令询问，默认）/ 高=ask 谨慎（全部询问）/ 全量=full 直通 */
+/** 权限选项（/permission 面板，放行程度升序，与 Web 输入区面板一致）：read 只读 / ask 请求批准（全部询问）/ safe 帮我批准（危险命令询问，默认）/ full 完全访问（直通） */
 export const PERMISSION_OPTIONS: { label: string; value: PermissionTier }[] = [
-  { label: '低（只读）', value: 'read' },
-  { label: '中（标准）', value: 'safe' },
-  { label: '高（谨慎）', value: 'ask' },
-  { label: '全量（直通）', value: 'full' },
+  { label: '只读', value: 'read' },
+  { label: '请求批准', value: 'ask' },
+  { label: '帮我批准', value: 'safe' },
+  { label: '完全访问', value: 'full' },
 ];
 
 /** 菜单选项 label 按界面语言取（value 对应 i18n key `menu.<kind>.<value>`；无对应 key 回退原 label） */
@@ -1847,6 +1790,211 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
   };
 }
 
+/**
+ * 检查点选择面板：列出全部检查点（含与当前工作区的差异统计），选中后 confirmMenu
+ * 只记录意图（state.rewindPick = 序号），interactive 每轮异步回滚（与 /session 同模式）。
+ * 异步：先加载检查点 + 逐个算差异再开面板（仿 openSessionMenu）。
+ */
+export async function openRewindMenu(state: TuiState, sessionPath?: string | null): Promise<void> {
+  const cps = await loadCheckpoints(sessionPath ?? undefined);
+  if (cps.length === 0) {
+    pushCmdLine(state, {
+      kind: 'warn',
+      text: '暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）',
+    });
+    return;
+  }
+  const options: { label: string; value: string }[] = [];
+  for (const c of cps) {
+    const stats = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+    const delta = stats.add === 0 && stats.rem === 0 ? '· 与当前一致' : `· Δ +${stats.add} −${stats.rem} 行`;
+    options.push({
+      label: truncateToWidth(`${checkpointSummaryLine(c)} ${delta}`, 60),
+      value: String(c.index),
+    });
+  }
+  state.menu = {
+    id: 'rewind',
+    title: t(state.language, 'menu.rewind.title'),
+    options,
+    selectedIndex: 0,
+    currentValue: '',
+    scrollTop: 0,
+  };
+}
+
+/** 输出一个技能的完整内容到命令面板（/skill show 与面板确认共用） */
+export async function pushSkillShow(state: TuiState, name: string): Promise<void> {
+  const content = await loadSkillContent(name);
+  pushCmdLine(state, {
+    kind: content ? 'meta' : 'warn',
+    text: content ? `技能「${name}」内容：` : `未找到技能「${name}」（/skill 查看已发现列表）`,
+  });
+  if (content) {
+    // 解析 frontmatter 展示扩展字段
+    const fm = parseSkillFrontmatter(content);
+    const ext = [];
+    if (fm['disable-model-invocation']) ext.push('仅手动触发');
+    if (fm['user-invocable']) ext.push('用户可手动触发');
+    if (fm.context === 'fork') ext.push(`子代理执行${fm.agent ? `（agent=${fm.agent}）` : ''}${fm.background ? '·后台' : ''}`);
+    if (ext.length > 0) pushCmdLine(state, { kind: 'meta', text: `属性：${ext.join(' · ')}` });
+    pushCmdLine(state, { kind: 'answer', text: content });
+  }
+}
+
+/**
+ * 技能选择面板：列出已发现技能（含来源/行为标签），选中后 confirmMenu 只记录
+ * 意图（state.skillPick），interactive 每轮加载完整内容（与 /session 同模式）。
+ */
+export async function openSkillMenu(state: TuiState, cwd = process.cwd()): Promise<void> {
+  const skills = await discoverSkills(cwd);
+  if (skills.length === 0) {
+    pushCmdLine(state, {
+      kind: 'warn',
+      text: '未发现技能（.opencode/.claude/.agents/skills 下无 SKILL.md）。用 /skill find <关键词> 网络检索，或 /skill add <owner/repo> --skill <名称> 安装，或 /skill create <名称> [描述] 新建。',
+    });
+    return;
+  }
+  state.menu = {
+    id: 'skill',
+    title: t(state.language, 'menu.skill.title'),
+    options: skills.map((s) => {
+      const tags: string[] = [];
+      if (s.global) tags.push('全局');
+      if (s.disableModelInvocation) tags.push('仅手动');
+      if (s.context === 'fork') tags.push('子代理');
+      const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
+      return {
+        label: truncateToWidth(`${s.name} — ${s.description}${tag}`, 60),
+        value: s.name,
+      };
+    }),
+    selectedIndex: 0,
+    currentValue: '',
+    scrollTop: 0,
+  };
+}
+
+/** MCP 服务器详情行（面板确认与 /mcp list 共用同一文本格式） */
+export function mcpServerDetailLines(
+  name: string,
+  servers: Record<string, McpServerConfig>,
+  handles: McpServerHandle[]
+): string[] {
+  const lines: string[] = [];
+  const cfg = servers[name];
+  if (!cfg) {
+    lines.push(`未配置 MCP 服务器「${name}」`);
+    return lines;
+  }
+  const h = handles.find((x) => x.name === name);
+  const endpoint = cfg.url ?? [cfg.command].concat(cfg.args ?? []).filter(Boolean).join(' ');
+  lines.push(`MCP 服务器「${name}」（${cfg.url ? '远端 HTTP' : '本地命令'} · ${h ? '已连接' : '未连接'}）：`);
+  if (endpoint) lines.push(`  端点：${endpoint}`);
+  if (!h) {
+    lines.push('  （连接失败或未提供工具——/mcp reconnect 重连）');
+    return lines;
+  }
+  if (h.tools.length > 0) lines.push(`  工具（${h.tools.length}）：${h.tools.map((t) => t.name).join('、')}`);
+  if (h.resources.length > 0) lines.push(`  资源（${h.resources.length}）：${h.resources.map((r) => r.uri).join('、')}`);
+  if (h.prompts.length > 0) lines.push(`  提示词模板（${h.prompts.length}）：${h.prompts.map((p) => p.name).join('、')}`);
+  if (h.instructions) lines.push('  instructions ✓');
+  return lines;
+}
+
+/**
+ * MCP 选择面板：每服务器一行（名 · 工具数/未连接）+ `⟳ 重连全部`。选中服务器只
+ * 记录意图（state.mcpPick = srv:<name>），interactive 每轮输出详情；重连走异步
+ * 重建（与 /session 同模式）。
+ */
+export function openMcpMenu(
+  state: TuiState,
+  servers: Record<string, McpServerConfig>,
+  handles: McpServerHandle[]
+): void {
+  const names = Object.keys(servers);
+  if (names.length === 0) {
+    pushCmdLine(state, {
+      kind: 'warn',
+      text: '未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add <名称> <command> 或 --url <url> 添加）',
+    });
+    return;
+  }
+  const byName = new Map(handles.map((h) => [h.name, h]));
+  state.menu = {
+    id: 'mcp',
+    title: t(state.language, 'menu.mcp.title'),
+    options: [
+      ...names.map((n) => {
+        const h = byName.get(n);
+        return {
+          label: truncateToWidth(h ? `${n} · ${h.tools.length} 工具` : `${n} · 未连接`, 60),
+          value: `srv:${n}`,
+        };
+      }),
+      { label: '⟳ 重连全部', value: '__reconnect__' },
+    ],
+    selectedIndex: 0,
+    currentValue: '',
+    scrollTop: 0,
+  };
+}
+
+/** 打开上下文窗口面板：默认（跟随模型）+ 256K/400K/512K/750K/1000K 档位，当前生效项高亮 */
+export function openContextMenu(
+  state: TuiState,
+  overrideTokens: number | undefined,
+  autoTokens: number | undefined
+): void {
+  const cur = typeof overrideTokens === 'number' && overrideTokens > 0 ? String(overrideTokens) : 'clear';
+  const autoLabel = autoTokens ? `（当前模型 ${formatTokenCount(autoTokens)}）` : '';
+  state.menu = {
+    id: 'context',
+    title: t(state.language, 'menu.context.title'),
+    options: [
+      { label: `默认 · 跟随模型自动${autoLabel}`, value: 'clear' },
+      ...CONTEXT_K_TIERS.map((k) => ({
+        label: `${k}K（${formatTokenCount(k * 1000)} tokens）`,
+        value: String(k * 1000),
+      })),
+    ],
+    selectedIndex: 0,
+    currentValue: cur,
+    scrollTop: 0,
+  };
+  const idx = state.menu.options.findIndex((o) => o.value === cur);
+  state.menu.selectedIndex = Math.max(0, idx);
+}
+
+/**
+ * /context 设置落盘 + 运行时应用（run() 直接键入与面板意图消费共用同一语义）。
+ * choice = tokens 数字（覆盖）/ 'clear'（清除回自动）。
+ */
+export function applyContextLimitChoice(
+  state: TuiState,
+  cfg: OmniConfig | undefined | null,
+  runOpts: { context?: { contextLimit?: number }; models?: { name: string; limit?: { context?: number } }[] } | undefined,
+  modelName: string,
+  choice: number | 'clear'
+): void {
+  const curEp = runOpts?.models?.find((m) => m.name === modelName);
+  if (choice === 'clear') {
+    if (cfg) delete cfg.contextLimit;
+    if (runOpts?.context) runOpts.context.contextLimit = curEp?.limit?.context;
+    state.contextLimit = curEp?.limit?.context ?? 0;
+    pushCmdLine(state, { kind: 'meta', text: '已清除手动覆盖（跟随模型自动识别）' });
+  } else {
+    if (cfg) cfg.contextLimit = choice;
+    if (runOpts?.context) runOpts.context.contextLimit = choice;
+    state.contextLimit = choice;
+    pushCmdLine(state, { kind: 'meta', text: `已覆盖上下文窗口 → ${formatTokenCount(choice)}（${choice} tokens；压缩预算与用量分母即时生效）` });
+  }
+  if (cfg) {
+    const res = persistContextLimitToConfig(choice === 'clear' ? null : choice, cfg);
+    pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message });
+  }
+}
+
 /** 模型菜单条目：label 附元数据摘要（上下文/输出上限），value = 切换名 */
 function modelMenuLabels(
   endpoints: import('../client.js').ModelEndpoint[],
@@ -1964,6 +2112,8 @@ export function openSettingsMenu(state: TuiState): void {
       { label: t(state.language, 'settings.theme'), value: 'theme' },
       { label: t(state.language, 'settings.tokens'), value: 'tokens' },
       { label: t(state.language, 'settings.doctor'), value: 'doctor' },
+      { label: t(state.language, 'settings.help'), value: 'help' },
+      { label: t(state.language, 'settings.models'), value: 'models' },
     ],
     selectedIndex: 0,
     currentValue: '',
@@ -2031,6 +2181,24 @@ export function confirmMenu(state: TuiState): void {
     // （state.sessionPick = 会话 id），interactive 每轮异步加载并恢复（见 interactive.ts）。
     state.sessionPick = opt.value;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.session', { label }) }, '/session');
+  } else if (menu.id === 'rewind') {
+    // 回滚检查点：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
+    // （state.rewindPick = 检查点序号），interactive 每轮异步回滚工作区文件（见 interactive.ts）。
+    const n = Number(opt.value);
+    if (Number.isInteger(n)) {
+      state.rewindPick = n;
+      pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.rewind', { index: n }) }, '/rewind');
+    }
+  } else if (menu.id === 'mcp') {
+    // MCP 面板：服务器只记录意图（state.mcpPick），interactive 每轮输出详情；
+    // 重连走异步重建（与 /session 同模式）。
+    state.mcpPick = opt.value;
+  } else if (menu.id === 'skill') {
+    // 技能面板：只记录意图（state.skillPick），interactive 每轮加载完整内容。
+    state.skillPick = opt.value;
+  } else if (menu.id === 'context') {
+    // 上下文窗口面板：只记录意图（state.contextLimitSave），interactive 每轮落盘+应用。
+    state.contextLimitSave = opt.value;
   } else if (menu.id === 'settings') {
     // 设置菜单：选择后打开对应设置编辑器。
     // language → menu 直接转换为语言面板（新面板接管，不关闭——否则语言面板闪现即关，
@@ -2049,6 +2217,16 @@ export function confirmMenu(state: TuiState): void {
       // 环境诊断：无编辑器面板，但执行需要 ctx（cfg + session.paint）——confirmMenu 是
       // 纯 state 操作拿不到 ctx，这里只记录意图，interactive 每轮命令分发前执行（同 sessionPick 模式）
       state.doctorPending = true;
+      state.menu = null;
+      state.status = '';
+    } else if (opt.value === 'help') {
+      // 帮助：纯 state 输出帮助文本到命令面板（原顶层 /help 已移入）
+      pushHelpText(state);
+      state.menu = null;
+      state.status = '';
+    } else if (opt.value === 'models') {
+      // 模型能力快照状态：纯 state 输出（原顶层 /models 已移入；refresh 需打字执行）
+      pushModelsStatus(state);
       state.menu = null;
       state.status = '';
     }

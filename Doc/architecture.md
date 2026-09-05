@@ -75,7 +75,7 @@ src/
     session-fork.ts  # /fork: branch a new session from a point in history
     rewind.ts        # /rewind: checkpoints + rollback
     events.ts        # EventRecorder: in-memory trace + `{"t":"ev"}` lines appended to session file
-    trace.ts         # foldTrace → TraceRow projection (for /trace panel and console ledger)
+    trace.ts         # foldTrace → TraceRow projection (console/web /trace text ledger)
     subagent.ts      # Subagent: isolated-context nested loop, shared safety gate, depth cap
     subagent-defs.ts # Subagent definitions: .agents/subagents/*.md frontmatter parsing
     orchestrate.ts   # /orchestrate fan-out pipeline + /goal acceptance-criteria loop
@@ -155,7 +155,6 @@ src/
     mention.ts       # `@` file-mention overlay
     shortcuts.ts     # Keyboard shortcuts help
     pending.ts       # Pending/steer message queue
-    trace.ts         # Trace panel (right sidebar)
     theme.ts         # Theme palette (system/light/dark)
     i18n.ts          # UI strings (zh/en)
     width.ts         # Display-width helpers (CJK aware)

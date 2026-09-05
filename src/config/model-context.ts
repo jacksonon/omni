@@ -162,6 +162,32 @@ export function resolveReasoningEffortOptions(
   return [...DEFAULT_FALLBACK_EFFORT_OPTIONS];
 }
 
+/** /context 手动档位（K）：256K/400K/512K/750K/1000K + 默认（跟随模型自动识别） */
+export const CONTEXT_K_TIERS = [256, 400, 512, 750, 1000];
+
+/** /context 参数解析：空 = 查看；默认/default/auto = 清除覆盖；档位数字 = 覆盖为 K×1000 tokens */
+export function parseContextSetArg(
+  raw: string
+): { kind: 'show' } | { kind: 'clear' } | { kind: 'set'; k: number; tokens: number } | { kind: 'error'; message: string } {
+  const arg = (raw ?? '').trim().toLowerCase();
+  if (!arg) return { kind: 'show' };
+  if (arg === '默认' || arg === 'default' || arg === 'auto') return { kind: 'clear' };
+  const k = Number(arg);
+  if (!Number.isInteger(k) || !CONTEXT_K_TIERS.includes(k)) {
+    return { kind: 'error', message: `用法：/context [${CONTEXT_K_TIERS.join('|')}|默认]（单位 K tokens；默认 = 跟随模型自动）` };
+  }
+  return { kind: 'set', k, tokens: k * 1000 };
+}
+
+/** 生效上下文窗口 token 数：手动覆盖（/context <档位>）优先，否则模型 limit.context */
+export function resolveContextLimit(
+  overrideTokens: number | undefined,
+  modelLimit: number | undefined
+): number | undefined {
+  if (typeof overrideTokens === 'number' && overrideTokens > 0) return Math.floor(overrideTokens);
+  return modelLimit;
+}
+
 /** token 数人性化显示：1048576 → 1M、204800 → 200k、8192 → 8192 */
 export function formatTokenCount(n: number): string {
   if (n >= 1_000_000) {

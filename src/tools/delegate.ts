@@ -7,7 +7,7 @@
  *
  * 过程可视化（1.0）：runSubagent 的 start/step/think/toolStart/toolEnd/end 事件经
  * onEvent 分发（Output.onSubagentEvent → TUI/Web delegate 卡片 live 状态 + 展开明细）
- * + EventRecorder（/trace 嵌套树）。事件带工具配对 seq（ToolContext.toolSeq）——
+ * + EventRecorder（/trace 账本）。事件带工具配对 seq（ToolContext.toolSeq）——
  * 并行多委托/嵌套精确归集到各自卡片。delegate.execute 创建 per-subagent
  * AbortController 注册进 runOpts.subagentStops（key = seq），UI「⏹ 停止」按 seq
  * abort——断流/步间退出，不再幽灵跑完。
@@ -193,10 +193,10 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
         def?.model ??
         (runOpts && runOpts.planMode ? runOpts.architectModel : runOpts?.editorModel) ??
         current;
-      // 进度事件汇聚（UI 可视化 + /trace 轨迹）：UI 回调 + 事件记录器
+      // 进度事件汇聚（UI 可视化 + /trace 账本）：UI 回调 + 事件记录器
       const onEvent = (ev: SubagentEvent): void => {
         opts.onEvent?.(ev);
-        // /trace 嵌套树：子代理生命周期事件也进轨迹记录器（subagent/start·step·end）；
+        // /trace 账本：子代理生命周期事件也进轨迹记录器（subagent/start·step·end）；
         // think/toolStart/toolEnd 是 UI 明细（展开详情），不进 /trace 账本（过程在卡片内）
         if (runOpts?.events) {
           const e = runOpts.events;

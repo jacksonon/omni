@@ -1,12 +1,11 @@
 /**
  * 交互模式：readline 循环，消息跨轮次保留（上下文连续）。
- * 支持 /exit、/clear、/help 命令。
+ * 支持 /exit、/clear、/settings help 等命令。
  */
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { parseModelAddArgs, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
-import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { parseModelAddArgs, persistContextLimitToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
+import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -37,14 +36,11 @@ import { EventRecorder } from '../agent/events.js';
 import { buildTraceTextLines } from '../agent/trace.js';
 import { captureCommand, collectDiff, detectCheckCommand, reviewCode } from '../agent/review.js';
 import {
-  configReport,
-  contextReport,
   detectScaffolds,
   doctorReport,
   exportSession,
+  fullStatusReport,
   memoryFilesFromMessages,
-  openInEditor,
-  statusReport,
 } from '../agent/report.js';
 import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
 import {
@@ -102,8 +98,8 @@ export async function runInteractive(
     // per-model variants 联动：切换后思考级别/选项跟随该模型配置（端点展开时已回退全局缺省）
     runOpts.reasoningEffort = endpoint.reasoningEffort;
     runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
-    // 压缩预算跟随新模型：手动配置 > 数据源自动识别（端点展开时已查表补缺）；未知模型清空（不误压）
-    if (runOpts.context) runOpts.context.contextLimit = endpoint.limit?.context;
+    // 压缩预算跟随新模型：手动覆盖（/context <档位>）> 模型配置 > 数据源自动识别（端点展开时已查表补缺）；未知模型清空（不误压）
+    if (runOpts.context) runOpts.context.contextLimit = resolveContextLimit(runOpts.cfg?.contextLimit, endpoint.limit?.context);
     return null;
   };
   // 会话持久化：增量追加每轮新增消息。
@@ -124,7 +120,7 @@ export async function runInteractive(
     // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
     await runOpts.events?.flush().catch(() => {});
   };
-  console.log('输入任务开始；/exit 退出，/help 查看帮助。');
+  console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
   safePrompt();
   for await (const line of rl) {
     const cmd = line.trim();
@@ -165,21 +161,22 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/permission' || cmd.startsWith('/permission ')) {
-      // /permission：显示当前档位；/permission 低|中|高|全量（或 read|safe|ask|full）切换
+      // /permission：显示当前档位；/permission 只读|请求批准|帮我批准|完全访问（或 read|safe|ask|full，兼容旧别名 低|中|高|全量）切换
       const want = cmd.slice('/permission'.length).trim();
       const PERMS: Record<string, PermissionTier> = {
+        只读: 'read', 请求批准: 'ask', 帮我批准: 'safe', 完全访问: 'full',
         低: 'read', 中: 'safe', 高: 'ask', 全量: 'full',
         read: 'read', safe: 'safe', ask: 'ask', full: 'full',
       };
       const PERM_LABEL: Record<PermissionTier, string> = {
-        read: '低（只读）', safe: '中（标准）', ask: '高（谨慎）', full: '全量（直通）',
+        read: '只读', safe: '帮我批准', ask: '请求批准', full: '完全访问',
       };
       if (!want) {
-        console.log(dim(`当前安全权限：${PERM_LABEL[permission]}（/permission 低|中|高|全量 切换）`));
+        console.log(dim(`当前安全权限：${PERM_LABEL[permission]}（/permission 只读|请求批准|帮我批准|完全访问 切换）`));
       } else {
         const next = PERMS[want];
         if (!next) {
-          console.log(red(`未知权限「${want}」——可选：低=只读 / 中=标准 / 高=谨慎 / 全量=直通`));
+          console.log(red(`未知权限「${want}」——可选：只读 / 请求批准 / 帮我批准 / 完全访问`));
         } else if (runOpts.trusted === false && next !== 'read') {
           // 未信任目录：强制只读，禁止提升（工作区信任的硬约束，/permission 不能绕过）
           console.log(red('当前目录未受信任——权限锁定为只读（read），无法提升（首次进入时批准信任即可提升）'));
@@ -531,7 +528,41 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/settings' || cmd.startsWith('/settings ')) {
-      // /settings：TUI 专属设置（底部状态行 statusline 的可视化配置面板只在 TUI 有——
+      // /settings：子设置分发（help 帮助 · models 模型能力快照；其余 TUI 专属面板只在全屏模式可用）。
+      // 配置文件 statusline 字段对所有模式生效（TUI 渲染时读取）。
+      const sub = cmd.slice('/settings'.length).trim();
+      const subCmd = sub.split(/\s+/)[0] ?? '';
+      const subArg = sub.slice(subCmd.length).trim();
+      if (subCmd === 'help' || subCmd === '') {
+        if (subCmd === '') {
+          console.log(dim('/settings 子设置：help 帮助 · models [refresh] 模型能力快照 · language 界面语言（TUI 面板） · theme 主题（TUI 面板） · tokens 当次 token 统计（TUI） · doctor 环境诊断（TUI） · statusline 见下'));
+        } else {
+          printHelp();
+        }
+        safePrompt();
+        continue;
+      }
+      if (subCmd === 'models') {
+        if (!subArg) {
+          const info = snapshotInfo();
+          console.log(dim(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`));
+          console.log(dim('/settings models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）'));
+        } else if (subArg === 'refresh') {
+          console.log(dim('正在拉取 models.dev 并重建快照…（无需 API Key）'));
+          const res = await refreshModelContextSnapshot();
+          if (res.ok) {
+            console.log(green(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`));
+            console.log(dim(`已写入 ${res.file}（下次启动自动覆盖内置；删除该文件恢复内置快照）`));
+          } else {
+            console.log(red(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`));
+          }
+        } else {
+          console.log(red(`未知子命令「${subArg}」——可用：/settings models（状态）· /settings models refresh（在线更新）`));
+        }
+        safePrompt();
+        continue;
+      }
+      // TUI 专属设置（底部状态行 statusline 的可视化配置面板只在 TUI 有——
       // CLI 模式无该界面）。配置文件 statusline 字段对所有模式生效（TUI 渲染时读取）。
       console.log(dim('/settings 是 TUI（全屏）模式命令：/settings statusline 用面板配置底部状态行（空格勾选 · ←/→ 排序 · Enter 保存生效）· /settings language 切换界面语言 · /settings theme 切换主题 · /settings tokens 显示/隐藏当次 token 统计 · /settings doctor 环境诊断。'));
       console.log(dim('CLI 模式可直接编辑配置文件 statusline 字段（段：speed/cache/tokens/context；对齐：statuslineAlign = left/center/right，空数组 = 不显示），TUI 渲染时读取。'));
@@ -627,9 +658,15 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/status') {
-      // /status：会话状态汇总（模型/权限/计划模式/思考级别/token/会话文件/脚手架）
+      // /status：会话状态汇总（含上下文用量，原 /context 已并入）
       const cfg = runOpts.cfg;
-      for (const line of statusReport({
+      const curEp = (runOpts.models ?? []).find((m) => m.name === currentModel);
+      const contextWindow = describeModelContextWindow(
+        resolveContextLimit(cfg?.contextLimit, curEp?.limit?.context),
+        currentModel,
+        curEp?.apiModel
+      );
+      for (const line of fullStatusReport({
         model: currentModel,
         permission: runOpts.permission ?? permission,
         planMode: runOpts.planMode ?? false,
@@ -640,46 +677,46 @@ export async function runInteractive(
         trusted: runOpts.trusted,
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
-        contextWindow: describeModelContextWindow(
-          (runOpts.models ?? []).find((m) => m.name === currentModel)?.limit?.context,
-          currentModel,
-          (runOpts.models ?? []).find((m) => m.name === currentModel)?.apiModel
-        ),
+        contextWindow,
+      }, {
+        messages,
+        summarizeAt: runOpts.cfg?.summarizeAt ?? 40,
+        compressRatio: runOpts.cfg?.contextCompressRatio,
       })) console.log(dim(line));
       safePrompt();
       continue;
     }
-    if (cmd === '/context') {
-      // /context：上下文用量（消息数/token 估算/脚手架/压缩建议）
+    if (cmd === '/context' || cmd.startsWith('/context ')) {
+      // /context：调整上下文窗口（/context 256|400|512|750|1000 手动覆盖，单位 K；
+      // /context 默认 清除覆盖跟随模型自动；无参查看当前生效值）。覆盖驱动压缩触发
+      // 预算与用量显示分母，并持久化到配置文件。
+      const parsed = parseContextSetArg(cmd.slice('/context'.length));
       const curEp = (runOpts.models ?? []).find((m) => m.name === currentModel);
-      for (const line of contextReport(
-        messages,
-        runOpts.cfg?.summarizeAt ?? 40,
-        describeModelContextWindow(curEp?.limit?.context, currentModel, curEp?.apiModel),
-        runOpts.cfg?.contextCompressRatio
-      ))
-        console.log(dim(line));
-      safePrompt();
-      continue;
-    }
-    if (cmd === '/models' || cmd.startsWith('/models ')) {
-      // /models：模型能力快照状态；/models refresh 在线更新（默认不自动更新，用户手动触发）
-      const arg = cmd.slice('/models'.length).trim();
-      if (!arg) {
-        const info = snapshotInfo();
-        console.log(dim(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`));
-        console.log(dim('/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）'));
-      } else if (arg === 'refresh') {
-        console.log(dim('正在拉取 models.dev 并重建快照…（无需 API Key）'));
-        const res = await refreshModelContextSnapshot();
-        if (res.ok) {
-          console.log(green(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`));
-          console.log(dim(`已写入 ${res.file}（下次启动自动覆盖内置；删除该文件恢复内置快照）`));
-        } else {
-          console.log(red(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`));
+      if (parsed.kind === 'error') {
+        console.log(red(parsed.message));
+      } else if (parsed.kind === 'clear') {
+        if (runOpts.cfg) delete runOpts.cfg.contextLimit;
+        if (runOpts.context) runOpts.context.contextLimit = curEp?.limit?.context;
+        console.log(dim('已清除手动覆盖（跟随模型自动识别）'));
+        if (runOpts.cfg) {
+          const res = persistContextLimitToConfig(null, runOpts.cfg);
+          console.log(res.ok ? dim(res.message) : yellow(res.message));
+        }
+      } else if (parsed.kind === 'set') {
+        if (runOpts.cfg) runOpts.cfg.contextLimit = parsed.tokens;
+        if (runOpts.context) runOpts.context.contextLimit = parsed.tokens;
+        console.log(green(`已覆盖上下文窗口 → ${parsed.k}K（${formatTokenCount(parsed.tokens)} tokens；压缩预算与用量分母即时生效）`));
+        if (runOpts.cfg) {
+          const res = persistContextLimitToConfig(parsed.tokens, runOpts.cfg);
+          console.log(res.ok ? dim(res.message) : yellow(res.message));
         }
       } else {
-        console.log(red(`未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）`));
+        const info = describeModelContextWindow(
+          resolveContextLimit(runOpts.cfg?.contextLimit, curEp?.limit?.context), currentModel, curEp?.apiModel
+        );
+        const src = runOpts.cfg?.contextLimit ? '手动覆盖（/context 默认 清除）' : info.label;
+        console.log(dim(`上下文窗口：${formatTokenCount(info.value)} tokens（${src}）`));
+        console.log(dim(`可选档位：${CONTEXT_K_TIERS.join(' / ')}（K）· 默认（跟随模型自动）——用法：/context <档位>|默认`));
       }
       safePrompt();
       continue;
@@ -688,28 +725,6 @@ export async function runInteractive(
       // /export：会话导出为 Markdown（.omni/ 目录）
       const file = exportSession(messages, process.cwd());
       console.log(file ? green(`已导出会话 → ${file}（${messages.length} 条消息）`) : red('导出失败（无法写入 .omni/ 目录）'));
-      safePrompt();
-      continue;
-    }
-    if (cmd === '/config') {
-      // /config：列出配置文件 + 用 $EDITOR 打开（console 可 spawn 编辑器）
-      if (!runOpts.cfg) {
-        console.log(red('配置信息不可用'));
-      } else {
-        for (const line of configReport(runOpts.cfg)) console.log(dim(line));
-        // 优先打开项目配置，其次全局配置
-        const project = ['omni.json', 'omni.jsonc']
-          .map((f) => `${process.cwd()}/${f}`)
-          .find((f) => existsSync(f));
-        const target = project || `${process.env.HOME || '~'}/.config/omni/omni.json`;
-        // 仅真实 TTY 才 spawn 编辑器（管道/非交互环境 spawn 会阻塞）；非 TTY 只给路径
-        if (process.stdout.isTTY && process.stdin.isTTY) {
-          console.log(dim(`用 $EDITOR 打开 ${target}…（编辑后重启生效）`));
-          openInEditor(target);
-        } else {
-          console.log(dim(`编辑配置：${target}（非交互环境不自动打开编辑器）`));
-        }
-      }
       safePrompt();
       continue;
     }
@@ -1105,11 +1120,6 @@ export async function runInteractive(
         console.log(dim(`轨迹账本（${events.length} 条事件 · 当前会话，含恢复的历史）：`));
         for (const line of buildTraceTextLines(events, { full: true })) console.log(dim(line));
       }
-      safePrompt();
-      continue;
-    }
-    if (cmd === '/help') {
-      printHelp();
       safePrompt();
       continue;
     }

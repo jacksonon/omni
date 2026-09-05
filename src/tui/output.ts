@@ -12,6 +12,7 @@ import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
 import { appendLine, clearLines, DELEGATE_ITEM_MAX, openCmdPanel, pushCmdLine, pushLine, pushToast, SPINNER_FRAMES, type DelegateRun, type TuiState, type ToolStatus, type TuiToastType } from './state.js';
+import { pushHelpText } from './commands.js';
 import { t, tf } from './i18n.js';
 
 export class TuiOutput implements Output {
@@ -856,14 +857,9 @@ export class TuiOutput implements Output {
   }
 
   showHelp(): void {
-    // 帮助文本输出到**命令面板**（独立窗口）——不混进对话流（用户要求所有命令输出
-    // 弹窗展示；commands.ts 的 /help 命令同此实现，接口保留供 console/兼容调用）
-    const lang = this.state.language;
-    openCmdPanel(this.state, '/help');
-    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.intro') }, '/help');
-    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.commands') }, '/help');
-    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.scroll') }, '/help');
-    pushCmdLine(this.state, { kind: 'meta', text: t(lang, 'help.more') }, '/help');
+    // 帮助文本输出到**命令面板**（独立窗口）——不混进对话流；与 /settings help 同源
+    //（commands.ts pushHelpText，接口保留供兼容调用）
+    pushHelpText(this.state);
     this.schedulePaint();
   }
 }

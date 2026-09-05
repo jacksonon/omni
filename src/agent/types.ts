@@ -100,7 +100,7 @@ export interface RunOptions {
   /** 停止指定 delegate 子代理（按工具配对序号；未找到 = no-op）。UI 层注入实现 */
   stopSubagent?: (seq: number) => void;
   /**
-   * 轨迹事件记录器（/trace 数据源）：loop 在轮生命周期/LLM 请求/工具调用/压缩
+   * 轨迹事件记录器（/compact 事件 + console/web /trace 账本源）：loop 在轮生命周期/LLM 请求/工具调用/压缩
    * 等关键节点直驱写入（不依赖 Output——单任务模式也记录）。交互入口
    * （prepareSessionPersistence）创建并注入；每轮对话结束经 persistTurn flush
    * 进会话文件（`{"t":"ev"}` 行）。恢复会话时 open 载入历史事件续号。
@@ -195,7 +195,7 @@ export interface RunOptions {
  * start（开始）/ step（内部每步 LLM 请求）/ end（完成，含结果摘要）。
  * 由 runSubagent 直驱，经 delegate 工具闭包分发：
  *  · Output.onSubagentEvent（TUI 更新 delegate 卡片 live 状态 / console 打印 dim 行）
- *  · EventRecorder（/trace 面板嵌套树——subagent/start·step·end 轨迹事件）
+ *  · EventRecorder（/trace 账本——subagent/start·step·end 轨迹事件）
  * 嵌套子代理的 parentId 关联父代理 id，depth 表达层级（0 = 主代理直接委托）。
  *
  * 1.0 子代理可视化扩展：

@@ -370,7 +370,7 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 - [x] **P1 子代理进度可视化**（第一百三十五次）：`SubagentEvent` 轨迹事件（start/step/end + step 带
       当前动作工具名）+ foldTrace 嵌套树行（缩进 + ✓ 步数 + 耗时 + 结果摘要）；TUI delegate 卡片复用
       tool 卡片（运行中 `子代理 X · ⠋ run_command 3/10`、收起态命令行 + `✓ N 步 · 结果首行`），
-      /trace 面板展示嵌套树；/agents 命令列出已发现定义 + `/agents <name>` 展开查看角色全文。
+      /trace 账本展示嵌套树；/agents 命令列出已发现定义 + `/agents <name>` 展开查看角色全文。
 - [x] **P1 模型路由：architect/editor 双模型**（第一百三十五次）：config `architect`/`editor` 字段——
       `/plan` 计划模式自动用 architect（强模型）、执行阶段用 editor（轻模型）；缺省回退当前模型。
 - [x] **P2 动态工作流轻量版**（第一百三十五次）：`/orchestrate` 固定 pipeline——fan-out 并行 delegate

@@ -22,7 +22,7 @@ import type { RunOptions, SubagentEvent } from './types.js';
 import type { EventRecorder } from './events.js';
 
 /**
- * worker 进度事件汇聚：UI 回调（Output.onSubagentEvent）+ 轨迹记录器（/trace 嵌套树）——
+ * worker 进度事件汇聚：UI 回调（Output.onSubagentEvent）+ 轨迹记录器（/trace 账本）——
  * 与 delegate 工具的 onEvent 同语义（编排 worker 直接跑 runSubagent，这里补记轨迹）。
  */
 function workerEvent(rec: EventRecorder | undefined, cb: ((ev: SubagentEvent) => void) | undefined) {

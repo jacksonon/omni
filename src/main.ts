@@ -27,7 +27,7 @@ import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
-import { autoFillLimit, resolveReasoningEffortOptions } from './config/model-context.js';
+import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
 import { HookRunner } from './hooks/index.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
@@ -335,8 +335,8 @@ export async function attachRuntime(
     repoMap: cfg.repoMap !== false,
     repoMapMaxSymbols: cfg.repoMapMaxSymbols,
     // 压缩 2.0（1.0 P1-4）：按模型上下文窗口占比提前触发（消息数阈值仍生效）。
-    // 窗口 = 手动配置 > 数据源自动识别——当前模型端点展开时已查表补缺（数据源自动化）
-    contextLimit: modelEndpoints.find((m) => m.name === cfg.model)?.limit?.context,
+    // 窗口 = 手动覆盖（/context <档位>）> 模型端点 limit.context（数据源自动化）
+    contextLimit: resolveContextLimit(cfg.contextLimit, modelEndpoints.find((m) => m.name === cfg.model)?.limit?.context),
     compressRatio: cfg.contextCompressRatio,
   };
   // 动态工具链：静态工具 + 子代理 delegate（可关）+ ask_user（向用户提问，消除歧义）+
@@ -519,7 +519,7 @@ export async function prepareSessionPersistence(
   if (!singleTask && !runOpts.sessionPath) {
     runOpts.sessionPath = (await createSession({ project: process.cwd(), model: cfg.model })) ?? undefined;
   }
-  // 轨迹事件记录器（/trace 数据源）：恢复/新建会话都挂在同一会话文件
+  // 轨迹事件记录器（/compact 事件 + console/web /trace 账本源）：恢复/新建会话都挂在同一会话文件
   // （`{"t":"ev"}` 行与消息行共存，loadSession 天然跳过）；单任务模式无会话
   // 文件 → 仅内存记录（flush 为 no-op，供 eval 等复用）。
   runOpts.events = await EventRecorder.open(runOpts.sessionPath ?? null);

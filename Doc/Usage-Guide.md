@@ -459,8 +459,8 @@ Esc to close, mouse click to insert.
 - **Markdown rendering**: bold / inline code / headings / blockquotes / tables (box-drawing
   frames) / lists / task checkboxes / strikethrough / fenced code blocks all render with syntax
   markers hidden;
-- **Trace panel (`/trace`)** on the right: per-turn ledger of LLM requests / tool calls / messages;
-  click a row to push a detail page, Esc to collapse.
+- **Trace ledger (console/web `/trace`)**: folded text of the per-turn LLM request / tool call /
+  message event log (the TUI right sidebar panel has been removed).
 
 ### Theme & language
 
@@ -482,19 +482,18 @@ A few are console-only (`/doctor`) and are noted inline.
 
 | Command | Effect |
 |---|---|
-| `/permission` | switch permission tier at runtime (low=read / medium=safe ask-on-danger / high=ask all / full=pass-through) |
+| `/permission` | switch permission tier at runtime (read-only=read / ask-all=ask / auto-approve-risky=safe / full-access=full) |
 | `/plan` | plan mode: read-only tools + research only, output an implementation plan for approval |
 | `/thinking` | fold/unfold all thinking globally |
 | `/model` | switch/add models (`/model <name>`; `/model add <name> [--base-url] [--api-key]`; `/model fetch` lists models the gateway offers that aren't registered locally) |
-| `/models` | model capability snapshot: `/models` shows status (built-in vs user-updated · entry count · age) · `/models refresh` pulls models.dev online and hot-swaps the in-memory table immediately (developers refresh the committed snapshot with `npm run models:snapshot`) |
 | `/variants` | switch the model's reasoning level (low/medium/high) |
-| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
+| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics / help / model snapshot (`/settings help` help · `/settings models [refresh]` snapshot refresh) |
 | `/undo` | undo the latest file edit (`/undo all` rolls back everything; write_file snapshots automatically) |
 | `/redo` | redo the last undo |
-| `/rewind` | session checkpoints: roll workspace files back to any past turn (`/rewind` lists · `/rewind <N>` restores; auto-checkpointed every turn, survives session restore, conversation kept — files only) |
+| `/rewind` | session checkpoints: roll workspace files back to any past turn (`/rewind` panel select · `/rewind <N>` restores; auto-checkpointed every turn, survives session restore, conversation kept — files only) |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory · `/init <subdir>` for a nested layer; never overwrites existing) |
 | `/memory-apply` | apply the pending project-memory snippet (`.omni/memory-pending.md`) into the project-root AGENTS.md, then clear the snippet — see 9.4 |
-| `/skill` | skill management: `list` (with tags) / `find <word>` online search on skills.sh / `add <repo> [--skill <name>] [--global]` install (takes effect in the current session immediately) / `show <name>` view |
+| `/skill` | skill management: panel select to view / `find <word>` online search on skills.sh / `add <repo> [--skill <name>] [--global]` install (takes effect in the current session immediately) / `show <name>` view / `create <name> [desc]` create / `delete <name>` delete |
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`, per-agent model/permission/tool whitelist/skills) |
 | `/orchestrate` | orchestration: fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report |
@@ -502,22 +501,20 @@ A few are console-only (`/doctor`) and are noted inline.
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/spec <feature>` | spec trio: writes `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, and syncs the tasks into the session todo list |
 | `/preset browser` | one-click install of the browser-automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack needed |
-| `/status` | session status summary (model / permission / plan mode / tokens / session file / scaffolds) |
-| `/context` | context usage (message counts + token estimate + compression-threshold advice) |
+| `/status` | session status summary (incl. context usage: model / permission / plan mode / tokens / session file / scaffolds / budget) |
+| `/context` | set context window (`/context` views · `256|400|512|750|1000` manual override in K · `default` for model auto) |
 | `/session` | session management: list current-directory history and continue (`/session <id>` prefix match, `all` cross-directory) |
 | `/resume` | restore a past session (no arg lists; `<id>` restores) |
 | `/rename` | rename the session (terminal window title + persisted meta) |
 | `/fork` | fork a new session from any point in history (lists checkpoints → choose one → new independent session; the original is untouched) |
 | `/send <session-id> <message>` | send a message to another session and get its result injected into the current context (lightweight cross-session collaboration) |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
-| `/trace` | trace panel (right sidebar): per-turn request/tool/message ledger, click a row for the detail page |
+| `/trace` | trace text ledger (console/web): folded per-turn request/tool/message event log |
 | `/diff` | view uncommitted changes (git diff + untracked files, first 60 lines; `--stat` summary only · `--full` untruncated) |
-| `/config` | show config file paths and sources |
-| `/mcp` | MCP management: `list` servers/tools · `/mcp resources` · `/mcp prompts` · `/mcp reconnect` after config edits · `/mcp add <name> <command\|--url>` (runtime, persisted) · `/mcp remove <name>` · `/mcp login <name>` (OAuth PKCE for HTTP servers) · `/mcp install <id>` (one-click from the registry) — see section 12 |
+| `/mcp` | MCP management: `/mcp` opens a selection panel (server list + reconnect all, select for details) · `resources` · `prompts` · `reconnect` after config edits · `add <name> <command\|--url>` (runtime, persisted) · `remove <name>` · `login <name>` (OAuth PKCE for HTTP servers) · `install <id>` (one-click from the registry) — see section 12 |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` | clear the current session view (memory and undo stack are untouched) |
 | `/exit` (alias `/quit`) | quit (triggers autoMemory write and session finalize) |
-| `/help` | command help |
 
 ---
 
@@ -1103,7 +1100,7 @@ parameter behaves like the legacy generic subagent.
 current action live (`subagent X · ⠋ run_command 3/10` — the tool being called + step count); on
 completion the collapsed card shows the result summary directly (command line + `✓ subagent X · 2
 steps · first line of result`), click to expand for full output; the precise nesting tree lives in
-the `/trace` panel.
+the console/web `/trace` ledger.
 
 ### Model routing (architect / editor)
 

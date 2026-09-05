@@ -114,7 +114,7 @@
           <div id="permission-pop" class="permission-pop hidden"></div>
         </div>
         <div id="composer-note" class="composer-note" data-i18n="composer.chooseSession">选择或新建会话</div>
-        <div id="composer-meta" class="composer-meta hidden"><span id="composer-mid" class="meta-mid hidden"></span><span id="composer-ctx" class="meta-ctx hidden"><span class="ctx-track"><span id="composer-ctx-fill" class="ctx-fill"></span></span><span id="composer-ctx-text"></span></span></div>
+        <div id="composer-meta" class="composer-meta hidden"><span id="composer-in" class="meta-item hidden"></span><span id="composer-out" class="meta-item hidden"></span><span id="composer-cache" class="meta-item hidden"></span><span id="composer-ctx" class="meta-ctx hidden"><span class="ctx-track"><span id="composer-ctx-fill" class="ctx-fill"></span></span><span id="composer-ctx-text"></span></span></div>
       </footer>
     </div>
   </main>
@@ -266,6 +266,7 @@
             <div class="setting-row col">
               <div class="setting-info"><h4 data-i18n="mcp.addTitle">添加服务器</h4><p data-i18n="mcp.addHint">同 /mcp add 语法：命令 [参数]，或 --url &lt;http&gt; [--approval &lt;mode&gt;]。</p></div>
               <div class="mcp-add-row"><input type="text" id="mcp-name" class="cfg-text" placeholder="服务器名" data-i18n-placeholder="mcp.namePh" autocomplete="off" spellcheck="false"><input type="text" id="mcp-text" class="cfg-text" placeholder="命令 [参数] 或 --url <http>" data-i18n-placeholder="mcp.cmdPh" autocomplete="off" spellcheck="false"><button id="btn-mcp-add" class="primary-button" type="button" data-i18n="mcp.add">添加</button></div>
+              <div class="mcp-add-row"><select id="mcp-approval" class="cfg-text" data-i18n-title="mcp.approval" title="审批模式"><option value="auto">auto</option><option value="prompt">prompt</option><option value="writes">writes</option><option value="approve">approve</option></select><input type="text" id="mcp-enabled" class="cfg-text" placeholder="工具白名单" data-i18n-placeholder="mcp.enabledPh" autocomplete="off" spellcheck="false"><input type="text" id="mcp-disabled" class="cfg-text" placeholder="工具黑名单" data-i18n-placeholder="mcp.disabledPh" autocomplete="off" spellcheck="false"></div>
             </div>
             <div class="setting-row col">
               <div class="setting-info"><h4 data-i18n="mcp.installTitle">从 Registry 安装</h4></div>
@@ -280,6 +281,13 @@
           <div class="mcp-head"><span id="skill-count" class="mc-models-count"></span><span style="flex:1"></span><button id="btn-skill-create" class="primary-button" type="button" data-i18n="skill.create">新建</button><button id="btn-skill-refresh" class="secondary-button" type="button" data-i18n="skill.refresh">刷新</button></div>
           <div id="skill-empty" class="mc-empty hidden" data-i18n="skill.empty">未发现技能——下方新建，或 /skill find 检索安装</div>
           <div id="skill-list" class="settings-group"></div>
+          <div class="settings-group">
+            <div class="setting-row col">
+              <div class="setting-info"><h4 data-i18n="skill.findTitle">从 Registry 检索安装</h4></div>
+              <div class="mcp-add-row"><input type="text" id="skill-find-q" class="cfg-text" placeholder="关键词" data-i18n-placeholder="skill.findPh" autocomplete="off" spellcheck="false"><button id="btn-skill-find" class="primary-button" type="button" data-i18n="skill.find">检索</button></div>
+              <div id="skill-find-results"></div>
+            </div>
+          </div>
         </section>
 
         <section class="settings-pane" data-pane="shortcuts">

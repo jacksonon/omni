@@ -43,6 +43,8 @@ const state = {
   sessionStats: new Map(),  // sessionId -> { turns, steps, llmMs, toolsMs, genMs, cached }
   sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached, lastPrompt }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
+  historyLimit: 60,       // 历史渲染消息数上限（长会话分页，防 DOM 爆炸；“加载更多”累加）
+  historyCache: null,     // 当前会话完整历史缓存 { id, data }（分页重绘不重复请求）
   steerText: null,      // 运行中 Cmd+Enter 打断消息（仅当前会话，优先于 queue）
   delegateRuns: [],     // 运行中 delegate 子代理（输入框上方面板；{seq,title,status,stopped,stopRequested,expanded,items,dropped}）
   attachments: [],      // 输入区附件（+ 按钮/拖拽采集；{ id, kind: image|text|path, name, size, dataUrl?, content? }）
@@ -93,7 +95,6 @@ const I18N_ZH = {
   'header.details': '打开详情',
   'header.closeDetails': '关闭详情',
   'header.chatTab': '对话',
-  'header.traceTab': '轨迹',
   // hero
   'hero.tagline': 'omni',
   'hero.preview': '预览版',
@@ -179,6 +180,7 @@ const I18N_ZH = {
   'session.new': '新会话',
   'session.title': '会话',
   'empty.sessions': '暂无会话',
+  'history.more': '显示更早 {n} 条（{t} 轮）',
   // 设置面板（tab 与字段）
   'settings.general': '通用',
   'settings.theme': '主题',
@@ -203,6 +205,9 @@ const I18N_ZH = {
   'mcp.namePh': '服务器名',
   'mcp.cmdPh': '命令 [参数] 或 --url <http>',
   'mcp.add': '添加',
+  'mcp.approval': '审批模式',
+  'mcp.enabledPh': '工具白名单（逗号分隔，空=全部）',
+  'mcp.disabledPh': '工具黑名单（逗号分隔）',
   'mcp.installTitle': '从 Registry 安装',
   'mcp.installPh': 'registry id',
   'mcp.install': '安装',
@@ -224,6 +229,11 @@ const I18N_ZH = {
   'skill.descPh': '一句话描述（模型据此选用）',
   'skill.create': '新建',
   'skill.show': '查看',
+  'skill.delete': '删除',
+  'skill.confirmDelete': '确定删除技能「{name}」？',
+  'skill.findTitle': '从 Registry 检索安装',
+  'skill.findPh': '关键词（如 code-review）',
+  'skill.find': '检索',
   'skill.global': '全局',
   'skill.manual': '仅手动',
   'skill.subagent': '子代理',
@@ -476,6 +486,7 @@ const I18N_ZH = {
   'model.head': '模型',
   'model.none': '当前无可用模型',
   'model.effortHead': '思考级别',
+  'model.contextHead': '上下文窗口',
   'model.noEffort': '该模型未提供思考级别',
   'queue.toSteer': '转为 steer 打断消息',
   'queue.toQueue': '转为排队消息',
@@ -508,7 +519,6 @@ const I18N_EN = {
   'header.details': 'Open details',
   'header.closeDetails': 'Close details',
   'header.chatTab': 'Chat',
-  'header.traceTab': 'Trajectory',
   'hero.tagline': 'Explore the unknown',
   'hero.preview': 'Preview',
   'hero.workspace': 'Current workspace',
@@ -588,6 +598,7 @@ const I18N_EN = {
   'session.new': 'New chat',
   'session.title': 'Session',
   'empty.sessions': 'No sessions',
+  'history.more': 'Show {n} earlier ({t} turns)',
   'settings.general': 'General',
   'settings.theme': 'Theme',
   'settings.model': 'Model',
@@ -610,6 +621,9 @@ const I18N_EN = {
   'mcp.namePh': 'Server name',
   'mcp.cmdPh': 'command [args] or --url <http>',
   'mcp.add': 'Add',
+  'mcp.approval': 'Approval mode',
+  'mcp.enabledPh': 'Enabled tools (comma-separated, empty = all)',
+  'mcp.disabledPh': 'Disabled tools (comma-separated)',
   'mcp.installTitle': 'Install from registry',
   'mcp.installPh': 'registry id',
   'mcp.install': 'Install',
@@ -631,6 +645,11 @@ const I18N_EN = {
   'skill.descPh': 'One-line description (used for selection)',
   'skill.create': 'Create',
   'skill.show': 'View',
+  'skill.delete': 'Delete',
+  'skill.confirmDelete': 'Delete skill "{name}"?',
+  'skill.findTitle': 'Install from registry',
+  'skill.findPh': 'Keyword (e.g. code-review)',
+  'skill.find': 'Search',
   'skill.global': 'Global',
   'skill.manual': 'Manual only',
   'skill.subagent': 'Subagent',
@@ -882,6 +901,7 @@ const I18N_EN = {
   'model.head': 'Model',
   'model.none': 'No model available',
   'model.effortHead': 'Reasoning',
+  'model.contextHead': 'Context',
   'model.noEffort': 'This model has no reasoning levels',
   'queue.toSteer': 'Convert to steer interrupt message',
   'queue.toQueue': 'Convert to queued message',
@@ -2136,8 +2156,8 @@ function showChatActions(e) {
     return b;
   };
   const ren = mk(t('session.rename'), async (id) => {
-    const title = prompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
-    if (!title || !title.trim()) return;
+    const title = await uiPrompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
+    if (title === null || !title.trim()) return;
     await api(`/api/sessions/${id}/rename`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title.trim() }) });
     $('#chat-title').textContent = title.trim();
     refreshSessions().catch(() => {});
@@ -2146,7 +2166,7 @@ function showChatActions(e) {
   const exp = mk(t('session.export'), (id) => window.open(`/api/sessions/${id}/export`, '_blank'));
   const rw = mk(t('session.rewind'), (id) => openRewindModal(id));
   const del = mk(t('session.delete'), async (id) => {
-    if (!confirm(t('session.deleteConfirm'))) return;
+    if (!(await uiConfirm(t('session.deleteConfirm')))) return;
     await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => notify(t('err.delete', { msg: err.message }), 'error'));
   });
   menu.append(ren, forkB, exp, rw, del);
@@ -2162,9 +2182,9 @@ function showChatActions(e) {
 
 /** /fork 对话框：输入保留前 N 条消息 */
 function openForkDialog(s) {
-  api(`/api/sessions/${s.id}/messages`).then((data) => {
+  api(`/api/sessions/${s.id}/messages`).then(async (data) => {
     const maxN = data.messages.length;
-    const raw = prompt(t('fork.prompt', { max: maxN }), String(Math.max(1, Math.min(maxN, 4))));
+    const raw = await uiPrompt(t('fork.prompt', { max: maxN }), String(Math.max(1, Math.min(maxN, 4))));
     if (raw === null) return;
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 1 || n > maxN) { notify(t('fork.invalid', { max: maxN }), 'error'); return; }
@@ -2201,7 +2221,7 @@ async function openRewindModal(sessionId) {
       const btn = el('button', 'primary', t('rewind.rollback'));
       btn.type = 'button';
       btn.addEventListener('click', async () => {
-        if (!confirm(t('rewind.confirm', { index: c.index }))) return;
+        if (!(await uiConfirm(t('rewind.confirm', { index: c.index })))) return;
         try {
           await api(`/api/sessions/${sessionId}/rewind`, {
             method: 'POST',
@@ -2251,9 +2271,9 @@ function showWorkspaceActions(e, project, count) {
   const menu = el('div', 'ctx-menu');
   const del = el('button', 'ctx-item danger', t('ws.remove'));
   del.type = 'button';
-  del.addEventListener('click', () => {
+  del.addEventListener('click', async () => {
     closeSessionActions();
-    if (!confirm(t('ws.removeConfirm', { name: projectName(project), count }))) return;
+    if (!(await uiConfirm(t('ws.removeConfirm', { name: projectName(project), count })))) return;
     api('/api/workspace/remove', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -2292,9 +2312,9 @@ function showSessionActions(e, s) {
   const menu = el('div', 'ctx-menu');
   const ren = el('button', 'ctx-item', t('session.rename'));
   ren.type = 'button';
-  ren.addEventListener('click', () => {
+  ren.addEventListener('click', async () => {
     closeSessionActions();
-    const title = prompt(t('session.titlePrompt'), s.title || '');
+    const title = await uiPrompt(t('session.titlePrompt'), s.title || '');
     if (title === null) return;
     const newTitle = title.trim();
     if (!newTitle) return;
@@ -2314,9 +2334,9 @@ function showSessionActions(e, s) {
   });
   const del = el('button', 'ctx-item danger', t('session.delete'));
   del.type = 'button';
-  del.addEventListener('click', () => {
+  del.addEventListener('click', async () => {
     closeSessionActions();
-    if (!confirm(t('session.deleteNamedConfirm', { name: s.title || s.id }))) return;
+    if (!(await uiConfirm(t('session.deleteNamedConfirm', { name: s.title || s.id })))) return;
     api(`/api/sessions/${s.id}/delete`, { method: 'DELETE' })
       .then(() => {
         state.sessions = state.sessions.filter((x) => x.id !== s.id);
@@ -2628,84 +2648,18 @@ function renderTurnFooter(sessionId, data) {
 }
 
 /** 从历史消息渲染会话内容（用户/思考/工具卡片/回答/回合统计）——selectSession 与
- *  运行中刷新后的 run.end 回填共用；不清会话状态、不动待发送队列。 */
-async function renderSessionHistory(id) {
+ *  运行中刷新后的 run.end 回填共用；不清会话状态、不动待发送队列。
+ * 长会话分页：只渲染最近 historyLimit 条（起点对齐到 user 轮），顶部挂“加载更多”。 */
+const HISTORY_LIMIT_DEFAULT = 60;
+const HISTORY_LIMIT_STEP = 60;
+async function renderSessionHistory(id, opts = {}) {
   try {
-    const data = await api(`/api/sessions/${id}/messages`);
-    const s = state.sessions.find((x) => x.id === id);
-    $('#chat-title').textContent = s?.title || (data.meta?.title) || t('session.title');
-    // 会话级累计按历史重建（底部状态行 = 全会话平均，不只是本页新消息）
-    rebuildSessionStats(id, data.messages);
-    updateComposerMeta();
-
-    let currentTurnUsages = [];
-    let currentTurnModel = null;
-    let currentTurnDurMs = 0;
-    let currentTurnGenMs = 0;
-    let currentTurnFirstTokenSum = 0;
-    let currentTurnFirstTokenCount = 0;
-
-    const flushTurnFooter = () => {
-      if (currentTurnUsages.length > 0) {
-        renderTurnFooter(id, {
-          usages: currentTurnUsages,
-          model: currentTurnModel,
-          durMs: currentTurnDurMs,
-          genMs: currentTurnGenMs,
-          firstTokenAvg: currentTurnFirstTokenCount > 0 ? currentTurnFirstTokenSum / currentTurnFirstTokenCount : null,
-        });
-        currentTurnUsages = [];
-        currentTurnModel = null;
-        currentTurnDurMs = 0;
-        currentTurnGenMs = 0;
-        currentTurnFirstTokenSum = 0;
-        currentTurnFirstTokenCount = 0;
-      }
-    };
-
-    data.messages.forEach((m) => {
-      const txt = typeof m.content === 'string' ? m.content : '';
-      if (m.role === 'user') {
-        flushTurnFooter(); // 遇到新一轮用户消息：先结算并渲染上一轮的 turn-footer
-        // 数组 content（图片/文本附件）：解析为附件 chips + 正文（历史恢复最小渲染）
-        const parsed = parseUserContent(m.content);
-        userBlock(id, parsed.text, parsed.attachments);
-      } else if (m.role === 'assistant') {
-        if (m.usage) currentTurnUsages.push(m.usage);
-        if (m.model) currentTurnModel = m.model;
-        if (typeof m.durMs === 'number') currentTurnDurMs += m.durMs;
-        if (typeof m.genMs === 'number') currentTurnGenMs += m.genMs;
-        if (typeof m.firstTokenMs === 'number' && m.firstTokenMs > 0) {
-          currentTurnFirstTokenSum += m.firstTokenMs;
-          currentTurnFirstTokenCount++;
-        }
-
-        // 先恢复 thinking（reasoning + reasoningMs 已持久化，恢复耗时），再恢复工具卡片，
-        // 最后正文——与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
-        if (m.reasoning) renderHistoryThinking(id, m.reasoning, m.reasoningMs);
-        if (m.tool_calls) {
-          for (const tc of m.tool_calls) {
-            // 找到对应的 tool result 消息
-            const idx = data.messages.indexOf(m);
-            const toolMsg = data.messages.slice(idx + 1).find(
-              (mm) => mm.role === 'tool' && mm.tool_call_id === tc.id
-            );
-            const toolTxt = typeof toolMsg?.content === 'string' ? toolMsg.content : '';
-            renderHistoryTool(id, tc.function?.name || 'tool', tc.function?.arguments || '', toolTxt);
-          }
-        }
-        if (txt) {
-          const b = assistantBlock(id);
-          b._text = txt; b.paint(); b.stopCursor();
-        }
-      }
-      // tool 消息已在 assistant 的 tool_calls 分支处理，跳过
-    });
-    flushTurnFooter(); // 历史最后一条消息后：结算并渲染最后一轮的 turn-footer
-    revealLastAnswer(); // 历史已加载完：仅最后一个回答带 拷贝/重新处理
-    renderWelcome();
-    state.autoFollow = true; // 切换/恢复会话：回到底部跟随模式
-    scrollBottom(true);
+    if (!(opts.refresh && state.historyCache && state.historyCache.id === id)) {
+      const data = await api(`/api/sessions/${id}/messages`);
+      state.historyCache = { id, data };
+      if (!opts.keepLimit) state.historyLimit = HISTORY_LIMIT_DEFAULT;
+    }
+    paintHistoryFromCache(id, opts.keepPosition === true);
     // 切换到正在运行的会话：预建 thinking 块，后续 SSE 事件实时流入
     if (state.runningSessions.has(id)) {
       if (currentThinking) { currentThinking.finish(); currentThinking = null; }
@@ -2714,6 +2668,116 @@ async function renderSessionHistory(id) {
     }
   } catch (e) {
     console.error(e);
+  }
+}
+
+/** 按缓存绘制（不清会话状态；toTop=false 时保持滚动位置，用于“加载更多”） */
+function paintHistoryFromCache(id, keepPosition = false) {
+  const cache = state.historyCache;
+  if (!cache || cache.id !== id) return;
+  const data = cache.data;
+  const s = state.sessions.find((x) => x.id === id);
+  $('#chat-title').textContent = s?.title || (data.meta?.title) || t('session.title');
+  // 会话级累计按完整历史重建（底部状态行 = 全会话平均，不只是本页渲染部分）
+  rebuildSessionStats(id, data.messages);
+  updateComposerMeta();
+  clearMessages();
+
+  const msgs = data.messages;
+  const limit = state.historyLimit || HISTORY_LIMIT_DEFAULT;
+  let start = Math.max(0, msgs.length - limit);
+  while (start > 0 && msgs[start].role !== 'user') start--; // 切片起点对齐到整轮
+  if (start > 0) {
+    const hidden = msgs.slice(0, start);
+    const turns = hidden.filter((m) => m.role === 'user').length;
+    const more = el('button', 'history-more', t('history.more', { n: start, t: turns }));
+    more.type = 'button';
+    more.addEventListener('click', () => {
+      state.historyLimit = (state.historyLimit || HISTORY_LIMIT_DEFAULT) + HISTORY_LIMIT_STEP;
+      if (!state.historyCache || state.historyCache.id !== id) {
+        renderSessionHistory(id, { keepLimit: true }).catch(() => {});
+        return;
+      }
+      const sb = document.querySelector('.scroll-body');
+      const h0 = sb ? sb.scrollHeight : 0;
+      const t0 = sb ? sb.scrollTop : 0;
+      paintHistoryFromCache(id, true);
+      // 上方追加内容：按高度差补偿滚动，视口保持不动
+      if (sb) sb.scrollTop = t0 + (sb.scrollHeight - h0);
+    });
+    msgList().appendChild(more);
+  }
+
+  let currentTurnUsages = [];
+  let currentTurnModel = null;
+  let currentTurnDurMs = 0;
+  let currentTurnGenMs = 0;
+  let currentTurnFirstTokenSum = 0;
+  let currentTurnFirstTokenCount = 0;
+
+  const flushTurnFooter = () => {
+    if (currentTurnUsages.length > 0) {
+      renderTurnFooter(id, {
+        usages: currentTurnUsages,
+        model: currentTurnModel,
+        durMs: currentTurnDurMs,
+        genMs: currentTurnGenMs,
+        firstTokenAvg: currentTurnFirstTokenCount > 0 ? currentTurnFirstTokenSum / currentTurnFirstTokenCount : null,
+      });
+      currentTurnUsages = [];
+      currentTurnModel = null;
+      currentTurnDurMs = 0;
+      currentTurnGenMs = 0;
+      currentTurnFirstTokenSum = 0;
+      currentTurnFirstTokenCount = 0;
+    }
+  };
+
+  const view = msgs.slice(start);
+  view.forEach((m) => {
+    const txt = typeof m.content === 'string' ? m.content : '';
+    if (m.role === 'user') {
+      flushTurnFooter(); // 遇到新一轮用户消息：先结算并渲染上一轮的 turn-footer
+      // 数组 content（图片/文本附件）：解析为附件 chips + 正文（历史恢复最小渲染）
+      const parsed = parseUserContent(m.content);
+      userBlock(id, parsed.text, parsed.attachments);
+    } else if (m.role === 'assistant') {
+      if (m.usage) currentTurnUsages.push(m.usage);
+      if (m.model) currentTurnModel = m.model;
+      if (typeof m.durMs === 'number') currentTurnDurMs += m.durMs;
+      if (typeof m.genMs === 'number') currentTurnGenMs += m.genMs;
+      if (typeof m.firstTokenMs === 'number' && m.firstTokenMs > 0) {
+        currentTurnFirstTokenSum += m.firstTokenMs;
+        currentTurnFirstTokenCount++;
+      }
+
+      // 先恢复 thinking（reasoning + reasoningMs 已持久化，恢复耗时），再恢复工具卡片，
+      // 最后正文——与实时 SSE 渲染顺序一致（user → thinking → tool → answer）
+      if (m.reasoning) renderHistoryThinking(id, m.reasoning, m.reasoningMs);
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          // 找到对应的 tool result 消息（只在本页视图内找；被截掉的结果显示无输出）
+          const idx = view.indexOf(m);
+          const toolMsg = view.slice(idx + 1).find(
+            (mm) => mm.role === 'tool' && mm.tool_call_id === tc.id
+          );
+          const toolTxt = typeof toolMsg?.content === 'string' ? toolMsg.content : '';
+          renderHistoryTool(id, tc.function?.name || 'tool', tc.function?.arguments || '', toolTxt);
+        }
+      }
+      if (txt) {
+        const b = assistantBlock(id);
+        b._text = txt; b.paint(); b.stopCursor();
+      }
+    }
+    // tool 消息已在 assistant 的 tool_calls 分支处理，跳过
+  });
+  flushTurnFooter(); // 历史最后一条消息后：结算并渲染最后一轮的 turn-footer
+  revealLastAnswer(); // 历史已加载完：仅最后一个回答带 拷贝/重新处理
+  renderWelcome();
+  if (!keepPosition) {
+    state.autoFollow = true; // 切换/恢复会话：回到底部跟随模式
+    scrollBottom(true);
   }
 }
 
@@ -2736,6 +2800,7 @@ async function selectSession(id, silent) {
  *  避免反复点「新会话」/ Cmd+K 在磁盘上积累大量空会话 */
 async function newSession() {
   state.session = null;
+  state.historyCache = null; // 草稿态无历史：旧缓存作废，避免“加载更多”串会话
   clearPendingMessages();
   clearMessages();
   $('#chat-title').textContent = t('session.new');
@@ -2933,10 +2998,12 @@ function sessionAvgRate(s, u) {
   const gen = baseGen + (live?.liveGenMs ?? 0);
   return gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
 }
-/** 当前模型 context 上限（config limit.context；未知返回 0）——输入框模型胶囊内 context 环用 */
+/** 当前模型 context 上限（/context 手动覆盖优先 → status.contextLimit；回退模型 limit.context；未知返回 0）——输入框模型胶囊内 context 环用 */
 function contextLimit() {
   const st = state.status;
-  if (!st || !Array.isArray(st.models)) return 0;
+  if (!st) return 0;
+  if (typeof st.contextLimit === 'number' && st.contextLimit > 0) return st.contextLimit;
+  if (!Array.isArray(st.models)) return 0;
   const cur = st.models.find((m) => m.name === st.model);
   return (cur && cur.limit && cur.limit.context) || 0;
 }
@@ -2990,7 +3057,7 @@ function rebuildSessionStats(id, messages) {
     if (Array.isArray(m.tool_calls)) s.steps += m.tool_calls.length;
   }
 }
-/** 渲染输入区下方元信息行：左[文件夹/loading] · 中[输入输出/缓存] · 右[上下文用量] */
+/** 渲染输入区下方元信息行：四项独立（输入/输出/缓存/上下文），可见项之间自动 · 分隔 */
 function updateComposerMeta() {
   updatePillAvg();
   updateContextRing();
@@ -2999,27 +3066,30 @@ function updateComposerMeta() {
   const s = state.session ? state.sessionStats.get(state.session) : null;
   const u = state.session ? state.sessionUsage.get(state.session) : null;
   const en = state.language === 'en';
-  // 中部：输入输出精简文本 + 缓存（无缓存数据不显示）
-  const mid = $('#composer-mid');
-  const parts = [];
-  if (u && (u.prompt > 0 || u.completion > 0)) {
-    parts.push(en ? `In ${fmtCompact(u.prompt)} · Out ${fmtCompact(u.completion)}` : `输入 ${fmtCompact(u.prompt)} · 输出 ${fmtCompact(u.completion)}`);
-  }
+  const set = (sel, text) => {
+    const n = $(sel);
+    if (!n) return;
+    n.textContent = text || '';
+    n.classList.toggle('hidden', !text);
+  };
+  set('#composer-in', u && u.prompt > 0 ? (en ? `In ${fmtCompact(u.prompt)}` : `输入 ${fmtCompact(u.prompt)}`) : '');
+  set('#composer-out', u && u.completion > 0 ? (en ? `Out ${fmtCompact(u.completion)}` : `输出 ${fmtCompact(u.completion)}`) : '');
+  let cache = '';
   if (s && u && s.cached > 0 && u.prompt > 0) {
     const pct = Math.min(100, Math.round((s.cached / u.prompt) * 100));
-    parts.push(en ? `Cache ${pct}%` : `缓存 ${pct}%`);
+    cache = en ? `Cache ${pct}%` : `缓存 ${pct}%`;
   }
-  mid.textContent = parts.join(' · ');
-  mid.classList.toggle('hidden', parts.length === 0);
+  set('#composer-cache', cache);
   updateComposerMetaVisibility();
 }
-/** 整行显隐：中/右全空才隐藏 */
+/** 整行显隐：四项全空才隐藏 */
 function updateComposerMetaVisibility() {
   const wrap = $('#composer-meta');
   if (!wrap) return;
-  const mid = $('#composer-mid');
-  const ctx = $('#composer-ctx');
-  const show = [mid, ctx].some((n) => n && !n.classList.contains('hidden') && (n.textContent || '').trim() !== '');
+  const show = ['#composer-in', '#composer-out', '#composer-cache', '#composer-ctx'].some((sel) => {
+    const n = $(sel);
+    return n && !n.classList.contains('hidden') && (n.textContent || '').trim() !== '';
+  });
   wrap.classList.toggle('hidden', !show);
 }
 
@@ -3637,6 +3707,7 @@ bus.on('workspace.changed', () => {
 });
 bus.on('clear', (ev) => {
   if (ev.sessionId !== state.session) return;
+  state.historyCache = null; // 上下文已清空：缓存作废
   clearMessages();
 });
 // 会话删除广播：列表移除；若为当前打开的会话回草稿态
@@ -3645,6 +3716,7 @@ bus.on('session.deleted', (ev) => {
   renderSessionList();
   if (state.session === ev.sessionId) {
     state.session = null;
+    state.historyCache = null;
     clearPendingMessages();
     clearMessages();
     $('#chat-title').textContent = t('session.new');
@@ -3668,15 +3740,13 @@ function refreshSessions() {
 
 /* ---------------- 斜杠命令 ---------------- */
 const SLASH_COMMANDS = [
-  { name: '/help', desc: '查看所有可用命令' },
-  { name: '/status', desc: '会话状态汇总' },
-  { name: '/context', desc: '上下文用量（消息/token 估算）' },
+  { name: '/status', desc: '会话状态汇总（含上下文用量）' },
+  { name: '/context', desc: '调整上下文窗口（无参数打开面板，256|400|512|750|1000K · 默认）' },
   { name: '/clear', desc: '清空当前会话上下文' },
   { name: '/plan', desc: '切换计划模式（只读调研，直接切换开关）' },
   { name: '/permission', desc: '权限面板切换（无参数打开面板，有参数直接切换）' },
   { name: '/model', desc: '模型面板切换（无参数打开面板，/model <名> 直接切换）' },
   { name: '/variants', desc: '思考级别面板切换（无参数打开面板，有参数直接切换）' },
-  { name: '/models', desc: '模型能力快照：/models refresh 在线更新（models.dev）' },
   { name: '/undo', desc: '撤销最近的文件修改（all = 全部）' },
   { name: '/redo', desc: '重做上次撤销（all = 全部）' },
   { name: '/compact', desc: '手动压缩上下文为摘要' },
@@ -3692,7 +3762,6 @@ const SLASH_COMMANDS = [
   { name: '/skill', desc: '技能管理（设置 → 技能页列表/新建/查看，或 find/add/show）' },
   { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
   { name: '/export', desc: '导出会话为 Markdown（直接下载文件）' },
-  { name: '/config', desc: '查看配置文件路径' },
   { name: '/mcp', desc: 'MCP 管理（设置 → MCP 页可视化增删/重连/登录，或 resources/prompts/install）' },
   { name: '/rename', desc: '重命名会话（无参数弹窗输入，有参数直接改名）' },
   { name: '/session', desc: '会话切换面板（无参数打开面板，有参数直接跳转）' },
@@ -3700,7 +3769,7 @@ const SLASH_COMMANDS = [
   { name: '/doctor', desc: '环境诊断（Node/API/配置）' },
   { name: '/spec', desc: '规格三件套（/spec <特性>）：requirements(EARS)/design/tasks 落盘 .omni/specs/' },
   { name: '/preset', desc: '能力一键预设（/preset browser 安装浏览器自动化双雄 MCP）' },
-  { name: '/settings', desc: '打开设置面板（/settings <面板> 直达对应页）' },];
+  { name: '/settings', desc: '打开设置面板（/settings <面板> 直达 · help 帮助 · models 模型能力快照）' },];
 
 const cmdPalette = $('#cmd-palette');
 const mentionPop = $('#mention-pop');
@@ -3834,11 +3903,21 @@ function acceptCmdSel() {
   }
 }
 
-function openCmdPanel(lines) {
+/* 命令输出面板：text = 等宽纯文本（默认）；markdown = 富文本（review/agents 等长文）；
+ * diff = 统一 diff 着色视图（/diff，与对话流 write_file diff 同源渲染）。 */
+function openCmdPanel(lines, format) {
   const body = $('#cmd-panel-body');
   body.innerHTML = '';
   if (lines.length === 0) {
     body.appendChild(el('div', 'cmd-empty', t('cmd.none')));
+  } else if (format === 'diff' && window.OmniMarkdown && window.OmniMarkdown.renderDiff) {
+    const wrap = el('div', 'md-body');
+    wrap.innerHTML = window.OmniMarkdown.renderDiff(lines.join('\n'), '');
+    body.appendChild(wrap);
+  } else if (format === 'markdown') {
+    const wrap = el('div', 'md-body');
+    wrap.innerHTML = mdToHtml(lines.join('\n'), { final: true });
+    body.appendChild(wrap);
   } else {
     const pre = el('pre', 'cmd-output');
     pre.textContent = lines.join('\n');
@@ -3869,7 +3948,7 @@ $('#cmd-panel').addEventListener('click', (e) => {
 /* —— 斜杠命令与 Web UI 联动（输入区命令直达真实功能，不只弹面板） ——
  * 有原生 UI 的命令走 UI（面板/弹窗/下载/切换），无 UI 的才走后端 /api/command 面板展示：
  *   模型/权限/计划/设置/检查点/分叉/导出/重命名/会话切换 → 原生 UI；
- *   状态/上下文/diff/review/诊断等纯文本命令 → 保留 cmd-panel 展示。
+ *   /diff（diff 着色）/review·/agents（markdown 富文本）/其余纯文本 → cmd-panel 展示。
  * 后端联动型（/plan 带参切换类）走 /api/command 但渲染为右上角通知 + 状态刷新，
  * 不再弹 cmd-panel，保证“执行结果落到界面上”。 */
 function parseSlash(cmd) {
@@ -3973,8 +4052,9 @@ async function runBackendLinked(cmd) {
 async function runSlashCommand(cmd) {
   const { base, arg } = parseSlash(cmd);
   // —— 1. 纯前端 UI 命令（不经过后端） ——
-  // /model、/variants 无参数 → 打开输入区的模型选择面板（模型下拉 + 思考级别滑条）
-  if ((base === '/model' || base === '/variants') && !arg) {
+  // /model、/variants、/context 无参数 → 打开输入区的模型选择面板（模型下拉 +
+  // 思考级别滑条 + 上下文窗口滑条，面板即覆盖三者的切换能力）
+  if ((base === '/model' || base === '/variants' || base === '/context') && !arg) {
     closeCmdPanel();
     openModelPop();
     return;
@@ -4010,11 +4090,14 @@ async function runSlashCommand(cmd) {
     notify(state.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。', 'success');
     return;
   }
-  // /settings → 打开设置面板（支持 /settings <面板名> 直达）
+  // /settings → 打开设置面板（支持 /settings <面板名> 直达）；help|models 走后端执行面板展示
   if (base === '/settings') {
-    closeCmdPanel();
-    openSettingsPane(arg);
-    return;
+    const sub = arg.split(/\s+/)[0].toLowerCase();
+    if (sub !== 'help' && sub !== 'models') {
+      closeCmdPanel();
+      openSettingsPane(arg);
+      return;
+    }
   }
   // /rewind 无参数 → 打开检查点面板；带参数 → 直接调 REST 回滚（与面板同接口）
   if (base === '/rewind') {
@@ -4060,7 +4143,7 @@ async function runSlashCommand(cmd) {
     if (!state.session) { notify(t('session.new'), 'info'); return; }
     let title = arg;
     if (!title) {
-      const raw = prompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
+      const raw = await uiPrompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
       if (raw === null) return;
       title = raw.trim();
       if (!title) return;
@@ -4106,6 +4189,7 @@ async function runSlashCommand(cmd) {
     if (sub !== 'add' && sub !== 'fetch') { await runBackendLinked(cmd); return; }
   }
   if (base === '/variants' && arg) { await runBackendLinked(cmd); return; }
+  if (base === '/context' && arg) { await runBackendLinked(cmd); return; }
   // 显示加载状态
   openCmdPanel([]);
   $('#cmd-panel-body').innerHTML = '';
@@ -4120,7 +4204,9 @@ async function runSlashCommand(cmd) {
       body: JSON.stringify({ command: cmd, sessionId: state.session, background: true }),
     });
     if (result.lines && result.lines.length > 0) {
-      openCmdPanel(result.lines);
+      // 富文本命令：/diff 走 diff 着色视图，/review 与 /agents 走 markdown 渲染
+      const fmt = base === '/diff' ? 'diff' : base === '/review' || base === '/agents' ? 'markdown' : undefined;
+      openCmdPanel(result.lines, fmt);
     } else {
       openCmdPanel([t('cmd.executed')]);
     }
@@ -4128,7 +4214,7 @@ async function runSlashCommand(cmd) {
     const c = cmd.trim();
     // ① 改运行时状态（模型/权限/计划/思考级别/上下文统计等）→ 刷新状态条
     //    （/clear 靠 clear 事件清消息流，此处再刷状态条清底部 context/缓存统计）
-    const statusCmds = ['/plan', '/permission', '/variants', '/model', '/models', '/thinking', '/preset', '/clear'];
+    const statusCmds = ['/plan', '/permission', '/variants', '/model', '/thinking', '/preset', '/clear', '/context', '/settings'];
     if (statusCmds.some((x) => c === x || c.startsWith(x + ' '))) {
       refreshStatus().catch(() => {});
     }
@@ -4418,6 +4504,76 @@ function dismiss(n) {
   n.classList.add('hide');
   setTimeout(() => n.remove(), 200);
 }
+
+/* 应用内确认/输入弹窗（替代原生 prompt/confirm：样式与其它 modal 一致，
+ * Esc/点遮罩/取消关闭；调用方一律 await）。
+ * uiConfirm(message, danger=true) → Promise<boolean>
+ * uiPrompt(message, initial='') → Promise<string|null>（取消=null） */
+function openUiDialog({ title, bodyEl, okLabel, danger }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const overlay = el('div', 'modal');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head');
+    head.appendChild(el('h2', null, title));
+    const x = el('button', 'icon-button', '✕');
+    x.type = 'button';
+    x.title = t('modal.close');
+    x.setAttribute('aria-label', t('modal.close'));
+    head.appendChild(x);
+    card.appendChild(head);
+    const body = el('div', 'modal-body');
+    if (bodyEl) body.appendChild(bodyEl);
+    const actions = el('div', 'dirpicker-actions');
+    const spacer = el('span', 'dirpicker-spacer');
+    const cancel = el('button', 'secondary-button', t('modal.cancel'));
+    cancel.type = 'button';
+    const ok = el('button', danger ? 'secondary-button danger' : 'primary-button', okLabel);
+    ok.type = 'button';
+    actions.append(spacer, cancel, ok);
+    body.appendChild(actions);
+    card.appendChild(body);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === 'Enter' && e.target && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); ok.click(); }
+    };
+    x.addEventListener('click', () => done(null));
+    cancel.addEventListener('click', () => done(null));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    document.addEventListener('keydown', onKey, true);
+    ok.addEventListener('click', () => done(true));
+    (bodyEl?.querySelector('input') || ok).focus?.();
+  });
+}
+function uiConfirm(message, danger = true) {
+  const msg = el('div', 'ui-confirm-msg', message);
+  return openUiDialog({ title: message.split('\n')[0].slice(0, 40), bodyEl: msg, okLabel: t('ask.confirm'), danger })
+    .then((v) => v === true);
+}
+function uiPrompt(message, initial = '') {
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'ui-confirm-msg', message));
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'cfg-text';
+  input.value = initial ?? '';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  wrap.appendChild(input);
+  return openUiDialog({ title: message.slice(0, 40), bodyEl: wrap, okLabel: t('ask.confirm'), danger: false })
+    .then((v) => (v === true ? input.value : null));
+}
 function copyLastReply() {
   const blocks = document.querySelectorAll('#messages .msg.assistant');
   const last = blocks[blocks.length - 1];
@@ -4590,8 +4746,8 @@ function renderShortcutsSettings() {
   }
   const restore = el('button', 'primary-button sc-restore', t('shortcut.restore'));
   restore.type = 'button';
-  restore.addEventListener('click', () => {
-    if (confirm(t('shortcut.restoreConfirm'))) {
+  restore.addEventListener('click', async () => {
+    if (await uiConfirm(t('shortcut.restoreConfirm'), false)) {
       try { localStorage.removeItem(SHORTCUTS_STORAGE_KEY); } catch { /* ignore */ }
       recordingFeatureId = null;
       renderShortcutsSettings();
@@ -4739,6 +4895,7 @@ async function doSend(text) {
   if (atts.length) { state.attachments = []; renderAttachList(); }
   setEmptyState(false);
   state._sending = false; // 释放发送锁（input 已清空 + runningSessions 即将 add）
+  state.historyCache = null; // 新回合落盘后历史变化：旧缓存作废（防“加载更多”刷掉本轮）
   try {
     if (!state.session) {
       const data = await api('/api/sessions', { method: 'POST' });
@@ -5295,6 +5452,105 @@ function renderModelPop(s) {
         .catch((err) => { notify(t('err.settings', { msg: err.message }), 'error'); range.value = String(applied); });
     });
   }
+  // 上下文窗口：默认（跟随模型）+ 256K/400K/512K/750K/1000K 档位滑条（与思考级别同交互：
+  // 拖动跟手预览、松手吸附生效、不自动关闭；单蓝色系，与档位配色的思考滑条区分）
+  pop.appendChild(el('div', 'pop-sep'));
+  pop.appendChild(el('div', 'pop-head', t('model.contextHead')));
+  {
+    const stops = [
+      { v: null, label: t('provider.defaultBadge') },
+      { v: 256000, label: '256K' },
+      { v: 400000, label: '400K' },
+      { v: 512000, label: '512K' },
+      { v: 750000, label: '750K' },
+      { v: 1000000, label: '1000K' },
+    ];
+    const cur = s.contextOverride && typeof s.contextLimit === 'number' ? s.contextLimit : null;
+    let idx = stops.findIndex((x) => x.v === cur);
+    if (idx < 0 && cur != null) {
+      // 手动值不在档位上（配置文件手写）：就近显示，改动后吸附到档位
+      let best = 0, bestD = Infinity;
+      stops.forEach((x, i) => {
+        if (x.v == null) return;
+        const d = Math.abs(x.v - cur);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      idx = best;
+    }
+    if (idx < 0) idx = 0;
+    const steps = stops.length - 1;
+    const wrap = el('div', 'slider-wrap');
+    wrap.style.setProperty('--slider-grad', 'linear-gradient(90deg, #4176e6 0%, #6366f1 100%)');
+    wrap.style.setProperty('--slider-glow', '#4176e6');
+    const inner = el('div', 'slider-inner');
+    inner.appendChild(el('div', 'slider-track'));
+    inner.appendChild(el('div', 'slider-fill'));
+    const dots = el('div', 'slider-dots');
+    inner.appendChild(dots);
+    inner.appendChild(el('div', 'slider-thumb'));
+    wrap.appendChild(inner);
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.className = 'slider-input';
+    range.min = '0';
+    range.max = String(steps);
+    range.step = '1';
+    range.value = String(idx);
+    range.setAttribute('aria-label', t('model.contextHead'));
+    wrap.appendChild(range);
+    pop.appendChild(wrap);
+    stops.forEach((x, i) => {
+      const dot = el('span', 'slider-dot');
+      dot.style.left = `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      if (i === idx) dot.classList.add('active');
+      dots.appendChild(dot);
+    });
+    const ticks = el('div', 'pop-ticks');
+    stops.forEach((x, i) => {
+      const sp = el('span', null, x.label);
+      if (i === idx) sp.classList.add('active');
+      sp.style.left = `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      sp.addEventListener('click', () => {
+        range.value = String(i);
+        range.dispatchEvent(new Event('change'));
+      });
+      ticks.appendChild(sp);
+    });
+    pop.appendChild(ticks);
+    let applied = idx;
+    const setFill = (pos) => wrap.style.setProperty('--fill', String((pos / steps) * 100));
+    const setTicks = (pos, animate) => {
+      ticks.querySelectorAll('span').forEach((sp, i) => {
+        const on = i === pos;
+        sp.classList.toggle('active', on);
+        if (on && animate) { sp.classList.remove('pop'); void sp.offsetWidth; sp.classList.add('pop'); }
+      });
+      dots.querySelectorAll('span').forEach((d, i) => {
+        const on = i === pos;
+        d.classList.toggle('active', on);
+        if (on && animate) { d.classList.remove('pop'); void d.offsetWidth; d.classList.add('pop'); }
+      });
+    };
+    setFill(idx);
+    range.addEventListener('input', () => {
+      wrap.classList.add('dragging');
+      const pos = Math.min(steps, Math.max(0, Math.round(Number(range.value))));
+      setFill(pos);
+      setTicks(pos, false);
+    });
+    range.addEventListener('change', () => {
+      const pos = Math.min(steps, Math.max(0, Math.round(Number(range.value))));
+      range.value = String(pos);
+      wrap.classList.remove('dragging');
+      setFill(pos);
+      setTicks(pos, true);
+      if (pos === applied) return;
+      const v = stops[pos].v;
+      applySettings({ contextLimit: v === null ? null : v })
+        .then(() => { applied = pos; })
+        .catch((err) => { notify(t('err.settings', { msg: err.message }), 'error'); range.value = String(applied); });
+    });
+  }
 }
 
 /* 代码块拷贝按钮（markdown-renderer 输出 .md-code-copy，委托处理点击：复制代码正文） */
@@ -5380,12 +5636,12 @@ function renderMcpChips() {
     box.appendChild(b);
   });
 }
-$('#mcp-chips')?.addEventListener('click', (e) => {
+$('#mcp-chips')?.addEventListener('click', async (e) => {
   const target = e.target;
   const del = target.closest ? target.closest('.mc-chip-del') : null;
   if (del) {
     const name = del.dataset.del;
-    if (!confirm(t('mcp.confirmDelete', { name }))) return;
+    if (!(await uiConfirm(t('mcp.confirmDelete', { name })))) return;
     mcpAction('remove', { name });
     return;
   }
@@ -5429,11 +5685,61 @@ function renderMcpDetail() {
   addRow(s.name + (s.hasInstructions ? ' · instructions ✓' : ''), endWrap);
   const tools = s.tools || [];
   if (tools.length) addRow(`${t('mcp.tools')} · ${tools.length}`, el('div', 'mcp-kv', tools.slice(0, 30).join(', ') + (tools.length > 30 ? ' …' : '')));
+  // 结果区（点击资源/提示词后加载内容进这里，复用 fetch-result 框样式）
+  const resultBox = el('div', 'fetch-result hidden');
+  const showResult = (title, text) => {
+    resultBox.innerHTML = '';
+    resultBox.appendChild(el('div', 'mcp-kv', title));
+    const pre = el('pre', 'cmd-output');
+    pre.textContent = text;
+    resultBox.appendChild(pre);
+    resultBox.classList.remove('hidden');
+  };
   const res = s.resources || [];
-  if (res.length) addRow(`${t('mcp.resources')} · ${res.length}`, el('div', 'mcp-kv', res.slice(0, 10).map((r) => r.uri).join('\n')));
+  if (res.length) {
+    const list = el('div', 'mcp-links');
+    res.slice(0, 10).forEach((r) => {
+      const b = el('button', 'mcp-link', r.uri);
+      b.type = 'button';
+      b.title = r.name || r.uri;
+      b.addEventListener('click', async () => {
+        showResult(`${s.name} · ${r.uri}`, t('provider.fetching'));
+        try {
+          const d = await api('/api/mcp/resource', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: s.name, uri: r.uri }),
+          });
+          showResult(`${s.name} · ${d.uri}${d.mimeType ? `（${d.mimeType}）` : ''}${d.truncated ? '（前 40 行）' : ''}`, d.text || t('tool.noOutput'));
+        } catch (e) { notify(e.message, 'error'); resultBox.classList.add('hidden'); }
+      });
+      list.appendChild(b);
+    });
+    if (res.length > 10) list.appendChild(el('div', 'mcp-kv', `… +${res.length - 10}`));
+    addRow(`${t('mcp.resources')} · ${res.length}`, list);
+  }
   const prompts = s.prompts || [];
-  if (prompts.length) addRow(`${t('mcp.prompts')} · ${prompts.length}`, el('div', 'mcp-kv', prompts.map((x) => x.name).join(', ')));
+  if (prompts.length) {
+    const list = el('div', 'mcp-links');
+    prompts.forEach((x) => {
+      const b = el('button', 'mcp-link', x.name + (x.description ? ` — ${x.description}` : ''));
+      b.type = 'button';
+      b.addEventListener('click', async () => {
+        showResult(`${s.name} · ${x.name}`, t('provider.fetching'));
+        try {
+          const d = await api('/api/mcp/prompt', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: s.name, prompt: x.name }),
+          });
+          showResult(`${s.name} · ${d.name}${d.description ? `（${d.description}）` : ''}`,
+            (d.messages || []).map((m) => `${m.role}: ${m.text}`).join('\n\n') || t('tool.noOutput'));
+        } catch (e) { notify(e.message, 'error'); resultBox.classList.add('hidden'); }
+      });
+      list.appendChild(b);
+    });
+    addRow(`${t('mcp.prompts')} · ${prompts.length}`, list);
+  }
   box.appendChild(group);
+  box.appendChild(resultBox);
 }
 
 /** MCP 写操作（add/remove/login/install/reconnect）：落盘 + 重连 + 刷列表/状态 */
@@ -5457,11 +5763,18 @@ $('#btn-mcp-add').addEventListener('click', async () => {
   try {
     const r = await api('/api/mcp', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'add', name, text }),
+      body: JSON.stringify({
+        action: 'add', name, text,
+        approval: $('#mcp-approval').value || undefined,
+        enabledTools: $('#mcp-enabled').value.trim() || undefined,
+        disabledTools: $('#mcp-disabled').value.trim() || undefined,
+      }),
     });
     notify(r.persistMessage || t('notify.saved'), 'success');
     $('#mcp-name').value = '';
     $('#mcp-text').value = '';
+    $('#mcp-enabled').value = '';
+    $('#mcp-disabled').value = '';
     mcpSel = name;
     await loadMcpPane();
     await refreshStatus().catch(() => {});
@@ -5503,10 +5816,23 @@ async function loadSkillPane() {
       info.appendChild(h);
       if (s.description) info.appendChild(el('p', null, s.description));
       r.appendChild(info);
+      const actions = el('div', 'about-value');
       const view = el('button', 'secondary-button', t('skill.show'));
       view.type = 'button';
       view.addEventListener('click', () => runSlashCommand('/skill show ' + s.name));
-      r.appendChild(view);
+      actions.appendChild(view);
+      const del = el('button', 'secondary-button danger', t('skill.delete'));
+      del.type = 'button';
+      del.addEventListener('click', async () => {
+        if (!(await uiConfirm(t('skill.confirmDelete', { name: s.name })))) return;
+        try {
+          await api(`/api/skills/${encodeURIComponent(s.name)}`, { method: 'DELETE' });
+          notify(t('notify.saved'), 'success');
+          await loadSkillPane();
+        } catch (e) { notify(e.message, 'error'); }
+      });
+      actions.appendChild(del);
+      r.appendChild(actions);
       list.appendChild(r);
     });
     const c = $('#skill-count');
@@ -5517,6 +5843,51 @@ async function loadSkillPane() {
   } catch (e) { notify(e.message, 'error'); }
 }
 $('#btn-skill-refresh').addEventListener('click', () => loadSkillPane());
+/* 技能 registry 检索安装（npx skills find/add；结果行直装） */
+$('#btn-skill-find').addEventListener('click', async () => {
+  const q = $('#skill-find-q').value.trim();
+  if (!q) return;
+  const box = $('#skill-find-results');
+  box.innerHTML = '';
+  box.appendChild(el('div', 'dir-empty', t('provider.fetching')));
+  try {
+    const d = await api('/api/skills/find', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ q }),
+    });
+    box.innerHTML = '';
+    if (!d.results.length) { box.appendChild(el('div', 'dir-empty', t('provider.noMatch'))); return; }
+    d.results.forEach((r) => {
+      const row = el('div', 'mcp-add-row');
+      row.appendChild(el('div', 'mcp-kv', r));
+      const add = el('button', 'primary-button', t('mcp.install'));
+      add.type = 'button';
+      add.addEventListener('click', async () => {
+        const id = String(r).split(/\s+/)[0] ?? '';
+        const at = id.indexOf('@');
+        const repo = at >= 0 ? id.slice(0, at) : id;
+        const skill = at >= 0 ? id.slice(at + 1) : undefined;
+        if (!repo) return;
+        try {
+          const res = await api('/api/skills/install', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ repo, skill }),
+          });
+          notify(res.message || t('notify.saved'), 'success');
+          await loadSkillPane();
+        } catch (e) { notify(e.message, 'error'); }
+      });
+      row.appendChild(add);
+      box.appendChild(row);
+    });
+  } catch (e) {
+    box.innerHTML = '';
+    box.appendChild(el('div', 'dir-empty', t('provider.errFetch', { msg: e.message })));
+  }
+});
+$('#skill-find-q').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('#btn-skill-find').click(); }
+});
 /* 新建技能弹窗（头部与刷新并排；回车确认，Esc/遮罩/取消关闭） */
 function openSkillCreate() {
   const inp = $('#skill-name');
@@ -5743,11 +6114,11 @@ function renderProviderBar(s) {
 }
 // 委托监听：chip 点击切换分组 / ✕ 删除 provider（不用 per-item 闭包——每次重建 DOM，
 // 闭包捕获的旧 s 可能过期；委托读 state.status 恒为最新）
-$('#mc-provider-chips')?.addEventListener('click', (e) => {
+$('#mc-provider-chips')?.addEventListener('click', async (e) => {
   const del = e.target.closest('.mc-chip-del');
   if (del) {
     const name = del.dataset.del;
-    if (!confirm(t('provider.removeProviderConfirm', { name }))) return;
+    if (!(await uiConfirm(t('provider.removeProviderConfirm', { name })))) return;
     api('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ providerRemove: { provider: name } }),
@@ -5832,8 +6203,8 @@ function renderProviderPanel(s) {
   // 删除 provider（新建模式无删除）
   const delBtn = $('#btn-del-provider');
   if (delBtn) {
-    delBtn.onclick = () => {
-      if (!group || !confirm(t('provider.removeProviderConfirm', { name: group.name }))) return;
+    delBtn.onclick = async () => {
+      if (!group || !(await uiConfirm(t('provider.removeProviderConfirm', { name: group.name })))) return;
       api('/api/settings', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerRemove: { provider: group.name } }),
@@ -6143,7 +6514,7 @@ async function toggleModelEnable(s, group, m, on, isNew) {
       notify(t('provider.errAdd', { msg: err.message }), 'error');
     }
   } else {
-    if (!confirm(t('provider.removeConfirm', { name: m.name }))) return;
+    if (!(await uiConfirm(t('provider.removeConfirm', { name: m.name })))) return;
     try {
       await api('/api/settings', {
         method: 'POST', headers: { 'content-type': 'application/json' },

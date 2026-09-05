@@ -16,7 +16,7 @@
  * · 安装来源标记：`/skill add --global` 安装到全局目录；列表显示来源。
  */
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -386,4 +386,49 @@ export function validateSkill(info: SkillInfo | null, dirName?: string): SkillVa
   else if (info.description.length > 200) warnings.push(`description ${info.description.length} 字符偏长（建议 ≤ 200——清单渐进披露时可读性）`);
   if (info.path && !existsSync(info.path)) errors.push(`SKILL.md 路径不存在：${info.path}`);
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/** 项目技能根目录（新建写入位置；与 Web 创建端点一致） */
+export function projectSkillDir(): string {
+  return path.join(process.cwd(), '.agents', 'skills');
+}
+
+/**
+ * 新建项目技能（.agents/skills/<name>/SKILL.md 模板；Web 创建端点与 TUI /skill create 共用）。
+ * 名不合法/已存在返回 ok:false（调用方映射 HTTP 状态或提示文本）。
+ */
+export function createSkill(name: string, description: string): { ok: boolean; message: string; path?: string } {
+  const n = (name ?? '').trim();
+  if (!SKILL_NAME_RE.test(n)) return { ok: false, message: '技能名不合法（仅小写字母、数字、连字符，如 my-skill）' };
+  const dir = path.join(projectSkillDir(), n);
+  if (existsSync(dir)) return { ok: false, message: `技能 ${n} 已存在` };
+  const desc = (description ?? '').trim();
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'SKILL.md'),
+      ['---', `name: ${n}`, `description: ${desc || n}`, '---', '', `# ${n}`, '', desc ? `${desc}\n` : '', '## 指令', '', '在此编写技能的详细指令...'].join('\n'),
+      'utf8'
+    );
+  } catch (e) {
+    return { ok: false, message: `创建技能失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { ok: true, message: `技能 ${n} 已创建`, path: dir };
+}
+
+/**
+ * 删除技能（只删 discover 到的 SKILL.md 所在目录——项目或全局技能根下，防止误删任意路径）。
+ */
+export async function removeSkill(name: string): Promise<{ ok: boolean; message: string }> {
+  const n = (name ?? '').trim();
+  if (!n) return { ok: false, message: '缺少技能名' };
+  const found = (await discoverSkills()).find((s) => s.name === n);
+  if (!found) return { ok: false, message: `未找到技能「${n}」` };
+  const dir = path.dirname(found.path);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    return { ok: false, message: `删除失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { ok: true, message: `已删除技能「${n}」` };
 }

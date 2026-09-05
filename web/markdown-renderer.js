@@ -551,5 +551,5 @@
     return `<div class="md-diff-wrap">${head}${inner}</div>`;
   }
 
-  window.OmniMarkdown = { render, parse, renderFileDiff, renderEditDiff };
+  window.OmniMarkdown = { render, parse, renderFileDiff, renderEditDiff, renderDiff: renderUnifiedDiffAsMarkdown };
 })();

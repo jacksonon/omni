@@ -56,7 +56,7 @@ export type TrajEvent =
   | (TrajBase & { k: 'request/header'; step: number; model: string; tools: string[]; messages: number })
   | (TrajBase & { k: 'compact'; removed: number })
   // 子代理（第六节 P1 编排）：生命周期轨迹——parentId 关联嵌套层级，depth 表达深度，
-  // /trace 面板据此画嵌套树（subagent/start·step·end 三种事件）
+  // /trace 账本据此呈现嵌套（subagent/start·step·end 三种事件）
   | (TrajBase & { k: 'subagent/start'; id: string; parentId: string | null; depth: number; name: string; task: string })
   | (TrajBase & { k: 'subagent/step'; id: string; depth: number; step: number; maxSteps: number })
   | (TrajBase & { k: 'subagent/end'; id: string; depth: number; ok: boolean; summary: string; steps: number; durationMs: number });

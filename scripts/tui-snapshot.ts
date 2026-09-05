@@ -652,6 +652,36 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
+  // 13d) 段间分隔符：有缓存时「缓存 50%· 上下文」；无缓存时「输出 567· 上下文」（不断开、不悬空）
+  const s13both = createTuiState();
+  s13both.version = '0.1.0';
+  s13both.model = 'grok-4.5';
+  s13both.cwd = '/w/s13';
+  s13both.tokens = { prompt: 1234, completion: 567, total: 1801 };
+  s13both.stats.cached = 617;
+  s13both.lastPromptTokens = 300;
+  pushLine(s13both, { kind: 'user', text: '你好' });
+  const r13both = await render(s13both);
+  if (!r13both.frame.includes('缓存 50% · ')) {
+    console.error('✗ 场景 13 有缓存时上下文段前缺分隔符');
+    process.exit(1);
+  }
+  const s13sep = createTuiState();
+  s13sep.version = '0.1.0';
+  s13sep.model = 'grok-4.5';
+  s13sep.cwd = '/w/s13';
+  s13sep.tokens = { prompt: 1234, completion: 567, total: 1801 };
+  s13sep.lastPromptTokens = 300; // 上下文用量显示（无上限只显示用量）；cached=0 → 缓存段隐藏
+  pushLine(s13sep, { kind: 'user', text: '你好' });
+  const r13sep = await render(s13sep);
+  if (r13sep.frame.includes('缓存')) {
+    console.error('✗ 场景 13 无缓存数据时不应显示缓存段');
+    process.exit(1);
+  }
+  if (!r13sep.frame.includes('输出 567 · ')) {
+    console.error('✗ 场景 13 无缓存时 Out 与上下文之间缺分隔符（断开了）');
+    process.exit(1);
+  }
   // 44 列窄屏：模型行只余 模式/模型/级别（输入输出/缓存已移入灰块外底行右侧，
   // 44 列下底行仍放得下——左侧文件夹截断保尾部）；模型恒保留
   const t13n = await createTestRenderer({ width: 44, height: 20 });
@@ -973,6 +1003,42 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('✓ 场景 16 通过：亮色主题灰色块/用户消息淡灰底+深字，内容区回答/思考/meta/markdown 代码块全部换深色文字，切回深色恢复');
+
+  // 场景 16b：模型行 Build/Plan 循环色（对标 hero 横幅彩虹）——bannerHue 驱动全色相
+  // 循环，Plan 固定错相 180°；亮度跟横幅同规则。渲染层取色与函数同源。
+  {
+    const { hslToHex: hex16b, modeCycleColor: mcc16b } = await import('../src/tui/theme.js');
+    const { parseColor: pc16b } = await import('@opentui/core');
+    const toInts = (c: unknown): number[] => ((c as { toInts: () => number[] }).toInts?.() ?? []).slice(0, 3);
+    if (mcc16b(10, false, false) !== hex16b(10, 0.85, 0.64)) {
+      console.error('✗ 场景 16b Build 未跟随 bannerHue');
+      process.exit(1);
+    }
+    if (mcc16b(10, true, false) !== hex16b(190, 0.85, 0.64) || mcc16b(200, true, false) !== hex16b(20, 0.85, 0.64)) {
+      console.error('✗ 场景 16b Plan 错相 180°/回绕错误');
+      process.exit(1);
+    }
+    if (mcc16b(10, false, true) !== hex16b(10, 0.85, 0.42) || mcc16b(10, false, true) === mcc16b(10, false, false)) {
+      console.error('✗ 场景 16b 亮色压暗未生效');
+      process.exit(1);
+    }
+    const s16b2 = createTuiState();
+    s16b2.version = '0.1.0';
+    s16b2.model = 'mock';
+    s16b2.bannerHue = 10;
+    s16b2.planMode = false;
+    pushLine(s16b2, { kind: 'user', text: '你好' }); // 有对话：退出 hero，模型行按底部布局渲染
+    const t16b2 = await createTestRenderer({ width: 64, height: 20 });
+    const tree16b2 = mountTree(t16b2.renderer, s16b2, { withInput: true });
+    repaintTree(t16b2.renderer, tree16b2, s16b2, { withInput: true });
+    await t16b2.renderOnce();
+    const fg16b = JSON.stringify(toInts((tree16b2.footerMode as unknown as { fg?: unknown })?.fg));
+    if (fg16b !== JSON.stringify(toInts(pc16b(hex16b(10, 0.85, 0.64))))) {
+      console.error(`✗ 场景 16b 模型行未取循环色: ${fg16b}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 16b 通过：模型行 Build/Plan 循环色（hue 驱动/Plan 错相/亮暗亮度/渲染同源）');
 
   // 场景 15：输入区 16px 圆角灰块（rounded 边框 + 同色线模拟圆角）+ 右下角发送按钮
   // + 模型/思考强度行（思考强度淡色）；输入增高时灰块同步变高
@@ -1576,8 +1642,8 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 35 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 35、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 31 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 31、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 扁平命令面板（无边框，标题 + 分组 + 选项整行高亮）：border 应关闭
@@ -1647,9 +1713,9 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 29 个」提示行
+  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 25 个」提示行
   //（无分组头——用户要求移除 section 组标题）
-  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 29 个'];
+  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 25 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
@@ -1674,7 +1740,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // 紧凑下拉不铺满内容区：窗口外命令不渲染（靠 ↑/↓ 滚动到达，不再截断成不可达）
-  for (const hidden of ['/init', '/skill', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/spec', '/preset', '/settings', '/model', '/models', '/config', '/mcp', '/diff', '/rewind', '/rename', '/fork', '/send', '/resume', '/session', '/redo', '/trace', '/help', '/permission', '/plan', '/thinking', '/exit', '/memory-apply']) {
+  for (const hidden of ['/init', '/skill', '/agents', '/orchestrate', '/goal', '/review', '/variants', '/spec', '/preset', '/settings', '/model', '/diff', '/rewind', '/rename', '/fork', '/send', '/resume', '/session', '/redo', '/permission', '/plan', '/thinking', '/exit', '/memory-apply']) {
     if (frame19.includes(hidden)) {
       console.error(`✗ 场景 19 窗口外命令 ${hidden} 不应渲染（应滚入窗口）`);
       process.exit(1);
@@ -2971,7 +3037,7 @@ async function main(): Promise<void> {
   fs.rmSync(tmp30, { recursive: true, force: true });
   console.log('✓ 场景 30 通过：快照/恢复/删除新建/上限/包装器 + /undo 与 /undo all 命令端到端/空栈提示');
 
-  // 场景 31：/permission 安全权限面板 —— 低=read / 中=safe / 高=ask / 全量=full
+  // 场景 31：/permission 安全权限面板 —— 只读=read / 请求批准=ask / 帮我批准=safe / 完全访问=full（放行程度升序，与 Web 一致）
   // 打开面板（默认高亮当前档位）+ ↑/↓/数字选择 + Enter 确认（state.permission 变更+meta）+ Esc 取消 + 渲染
   const cmd31 = await import('../src/tui/commands.js');
   const { openPermissionMenu, handleMenuKey: handleMenuKey31, PERMISSION_OPTIONS } = cmd31;
@@ -2979,7 +3045,7 @@ async function main(): Promise<void> {
   const s31 = createTuiState();
   s31.version = '0.1.0';
   s31.model = 'mock';
-  s31.permission = 'safe'; // 默认中（标准）
+  s31.permission = 'safe'; // 默认帮我批准
   pushLine(s31, { kind: 'user', text: '你好' });
   s31.status = '任务完成';
   // a) 面板打开：4 个档位，高亮当前值（safe）
@@ -2988,13 +3054,13 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 31 面板未正确打开: ${JSON.stringify(s31.menu)}`);
     process.exit(1);
   }
-  if (s31.menu.selectedIndex !== 1 || s31.menu.currentValue !== 'safe') {
+  if (s31.menu.selectedIndex !== 2 || s31.menu.currentValue !== 'safe') {
     console.error(`✗ 场景 31 初始高亮/当前值错误: ${JSON.stringify(s31.menu)}`);
     process.exit(1);
   }
-  // b) 键盘：↑ 从「中」上移到「低」→ 数字 1 直接选中「低」并确认 → permission=read、面板关闭、meta 提示
-  if (!handleMenuKey31({ name: 'up', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu?.selectedIndex !== 0) {
-    console.error(`✗ 场景 31 ↑ 未移动高亮: ${JSON.stringify(s31.menu)}`);
+  // b) 键盘：↑ 从「帮我批准」上移到「请求批准」→ 数字 1 直接选中「只读」并确认 → permission=read、面板关闭、meta 提示
+  if (!handleMenuKey31({ name: 'up', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu?.selectedIndex !== 1) {
+    console.error(`✗ 场景 31 ↑ 未移动高亮（应到请求批准）: ${JSON.stringify(s31.menu)}`);
     process.exit(1);
   }
   if (!handleMenuKey31({ name: '1', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu !== null || s31.permission !== 'read') {
@@ -3009,7 +3075,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 31 权限切换提示泄漏进了对话流');
     process.exit(1);
   }
-  // c) Enter 确认：打开面板 → ↓ 移到「全量」→ Enter → permission=full
+  // c) Enter 确认：打开面板 → ↓↓↓ 移到「完全访问」→ Enter → permission=full
   openPermissionMenu(s31);
   handleMenuKey31({ name: 'down', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31);
   handleMenuKey31({ name: 'down', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31);
@@ -3020,7 +3086,7 @@ async function main(): Promise<void> {
   }
   // d) Esc 取消：再打开面板 → Esc → 面板关闭且档位不变
   openPermissionMenu(s31);
-  s31.menu!.selectedIndex = 2; // 高亮「高」但不确认
+  s31.menu!.selectedIndex = 1; // 高亮「请求批准」但不确认
   if (!handleMenuKey31({ name: 'escape', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s31) || s31.menu !== null || s31.permission !== 'full') {
     console.error('✗ 场景 31 Esc 取消未生效');
     process.exit(1);
@@ -3032,7 +3098,7 @@ async function main(): Promise<void> {
   s31e.permission = 'ask';
   const msgs31e: unknown[] = [];
   await cmd31.runCommand({ state: s31e, out: {}, session: {}, input: {}, messages: msgs31e } as never, '/permission');
-  if (!s31e.menu || s31e.menu.id !== 'permission' || s31e.menu.selectedIndex !== 2) {
+  if (!s31e.menu || s31e.menu.id !== 'permission' || s31e.menu.selectedIndex !== 1) {
     console.error(`✗ 场景 31 runCommand /permission 未打开面板（应高亮当前 ask）: ${JSON.stringify(s31e.menu)}`);
     process.exit(1);
   }
@@ -3048,7 +3114,7 @@ async function main(): Promise<void> {
   await t31f.renderOnce();
   const r31 = { frame: t31f.captureCharFrame() };
   console.log(r31.frame);
-  const checks31 = ['安全权限', '低（只读）', '中（标准）', '高（谨慎）', '全量（直通）', '› 低（只读）', 'Enter 确认', 'Esc 取消'];
+  const checks31 = ['安全权限', '只读', '请求批准', '帮我批准', '完全访问', '› 只读', 'Enter 确认', 'Esc 取消'];
   const missing31 = checks31.filter((c) => !r31.frame.includes(c));
   if (missing31.length) {
     console.error(`✗ 场景 31 面板渲染缺: ${missing31.join(', ')}`);
@@ -3059,11 +3125,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const rows31f = computeRows(s31f, { height: 20, width: 64 }, { withInput: true });
-  if (rows31f.some((r) => r.text.includes('低（只读）') || r.text.includes('Enter 确认'))) {
+  if (rows31f.some((r) => r.text.includes('请求批准') || r.text.includes('Enter 确认'))) {
     console.error('✗ 场景 31 菜单行仍内联在内容流（应移到 alert 浮层）');
     process.exit(1);
   }
-  console.log('✓ 场景 31 通过：/permission 面板 4 档位（低/中/高/全量）+ ↑↓/数字/Enter/Esc + runCommand 分发 + 浮层渲染');
+  console.log('✓ 场景 31 通过：/permission 面板 4 档位（只读/请求批准/帮我批准/完全访问）+ ↑↓/数字/Enter/Esc + runCommand 分发 + 浮层渲染');
 
   // 场景 32：技能系统 —— frontmatter 解析 / 发现（项目+全局去重）/ 加载 / 注入消息 / /skill 命令分发
   console.log('=== 场景 32：技能（SKILL.md）系统 ===');
@@ -3148,13 +3214,17 @@ async function main(): Promise<void> {
   s32.version = '0.1.0';
   s32.model = 'mock';
   await cmd32.runCommand({ state: s32, out: {}, session: { paint: async () => {} }, input: {}, messages: [] } as never, '/skill');
-  const pl32 = s32.cmdPanel?.lines ?? [];
-  if (!pl32.some((l) => String(l).includes('git-release') && String(l).includes('创建一致的发布'))) {
-    console.error(`✗ 场景 32 /skill 未列出已发现技能: ${JSON.stringify(pl32)}`);
+  if (!s32.menu || s32.menu.id !== 'skill' || !s32.menu.options.some((o) => o.value === 'git-release')) {
+    console.error(`✗ 场景 32 /skill 未打开技能面板: ${JSON.stringify(s32.menu)}`);
     process.exit(1);
   }
   if (s32.lines.some((l) => l.text.includes('git-release'))) {
     console.error('✗ 场景 32 /skill 输出泄漏进了对话流');
+    process.exit(1);
+  }
+  const { handleMenuKey: hmk32 } = cmd32;
+  if (!hmk32({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s32) || s32.menu !== null || s32.skillPick !== 'git-release') {
+    console.error(`✗ 场景 32 技能面板确认未记录意图: skillPick=${(s32 as { skillPick?: unknown }).skillPick}`);
     process.exit(1);
   }
   const s32b = createTuiState();
@@ -3708,17 +3778,23 @@ async function main(): Promise<void> {
   fs.rmSync(tmp34c, { recursive: true, force: true });
   console.log('✓ 场景 34 通过：config models 多端点解析/attachRuntime 展开+modelRuntime/createClient 重建//model 面板选择确认/数字键/Esc/无列表回退 + /model add 解析/持久化（纯 JSON 改写·JSONC 跳过·无配置新建）/TUI 分发 + per-model variants（展开缺省回退全局·persist 按模型分流写 models.<名>.reasoningEffort）');
 
-  // 场景 35：/status /context /export /config /mcp /diff /rename /resume /redo 九个命令 + /settings doctor 诊断
+  // 场景 35：/status（含上下文用量）/context（窗口档位）/export /mcp /diff /rename /resume /redo 八个命令 + /settings doctor 诊断
   console.log('=== 场景 35：批量新命令 ===');
   const cmd35 = await import('../src/tui/commands.js');
-  // a) 全部注册（doctor 已并入 /settings 二级菜单）
-  for (const n of ['status', 'context', 'export', 'config', 'mcp', 'diff', 'rename', 'resume', 'redo']) {
+  // a) 全部注册（doctor 已并入 /settings 二级菜单；help/models/config 已移入或删除）
+  for (const n of ['status', 'context', 'export', 'mcp', 'diff', 'rename', 'resume', 'redo']) {
     if (!cmd35.findCommand(n)) {
       console.error(`✗ 场景 35 /${n} 命令未注册`);
       process.exit(1);
     }
   }
-  // b) /status：输出模型/权限/思考级别/脚手架
+  for (const n of ['help', 'models', 'config']) {
+    if (cmd35.findCommand(n)) {
+      console.error(`✗ 场景 35 /${n} 应已删除（help/models 移入 settings，config 删除）`);
+      process.exit(1);
+    }
+  }
+  // b) /status：输出模型/权限/思考级别/脚手架 + 合并的上下文用量
   const s35 = createTuiState();
   s35.version = '0.1.0';
   s35.model = 'mock-model';
@@ -3728,23 +3804,61 @@ async function main(): Promise<void> {
   s35.tokens = { prompt: 100, completion: 50, total: 150 };
   await cmd35.runCommand({ state: s35, out: {}, session: {}, input: {}, messages: [], model: 'mock-model', sessionPath: 'mock-session.jsonl' } as never, '/status');
   const status35 = (s35.cmdPanel?.lines ?? []).map((l) => String(l)).join('\n');
-  if (!status35.includes('mock-model') || !status35.includes('权限') || !status35.includes('high') || !status35.includes('150') || !status35.includes('mock-session.jsonl')) {
-    console.error(`✗ 场景 35 /status 输出缺失: ${JSON.stringify(s35.cmdPanel?.lines)}`);
+  if (!status35.includes('mock-model') || !status35.includes('权限') || !status35.includes('high') || !status35.includes('150') || !status35.includes('mock-session.jsonl') || !status35.includes('上下文')) {
+    console.error(`✗ 场景 35 /status 输出缺失（含合并的上下文用量）: ${JSON.stringify(s35.cmdPanel?.lines)}`);
     process.exit(1);
   }
   if (s35.lines.some((l) => l.text.includes('mock-model'))) {
     console.error('✗ 场景 35 /status 输出泄漏进了对话流');
     process.exit(1);
   }
-  // c) /context：消息数 + 压缩建议
+  // c) /context：无参查看当前窗口；设档位覆盖 + 持久化（临时 cwd 落盘）；默认清除；非法提示
   const s35c = createTuiState();
   const msgs35c: ChatCompletionMessageParam[] = [
     { role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' },
     { role: 'user', content: 'q2' }, { role: 'assistant', content: 'a2' },
   ];
   await cmd35.runCommand({ state: s35c, out: {}, session: {}, input: {}, messages: msgs35c, cfg: { summarizeAt: 40 } as never } as never, '/context');
-  if (!(s35c.cmdPanel?.lines ?? []).some((l) => String(l).includes('4 条消息')) || !(s35c.cmdPanel?.lines ?? []).some((l) => String(l).includes('/compact'))) {
-    console.error(`✗ 场景 35 /context 输出缺失: ${JSON.stringify(s35c.cmdPanel?.lines)}`);
+  if (!s35c.menu || s35c.menu.id !== 'context' || s35c.menu.options.length !== 6) {
+    console.error(`✗ 场景 35 /context 未打开面板: ${JSON.stringify(s35c.menu)}`);
+    process.exit(1);
+  }
+  const tmp35c = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-cmd-ctx-'));
+  const oldCwd35c = process.cwd();
+  process.chdir(tmp35c);
+  try {
+    const s35c2 = createTuiState();
+    const cfg35c = {};
+    await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 400');
+    if (!(s35c2.cmdPanel?.lines ?? []).some((l) => String(l).includes('400k')) || (cfg35c as { contextLimit?: number }).contextLimit !== 400000 || s35c2.contextLimit !== 400000) {
+      console.error(`✗ 场景 35 /context 设档位未生效: ${JSON.stringify(s35c2.cmdPanel?.lines)} cfg=${JSON.stringify(cfg35c)}`);
+      process.exit(1);
+    }
+    await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 999');
+    if (!(s35c2.cmdPanel?.lines ?? []).some((l) => String(l).includes('用法：/context'))) {
+      console.error(`✗ 场景 35 /context 非法档位未提示用法: ${JSON.stringify(s35c2.cmdPanel?.lines)}`);
+      process.exit(1);
+    }
+    await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 默认');
+    if ((cfg35c as { contextLimit?: number }).contextLimit !== undefined) {
+      console.error(`✗ 场景 35 /context 默认未清除覆盖: cfg=${JSON.stringify(cfg35c)}`);
+      process.exit(1);
+    }
+  } finally {
+    process.chdir(oldCwd35c);
+    fs.rmSync(tmp35c, { recursive: true, force: true });
+  }
+  // c2) /context 面板：默认 + 5 档位，当前生效项高亮；确认记录意图
+  const s35c3 = createTuiState();
+  cmd35.openContextMenu(s35c3, undefined, 128000);
+  if (!s35c3.menu || s35c3.menu.id !== 'context' || s35c3.menu.options.length !== 6 || s35c3.menu.currentValue !== 'clear') {
+    console.error(`✗ 场景 35 context 面板错误: ${JSON.stringify(s35c3.menu)}`);
+    process.exit(1);
+  }
+  const { handleMenuKey: hmk35c } = cmd35;
+  s35c3.menu.selectedIndex = 3;
+  if (!hmk35c({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s35c3) || s35c3.menu !== null || s35c3.contextLimitSave !== '512000') {
+    console.error(`✗ 场景 35 context 面板确认未记录意图: save=${(s35c3 as { contextLimitSave?: unknown }).contextLimitSave}`);
     process.exit(1);
   }
   // d) /rename：设置会话标题
@@ -3765,14 +3879,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 35 /export 未写出文件: ${JSON.stringify(s35e.cmdPanel?.lines)}`);
     process.exit(1);
   }
-  // f) /config：打印配置路径（TUI 不 spawn 编辑器）
-  const s35f = createTuiState();
-  await cmd35.runCommand({ state: s35f, out: {}, session: {}, input: {}, messages: [], cfg: { sources: ['项目配置 omni.json'] } as never } as never, '/config');
-  if (!(s35f.cmdPanel?.lines ?? []).some((l) => String(l).includes('配置文件')) || !(s35f.cmdPanel?.lines ?? []).some((l) => String(l).includes('omni.json'))) {
-    console.error(`✗ 场景 35 /config 输出缺失: ${JSON.stringify(s35f.cmdPanel?.lines)}`);
-    process.exit(1);
-  }
-  // g) /mcp：无配置 → 提示；配置了 → 列出工具
+  // g) /mcp：无配置 → 提示；配置了 → 打开选择面板（服务器 + 重连全部）
   const s35g = createTuiState();
   await cmd35.runCommand({ state: s35g, out: {}, session: {}, input: {}, messages: [], mcpServers: {} } as never, '/mcp');
   if (!(s35g.cmdPanel?.lines ?? []).some((l) => String(l).includes('未配置 MCP 服务器'))) {
@@ -3781,8 +3888,13 @@ async function main(): Promise<void> {
   }
   const s35g2 = createTuiState();
   await cmd35.runCommand({ state: s35g2, out: {}, session: {}, input: {}, messages: [], mcpServers: { demo: {} } as never, tools: [{ name: 'demo_ping' }, { name: 'run_command' }] as never } as never, '/mcp');
-  if (!(s35g2.cmdPanel?.lines ?? []).some((l) => String(l).includes('已配置 1 个 MCP 服务器')) || !(s35g2.cmdPanel?.lines ?? []).some((l) => String(l).includes('demo_ping'))) {
-    console.error(`✗ 场景 35 /mcp 列表缺失: ${JSON.stringify(s35g2.cmdPanel?.lines)}`);
+  if (!s35g2.menu || s35g2.menu.id !== 'mcp' || !s35g2.menu.options.some((o) => o.value === 'srv:demo') || !s35g2.menu.options.some((o) => o.value === '__reconnect__')) {
+    console.error(`✗ 场景 35 /mcp 未打开服务器面板: ${JSON.stringify(s35g2.menu)}`);
+    process.exit(1);
+  }
+  const { handleMenuKey: hmk35g } = cmd35;
+  if (!hmk35g({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s35g2) || s35g2.menu !== null || s35g2.mcpPick !== 'srv:demo') {
+    console.error(`✗ 场景 35 MCP 面板确认未记录意图: mcpPick=${(s35g2 as { mcpPick?: unknown }).mcpPick}`);
     process.exit(1);
   }
   // h) /diff：临时 git 仓库有改动 → 输出 diff
@@ -3876,7 +3988,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   fs.rmSync(tmp35, { recursive: true, force: true });
-  console.log('✓ 场景 35 通过：/status /context /rename /export /config /mcp /diff /redo（含 undo 栈 round-trip）/resume（含标题还原）/doctor');
+  console.log('✓ 场景 35 通过：/status（含上下文用量）/context（窗口档位查看/设置/清除）/rename /export /mcp /diff /redo（含 undo 栈 round-trip）/resume（含标题还原）/doctor');
 
   // 场景 36：@ 提及文件选择（输入框含 @ 时列出候选，Tab/Enter/点击插入）+ 圆角浮层共用
   const { detectMention: detectMention36, insertMention: insertMention36, listMentionCandidates: listMention36 } = await import('../src/tui/mention.js');
@@ -4257,6 +4369,29 @@ async function main(): Promise<void> {
   process.env.XDG_CONFIG_HOME = oldXdg37;
   fs.rmSync(tmp37c, { recursive: true, force: true });
   console.log('✓ 场景 37 通过：/session（面板只列同目录/确认意图/列出全部/继续恢复/前缀匹配/未知提示/空目录提示/窗口滚动全量可达）');
+
+  // 场景 37b：/rewind 检查点面板（无检查点警告 + Enter 确认记录意图）
+  console.log('=== 场景 37b：/rewind 检查点面板 ===');
+  const cmd37b = await import('../src/tui/commands.js');
+  const s37b = createTuiState();
+  s37b.version = '0.1.0';
+  s37b.model = 'mock';
+  await cmd37b.openRewindMenu(s37b, '/nonexistent-session.jsonl');
+  if (s37b.menu !== null) {
+    console.error('✗ 场景 37b 无检查点时不应打开面板');
+    process.exit(1);
+  }
+  if (!s37b.cmdPanel || !s37b.cmdPanel.lines.some((l) => String(l).includes('暂无检查点'))) {
+    console.error('✗ 场景 37b 无检查点时应警告');
+    process.exit(1);
+  }
+  s37b.menu = { id: 'rewind', title: '检查点', options: [{ label: '#2 · x', value: '2' }, { label: '#1 · y', value: '1' }], selectedIndex: 0, currentValue: '', scrollTop: 0 };
+  const { handleMenuKey: hmk37b } = cmd37b;
+  if (!hmk37b({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s37b) || s37b.menu !== null || s37b.rewindPick !== 2) {
+    console.error(`✗ 场景 37b Enter 确认未记录意图（rewindPick 应=2）: rewindPick=${(s37b as { rewindPick?: unknown }).rewindPick}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 37b 通过：/rewind 检查点面板（空警告 + 确认意图）');
 
   // 场景 38：执行型命令面板自动收起（无需按 Esc）——autoClose 标记 + scheduleCmdPanelAutoClose 定时收起
   console.log('=== 场景 38：执行型命令面板自动收起 ===');
@@ -5146,11 +5281,11 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 43 英文模型行中部错误`);
     process.exit(1);
   }
-  // c) 设置菜单含语言/主题/tokens/doctor 项 + 打开语言面板：高亮当前语言
+  // c) 设置菜单含语言/主题/tokens/doctor/help/models 项 + 打开语言面板：高亮当前语言
   const s43 = createTuiState();
   openSettingsMenu(s43);
-  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 4 || s43.menu.options[0]?.value !== 'language' || s43.menu.options[1]?.value !== 'theme' || s43.menu.options[2]?.value !== 'tokens' || s43.menu.options[3]?.value !== 'doctor') {
-    console.error(`✗ 场景 43 设置菜单缺语言/主题/tokens/doctor 项: ${JSON.stringify(s43.menu)}`);
+  if (!s43.menu || s43.menu.id !== 'settings' || s43.menu.options.length !== 6 || s43.menu.options[0]?.value !== 'language' || s43.menu.options[1]?.value !== 'theme' || s43.menu.options[2]?.value !== 'tokens' || s43.menu.options[3]?.value !== 'doctor' || s43.menu.options[4]?.value !== 'help' || s43.menu.options[5]?.value !== 'models') {
+    console.error(`✗ 场景 43 设置菜单缺语言/主题/tokens/doctor/help/models 项: ${JSON.stringify(s43.menu)}`);
     process.exit(1);
   }
   openLanguageMenu(s43);
@@ -5188,7 +5323,7 @@ async function main(): Promise<void> {
   const texts43e = menuPanelRows(s43e.menu!, 44, 'en')
     .map((r) => r.text)
     .join('\n');
-  for (const want of ['Security', 'Read (read-only)', 'Safe (default)', 'Ask (all commands)', 'Full (no checks)', 'Enter confirm', 'Esc cancel']) {
+  for (const want of ['Security', 'Read only', 'Ask (always)', 'Auto-approve (risky only)', 'Full access', 'Enter confirm', 'Esc cancel']) {
     if (!texts43e.includes(want)) {
       console.error(`✗ 场景 43 英文权限菜单缺: ${want}\n${texts43e}`);
       process.exit(1);
@@ -5211,10 +5346,10 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 settingsPanelRows 应已删除');
     process.exit(1);
   }
-  // g) 联想 descriptionEn：25 条命令都配了英文描述（英文模式渲染层取 descriptionEn）
+  // g) 联想 descriptionEn：命令都配了英文描述（英文模式渲染层取 descriptionEn）
   //    /theme /tokens /doctor 已并入 /settings（二级菜单）——设置命令带完整英文描述
   const settingsCmd43 = findCommand43('settings');
-  if (!settingsCmd43?.descriptionEn || settingsCmd43.descriptionEn !== 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor)') {
+  if (!settingsCmd43?.descriptionEn || settingsCmd43.descriptionEn !== 'Settings (/settings language · /settings theme · /settings tokens · /settings doctor · /settings help · /settings models)') {
     console.error('✗ 场景 43 settings 命令缺 descriptionEn');
     process.exit(1);
   }
@@ -5226,8 +5361,29 @@ async function main(): Promise<void> {
     console.error('✗ 场景 43 /theme /tokens /doctor 不应再是一级命令（应并入 /settings 二级菜单）');
     process.exit(1);
   }
-  if (ti18n('zh', 'settings.theme') !== '主题（亮色 / 深色 / 跟随系统）' || ti18n('en', 'settings.theme') !== 'Theme (light / dark / system)' || ti18n('zh', 'settings.tokens') !== '当次 token 统计（输入/输出/缓存）' || ti18n('en', 'settings.tokens') !== 'Per-turn token stats (in/out/cache)' || ti18n('zh', 'settings.doctor') !== '环境诊断（Node/Bun/API/配置）' || ti18n('en', 'settings.doctor') !== 'Environment diagnostics (Node/Bun/API/config)') {
-    console.error('✗ 场景 43 settings.theme / settings.tokens / settings.doctor i18n 键缺失');
+  if (ti18n('zh', 'settings.theme') !== '主题（亮色 / 深色 / 跟随系统）' || ti18n('en', 'settings.theme') !== 'Theme (light / dark / system)' || ti18n('zh', 'settings.tokens') !== '当次 token 统计（输入/输出/缓存）' || ti18n('en', 'settings.tokens') !== 'Per-turn token stats (in/out/cache)' || ti18n('zh', 'settings.doctor') !== '环境诊断（Node/Bun/API/配置）' || ti18n('en', 'settings.doctor') !== 'Environment diagnostics (Node/Bun/API/config)' || ti18n('zh', 'settings.help') !== '帮助（命令列表）' || ti18n('en', 'settings.help') !== 'Help (command list)' || ti18n('zh', 'settings.models') !== '模型能力快照（models.dev）' || ti18n('en', 'settings.models') !== 'Model snapshot (models.dev)') {
+    console.error('✗ 场景 43 settings.* i18n 键缺失');
+    process.exit(1);
+  }
+  // g2) /settings 菜单含 help/models：确认分别输出帮助文本与快照状态
+  const { openSettingsMenu: osm43, confirmMenu: cm43 } = await import('../src/tui/commands.js');
+  const s43m = createTuiState();
+  osm43(s43m);
+  if (!s43m.menu || !s43m.menu.options.some((o) => o.value === 'help') || !s43m.menu.options.some((o) => o.value === 'models')) {
+    console.error(`✗ 场景 43 settings 菜单缺 help/models 项: ${JSON.stringify(s43m.menu?.options)}`);
+    process.exit(1);
+  }
+  s43m.menu.selectedIndex = s43m.menu.options.findIndex((o) => o.value === 'models');
+  cm43(s43m);
+  if (!(s43m.cmdPanel?.lines ?? []).some((l) => String(l).includes('模型能力快照'))) {
+    console.error(`✗ 场景 43 settings 菜单 models 未输出快照状态: ${JSON.stringify(s43m.cmdPanel?.lines)}`);
+    process.exit(1);
+  }
+  osm43(s43m);
+  s43m.menu.selectedIndex = s43m.menu.options.findIndex((o) => o.value === 'help');
+  cm43(s43m);
+  if (!(s43m.cmdPanel?.lines ?? []).some((l) => String(l).includes('直接输入消息开始对话'))) {
+    console.error(`✗ 场景 43 settings 菜单 help 未输出帮助: ${JSON.stringify(s43m.cmdPanel?.lines)}`);
     process.exit(1);
   }
   // h) buildBody tokens 英文：language=en 时 tokens 模块英文
@@ -5327,13 +5483,14 @@ async function main(): Promise<void> {
   }
   // m) 设置菜单点击转换链路（此前快照只测 openLanguageMenu 直达路径，
   //    未测 settings 菜单点击——用户反馈「点状态行没反应/点语言打开状态行操作页」的盲区）：
-  //    4 项（状态行已移除）：点「语言」→ menu 转换为语言面板（不误关）；语言面板内再点击切换生效
+  //    6 项（小视口窗口只显示前 4 项 + 提示/滚动行，help/models 在窗口外可 ↓ 到达）：
+  //    点「语言」→ menu 转换为语言面板（不误关）；语言面板内再点击切换生效
   const { openSettingsMenu: openSettingsMenu43 } = await import('../src/tui/commands.js');
   openSettingsMenu43(s43); // 当前语言 en：菜单标题/选项应为英文
   repaintTree(t43.renderer, tree43, s43, { withInput: true });
   await t43.renderOnce();
   const top43d = (tree43.menuOverlay!.top ?? 0) as number;
-  if (JSON.stringify(tree43.menuRowMap) !== JSON.stringify([-1, -1, 0, 1, 2, 3, -1])) {
+  if (JSON.stringify(tree43.menuRowMap.slice(0, 6)) !== JSON.stringify([-1, -1, 0, 1, 2, 3]) || tree43.menuRowMap[tree43.menuRowMap.length - 1] !== -1) {
     console.error(`✗ 场景 43 设置菜单行映射错误: ${JSON.stringify(tree43.menuRowMap)}`);
     process.exit(1);
   }
@@ -5415,9 +5572,8 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
 
-  // 场景 44：/trace 右侧轨迹面板 —— 事件投影（foldTrace）+ 面板行（tracePanelLines）+ 渲染/点击/命令分发
+  // 场景 44：轨迹账本投影（foldTrace/detail/账本文本；TUI 右侧面板已删除，面板相关断言移除）
   const { foldTrace, buildTraceTextLines, fmtMs } = await import('../src/agent/trace.js');
-  const { traceDetailLines, tracePanelLines, refreshTrace, TRACE_TEXT_COLS } = await import('../src/tui/trace.js');
   // 两回合事件序列（turn/start → user → request → tool 配对 → assistant → turn/end；轮 2 interrupt 中止）
   const evs44: TrajEvent[] = [
     { s: 1, time: 1000, k: 'turn/start', turn: 1 },
@@ -5496,234 +5652,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 44 账本 full 应包含 tool 完整 args: ${JSON.stringify(led44)}`);
     process.exit(1);
   }
-  // c) tracePanelLines：空状态（empty + hint）
-  const s44e = createTuiState();
-  const pl44e = tracePanelLines(s44e, 16);
-  if (!pl44e.lines.some((l) => l.text.includes('暂无轨迹')) || !pl44e.lines.some((l) => l.text.includes('Esc 收起'))) {
-    console.error(`✗ 场景 44 空面板错误: ${JSON.stringify(pl44e.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  // d) 有数据：标题「轨迹（N 条）」+ 内容窗口 + 底部 hint；窗口外选中行保持可见（滚动收敛）
-  const s44 = createTuiState();
-  refreshTrace(s44, evs44);
-  if (s44.traceRows.length !== 7) {
-    console.error(`✗ 场景 44 refreshTrace 行数错误: ${s44.traceRows.length}`);
-    process.exit(1);
-  }
-  const pl44 = tracePanelLines(s44, 16); // budget = 16-5-2 = 9 → contentRows 9 全部可见
-  if (!pl44.lines[0]!.text.includes('轨迹（7 条）') || pl44.rowMap[0] !== -1) {
-    console.error(`✗ 场景 44 面板标题错误: ${JSON.stringify(pl44.lines[0])}`);
-    process.exit(1);
-  }
-  if (!pl44.lines.some((l) => l.text.includes('❯ 列一下当前目录')) || !pl44.lines.some((l) => l.text.includes('⚙ list_directory .'))) {
-    console.error(`✗ 场景 44 面板行渲染错误: ${JSON.stringify(pl44.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  // 选中可见收敛：全部可见时选中任何行都不应触发滚动（scroll 保持 0）
-  s44.traceSelected = 6;
-  const pl44b = tracePanelLines(s44, 16);
-  if (pl44b.lines.some((l) => l.text.startsWith('↑ 还有'))) {
-    console.error('✗ 场景 44 全量可见时不应出现上滚提示（选中行已在窗口内）');
-    process.exit(1);
-  }
-  // 收紧窗口（budget 3 → contentRows 1）：选中末行 → scroll 钳到 T-1-s 保证选中行可见
-  const s44s = createTuiState();
-  refreshTrace(s44s, evs44);
-  s44s.traceSelected = 6; // 末行（轮 2 的 user ↑ 行）
-  const pl44c = tracePanelLines(s44s, 8, 3); // contentRows = 1
-  const sel44c = pl44c.lines.find((l) => l.text.startsWith('› '));
-  if (!sel44c || !sel44c.text.includes('改为查询文件内容')) {
-    console.error(`✗ 场景 44 选中行未滚入窗口（应显示末行 ↑ user）: ${JSON.stringify(pl44c.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  // 选中行 + 有 detail：列表页**不内嵌**详情（点击进入详情页展示——用户要求页面导航），
-  // 详情内容只出现在 traceDetailLines
-  const evs44e: TrajEvent[] = [
-    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
-    { s: 2, time: 1100, k: 'user/message', text: '跑一下', source: 'user' },
-    { s: 3, time: 2000, k: 'turn/end', turn: 1, reason: 'error', detail: 'API 401 Invalid token' },
-  ];
-  const s44d = createTuiState();
-  refreshTrace(s44d, evs44e);
-  s44d.traceSelected = 0; // turn 1 ✗ 带 detail
-  const pl44d = tracePanelLines(s44d, 16);
-  if (!pl44d.lines[1]!.text.includes('✗') || !pl44d.lines[1]!.text.includes('轮 1')) {
-    console.error(`✗ 场景 44 列表页选中行错误: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  if (pl44d.lines.some((l) => l.text.includes('API 401'))) {
-    console.error(`✗ 场景 44 列表页不应内嵌详情（详情在详情页）: ${JSON.stringify(pl44d.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  // d2) 详情页（traceDetailLines）：返回行（rowMap -2）+ 行标题 + 完整内容（折行不截断）——
-  // 长内容按列宽折行显示全部；点击返回行回列表
-  const evs44f: TrajEvent[] = [
-    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
-    { s: 2, time: 1100, k: 'user/message', text: '问题一', source: 'user' },
-    { s: 3, time: 1200, k: 'request/header', step: 1, model: 'mock', tools: ['list_directory'], messages: 2 },
-    { s: 4, time: 1250, k: 'tool/call', step: 1, callId: 'c1', name: 'list_directory', args: '{"path":"."}' },
-    { s: 5, time: 2000, k: 'tool/result', callId: 'c1', ok: true, chars: 320 },
-    { s: 6, time: 2100, k: 'assistant/message', step: 2, text: '回答一', usage: { input: 500, output: 60 }, llmMs: 1500, firstTokenMs: 200 },
-    { s: 7, time: 2200, k: 'turn/end', turn: 1, reason: 'completed' },
-    { s: 8, time: 3000, k: 'turn/start', turn: 2 },
-    { s: 9, time: 3100, k: 'user/message', text: '问题二', source: 'user' },
-    { s: 10, time: 3200, k: 'turn/end', turn: 2, reason: 'error', detail: 'API 401 Invalid token' },
-  ];
-  const s44f = createTuiState();
-  refreshTrace(s44f, evs44f);
-  if (s44f.traceRows.length !== 7) {
-    console.error(`✗ 场景 44 窗口满用例行数错误: ${s44f.traceRows.length}`);
-    process.exit(1);
-  }
-  // turn 2 ✗（下标 5）详情页：返回行 + 轮 2 ✗ 标题 + API 401 完整内容
-  const dl44 = traceDetailLines(s44f, 5, 32);
-  if (!dl44.lines[0]!.text.includes('返回') || dl44.rowMap[0] !== -2) {
-    console.error(`✗ 场景 44 详情页返回行错误: ${JSON.stringify(dl44.lines[0])} rowMap=${dl44.rowMap[0]}`);
-    process.exit(1);
-  }
-  if (!dl44.lines[1]!.text.includes('轮 2 ✗')) {
-    console.error(`✗ 场景 44 详情页标题错误: ${JSON.stringify(dl44.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  if (!dl44.lines.some((l) => l.text.includes('API 401 Invalid token'))) {
-    console.error(`✗ 场景 44 详情页缺完整内容: ${JSON.stringify(dl44.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  // 长内容折行不截断（30 个汉字 + 超长参数 → 多行完整显示）
-  const s44g = createTuiState();
-  refreshTrace(s44g, [
-    { s: 1, time: 1000, k: 'turn/start', turn: 1 },
-    { s: 2, time: 1100, k: 'user/message', text: '首行\n' + '长'.repeat(40), source: 'user' },
-    { s: 3, time: 2000, k: 'turn/end', turn: 1, reason: 'completed' },
-  ]);
-  const dl44g = traceDetailLines(s44g, 1, 32); // user 行：完整正文 = 首行 + 40 个「长」
-  const dlText = dl44g.lines.map((l) => l.text).join('\n');
-  if (dlText.includes('…') || dl44g.lines.length < 3) {
-    console.error(`✗ 场景 44 详情页长内容应折行显示全部（不截断）: ${JSON.stringify(dl44g.lines.map((l) => l.text))}`);
-    process.exit(1);
-  }
-  if (!dlText.includes('长'.repeat(40))) {
-    // 折行后 40 个「长」被换行断开——按字符总数校验内容完整（不截断）
-    const longCount = (dlText.match(/长/g) ?? []).length;
-    if (longCount !== 40) {
-      console.error(`✗ 场景 44 详情页长内容缺失: 长×${longCount}（应 40）: ${JSON.stringify(dl44g.lines.map((l) => l.text))}`);
-      process.exit(1);
-    }
-  }
-  // 渲染集成：traceDetail 打开 → 帧含返回行 + 内容；点击返回行 → 回列表页
-  s44f.traceOpen = true;
-  s44f.traceDetail = { rowIdx: 5 };
-  const t44d = await createTestRenderer({ width: 64, height: 20 });
-  const tree44d = mountTree(t44d.renderer, s44f, { withInput: true });
-  await t44d.renderOnce();
-  const frame44d = t44d.captureCharFrame();
-  if (!frame44d.includes('返回') || !frame44d.includes('API 401 Invalid token') || frame44d.includes('轨迹（7 条）')) {
-    console.error(`✗ 场景 44 详情页渲染错误:\n${frame44d}`);
-    process.exit(1);
-  }
-  const { handleTuiMouseEvent: htm44d } = await import('../src/tui/render.js');
-  // 返回行在面板第 1 行（y = traceRect.top）
-  htm44d({ type: 'down', button: 0, x: tree44d.traceLeft + 5, y: tree44d.traceRect!.top }, tree44d, s44f, 64, noopPaint);
-  if (s44f.traceDetail !== null) {
-    console.error('✗ 场景 44 点击返回行未回列表页');
-    process.exit(1);
-  }
-  // 详情页内容行点击无操作（不关闭/不跳转）
-  s44f.traceDetail = { rowIdx: 5 };
-  htm44d({ type: 'down', button: 0, x: tree44d.traceLeft + 5, y: tree44d.traceRect!.top + 2 }, tree44d, s44f, 64, noopPaint);
-  if (s44f.traceDetail === null) {
-    console.error('✗ 场景 44 详情页内容行点击不应返回');
-    process.exit(1);
-  }
-  s44f.traceDetail = null;
-  // e) 渲染集成：traceOpen → traceBox 可见 + 帧内含面板 + traceRect/traceLeft/rowMap；关闭 → 隐藏
-  const s44r = createTuiState();
-  refreshTrace(s44r, evs44);
-  s44r.traceOpen = true;
-  const t44 = await createTestRenderer({ width: 64, height: 20 });
-  const tree44 = mountTree(t44.renderer, s44r, { withInput: true });
-  await t44.renderOnce();
-  if (!tree44.traceBox || !tree44.traceBox.visible) {
-    console.error('✗ 场景 44 traceBox 未显示');
-    process.exit(1);
-  }
-  const frame44 = t44.captureCharFrame();
-  if (!frame44.includes('轨迹（7 条）') || !frame44.includes('list_directory')) {
-    console.error('✗ 场景 44 帧内无轨迹面板内容');
-    process.exit(1);
-  }
-  if (tree44.traceLeft !== 64 - 36 - 1) {
-    console.error(`✗ 场景 44 traceLeft 错误: ${tree44.traceLeft}（应 ${64 - 36 - 1}）`);
-    process.exit(1);
-  }
-  if (!tree44.traceRect || tree44.traceRect.top !== 2 || tree44.traceRect.bottom < tree44.traceRect.top) {
-    console.error(`✗ 场景 44 traceRect 错误: ${JSON.stringify(tree44.traceRect)}（应 top=2、bottom ≥ top）`);
-    process.exit(1);
-  }
-  if (tree44.traceRowMap.some((v) => v !== -1 && (v < 0 || v >= 7))) {
-    console.error(`✗ 场景 44 traceRowMap 下标越界: ${JSON.stringify(tree44.traceRowMap)}`);
-    process.exit(1);
-  }
-  // 内容宽度收缩：traceOpen 时 computeRows 内容区右移（长行重新折行，面板不盖对话流）
-  const s44w = createTuiState();
-  pushLine(s44w, { kind: 'user', text: 'a'.repeat(50) });
-  const rows44none = computeRows(s44w, { height: 20, width: 64 }, { withInput: true });
-  s44w.traceOpen = true;
-  const rows44open = computeRows(s44w, { height: 20, width: 64 }, { withInput: true });
-  const maxW44none = Math.max(...rows44none.map((r) => visualWidth(r.text)));
-  const maxW44open = Math.max(...rows44open.map((r) => visualWidth(r.text)));
-  if (maxW44none < 50 || maxW44open > 64 - 2 - (36 + 2) || maxW44open >= maxW44none) {
-    console.error(`✗ 场景 44 traceOpen 内容宽度未收缩: none=${maxW44none} open=${maxW44open}（应 none≥50、open ≤ ${64 - 2 - 38}）`);
-    process.exit(1);
-  }
-  // f) 鼠标点击：列表页命中轨迹行 → **推入详情页**；详情页点返回行 → 回列表；
-  // 标题行（rowMap -1）不触发；面板外点击不命中
-  const { handleTuiMouseEvent: htm44 } = await import('../src/tui/render.js');
-  const y44row = tree44.traceRect!.top + 2; // 面板第 3 行（rowMap ≥ 0）
-  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: y44row }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceDetail === null || s44r.traceDetail.rowIdx < 0) {
-    console.error('✗ 场景 44 点击轨迹行未推入详情页');
-    process.exit(1);
-  }
-  // 详情页：点返回行（面板第 1 行）→ 回列表页
-  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: tree44.traceRect!.top }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceDetail !== null) {
-    console.error('✗ 场景 44 详情页点击返回行未回列表');
-    process.exit(1);
-  }
-  // 列表页：点标题行（面板第 1 行，rowMap -1）不触发——选中/详情状态保持不变
-  const selBefore44 = s44r.traceSelected;
-  htm44({ type: 'down', button: 0, x: tree44.traceLeft + 5, y: tree44.traceRect!.top }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceDetail !== null || s44r.traceSelected !== selBefore44) {
-    console.error(`✗ 场景 44 点击标题行不应触发: detail=${JSON.stringify(s44r.traceDetail)} sel=${s44r.traceSelected}（点击前 ${selBefore44}）`);
-    process.exit(1);
-  }
-  htm44({ type: 'down', button: 0, x: tree44.traceLeft - 1, y: y44row }, tree44, s44r, 64, noopPaint);
-  if (s44r.traceDetail !== null) {
-    console.error('✗ 场景 44 面板左侧区域点击不应命中面板');
-    process.exit(1);
-  }
-  // g) /trace 命令分发：toggle + 关闭时清选中/滚动/详情页；无 events 时也能安全 toggle
-  const { runCommand: runCmd44, findCommand: findCmd44 } = await import('../src/tui/commands.js');
-  if (!findCmd44('trace')) {
-    console.error('✗ 场景 44 /trace 命令未注册');
-    process.exit(1);
-  }
-  const s44c = createTuiState();
-  await runCmd44({ state: s44c, out: {}, session: {}, input: {}, messages: [] } as never, '/trace');
-  if (!s44c.traceOpen) {
-    console.error('✗ 场景 44 /trace 未打开面板');
-    process.exit(1);
-  }
-  s44c.traceSelected = 3;
-  s44c.traceScroll = 5;
-  s44c.traceDetail = { rowIdx: 2 };
-  await runCmd44({ state: s44c, out: {}, session: {}, input: {}, messages: [] } as never, '/trace');
-  if (s44c.traceOpen || s44c.traceSelected !== -1 || s44c.traceScroll !== 0 || s44c.traceDetail !== null) {
-    console.error(`✗ 场景 44 /trace 关闭未清选中/滚动/详情页: ${JSON.stringify({ open: s44c.traceOpen, sel: s44c.traceSelected, scroll: s44c.traceScroll, detail: s44c.traceDetail })}`);
-    process.exit(1);
-  }
-  console.log('✓ 场景 44 通过：/trace 右侧轨迹面板（foldTrace 投影/账本/面板行/选中收敛/渲染收缩/页面导航点击/命令分发）');
+  console.log('✓ 场景 44 通过：轨迹账本投影（foldTrace 折叠/detail/账本文本；TUI 右侧面板已删除）');
 
   // 场景 45：ask_user 提问面板（输入区上方：选项 A-D / 自定义输入 / Esc 取消）
   const { createAskUserTool } = await import('../src/tools/ask.js');
@@ -6055,7 +5984,7 @@ async function main(): Promise<void> {
   const expectBindings: [string, string][] = [
     ['t', '/settings theme'], ['p', '/permission'], ['m', '/model'], ['v', '/variants'],
     ['s', '/settings'], ['l', '/plan'], ['h', '/thinking'], ['u', '/undo'],
-    ['r', '/redo'], ['c', '/clear'], ['?', '/help'],
+    ['r', '/redo'], ['c', '/clear'], ['?', '/settings help'],
   ];
   for (const [k, cmd] of expectBindings) {
     if (TUI_SHORTCUTS[k] !== cmd) {

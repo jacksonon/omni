@@ -90,6 +90,8 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "globalAgentsFile": true,               // 全局记忆 ~/.config/omni/AGENTS.md：跨项目用户偏好，排在项目记忆之前（级联；默认 true）
   "autoMemory": true,                     // 交互模式退出时把新偏好自动追加进全局记忆（默认 true；单次任务不触发）
   "summarizeAt": 40,                      // 长对话摘要压缩阈值（消息数；0 = 关闭）
+  // 手动覆盖上下文窗口（单位 token，如 512000 = 512K；缺省跟随模型自动；/context 256|400|512|750|1000|默认 调整并持久化）
+  // "contextLimit": 512000,
   "preloadFiles": true,                   // 预载任务文本中出现的相关文件（默认 true）
   "allowSubagents": true,                 // 启用子代理 delegate 工具（默认 true）
   "skills": true,                          // 启用技能（SKILL.md）发现与 skill 工具（默认 true）
@@ -174,9 +176,14 @@ src/
                         #   语言复用主题式分段按钮 / 并发上限复用输入区渐变滑条（1-16，填充/thumb/刻度/读数同步）
                         #   设置·关于输入区风格：版本/服务地址配消息流同款拷贝按钮 / 工具列表改 pill chips（含计数）/
                         #   语言行改跳转行（chevron，直达通用面板）
-                        #   设置·MCP/技能页：MCP（chips 列表+详情+增删+重连/登录+registry 安装，GET /api/mcp；
-                        #   添加复用 /mcp add 文本语法）/ 技能（列表+徽标+新建，GET /api/skills；查看走 /skill show；
-                        #   列表行按钮不压缩不换行 / 新建改弹窗放头部与刷新并排）
+                        #   设置·MCP/技能页：MCP（chips 列表+详情行点击读资源/取提示词+增删+重连/登录+registry 安装，GET /api/mcp；
+                        #   添加复用 /mcp add 文本语法 + 审批/白黑名单高级项；资源/提示词新端点 /api/mcp/resource|prompt）/
+                        #   技能（列表+徽标+新建+删除，GET /api/skills；查看走 /skill show；registry 检索安装；
+                        #   新端点 DELETE /api/skills/<名> + POST /api/skills/find|install；列表行按钮不压缩不换行 /
+                        #   新建改弹窗放头部与刷新并排）
+                        #   确认/输入弹窗（uiConfirm/uiPrompt，替代原生 prompt/confirm，13 处调用点全量替换）
+                        #   命令面板富文本（openCmdPanel format：/diff 走 diff 着色视图，/review·/agents 走 markdown）
+                        #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -197,8 +204,8 @@ src/
     orchestrate.ts      # **编排**：/orchestrate 固定 pipeline（fan-out 并行 delegate → 汇总 → 对抗审查）+ /goal 目标机制（自动推导验收标准 → 循环执行直至达标，判定反馈驱动下一轮）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/trace 面板与 /compact 事件源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
-    trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console 账本）
+    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/compact 事件 + console/web /trace 账本源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
+    trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console/web 账本）
     types.ts            # RunOptions / ThinkingDisplay 共享类型
   safety/
     index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用）
@@ -236,8 +243,7 @@ src/
     model-context-builder.ts # 快照构建纯逻辑（拉取/归一化/建表/双序列化）——scripts 生成器与运行时 /models refresh 共用一份实现
     model-context-snapshot.ts # models.dev 离线内置快照（scripts/build-model-context-snapshot.ts 生成；进 repo）
   tui/
-    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单/轨迹面板状态）
-    trace.ts            # **轨迹面板（右侧栏，/trace）**：TraceRow 投影截断成面板行（tracePanelLines，窗口滚动/选中收敛）+ refreshTrace（交互每轮刷新）
+    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单/面板意图状态）
     render.ts           # 渲染编排：mountTree/repaintTree/startTui（行构建在 rows.ts）
     rows.ts             # 内容行构建：buildBody/computeRows/卡片与审批卡/点击命中（纯函数）
     layout.ts           # 布局常量 + 按显示列数的折行/截断数学（不依赖 OpenTUI）
@@ -287,7 +293,7 @@ for step in 1..maxSteps:
 - **细胞池复用**（非全量重建）：池只增不减，行内容原位更新，防原生 TextBuffer 耗尽（早期每帧 remove+new ~1365 次重绘后崩）；`state.ts` 是纯可变对象，不是 signal；
 - **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行）+ 灰块外底行（左文件夹全路径 …… 右输入/输出 · 缓存 · 上下文迷你条，左右与输入区文本对齐、与灰块隔 1 行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别 · 会话平均 tok/s · ⠹ esc 打断`（loading+esc 打断提示仅会话进行中显示在速率右侧，accentBlue 转圈；超宽按 均值→loading 顺序隐藏）；旧底部统计行与 `/settings statusline` 面板已移除（`statusline`/`statuslineAlign` 配置保留兼容、被忽略）；内容行预算 = 高度 - 9 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
 - **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送小视图（每条一行「N 排队/打断 · 文本」，steer 插最前；**点击直接编辑**——文本取回输入框，↑/↓ 选中、←/→ 排序、Backspace 删除）；todo 小视图（输入框上方、待发送区上方：todo_write 经 RunOptions.onTodo 实时镜像 ✓/▸/· 各状态）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
-- **浮层体系**：`/` 命令联想与 `@` 提及文件选择（输入区同款风格：同底色 + 左侧深灰竖线 + 与输入区同宽，扁平无边框、窗口滚动、鼠标点击）、命令菜单面板（/theme /settings /model 等）与命令输出面板（/mcp /status 等）——**扁平无边框 + 顶部留白 1 行**（同联想下拉：留白/标题/内容/提示行，无圆角卡片线）、与输入区同宽同左、底边**贴住灰色块**（hero 居中时保持 hero 跟随 0.75 居中输入区，打开面板不把输入区拉到底部；操作提示渲染在面板内部，不写状态栏）、轨迹面板（右侧栏 + 详情页）、ask 提问面板（**扁平面板**同命令面板风格，bottomBlock 流式节点紧贴输入区；自定义输入独立于主输入框）——全部绝对定位、不占内容流、不遮输入区；
+- **浮层体系**：`/` 命令联想与 `@` 提及文件选择（输入区同款风格：同底色 + 左侧深灰竖线 + 与输入区同宽，扁平无边框、窗口滚动、鼠标点击）、命令菜单面板（/theme /settings /model 等）与命令输出面板（/mcp /status 等）——**扁平无边框 + 顶部留白 1 行**（同联想下拉：留白/标题/内容/提示行，无圆角卡片线）、与输入区同宽同左、底边**贴住灰色块**（hero 居中时保持 hero 跟随 0.75 居中输入区，打开面板不把输入区拉到底部；操作提示渲染在面板内部，不写状态栏）、ask 提问面板（**扁平面板**同命令面板风格，bottomBlock 流式节点紧贴输入区；自定义输入独立于主输入框）——全部绝对定位、不占内容流、不遮输入区；
 - **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；**字符级拖选复制**（OpenTUI 无选区 API，omni 自绘）：左键按在内容行建立选区（`tree.sel`，行下标 + 显示列；`colToChar` 把事件 x → 字符，CJK/emoji 全角 2 列、不断代理对），拖动实时更新焦点行/列（渲染层 `selecRow`/`markRowSelected` 命中行 chunks 重建 + `selBg`/`selFg` 高亮块），松开若有位移则 `selectionText` 提取选区文本（跨行 `\n` 连接）写系统剪贴板（OSC52 + pbcopy/xclip/Set-Clipboard 回退），成功后**右上角 toast「✓ 已复制」**；纯点击（无位移）清空不复制，浮层打开/内容区外不触发；**右上角 toast（Alert notification）**：`pushToast(state, text, type)` 设置 + 过期时间戳，`repaintTree` 渲染绝对定位右上角浮层（`toastBox`，zIndex 11 最高；宽度由内容自适应，类型着色 success 绿/error 深红/info 默认；过期即清除，`state.schedulePaint` 由 TuiOutput 注入驱动自动消失）——**拖选复制/模型切换（/model 面板与 CLI）/思考级别切换/命令面板短结果（/mcp 添加移除）/请求失败错误**统一收口到 toast，`TuiOutput.pushToast` 供 Output 通道使用；
 - **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
 - **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 51 场景，与 CLI 共用同一渲染路径。
@@ -306,20 +312,20 @@ for step in 1..maxSteps:
 | `web_search` | **Web 搜索**（运行时注入，Brave Search API）：关键词 → 搜索结果列表（标题/URL/摘要）；key 配 `webSearchApiKey` 或环境变量 `BRAVE_API_KEY`，结果可再交 `web_fetch` 抓取 |
 | `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方**扁平面板**（无边框/无底色，紧贴输入区；A-D 勾选 / **独立自定义输入**——打字进面板缓冲不进主输入框 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
 | `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）。**过程可视化（1.0）**：运行中的 delegate 在**输入区上方面板**（command 样式——TUI delegateBox / Web #delegate-panel）逐条显示，进度事件带工具配对 seq 精确归集（并行/嵌套不互相覆盖）；点击就地展开查看思考（think）与工具调用明细（toolStart/toolEnd）；展开内 **⏹ 停止**（per-subagent AbortController——断流/步间退出，不再幽灵跑完）；完成后面板行移除、对话流留结果摘要卡（点击展开全过程，**thought 式扁平**对齐 thought/Web 透明卡：收起单行 `+ Subagent:` / 展开缩进明细，步数耗时来自 end 事件快照） |
-| `/skill` 命令 | **技能管理**（TUI/CLI 交互）：`/skill` 列出已发现（含标签：全局/仅手动/子代理）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性） |
+| `/skill` 命令 | **技能管理**（TUI 面板选择查看 / CLI 交互）：`/skill` 打开选择面板（含标签：全局/仅手动/子代理，选中加载完整内容）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性）· `/skill create <名> [描述]` 新建（`.agents/skills`，与 Web 共用 `createSkill`）· `/skill delete <名>` 删除（仅删 discover 到的目录） |
 | `/compact` 命令 | **手动压缩上下文**：把旧消息合并为摘要（复用 summarizeContext，保留最近 8 条原文）
 | `/agents` 命令 | **查看子代理配置**：delegate 启用状态 / 模型 / 步骤上限 / 子代理可用工具 + 已发现子代理定义（`.agents/subagents/*.md`，只读）
 | `/orchestrate` 命令 | **编排**：fan-out 并行 delegate（默认 3 worker）→ 汇总 → 对抗审查 → 最终报告（`/orchestrate <任务>`）
 | `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
 | `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
 | `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，优先级 = 配置 reasoningEffortOptions（omni.json，显式空数组=明确关闭）> models.dev 快照查表（effort 子集/仅开关 none·auto）> 默认档位（low/medium/high/xhigh/max + none/auto）；none/auto 不随请求下发参数 |
-| `/models` 命令 | **模型能力快照（CLI/TUI/Web 三端）**：`/models` 查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· `/models refresh` 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
+| 模型能力快照 | **已移入 `/settings models [refresh]`**（三端统一子命令）：查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
 | `/model` 命令 | **切换/添加模型**（多端点）：`/model` 面板 · `/model <名称>` 切换 · `/model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]` **添加并持久化**（运行时注册进 runOpts.models + 切换，纯 JSON 配置自动追加 **providers 单模型分组**，JSONC 提示手动加）；选项来自配置 providers 分组（端点/密钥的唯一格式，缺省字段回退网关级/环境变量）；切换时用 createClient 重建客户端并更新 ModelRuntime（主循环与子代理同步） |
-| `/status` 命令 | **会话状态汇总**：模型/权限/计划模式/思考级别/token 用量/会话文件/已加载脚手架（记忆/技能/预载）；共享逻辑在 `agent/report.ts`（TUI+CLI 复用） |
-| `/context` 命令 | **上下文用量**：消息数（user/assistant/tool）+ token 估算 + 已加载脚手架 + 距自动压缩阈值建议 |
+| `/status` 命令 | **会话状态汇总**（含上下文用量，原 `/context` 已并入）：模型/权限/计划模式/思考级别/token 用量/会话文件/已加载脚手架（记忆/技能/预载）+ 消息数/token 估算/压缩预算；共享逻辑在 `agent/report.ts`（`fullStatusReport`，三端复用） |
+| `/context` 命令 | **调整上下文窗口**：`/context` 查看当前生效值 · `/context 256|400|512|750|1000` 手动覆盖（单位 K tokens）· `/context 默认` 清除回跟随模型自动；覆盖驱动压缩触发预算与用量分母，持久化到 `contextLimit` 配置 |
+| `/settings` 命令 | **设置 hub**：TUI 打开选择菜单（语言/主题/token 统计/诊断/**帮助/模型快照**）· `/settings help` 帮助（原顶层 `/help`）· `/settings models [refresh]` 模型能力快照（原顶层 `/models`）；CLI/Web 同原子命令 |
 | `/export` 命令 | **导出会话**为 Markdown（`.omni/export-<时间戳>.md`；脚手架 system 消息不导出） |
-| `/config` 命令 | **查看配置文件**：全局/项目/自定义路径 + 配置来源（TUI 不 spawn 编辑器，console 用 $EDITOR 打开） |
-| `/mcp` 命令 | **管理 MCP 服务器**：列出已配置服务器/已发现工具/资源/提示词；`/mcp reconnect` 重连；`/mcp resources /mcp prompts` 查看资源/提示词；`/mcp add <名> <command|--url>` 运行时添加并持久化；`/mcp remove <名>` 移除；`/mcp login <名>` OAuth 登录（HTTP 服务器） |
+| `/mcp` 命令 | **管理 MCP 服务器**（TUI 无参打开选择面板：服务器列表 + 重连全部，选中查看详情/触发重建）：`/mcp reconnect` 重连；`/mcp resources /mcp prompts` 查看资源/提示词；`/mcp read <server> <uri>` 读资源；`/mcp get <server> <模板>` 取提示词；`/mcp add <名> <command|--url>` 运行时添加并持久化；`/mcp remove <名>` 移除；`/mcp login <名>` OAuth 登录（HTTP 服务器） |
 | `/diff` 命令 | **查看未提交改动**（复用 review.ts 的 collectDiff，输出前 60 行） |
 | `/rename` 命令 | **改会话标题**：终端窗口标题（OSC 0）+ 会话 meta 落盘（SessionMeta.title，/resume 还原） |
 | `/resume` 命令 | **恢复历史会话**：无参列出 / `<id>` 恢复（替换 messages + sessionPath + 重置落盘计数 + 历史回放进对话流；onResume 回调由 interactive 组装） |
@@ -328,7 +334,8 @@ for step in 1..maxSteps:
 | `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
 | `/memory-apply` 命令 | **应用待提交的项目记忆片段**：`.omni/memory-pending.md` → 项目根 AGENTS.md（退出时自动提取项目持久事实生成待确认片段；确认后应用并清片段） |
 | `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
-| `/trace` 命令 | **轨迹面板（右侧栏）**：每轮请求/工具/消息账本——`/trace` 展开/收起；数据源 = 事件记录器（event.ts 内存全量事件，interactive 每轮 refreshTrace 投影），console 端 `/trace` 打印文本账本；TUI 面板 ↑/↓ 选择 + **点击推入详情页**（顶部返回按钮 + 完整内容）+ Esc 收起，展开时内容宽度收缩（面板不盖对话流） |
+| `/rewind` 命令 | **会话检查点**：TUI 无参打开选择面板（含差异统计，确认经 `rewindPick` 意图异步回滚）/ `/rewind <N>` 直接恢复（只回滚工作区文件，对话保留 + system 提示）；Web 端命令直达检查点面板 |
+| `/trace` 命令 | **轨迹文本账本**（console/web `/trace`，TUI 右侧面板已删除）：每轮请求/工具/消息事件序列折叠投影（`agent/trace.ts` foldTrace + buildTraceTextLines，数据源 = 事件记录器内存全量事件） |
 | `/doctor` 命令 | **环境诊断**：Node/Bun 版本、API Key、端点连通性（5s 超时 fetch）、配置/MCP/权限/模型 |
 | `mcp_*` | **MCP 外部工具**：经 stdio（本地子进程）或 streamable HTTP（远端端点）调用外部服务器（可选，`mcpServers`）；同名 server 资源/提示词辅助工具（`<server>_read_resource` / `<server>_get_prompt`）随声明自动注册；server instructions 注入系统提示；per-tool 审批模式（`defaultToolsApprovalMode`）过安全闸门 |
 

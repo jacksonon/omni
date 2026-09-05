@@ -25,8 +25,8 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **OS-level sandbox**: `sandbox` config (`read-only` / `workspace-write` / `danger-full-access`) wraps `run_command` with macOS `sandbox-exec` or Linux `bwrap` (deny writes/network; workspace-write allows only cwd), degrading gracefully when unavailable
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
-- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 26 `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/config etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
-- **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn (progressive disclosure: first 15 listed + "N more"), and the model loads full content on demand via the `skill` tool; frontmatter extensions (`disable-model-invocation` / `user-invocable` / `context: fork` subagent execution / `agent` / `background`); `/skill` lists (with tags) / `find <term>` searches skills.sh online / `add` installs (immediate effect in current session) / `show <name>`
+- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 31 `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/settings etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
+- **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn (progressive disclosure: first 15 listed + "N more"), and the model loads full content on demand via the `skill` tool; frontmatter extensions (`disable-model-invocation` / `user-invocable` / `context: fork` subagent execution / `agent` / `background`); `/skill` opens a selection panel (with tags) / `find <term>` searches skills.sh online / `add` installs (immediate effect in current session) / `show <name>` / `create <name> [desc]` / `delete <name>`
 - **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global / `/init <subdir>` for nested-layer one-shot generation, session-end auto-extraction of new preferences into global memory (dedup/conflict merge + TTL archive); progressive disclosure tools (`memory_search` / `memory_read`); `AGENTS.override.md`/`TEAM_GUIDE.md` fallback + 32KB total budget; project-level auto-write produces a pending snippet (`.omni/memory-pending.md`) applied via `/memory-apply`
 - **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk); `/fork` forks a new session from a point in history (original kept), `/send <session> <msg>` sends a message to another session and injects the reply into the current context
 - **Hooks (lifecycle automation)**: attach shell commands to lifecycle events — rewrite user prompts (`UserPromptSubmit`), hard-block tool calls (`PreToolUse`), feed post-tool output back to the model such as lint results (`PostToolUse`), require the agent to keep working before it stops (`Stop`), session-complete notifications (`Notification`), plus `SessionStart` context injection, subagent hooks (`SubagentStart`/`SubagentStop` + Pre/Post around subagent tool calls) and `PreCompact`; JSON protocol over stdin/stdout, wildcard tool-name matchers, config layers merged (global + project), stderr captured, timeout/failure degrade to pass-through
@@ -385,7 +385,7 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/thinking` | show/hide thinking entirely (off = no thinking blocks stream at all, reasoning still saved to disk) |
 | `/model` | switch models; `/model <name>`; `/model add <name> [--base-url] [--api-key]` (adds + persists) |
 | `/variants` | switch the model's reasoning level (low/medium/high, persisted) |
-| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics |
+| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics / help / model snapshot |
 | `/undo` · `/redo` | undo the latest file edit (`/undo all` for everything) · redo the last undo |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites) |
 | `/skill` | skill management: list (with tags) / `find <word>` online search / `add <repo> [--global]` install (immediate in current session) / `show <name>` |
@@ -394,18 +394,18 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/orchestrate` | orchestration: fan-out parallel delegates → merge → adversarial review → final report |
 | `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop a task until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
-| `/status` · `/context` | session status summary · context usage with compression advice |
+| `/status` | session status summary (incl. context usage) |
 | `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |
 | `/resume` · `/rename` · `/fork` · `/send` · `/memory-apply` | restore a past session · rename the session (window title + persisted meta) · fork a new session from history · send a message to another session and get the result · apply pending project memory |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
-| `/trace` | trace panel (right sidebar): per-turn LLM request / tool / message ledger, click for detail page |
-| `/diff` · `/config` | uncommitted changes · config paths & sources |
-| `/mcp` | MCP management: list servers/tools/resources/prompts, `/mcp reconnect` after config edits, `/mcp add <name> <command|--url>` add at runtime, `/mcp remove <name>`, `/mcp login <name>` OAuth for HTTP servers, `/mcp install <id>` registry one-click |
+| `/trace` | trace text ledger (console/web): per-turn LLM request / tool / message event log |
+| `/diff` | uncommitted changes |
+| `/mcp` | MCP management: panel select for details, list servers/tools/resources/prompts, `/mcp reconnect` after config edits, `/mcp add <name> <command|--url>` add at runtime, `/mcp remove <name>`, `/mcp login <name>` OAuth for HTTP servers, `/mcp install <id>` registry one-click |
 | `/model fetch` | pull `GET {baseURL}/models` and list models not yet in the local table (Ollama/LM Studio/vLLM/any OpenAI-compatible gateway) |
 | `/spec <feature>` | spec trio: `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, tasks synced to the session todo list |
 | `/preset browser` | install the browser automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
-| `/clear` · `/exit` (alias `/quit`) · `/help` | clear view · quit (autoMemory + session finalize) · help |
+| `/clear` · `/exit` (alias `/quit`) | clear view · quit (autoMemory + session finalize) |
 
 ### Safety & permissions
 
@@ -440,8 +440,8 @@ reject, or click); piped/non-interactive auto-rejects. Every tool call is audite
   disable mouse mode) and a TUI build (`npm run dev:tui` / TUI npm package / native binary).
 - **See what the model receives?** `OMNI_DEBUG=1 omni "task"` prints the full request body to stderr.
 - **Conversation too long?** Auto-summarization is on (`summarizeAt: 40`); `/compact` manually,
-  `/context` shows usage.
-- **Config not applied?** Check precedence (env vars > config files > CLI args); `/config` shows sources.
+  `/status` shows usage.
+- **Config not applied?** Check precedence (env vars > config files > CLI args).
 - **No key, want a local try?** `npm run mock` (port 8787) + `OMNI_BASE_URL=http://127.0.0.1:8787/v1 OMNI_API_KEY=sk-mock`.
 
 ## Architecture

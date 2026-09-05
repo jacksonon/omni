@@ -225,3 +225,27 @@ export function effortColor(effort: string | undefined, theme: TuiTheme): string
   if (!effort) return theme.footerDim;
   return theme.effortColors[effort] ?? theme.footerDim;
 }
+
+/** HSL → CSS hex（彩虹动画用）：h∈[0,360)、s/l∈[0,1]，返回 `#rrggbb` */
+export function hslToHex(h: number, s: number, l: number): string {
+  const f = (n: number): number => {
+    const k = (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  const to = (v: number): string =>
+    Math.round(v * 255)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
+}
+
+/**
+ * 模式前缀循环色（模型行 Build/Plan，对标 hero 横幅彩虹）：
+ * bannerHue 驱动全色相循环，Plan 固定错相 180°——两模式永远可区分；
+ * 亮度跟横幅同规则（亮色压暗/深色提亮，保证对比度）。
+ */
+export function modeCycleColor(bannerHue: number, planMode: boolean, light: boolean): string {
+  const hue = (((planMode ? bannerHue + 180 : bannerHue) % 360) + 360) % 360;
+  return hslToHex(hue, 0.85, light ? 0.42 : 0.64);
+}

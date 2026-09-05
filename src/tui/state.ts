@@ -8,7 +8,6 @@ import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
 import type { WriteDiff } from '../output/format.js';
 import type { TuiLang } from './i18n.js';
-import type { TraceRow } from '../agent/trace.js';
 import type { AskResult } from '../tools/ask.js';
 
 /** spinner 动画帧（braille 点阵） */
@@ -548,6 +547,27 @@ export interface TuiState {
    */
   sessionPick: string | null;
   /**
+   * /context 面板确认项（tokens 数字符串 / 'clear' 清除覆盖；interactive 每轮消费，
+   * 落盘 + 同步运行时，与直接键入同语义）。
+   */
+  contextLimitSave: string | null;
+  /**
+   * /rewind 面板确认的检查点序号（TUI 面板选择后只记录意图，interactive 每轮
+   * 异步回滚工作区文件——confirmMenu 是纯 state 操作拿不到回调，与 /session 同模式）。
+   * 非 null 时 interactive 在处理完回滚后置 null。
+   */
+  rewindPick: number | null;
+  /**
+   * /mcp 面板确认项（srv:<name> 查看详情 / __reconnect__ 重连全部；interactive 每轮消费）。
+   * 非 null 时 interactive 在处理完后置 null。
+   */
+  mcpPick: string | null;
+  /**
+   * /skill 面板确认的技能名（interactive 每轮加载完整内容并输出到命令面板）。
+   * 非 null 时 interactive 在处理完后置 null。
+   */
+  skillPick: string | null;
+  /**
    * /settings 菜单确认「环境诊断」项的意图（confirmMenu 是纯 state 操作拿不到
    * ctx——只记录意图，interactive 每轮消费后调 runCommand('/settings doctor')）。
    * 非 null 时 interactive 在每轮命令分发前执行诊断并置 false。
@@ -626,20 +646,6 @@ export interface TuiState {
    */
   submitMode: 'queue' | 'steer';
   /**
-   * 轨迹面板（/trace 展开右侧栏）：traceOpen = 面板可见；traceRows = 折叠投影
-   * （interactive 每轮对话后 refreshTrace 刷新）；traceScroll = 面板内部滚动偏移
-   * （0 = 最新在底部；↑/↓ 回看历史）；traceSelected = 列表页选中行下标
-   * （-1 = 无；点击/Enter 推入详情页）；traceDetail = 详情页快照（非空 = 已推入
-   * 详情页：标题 + 完整内容行——点击轨迹行进入，Esc/返回行回列表）。
-   */
-  traceOpen: boolean;
-  traceRows: TraceRow[];
-  traceScroll: number;
-  traceSelected: number;
-  /** 详情页（非空 = 面板显示详情页：返回行 + 行标题 + 完整内容；Esc/点返回回列表）：
-   * rowIdx = 点击的 traceRows 行下标（内容渲染时实时取，快照语义由 traceDetailLines 保证） */
-  traceDetail: { rowIdx: number } | null;
-  /**
    * 审批结果回调（TuiOutput.requestApproval 注入；渲染层/按键层调用后由
    * TuiOutput 置 null）。放 state 上让 startTui（鼠标）与 interactive（按键）
    * 无需反向依赖 TuiOutput 即可完成审批。
@@ -710,6 +716,10 @@ export function createTuiState(): TuiState {
     reasoningEffort: '',
     reasoningEffortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
     sessionPick: null,
+    contextLimitSave: null,
+    rewindPick: null,
+    mcpPick: null,
+    skillPick: null,
     doctorPending: false,
     inputText: '',
     cmdSuggestDismissedText: null,
@@ -728,11 +738,6 @@ export function createTuiState(): TuiState {
     todoList: [],
     delegateRuns: [],
     submitMode: 'queue',
-    traceOpen: false,
-    traceRows: [],
-    traceScroll: 0,
-    traceSelected: -1,
-    traceDetail: null,
     toast: null,
     schedulePaint: null,
   };

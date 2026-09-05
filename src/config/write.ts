@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { OmniConfig } from './index.js';
 import { parseJsonc } from './jsonc.js';
+import { formatTokenCount } from './model-context.js';
 import type { McpServerConfig, ToolApprovalMode } from '../tools/mcp.js';
 
 /** /model add 解析结果：ok=true 时携带模型名与端点字段（缺省字段不在结果里，调用方回退顶层） */
@@ -561,6 +562,45 @@ export function persistReasoningEffortToConfig(
     ok: true,
     file: res.file,
     message: `已保存思考级别 → ${res.file}（重启后同样生效${loc ? `；仅对模型 ${loc.mid} 生效` : '；全局默认'}）`,
+  };
+}
+
+/**
+ * 把手动覆盖的上下文窗口写入配置文件（/context <档位> 设置，单位 token）。
+ * limit = null → 删除字段（回到默认，跟随模型自动识别）。
+ * 运行时已即时生效（各端同步进 context 上下限），这里只落盘供下次会话加载。
+ */
+export function persistContextLimitToConfig(
+  limit: number | null,
+  cfg: OmniConfig
+): PersistModelResult {
+  const res = loadConfigObject(cfg);
+  if (!res.ok) {
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（contextLimit 字段手动添加 = ${limit ?? '删除该字段'}）`,
+    };
+  }
+  const cfgObj = res.obj;
+  if (limit == null) delete cfgObj.contextLimit;
+  else cfgObj.contextLimit = limit;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(cfgObj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（contextLimit 字段手动添加）`,
+    };
+  }
+  return {
+    ok: true,
+    file: res.file,
+    message:
+      limit == null
+        ? `已清除手动覆盖（跟随模型自动）→ ${res.file}`
+        : `已保存上下文窗口 → ${res.file}（${formatTokenCount(limit)} tokens，重启后同样生效）`,
   };
 }
 

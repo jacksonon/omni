@@ -4,7 +4,7 @@
  * Esc 取消前缀；未绑定键取消前缀并放行给输入框（继续编辑即返回）。
  *
  * 复用 / 命令注册表（runCommand 统一分发）——/settings theme、/permission、
- * /model、/variants、/plan、/thinking、/undo、/redo、/clear、/help 全部走
+ * /model、/variants、/plan、/thinking、/undo、/redo、/clear、/settings help 全部走
  * 同一套命令逻辑（面板打开 / 静默切换 / 输出到命令面板），与手输命令完全等价，
  * 新增命令无需改这里（想绑新键只需加一行）。
  */
@@ -22,7 +22,7 @@ export const TUI_SHORTCUTS: Record<string, string> = {
   u: '/undo', // 撤销文件修改
   r: '/redo', // 重做
   c: '/clear', // 清空上下文
-  '?': '/help', // 帮助
+  '?': '/settings help', // 帮助（已移入 settings）
 };
 
 /**

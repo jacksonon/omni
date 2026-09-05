@@ -243,6 +243,11 @@
       "description": "上下文压缩触发占比（默认 0.7）",
       "default": 0.7
     },
+    "contextLimit": {
+      "type": "number",
+      "minimum": 1,
+      "description": "手动覆盖上下文窗口（单位 token，如 256000 = 256K；缺省跟随模型自动识别，可用 /context 调整）"
+    },
     "telemetry": {
       "type": "object",
       "description": "OpenTelemetry 导出（默认关闭、opt-in 显式；prompt 默认脱敏）",

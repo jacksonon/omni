@@ -518,11 +518,12 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @keyframes send-ring-spin { to { transform: rotate(360deg); } }
 .composer-note { width: 100%; max-width: var(--composer-width); min-height: 16px; padding-top: 5px; color: var(--text-caption); font-size: 11px; line-height: 16px; text-align: center; }
 /* 输入区下方元信息行：左[文件夹/loading] · 中[输入输出/缓存] …… 右[上下文用量] */
-.composer-meta { display: flex; align-items: center; gap: 8px; width: 100%; max-width: var(--composer-width); margin: 0 auto; padding-top: 3px; color: var(--text-caption); font: 11px/16px var(--mono); white-space: nowrap; overflow: hidden; }
+.composer-meta { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; max-width: var(--composer-width); margin: 0 auto; padding-top: 3px; color: var(--text-caption); font: 11px/16px var(--mono); white-space: nowrap; overflow: hidden; }
 .empty-session .composer-meta { display: none; }
-.meta-mid { flex: none; overflow: hidden; text-overflow: ellipsis; opacity: .9; margin-left: auto; }
+/* 四项独立（输入/输出/缓存/上下文）：可见项之间自动加 · 分隔（hidden 项不参与相邻匹配） */
+.meta-item { flex: none; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
+.composer-meta > span + span::before { content: '·'; margin-right: 8px; opacity: .55; }
 .meta-ctx { display: inline-flex; align-items: center; gap: 7px; flex: none; font-weight: 600; }
-.meta-mid.hidden + .meta-ctx { margin-left: auto; }
 /* 上下文渐变进度条：宽度过渡 + 流光动画 */
 .ctx-track { width: 72px; height: 6px; border-radius: 999px; background: var(--line-2); overflow: hidden; flex: none; }
 .ctx-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--ctx-color, var(--blue, #3b82f6)), color-mix(in srgb, var(--ctx-color, var(--blue, #3b82f6)) 55%, white)); box-shadow: 0 0 8px color-mix(in srgb, var(--ctx-color, var(--blue, #3b82f6)) 55%, transparent); transition: width .5s ease; position: relative; overflow: hidden; }
@@ -614,6 +615,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .cc-slider { --slider-grad: linear-gradient(90deg, #4176e6 0%, #6366f1 100%); --slider-glow: #4176e6; margin: 0 2px; }
 #cc-ticks span.active { color: #4176e6; }
 #cc-val { color: var(--text-secondary); font-weight: 600; }
+/* 应用内确认/输入弹窗（替代原生 prompt/confirm，与其它 modal 同风格） */
+.ui-confirm-msg { white-space: pre-wrap; color: var(--text); font-size: 13.5px; line-height: 21px; overflow-wrap: anywhere; }
 /* 设置 · 关于（输入区风格）：值 + 拷贝按钮 / 工具 chips / 语言跳转行 */
 .about-value { display: inline-flex; align-items: center; gap: 4px; flex: none; min-width: 0; }
 .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -623,6 +626,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .setting-row.about-jump:hover { background: var(--surface-hover); }
 .setting-row.about-jump:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .about-chev { width: 14px; height: 14px; flex: none; color: var(--text-caption); }
+/* 长会话分页：“加载更多”顶 pill（只渲染最近 N 条，点按累加回看） */
+.history-more { display: block; width: max-content; max-width: 100%; margin: 4px auto 10px; padding: 5px 16px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); color: var(--text-secondary); font-size: 12.5px; cursor: pointer; }
+.history-more:hover { background: var(--surface-hover-solid); color: var(--text); }
 /* 设置 · MCP/技能页（复用模型配置列表风格：chips + 表单行） */
 .mcp-head { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
 .mcp-head .secondary-button { flex: none; }
@@ -638,6 +644,18 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mc-badge.http { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
 .mc-badge.std { background: var(--surface-muted); color: var(--text-secondary); }
 .skill-badges { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
+/* MCP 详情可点击条目（资源/提示词）与结果框 */
+.mcp-links { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: 1; min-width: 0; }
+.mcp-link { max-width: 100%; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--blue); font: 12px/18px var(--mono); text-align: right; cursor: pointer; overflow-wrap: anywhere; }
+.mcp-link:hover { background: var(--surface-hover-solid); }
+#mcp-detail .fetch-result { margin-top: 10px; }
+#mcp-detail .fetch-result .cmd-output { border: 0; background: transparent; padding: 6px 0 0; margin: 0; }
+#mcp-approval { flex: none; width: 132px; }
+/* 技能检索结果行（registry id + 安装按钮） */
+#skill-find-results { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+#skill-find-results:empty { display: none; }
+#skill-find-results .mcp-add-row .mcp-kv { flex: 1; min-width: 0; align-self: center; }
+#skill-find-results .primary-button { flex: none; }
 /* 技能列表行内按钮：不压缩、不换行（窄屏下描述再长也不把「查看」挤成竖排） */
 #skill-list .secondary-button { flex: none; white-space: nowrap; }
 

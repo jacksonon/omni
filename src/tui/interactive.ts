@@ -2,7 +2,7 @@
  * TUI 交互模式：底部输入框 + 消息滚动区，多轮对话全部在 TUI 内完成。
  *
  * 流程：等待输入框 Enter 提交 → 回显用户消息 → 跑一轮 Agent → 等待下一轮。
- * 支持 / 命令（/theme /exit /clear /help，见 commands.ts）：
+ * 支持 / 命令（/theme /exit /clear /settings help，见 commands.ts）：
  *   · 提交 `/xxx` 时调 runCommand 分发，'exit' 结果结束循环；
  *   · 带面板的命令（如 /theme）打开 state.menu——面板打开期间键盘事件由
  *     handleMenuKey 在全局 keypress 里先于输入框拦截（↑/↓/数字选择、Enter 确认、
@@ -21,14 +21,14 @@ import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
-import { autoGitCommit, createCheckpoint } from '../agent/rewind.js';
+import { autoGitCommit, createCheckpoint, loadCheckpoint, restoreCheckpoint } from '../agent/rewind.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
-import { refreshTrace } from './trace.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
-import { handleMenuKey, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
+import { resolveContextLimit } from '../config/model-context.js';
+import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 
@@ -172,8 +172,6 @@ export async function runTuiInteractive(
     const oldEvents = runOpts.events;
     runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
     state.scrollTop = null;
-    state.traceSelected = -1;
-    state.traceScroll = 0;
     // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
     if (prevPath && prevPath !== file) void removeEmptySession(prevPath);
     let hasUser = false;
@@ -237,10 +235,14 @@ export async function runTuiInteractive(
     hooks: runOpts.hooks,
   };
   // hero 横幅动画定时器（150ms 一帧）：未开始对话（lines.length === 0）时 rainbow
-  // 彩虹色沿横幅流动。定时器常驻交互全程，非 hero 时只推进 hue 不触发重绘（不浪费）。
+  // 彩虹色沿横幅流动。有对话后降频复用同一驱动：模式前缀（Build/Plan）按 bannerHue
+  // 循环变色（对标横幅彩虹，~1.2s 一帧；repaint 幂等，无状态变更不闪）。
+  // 定时器常驻交互全程，退出时 clearInterval（见文末）。
+  let bannerTick = 0;
   const bannerAnimTimer = setInterval(() => {
     state.bannerHue = (state.bannerHue + 4) % 360;
-    if (state.lines.length === 0) void session.paint().catch(() => {});
+    bannerTick++;
+    if (state.lines.length === 0 || bannerTick % 8 === 0) void session.paint().catch(() => {});
   }, 150);
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
@@ -339,49 +341,6 @@ export async function runTuiInteractive(
       // 滚动位置由 cmdPanelRows 在渲染时 clamp 到合法区间（回写 panel.scroll）
       paintNow();
       return;
-    }
-    // 轨迹面板（/trace 右侧栏）：非模态浮层——↑/↓ 移动选中行（渲染层兜底收敛滚动
-    // 保持选中可见）、Esc 收起面板（preventDefault：不触发下方「Esc 取消运行」）；
-    // 其余按键放行给输入框（可继续输入/Enter 发送，面板保持打开）。
-    // **两级页面**：详情页（traceDetail 非空）——↑/↓ 滚动详情内容、Esc 回列表页、
-    // Enter 不消费（放行输入框）；列表页——↑/↓ 移动选中、Enter 推入详情页、Esc 收起。
-    if (state.traceOpen) {
-      let consumed = false;
-      if (state.traceDetail) {
-        // 详情页：↑/↓ 滚动内容（复用 traceScroll，渲染层钳制）
-        if (key.name === 'up' || key.name === 'down') {
-          state.traceScroll += key.name === 'down' ? 1 : -1;
-          consumed = true;
-        } else if (key.name === 'escape' || key.name === 'esc') {
-          state.traceDetail = null; // 回列表页（再按 Esc 收起面板）
-          state.traceScroll = 0;
-          consumed = true;
-        }
-      } else if (key.name === 'up' || key.name === 'down') {
-        const rows = state.traceRows;
-        if (rows.length > 0) {
-          if (state.traceSelected < 0) state.traceSelected = rows.length - 1;
-          else if (key.name === 'up') state.traceSelected = Math.max(0, state.traceSelected - 1);
-          else state.traceSelected = Math.min(rows.length - 1, state.traceSelected + 1);
-        }
-        consumed = true;
-      } else if (key.name === 'return' || key.name === 'kpenter' || key.name === 'linefeed') {
-        if (state.traceSelected >= 0 && state.traceSelected < state.traceRows.length) {
-          state.traceDetail = { rowIdx: state.traceSelected }; // Enter 推入详情页
-          state.traceScroll = 0;
-          consumed = true;
-        }
-      } else if (key.name === 'escape' || key.name === 'esc') {
-        state.traceOpen = false;
-        state.traceSelected = -1;
-        state.traceScroll = 0;
-        consumed = true;
-      }
-      if (consumed) {
-        key.preventDefault();
-        paintNow();
-        return;
-      }
     }
     // 待发送列表选择入口：输入框为空且有待发送消息时，↑ 进入列表选择
     //（否则 ↑ 是滚动——只有有待发送消息时让位给列表选择）
@@ -495,34 +454,8 @@ export async function runTuiInteractive(
       if (!consumed) paintDeferred();
       return;
     }
-    // 轨迹面板（/trace 右侧栏）：非模态浮层——↑/↓ 移动选中行（渲染层兜底收敛滚动
-    // 保持选中可见）、Esc 收起面板（preventDefault：不触发下方「Esc 取消运行」）；
-    // 其余按键放行给输入框（可继续输入/Enter 发送，面板保持打开）。放在联想/提及
-    // 之后：输入浮层（用户正在打字）优先消费 ↑/↓/Esc，轨迹面板是边缘 UI。
-    if (state.traceOpen) {
-      let consumed = false;
-      if (key.name === 'up' || key.name === 'down') {
-        const rows = state.traceRows;
-        if (rows.length > 0) {
-          if (state.traceSelected < 0) state.traceSelected = rows.length - 1;
-          else if (key.name === 'up') state.traceSelected = Math.max(0, state.traceSelected - 1);
-          else state.traceSelected = Math.min(rows.length - 1, state.traceSelected + 1);
-        }
-        consumed = true;
-      } else if (key.name === 'escape' || key.name === 'esc') {
-        state.traceOpen = false;
-        state.traceSelected = -1;
-        state.traceScroll = 0;
-        consumed = true;
-      }
-      if (consumed) {
-        key.preventDefault();
-        paintNow();
-        return;
-      }
-    }
     // ESC 取消正在进行的对话（同取消语义）：前面的浮层分支（菜单/面板/联想/提及/
-    // 待发送选择/轨迹面板）已各自消费自己的 Esc——能走到这里说明无任何浮层。
+    // 待发送选择）已各自消费自己的 Esc——能走到这里说明无任何浮层。
     // 审批卡片打开时 ESC 由 startTui 的审批 handler 先消费（拒绝审批并置位
     // approvalKeyJustConsumed），这里跳过取消运行（拒绝审批 ≠ 取消对话）。
     if ((key.name === 'escape' || key.name === 'esc') && state.running) {
@@ -568,8 +501,9 @@ export async function runTuiInteractive(
     state.provider = (runOpts.models ?? []).find((m) => m.name === state.model)?.provider
       ?? findProviderForModel(runOpts.models ?? [], state.model)
       ?? '';
-    // 当前模型 context 上限（footer context 段显示 `上下文 已用/上限`；未知为 0）
-    state.contextLimit = (runOpts.models ?? []).find((m) => m.name === state.model)?.limit?.context ?? 0;
+    // 当前模型 context 上限（footer context 段显示 `上下文 已用/上限`；未知为 0；
+    // 手动覆盖（/context <档位>）优先于模型值）
+    state.contextLimit = resolveContextLimit(runOpts.cfg?.contextLimit, (runOpts.models ?? []).find((m) => m.name === state.model)?.limit?.context) ?? 0;
     // 当前模型运行时（可变）：/model 切换时重建 client 并更新共享引用（子代理同步）
     let currentClient: OpenAI = client;
     let currentModel = state.model;
@@ -580,7 +514,7 @@ export async function runTuiInteractive(
       currentModel = endpoint.name;
       state.model = endpoint.name;
       state.provider = endpoint.provider ?? findProviderForModel(runOpts.models ?? [], endpoint.name) ?? ''; // footer 模型行显示所属 provider 组
-      state.contextLimit = endpoint.limit?.context ?? 0; // footer context 段上限（未知 0）
+      state.contextLimit = resolveContextLimit(runOpts.cfg?.contextLimit, endpoint.limit?.context) ?? 0; // footer context 段上限（手动覆盖优先，未知 0）
       if (runOpts.modelRuntime) {
         runOpts.modelRuntime.client = currentClient;
         runOpts.modelRuntime.model = endpoint.name;
@@ -591,8 +525,8 @@ export async function runTuiInteractive(
       // 命名 variant（1.0 P0-3）同样随端点带出（models.<名>.variant 初始值）
       runOpts.reasoningEffort = endpoint.reasoningEffort;
       runOpts.reasoningEffortOptions = endpoint.reasoningEffortOptions ?? runOpts.reasoningEffortOptions;
-      // 压缩预算跟随新模型（数据源自动档：端点展开时 limit.context 已查表补缺；未知模型清空）
-      if (runOpts.context) runOpts.context.contextLimit = endpoint.limit?.context;
+      // 压缩预算跟随新模型（手动覆盖（/context <档位>）优先；数据源自动档：端点展开时 limit.context 已查表补缺；未知模型清空）
+      if (runOpts.context) runOpts.context.contextLimit = resolveContextLimit(runOpts.cfg?.contextLimit, endpoint.limit?.context);
       state.reasoningEffort = endpoint.reasoningEffort ?? '';
       if (endpoint.reasoningEffortOptions !== undefined) state.reasoningEffortOptions = endpoint.reasoningEffortOptions;
       runOpts.activeVariant = endpoint.variant;
@@ -725,6 +659,66 @@ export async function runTuiInteractive(
         }
         await session.paint();
       }
+      // /rewind 面板确认：回滚到所选检查点的文件状态（只改工作区文件，对话保留；
+      // 每轮只处理一次，处理完清空意图）
+      if (state.rewindPick != null) {
+        const n = state.rewindPick;
+        state.rewindPick = null;
+        const target = await loadCheckpoint(runOpts.sessionPath, n);
+        if (!target) {
+          pushCmdLine(state, { kind: 'warn', text: `/rewind <序号>：检查点 #${n} 不存在（/rewind 查看列表）` }, '/rewind');
+        } else {
+          const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
+          pushCmdLine(state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` }, '/rewind');
+          for (const r of results) pushCmdLine(state, { kind: 'meta', text: `· ${r}` }, '/rewind');
+          messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+        }
+        await session.paint();
+      }
+      // /mcp 面板确认：srv:<name> 输出服务器详情 / __reconnect__ 异步重建工具链
+      if (state.mcpPick) {
+        const pick = state.mcpPick;
+        state.mcpPick = null;
+        if (pick === '__reconnect__') {
+          pushCmdLine(state, { kind: 'meta', text: '正在重连 MCP 服务器…' }, '/mcp');
+          await session.paint();
+          closeMcpClients();
+          const handles = await discoverMcpServers(runOpts.mcpServers);
+          runOpts.mcpHandles = handles;
+          runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
+          const instrContent = mcpInstructionsMessage(handles);
+          if (instrContent) {
+            const instrPrefix = '[MCP server instructions';
+            const existingIdx = messages.findIndex(
+              (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+            );
+            const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+            if (existingIdx >= 0) messages[existingIdx] = instrMsg;
+            else messages.unshift(instrMsg);
+          }
+          pushCmdLine(state, { kind: 'meta', text: '已重连（工具链已更新，新工具对模型可见）' }, '/mcp');
+        } else if (pick.startsWith('srv:')) {
+          const name = pick.slice(4);
+          for (const l of mcpServerDetailLines(name, runOpts.mcpServers ?? {}, runOpts.mcpHandles ?? [])) {
+            pushCmdLine(state, { kind: 'meta', text: l }, '/mcp');
+          }
+        }
+        await session.paint();
+      }
+      // /skill 面板确认：加载所选技能完整内容
+      if (state.skillPick) {
+        const name = state.skillPick;
+        state.skillPick = null;
+        await pushSkillShow(state, name);
+        await session.paint();
+      }
+      // /context 面板确认：落盘 + 同步运行时（与直接键入同语义）
+      if (state.contextLimitSave != null) {
+        const v = state.contextLimitSave;
+        state.contextLimitSave = null;
+        applyContextLimitChoice(state, runOpts.cfg, runOpts, state.model, v === 'clear' ? 'clear' : Number(v));
+        await session.paint();
+      }
       // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
       // 待发送积压优先：回合结束后自动消费——steer（打断）消息插入时在最前、queue 追加在末尾，
       // shift() 天然按 打断优先 → 排队顺序 发送；用户可在此之前用 ↑ 选中管理（排序/删除/编辑）
@@ -775,7 +769,7 @@ export async function runTuiInteractive(
         cfg: runOpts.cfg,
         mcpServers: runOpts.mcpServers,
         mcpHandles: runOpts.mcpHandles,
-        // 轨迹事件记录器（/trace 面板数据源 + /compact 事件）
+        // 轨迹事件记录器（/compact 事件源 + 会话文件 {"t":"ev"} 行）
         events: runOpts.events,
         hooks: runOpts.hooks,
         // /mcp reconnect：关旧客户端 → 重新 discover → 重建工具链 + 更新 handles + 替换 instructions
@@ -1038,8 +1032,6 @@ export async function runTuiInteractive(
         const committed = await autoGitCommit(cmd).catch(() => null);
         if (committed) pushLine(state, { kind: 'meta', text: `✓ ${committed}` });
       }
-      // 轨迹投影刷新（/trace 面板数据源）：每轮结束重新折叠——面板下次重绘即为最新
-      if (runOpts.events) refreshTrace(state, runOpts.events.events);
       turn++;
       // 首轮对话结束后异步生成会话标题：独立轻量 LLM 调用，不阻塞主流程
       // （标题稍后到达并设为终端窗口/标签页标题——不显示在对话流里，保持信息流纯净；

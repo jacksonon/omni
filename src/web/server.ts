@@ -56,13 +56,11 @@ import {
   reviewCode,
 } from '../agent/review.js';
 import {
-  configReport,
-  contextReport,
   detectScaffolds,
   doctorReport,
   exportSession,
+  fullStatusReport,
   memoryFilesFromMessages,
-  statusReport,
 } from '../agent/report.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import {
@@ -95,10 +93,11 @@ import type { Output } from '../output/types.js';
 import { attachRuntime, prepareRun } from '../main.js';
 import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
-import { autoFillLimit, describeModelContextWindow, refreshModelContextSnapshot, resolveModelCapabilities, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveModelCapabilities, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
   parseModelAddArgs,
+  persistContextLimitToConfig,
   persistLanguageToConfig,
   persistModelDefaultToConfig,
   persistModelToConfig,
@@ -383,6 +382,9 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     reasoningEffort: runOpts.reasoningEffort ?? undefined,
     reasoningEffortOptions: runOpts.reasoningEffortOptions ?? undefined,
     activeVariant: runOpts.activeVariant ?? undefined,
+    // 生效上下文窗口（手动覆盖（/context <档位>）优先，否则当前模型 limit.context；composer 用量环与压缩分母同源）
+    contextLimit: resolveContextLimit(runOpts.cfg?.contextLimit, (runOpts.models ?? []).find((m) => m.name === runOpts.modelRuntime?.model)?.limit?.context),
+    contextOverride: typeof runOpts.cfg?.contextLimit === 'number' && (runOpts.cfg?.contextLimit ?? 0) > 0,
     webTheme: runOpts.cfg?.webTheme ?? 'system',
     language: runOpts.cfg?.language ?? 'zh',
     // 输入区下方状态行段（设置 → 状态栏配置；同 CLI/TUI footer stats）
@@ -639,8 +641,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       runOpts.reasoningEffort = ep.reasoningEffort ?? cfg.reasoningEffort;
       runOpts.reasoningEffortOptions = ep.reasoningEffortOptions ?? cfg.reasoningEffortOptions;
       runOpts.activeVariant = ep.variant; // 命名 variant 随端点带出（1.0 P0-3）
-      // 压缩预算跟随新模型（数据源自动档：未知模型清空不误压）
-      if (runOpts.context) runOpts.context.contextLimit = ep.limit?.context;
+      // 压缩预算跟随新模型（手动覆盖（/context <档位>）优先；数据源自动档：未知模型清空不误压）
+      if (runOpts.context) runOpts.context.contextLimit = resolveContextLimit(cfg.contextLimit, ep.limit?.context);
     } catch {
       return false;
     }
@@ -756,7 +758,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   }
 
   /** 执行 / 命令（复用 CLI 全部命令逻辑），返回输出行数组。
-   *  s = null 表示无会话上下文（/status /model /config 等仍可用）。 */
+   *  s = null 表示无会话上下文（/status /model 等仍可用）。 */
   async function runSlashCommand(
     cmd: string,
     s: WebSession | null,
@@ -770,11 +772,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     // -- 不需要 LLM 的命令 --
 
-    if (cmd === '/help') {
-      add('可用命令：/status /context /export /config /diff [--stat|--full] /rewind /doctor /trace /agents');
-      add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
-      add('/skill [find|add|show] /compact /review /rename /session /resume /mcp /init');
-      add('/orchestrate /goal /settings /help');
+    if (cmd === '/help' || cmd.startsWith('/help ')) {
+      // 顶层 /help 已移入 /settings help：保留迁移提示
+      add('帮助已移入 /settings help（设置 → 帮助页同理可用）');
       return { lines };
     }
 
@@ -803,13 +803,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     if (cmd === '/permission' || cmd.startsWith('/permission ')) {
       const want = cmd.slice('/permission'.length).trim();
-      const PERMS: Record<string, PermissionTier> = { 低: 'read', 中: 'safe', 高: 'ask', 全量: 'full', read: 'read', safe: 'safe', ask: 'ask', full: 'full' };
-      const LABEL: Record<string, string> = { read: '低（只读）', safe: '中（标准）', ask: '高（谨慎）', full: '全量（直通）' };
+      const PERMS: Record<string, PermissionTier> = { 只读: 'read', 请求批准: 'ask', 帮我批准: 'safe', 完全访问: 'full', 低: 'read', 中: 'safe', 高: 'ask', 全量: 'full', read: 'read', safe: 'safe', ask: 'ask', full: 'full' };
+      const LABEL: Record<string, string> = { read: '只读', safe: '帮我批准', ask: '请求批准', full: '完全访问' };
       if (!want) {
-        add(`当前安全权限：${LABEL[runOpts.permission ?? 'safe']}（/permission 低|中|高|全量 切换）`);
+        add(`当前安全权限：${LABEL[runOpts.permission ?? 'safe']}（/permission 只读|请求批准|帮我批准|完全访问 切换）`);
       } else {
         const next = PERMS[want];
-        if (!next) { add(`未知权限「${want}」——可选：低=只读 / 中=标准 / 高=谨慎 / 全量=直通`); }
+        if (!next) { add(`未知权限「${want}」——可选：只读 / 请求批准 / 帮我批准 / 完全访问`); }
         else { runOpts.permission = next; runOpts.safetyGate?.setTier(next); add(`已切换安全权限 → ${LABEL[next]}`); }
       }
       return { lines };
@@ -864,59 +864,60 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     if (cmd === '/status') {
       const curEp = (runOpts.models ?? []).find((m) => m.name === model);
-      for (const l of statusReport({
+      const contextWindow = describeModelContextWindow(
+        resolveContextLimit(cfg.contextLimit, curEp?.limit?.context), model, curEp?.apiModel
+      );
+      for (const l of fullStatusReport({
         model, permission: runOpts.permission ?? 'safe',
         planMode: runOpts.planMode ?? false, reasoningEffort: runOpts.reasoningEffort,
         sessionPath: runOpts.sessionPath, scaffolds: detectScaffolds(messages),
         sandbox: runOpts.sandbox, trusted: runOpts.trusted,
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
-        contextWindow: describeModelContextWindow(curEp?.limit?.context, model, curEp?.apiModel),
+        contextWindow,
+      }, {
+        messages,
+        summarizeAt: cfg.summarizeAt ?? 40,
+        compressRatio: cfg.contextCompressRatio,
       })) add(l);
       return { lines };
     }
 
-    if (cmd === '/context') {
+    if (cmd === '/context' || cmd.startsWith('/context ')) {
+      // /context：调整上下文窗口（档位 K 手动覆盖 / 默认清除跟随模型自动；无参查看）
+      const parsed = parseContextSetArg(cmd.slice('/context'.length));
       const curEp = (runOpts.models ?? []).find((m) => m.name === model);
-      for (const l of contextReport(
-        messages,
-        cfg.summarizeAt ?? 40,
-        describeModelContextWindow(curEp?.limit?.context, model, curEp?.apiModel),
-        cfg.contextCompressRatio
-      ))
-        add(l);
-      return { lines };
-    }
-
-    if (cmd === '/models' || cmd.startsWith('/models ')) {
-      // /models：模型能力快照状态；/models refresh 在线更新（默认不自动更新）
-      const arg = cmd.slice('/models'.length).trim();
-      if (!arg) {
-        const info = snapshotInfo();
-        add(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`);
-        add('/models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）');
-      } else if (arg === 'refresh') {
-        add('正在拉取 models.dev 并重建快照…（无需 API Key）');
-        const res = await refreshModelContextSnapshot();
-        if (res.ok) {
-          add(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`);
-          add(`已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）`);
-        } else {
-          add(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`);
-        }
-      } else {
-        add(`未知子命令「${arg}」——可用：/models（状态）· /models refresh（在线更新）`);
+      if (parsed.kind === 'error') {
+        add(parsed.message);
+        return { lines };
       }
+      if (parsed.kind === 'clear') {
+        delete cfg.contextLimit;
+        if (runOpts.context) runOpts.context.contextLimit = curEp?.limit?.context;
+        add('已清除手动覆盖（跟随模型自动识别）');
+        const res = persistContextLimitToConfig(null, cfg);
+        add(res.message);
+        return { lines };
+      }
+      if (parsed.kind === 'set') {
+        cfg.contextLimit = parsed.tokens;
+        if (runOpts.context) runOpts.context.contextLimit = parsed.tokens;
+        add(`已覆盖上下文窗口 → ${parsed.k}K（${formatTokenCount(parsed.tokens)} tokens；压缩预算与用量分母即时生效）`);
+        const res = persistContextLimitToConfig(parsed.tokens, cfg);
+        add(res.message);
+        return { lines };
+      }
+      const info = describeModelContextWindow(
+        resolveContextLimit(cfg.contextLimit, curEp?.limit?.context), model, curEp?.apiModel
+      );
+      const src = cfg.contextLimit ? '手动覆盖（/context 默认 清除）' : info.label;
+      add(`上下文窗口：${formatTokenCount(info.value)} tokens（${src}）`);
+      add(`可选档位：${CONTEXT_K_TIERS.join(' / ')}（K）· 默认（跟随模型自动）——用法：/context <档位>|默认`);
       return { lines };
     }
     if (cmd === '/export') {
       const file = exportSession(messages, process.cwd());
       add(file ? `已导出会话 → ${file}（${messages.length} 条消息）` : '导出失败（无法写入 .omni/ 目录）');
-      return { lines };
-    }
-
-    if (cmd === '/config') {
-      for (const l of configReport(cfg)) add(l);
       return { lines };
     }
 
@@ -1444,13 +1445,42 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/settings' || cmd.startsWith('/settings ')) {
-      // Web 端 /settings 由前端直接打开设置面板（见 app.js runSlashCommand 联动）；
-      // 后端保留兜底：非 Web 客户端调用时给出面板位置提示，避免“未知命令”。
+      // /settings 子设置：help 帮助 · models [refresh] 模型能力快照（原顶层命令已移入）；
+      // 其余面板名走前端设置面板（见 app.js runSlashCommand 联动），后端保留兜底提示。
       const arg = cmd.slice('/settings'.length).trim();
+      const sub = arg.split(/\s+/)[0] ?? '';
+      const subArg = arg.slice(sub.length).trim();
+      if (sub === 'help') {
+        add('可用命令：/status（含上下文用量）/context <档位>|默认 /export /diff [--stat|--full] /rewind /doctor /trace /agents');
+        add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
+        add('/skill [find|add|show|create|delete] /compact /review /rename /session /resume /mcp /init');
+        add('/orchestrate /goal /loop /spec /preset /send /memory-apply /fork /compact');
+        add('/settings help（本帮助）· /settings models [refresh]（模型能力快照）· /settings <面板名>（打开设置面板）');
+        return { lines };
+      }
+      if (sub === 'models') {
+        if (!subArg) {
+          const info = snapshotInfo();
+          add(`模型能力快照：${info.source === 'user' ? '用户更新' : '内置快照'} · ${info.count} 模型 · 生成于 ${info.generatedAt.slice(0, 10)}（${info.ageDays} 天前）`);
+          add('/settings models refresh 在线更新（models.dev → 用户配置目录，当前会话立即生效；默认不自动更新）');
+        } else if (subArg === 'refresh') {
+          add('正在拉取 models.dev 并重建快照…（无需 API Key）');
+          const res = await refreshModelContextSnapshot();
+          if (res.ok) {
+            add(`✅ 快照已更新：${res.info.count} 模型 · 生成于 ${res.info.generatedAt.slice(0, 10)} · 当前会话立即生效`);
+            add(`已写入 ${res.info.userFile}（下次启动自动覆盖内置；删除该文件恢复内置快照）`);
+          } else {
+            add(`✗ 快照更新失败：${res.error}（保留旧快照，可稍后重试）`);
+          }
+        } else {
+          add(`未知子命令「${subArg}」——可用：/settings models（状态）· /settings models refresh（在线更新）`);
+        }
+        return { lines };
+      }
       const panes = ['general（通用）', 'theme（主题）', 'apikey（模型配置）', 'mcp（MCP 服务）', 'skills（技能）', 'shortcuts（快捷键）', 'about（关于）'];
       if (!arg) {
-        add('Web 设置面板已在前端打开（通用 / 主题 / 模型配置 / 快捷键 / 关于）。');
-        add(`可用面板：${panes.join(' / ')}（用法：/settings <面板名>，如 /settings theme）`);
+        add('Web 设置面板已在前端打开（通用 / 主题 / 模型配置 / MCP 服务 / 技能 / 快捷键 / 关于）。');
+        add(`可用面板：${panes.join(' / ')}（用法：/settings <面板名>，如 /settings theme；/settings help 查看命令帮助）`);
       } else {
         add(`Web 设置面板已在前端打开（请求面板：${arg}）。`);
         add(`可用面板：${panes.join(' / ')}`);
@@ -1458,7 +1488,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       return { lines };
     }
 
-    add(`未知命令「${cmd}」。/help 查看可用命令。`);
+    if (cmd === '/models' || cmd.startsWith('/models ')) {
+      // 顶层 /models 已移入 /settings models：保留迁移提示
+      add('模型能力快照已移入 /settings models（/settings models refresh 在线更新）');
+      return { lines };
+    }
+
+    add(`未知命令「${cmd}」。/settings help 查看可用命令。`);
     return { lines };
   }
 
@@ -1880,6 +1916,30 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         if (typeof body.reasoningEffort === 'string' && body.reasoningEffort) {
           runOpts.reasoningEffort = body.reasoningEffort;
+        }
+        // 上下文窗口手动覆盖（模型面板滑条；null = 清除回跟随模型自动）
+        if (body.contextLimit === null || (typeof body.contextLimit === 'number' && Number.isFinite(body.contextLimit))) {
+          if (body.contextLimit === null) {
+            delete cfg.contextLimit;
+            if (runOpts.cfg) delete runOpts.cfg.contextLimit;
+            if (runOpts.context) {
+              const ep = (runOpts.models ?? []).find((m) => m.name === runOpts.modelRuntime?.model);
+              runOpts.context.contextLimit = ep?.limit?.context;
+            }
+          } else if (body.contextLimit > 0) {
+            const v = Math.floor(body.contextLimit);
+            cfg.contextLimit = v;
+            if (runOpts.cfg) runOpts.cfg.contextLimit = v;
+            if (runOpts.context) runOpts.context.contextLimit = v;
+          } else {
+            json(res, 400, { error: 'contextLimit 非法（正整数 token 数，或 null 清除）' });
+            return;
+          }
+          const pr = persistContextLimitToConfig(body.contextLimit === null ? null : Math.floor(body.contextLimit), cfg);
+          if (!pr.ok) {
+            json(res, 400, { error: pr.message });
+            return;
+          }
         }
         if (typeof body.planMode === 'boolean') {
           runOpts.planMode = body.planMode;
@@ -2352,6 +2412,19 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             else if (typeof body.command === 'string' && body.command.trim())
               cfgNew = { command: body.command.trim(), args: Array.isArray(body.args) ? body.args.map(String) : undefined };
             if (!cfgNew) throw new Error('需要 url 或 command 字段');
+            // 高级选项（设置页添加表单；同 /mcp add --approval/--enabled-tools/--disabled-tools）
+            if (typeof body.approval === 'string' && ['auto', 'prompt', 'writes', 'approve'].includes(body.approval)) {
+              cfgNew.defaultToolsApprovalMode = body.approval as McpServerConfig['defaultToolsApprovalMode'];
+            }
+            const toList = (v: unknown): string[] | undefined => {
+              const arr = Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(',') : [];
+              const out = arr.map((x) => x.trim()).filter(Boolean);
+              return out.length > 0 ? out : undefined;
+            };
+            const enabled = toList(body.enabledTools);
+            if (enabled) cfgNew.enabledTools = enabled;
+            const disabled = toList(body.disabledTools);
+            if (disabled) cfgNew.disabledTools = disabled;
             const { persistMcpServerToConfig } = await import('../config/write.js');
             const pr = persistMcpServerToConfig(name2, cfgNew, cfg);
             runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [name2]: cfgNew };
@@ -2413,6 +2486,62 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         return;
       }
+      // 读取 MCP 资源内容（POST /api/mcp/resource {name, uri}；截断前 40 行对齐 TUI）
+      if (p === '/api/mcp/resource' && req.method === 'POST') {
+        const body = await readBody(req);
+        const name = String(body.name ?? '');
+        const uri = String(body.uri ?? '');
+        const h = (runOpts.mcpHandles ?? []).find((x) => x.name === name);
+        if (!h) {
+          json(res, 404, { error: `服务器「${name}」未连接` });
+          return;
+        }
+        try {
+          const r = await h.client.readResource(uri);
+          if (!r) {
+            json(res, 404, { error: `资源「${uri}」不存在或不可读` });
+            return;
+          }
+          const lines = (r.text ?? '').split('\n');
+          json(res, 200, { ok: true, uri: r.uri, mimeType: r.mimeType ?? null, text: lines.slice(0, 40).join('\n'), truncated: lines.length > 40 });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          json(res, msg.includes('不存在') ? 404 : 400, { error: `读取失败：${msg}` });
+        }
+        return;
+      }
+      // 获取 MCP 提示词模板内容（POST /api/mcp/prompt {name, prompt}；无参调用）
+      if (p === '/api/mcp/prompt' && req.method === 'POST') {
+        const body = await readBody(req);
+        const name = String(body.name ?? '');
+        const prompt = String(body.prompt ?? '');
+        const h = (runOpts.mcpHandles ?? []).find((x) => x.name === name);
+        if (!h) {
+          json(res, 404, { error: `服务器「${name}」未连接` });
+          return;
+        }
+        if (!prompt) {
+          json(res, 400, { error: '缺少 prompt 模板名' });
+          return;
+        }
+        try {
+          const r = await h.client.getPrompt(prompt, {});
+          if (!r) {
+            json(res, 404, { error: `提示词模板「${prompt}」不存在` });
+            return;
+          }
+          json(res, 200, {
+            ok: true,
+            name: prompt,
+            description: r.description ?? '',
+            messages: r.messages.map((m) => ({ role: m.role, text: (m.text ?? '').slice(0, 2000) })),
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          json(res, msg.includes('不存在') ? 404 : 400, { error: `获取失败：${msg}` });
+        }
+        return;
+      }
 
       // 列表（设置 → 技能页数据源）：已发现技能（名称/描述/来源/标签）
       if (p === '/api/skills' && req.method === 'GET') {
@@ -2432,36 +2561,60 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const body = await readBody(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         const desc = typeof body.description === 'string' ? body.description.trim() : '';
-        if (!name || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
-          json(res, 400, { error: '技能名不合法（仅小写字母、数字、连字符，如 my-skill）' });
+        const { createSkill } = await import('../agent/skill.js');
+        const r = createSkill(name, desc);
+        if (!r.ok) {
+          json(res, r.message.includes('已存在') ? 409 : 400, { error: r.message });
           return;
         }
-        try {
-          const skillsDir = path.join(process.cwd(), '.agents', 'skills', name);
-          if (existsSync(skillsDir)) {
-            json(res, 409, { error: `技能 ${name} 已存在` });
-            return;
-          }
-          const { mkdirSync, writeFileSync } = await import('node:fs');
-          mkdirSync(skillsDir, { recursive: true });
-          const frontmatter = [
-            '---',
-            `name: ${name}`,
-            `description: ${desc || name}`,
-            '---',
-            '',
-            `# ${name}`,
-            '',
-            desc ? `${desc}\n` : '',
-            '## 指令',
-            '',
-            '在此编写技能的详细指令...',
-          ].join('\n');
-          writeFileSync(path.join(skillsDir, 'SKILL.md'), frontmatter, 'utf8');
-          json(res, 201, { ok: true, name, path: skillsDir });
-        } catch (e) {
-          json(res, 400, { error: `创建技能失败：${e instanceof Error ? e.message : String(e)}` });
+        json(res, 201, { ok: true, name, path: r.path });
+        return;
+      }
+      // 删除技能（DELETE /api/skills/<name>；只删 discover 到的技能目录）
+      const skillDelMatch = p.match(/^\/api\/skills\/([^/]+)$/);
+      if (skillDelMatch && req.method === 'DELETE') {
+        const { removeSkill } = await import('../agent/skill.js');
+        const r = await removeSkill(decodeURIComponent(skillDelMatch[1] ?? ''));
+        if (!r.ok) {
+          json(res, 400, { error: r.message });
+          return;
         }
+        json(res, 200, { ok: true, message: r.message });
+        return;
+      }
+      // 检索 registry（POST /api/skills/find {q}；npx skills find，失败返回错误文本）
+      if (p === '/api/skills/find' && req.method === 'POST') {
+        const body = await readBody(req);
+        const q = typeof body.q === 'string' ? body.q.trim() : '';
+        if (!q) {
+          json(res, 400, { error: '缺少检索关键词' });
+          return;
+        }
+        const { runSkillsCli, parseSkillFindResults } = await import('../agent/skill.js');
+        const { ok, output } = await runSkillsCli(['find', q]);
+        if (!ok) {
+          json(res, 400, { error: output.slice(0, 300) || 'npx skills 不可用' });
+          return;
+        }
+        json(res, 200, { ok: true, results: parseSkillFindResults(output).slice(0, 20) });
+        return;
+      }
+      // 从 registry 安装（POST /api/skills/install {repo, skill?}；npx skills add -y）
+      if (p === '/api/skills/install' && req.method === 'POST') {
+        const body = await readBody(req);
+        const repo = typeof body.repo === 'string' ? body.repo.trim() : '';
+        const skill = typeof body.skill === 'string' && body.skill.trim() ? body.skill.trim() : undefined;
+        if (!repo) {
+          json(res, 400, { error: '缺少 repo（如 owner/repo）' });
+          return;
+        }
+        const { runSkillsCli } = await import('../agent/skill.js');
+        const { ok, output } = await runSkillsCli(['add', repo, ...(skill ? ['--skill', skill] : []), '-y'], 180_000);
+        if (!ok) {
+          json(res, 400, { error: output.slice(0, 300) || '安装失败' });
+          return;
+        }
+        json(res, 200, { ok: true, message: '安装完成（已装入 .agents/skills 等目录，刷新后可见）' });
         return;
       }
 

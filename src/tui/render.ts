@@ -63,9 +63,8 @@ import { logCrash } from './crashlog.js';
 import { dim } from '../ui.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
-import { TRACE_TEXT_COLS, TRACE_W, traceDetailLines, tracePanelLines } from './trace.js';
 import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, formatCompact, formatContextUsage, formatMiniBar, sessionAvgRate, truncatePathHead } from './layout.js';
-import { effortColor, isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
+import { effortColor, hslToHex, isLightTheme, modeCycleColor, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { editPending } from './pending.js';
 import { visualWidth } from './width.js';
@@ -119,20 +118,6 @@ const OMNI_BANNER = [
 
 /** hero 品牌头行数（用于垂直居中预算） */
 const HERO_LINES = OMNI_BANNER.length;
-
-/** HSL → CSS hex（彩虹动画用）：h∈[0,360)、s/l∈[0,1]，返回 `#rrggbb` */
-export function hslToHex(h: number, s: number, l: number): string {
-  const f = (n: number): number => {
-    const k = (n + h / 30) % 12;
-    const a = s * Math.min(l, 1 - l);
-    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-  };
-  const to = (v: number): string =>
-    Math.round(v * 255)
-      .toString(16)
-      .padStart(2, '0');
-  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
-}
 
 export interface TuiSession {
   /** 立即重绘一帧（状态变更后调用） */
@@ -246,14 +231,6 @@ export interface TuiTree {
   cmdPanelCells: TextRenderable[];
   /** 命令输出面板左侧深灰竖线（同输入区蓝线写法，独立渲染列） */
   cmdPanelBar: TextRenderable | null;
-  /** 轨迹面板浮层（/trace 右侧栏：绝对定位右缘，宽 TRACE_W；展开时内容宽度收缩） */
-  traceBox: BoxRenderable | null;
-  traceCells: TextRenderable[];
-  /** 轨迹面板可点击区域（面板内部行；屏幕 0-based y 区间）+ 行 → traceRows 下标映射（-1 = 标题/提示行） */
-  traceRect: { top: number; bottom: number } | null;
-  traceRowMap: number[];
-  /** 轨迹面板占据的屏幕列起始（x ≥ 该值且 y 命中 traceRect 的点击归属面板，不穿透内容） */
-  traceLeft: number;
   /** ask_user 提问面板（bottomBlock 内、待发送区上方：问题 + 选项 + 提示；非空时可见） */
   askBox: BoxRenderable | null;
   askCells: TextRenderable[];
@@ -577,31 +554,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     cmdPanelCells.push(c);
   }
 
-  // 轨迹面板浮层（/trace 右侧栏）：绝对定位右缘（top/left 每帧重算），zIndex 低于
-  // 菜单/命令面板（内容流之上、浮层之下）；展开时内容宽度收缩（computeRows 读
-  // state.traceOpen——对话流右移，线条重新折行，面板不盖内容）。细胞池预分配
-  // 充足行数（视口最高 ~60 行；不参与内容流/滚动）。
-  const traceBox = new BoxRenderable(ctx, {
-    position: 'absolute',
-    zIndex: 8,
-    flexDirection: 'column',
-    visible: false,
-    backgroundColor: theme.suggestBg,
-    border: true,
-    borderStyle: 'rounded',
-    borderColor: theme.suggestBorder,
-    paddingX: 1,
-  });
-  root.add(traceBox);
-  const traceCells: TextRenderable[] = [];
-  for (let i = 0; i < 60; i++) {
-    const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
-    traceBox.add(c);
-    traceCells.push(c);
-  }
-
   // 右上角 toast 浮层（Alert notification）：绝对定位右上角（top=1、右缘=1），
-  // 短暂显示自动消失；zIndex 最高（11）——不被菜单/命令面板/轨迹面板遮挡。
+  // 短暂显示自动消失；zIndex 最高（11）——不被菜单/命令面板遮挡。
   // 宽度按文本显示宽每帧重算（clamp 到视口内）；无 toast 时整体隐藏。
   const toastBox = new BoxRenderable(ctx, {
     position: 'absolute',
@@ -756,11 +710,6 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     cmdPanelOverlay,
     cmdPanelCells,
     cmdPanelBar,
-    traceBox,
-    traceCells,
-    traceRect: null,
-    traceRowMap: [],
-    traceLeft: 0,
     lastRows: [],
     sel: null,
     toastBox,
@@ -1086,16 +1035,24 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const cachePct = state.tokens.prompt > 0 ? Math.min(100, Math.round((state.stats.cached / state.tokens.prompt) * 100)) : 0;
   const cacheText = state.stats.cached > 0 ? (en ? `Cache ${cachePct}%` : `缓存 ${cachePct}%`) : '';
   // 宽度预算：左侧可用 = 行宽 - 根边距(2) - 行 margin(4) - 右侧段；文件夹最小 8 列，
-  // 仍溢出时按 缓存→输入输出 顺序隐藏（上下文恒保留）
+  // 仍溢出时按 缓存→输入输出 顺序隐藏（上下文恒保留）。段间 · 以前缀形式附在后一段
+  // 内容里（无缓存时 Out 与上下文之间不断开，也不留悬空分隔符），宽度按段文本计，
+  // 分隔符 riding 在每段 +1 的间隙 allowance 内（flex gap 实际已留出 1 列）。
   const wCtx = ctxText ? visualWidth(ctxText) : 0;
   const wIO = visualWidth(ioText);
   const wCache = visualWidth(cacheText);
   let showIO = ioText !== '';
   let showCache = cacheText !== '';
-  let rightW = (showIO ? wIO + 1 : 0) + (showCache ? wCache + 1 : 0) + (ctxText ? wCtx + 1 : 0);
+  // 右侧总宽：隐藏后重算，保证不残留已隐藏段的宽度
+  const calcRightW = (): number =>
+    (showIO ? wIO + 1 : 0) +
+    (showCache ? wCache + 1 : 0) +
+    (ctxText ? wCtx + 1 : 0);
+  let rightW = calcRightW();
   while ((showCache || showIO) && (width ?? 80) - 6 - rightW < 8) {
-    if (showCache) { showCache = false; rightW -= wCache + 1; }
-    else { showIO = false; rightW -= wIO + 1; }
+    if (showCache) showCache = false;
+    else showIO = false;
+    rightW = calcRightW();
   }
   const leftAvail = Math.max(8, (width ?? 80) - 6 - rightW);
   // 窄屏退化（用户要求）：全路径放不下时只显示当前文件夹名（basename + 分支）——
@@ -1115,11 +1072,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.footerIO.visible = showIO;
   }
   if (tree.footerCache) {
-    tree.footerCache.content = cacheText;
+    // 缓存段：左侧有可见段时加 · 前缀（IO 隐藏时不留悬空分隔符）；隐藏时内容清空
+    tree.footerCache.content = showCache ? (showIO ? '· ' : '') + cacheText : '';
     tree.footerCache.visible = showCache;
   }
   if (tree.metaCtx) {
-    tree.metaCtx.content = ctxText;
+    // 上下文段：左侧有可见段时加 · 前缀（无缓存时 Out 与上下文之间不断开）；隐藏时内容清空
+    tree.metaCtx.content = ctxText !== '' ? ((showIO || showCache ? '· ' : '') + ctxText) : '';
     tree.metaCtx.visible = ctxText !== '';
     if (ctxText !== '') {
       const pct = contextPercent(lastPrompt, contextLimit);
@@ -1136,9 +1095,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const modelText = `${state.model}${state.provider ? ` ${state.provider}` : ''}`;
   const effortText = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
   if (tree.footerModel && tree.footerMode) {
-    // 模式前缀按模式着色（Build 青 / Plan 洋红，避开思考级别色阶）
+    // 模式前缀循环色（对标 hero 横幅彩虹：bannerHue 驱动，Plan 错相 180°）
     tree.footerMode.content = modeText;
-    tree.footerMode.fg = parseColor(state.planMode ? themeFor(state).modePlan : themeFor(state).modeBuild);
+    tree.footerMode.fg = parseColor(modeCycleColor(state.bannerHue, state.planMode, isLightTheme(theme)));
     tree.footerModel.content = modelText;
   }
   if (tree.footerEffort) {
@@ -1666,73 +1625,6 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
 
-  // 轨迹面板（/trace 右侧栏）：绝对定位右缘浮层（top=1），逐行往下渲染，
-  // 底边不超出视口太多（灰块在左下角，右侧面板无需避让它——灰块不遮面板行）。
-  // 预算 = 视口高 - 8（留若干行给底部灰块 + 统计行 + 内边距）。hero 居中模式下
-  // footerTop 较小（灰块上移），但面板高度不受影响——用全视口而非 footerTop 计算。
-  // 展开时对话流宽度收缩在 computeRows（读 state.traceOpen）——内容右移重新折行，
-  // 面板不盖内容。行级命中：内部行 i → 事件坐标 y = top + 1 + i（border 1 行）；
-  // rowMap 记录 行 → traceRows 绝对下标（-1 = 标题/提示行，-2 = 详情页返回行）。
-  // **两级页面**：列表页（traceDetail 为 null）点击行推入详情页；详情页
-  //（traceDetail 非空）显示返回行 + 完整内容（点击返回行/Esc 回列表）。
-  if (tree.traceBox) {
-    const tOpen = state.traceOpen;
-    tree.traceBox.visible = tOpen;
-    if (tOpen && (height ?? 24) > 9) {
-      tree.traceBox.backgroundColor = theme.suggestBg; // 主题可能切换（/theme 或检测晚到）
-      tree.traceBox.borderColor = parseColor(theme.suggestBorder);
-      const maxRows = Math.max(3, (height ?? 24) - 7);
-      // 详情页（点击轨迹行推入）：返回行 + 行标题 + 完整内容（折行不截断）；
-      // 内容超预算时窗口滚动（复用 traceScroll，底部对齐 + 顶部提示）
-      const detail = state.traceDetail;
-      let lines: ReturnType<typeof tracePanelLines>['lines'];
-      let rowMap: ReturnType<typeof tracePanelLines>['rowMap'];
-      if (detail) {
-        const all = traceDetailLines(state, detail.rowIdx, TRACE_TEXT_COLS);
-        const contentRows = Math.max(1, maxRows - 1); // 顶部提示位（滚动时）
-        const maxScroll = Math.max(0, all.lines.length - contentRows);
-        const scroll = Math.min(Math.max(0, state.traceScroll), maxScroll);
-        const end = all.lines.length - scroll;
-        const start = Math.max(0, end - contentRows);
-        lines = [];
-        rowMap = [];
-        if (start > 0) {
-          lines.push({ text: tf(state.language, 'trace.scrollUp', { n: start }), style: { dim: true } });
-          rowMap.push(-1);
-        }
-        for (let i = start; i < end; i++) {
-          lines.push(all.lines[i]);
-          rowMap.push(all.rowMap[i]);
-        }
-      } else {
-        ({ lines, rowMap } = tracePanelLines(state, footerTop, maxRows));
-      }
-      const panelRows = Math.min(lines.length, maxRows);
-      tree.traceBox.top = 1;
-      tree.traceBox.left = Math.max(1, (width ?? 80) - TRACE_W - 1); // 右缘贴内容区右边界（root paddingX 1）
-      tree.traceLeft = Math.max(1, (width ?? 80) - TRACE_W - 1); // 面板边框盒起始列（屏幕 0-based 事件坐标）
-      for (let i = 0; i < tree.traceCells.length; i++) {
-        const cell = tree.traceCells[i];
-        if (i >= panelRows) {
-          cell.visible = false;
-          continue;
-        }
-        cell.visible = true;
-        try {
-          const l = lines[i];
-          applyRowToCell(cell, { text: l.text, style: l.style }, theme);
-        } catch (e) {
-          logCrash('trace-row', e);
-        }
-      }
-      tree.traceRect = { top: tree.traceBox.top + 1, bottom: tree.traceBox.top + panelRows };
-      tree.traceRowMap = rowMap.slice(0, panelRows);
-    } else {
-      tree.traceRect = null;
-      tree.traceRowMap = [];
-    }
-  }
-
   // 右上角 toast（Alert notification）：短暂显示自动消失，不占对话流、不阻塞输入。
   // 绝对定位右上角（top=1、右缘=1）；宽度按文本显示宽重算（clamp 到视口内，长文截断）；
   // 类型着色：success 绿 / error 红 / info 默认；主题切换（/theme 或检测晚到）底色跟随刷新。
@@ -1753,7 +1645,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const textW = visualWidth(full);
       const w = Math.min(textW, avail);
       const shown = textW > avail ? full.slice(0, Math.max(0, fitCount(full, avail - 1))) + '…' : full;
-      // 浮层宽度由内容自适应（同 traceBox：OpenTUI 由子文本决定宽，显式 width 会压缩内部）
+      // 浮层宽度由内容自适应（OpenTUI 由子文本决定宽，显式 width 会压缩内部）
       tree.toastBox.top = 1;
       tree.toastBox.left = Math.max(1, (width ?? 80) - (w + 2) - 1); // 右缘贴视口右边界
       tree.toastCell.visible = true;
@@ -2088,35 +1980,6 @@ export function handleTuiMouseEvent(
         void paint();
         return;
       }
-    }
-    // 轨迹面板（/trace 右侧栏）：x ≥ traceLeft 且 y 命中面板内部行。
-    // 详情页：点击返回行（rowMap -2）→ 回列表；内容行无操作。
-    // 列表页：点击轨迹行 → **推入详情页**（rowIdx 快照）；标题/提示行不触发。
-    if (
-      state.traceOpen &&
-      tree.traceRect &&
-      typeof e.x === 'number' &&
-      e.x >= tree.traceLeft &&
-      e.y >= tree.traceRect.top &&
-      e.y <= tree.traceRect.bottom
-    ) {
-      const panelIdx = e.y - tree.traceRect.top;
-      const rowIdx = tree.traceRowMap[panelIdx];
-      if (state.traceDetail) {
-        // 详情页：返回行恒为面板第 1 行（traceDetailLines 固定结构）——直接按
-        // panelIdx 判断，不依赖 traceRowMap（点击推入详情页后 paint 异步刷新前，
-        // 同帧第二次点击读到的还是列表页的旧 rowMap——快照同帧点击暴露）
-        if (panelIdx === 0) {
-          state.traceDetail = null; // 点击返回行：回列表页
-          state.traceScroll = 0;
-        }
-      } else if (rowIdx !== undefined && rowIdx >= 0) {
-        state.traceSelected = rowIdx;
-        state.traceDetail = { rowIdx }; // 推入详情页
-        state.traceScroll = 0;
-      }
-      void paint();
-      return;
     }
     // 命令联想 / @ 提及浮层：点击某项 → 填入（命令填 /cmd ；提及按文件/目录插入）。
     // 行 → items 下标经 tree.suggestRowMap 映射（-1 = ↑/↓ 提示行，点击忽略）

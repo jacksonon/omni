@@ -119,7 +119,7 @@ export async function runSubagent(
 ): Promise<string> {
   // Hooks：SubagentStart（fire-and-forget，任务回传；失败静默）
   opts.hooks?.subagentStart(task);
-  // 进度事件：start（UI 可视化 + /trace 嵌套树的根）
+  // 进度事件：start（UI 可视化 + /trace 账本嵌套的根）
   emit(opts, { type: 'start', task });
   const t0 = Date.now();
   const maxSteps = opts.maxSteps ?? 10;

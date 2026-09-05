@@ -125,6 +125,17 @@ export function contextReport(
   return lines;
 }
 
+/** /status（合并版）：状态汇总 + 上下文用量（原 /context 内容并入，不再单独成命令） */
+export function fullStatusReport(
+  status: StatusInput,
+  ctx: { messages: ChatCompletionMessageParam[]; summarizeAt: number; compressRatio?: number }
+): string[] {
+  return [
+    ...statusReport(status),
+    ...contextReport(ctx.messages, ctx.summarizeAt, status.contextWindow, ctx.compressRatio),
+  ];
+}
+
 /** 脚手架 system 前缀（记忆/技能/预载）——与 session.ts 的 SKIP_PREFIXES 保持一致 */
 const SCAFFOLD_PREFIXES = ['[项目记忆', '[全局记忆', '[已发现技能', '[已按任务预载'] as const;
 
