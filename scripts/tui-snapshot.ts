@@ -4226,7 +4226,8 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 37 面板未只列同目录会话: ${JSON.stringify(s37.menu)}`);
     process.exit(1);
   }
-  // b) Enter 确认 → 记录意图（sessionPick），交互层下一轮异步加载恢复
+  // b) Enter 确认 → 记录意图（sessionPick），交互层即时排空加载恢复（确认即加载，
+  // 不等下一次提交；run 在飞时跳过、循环开头兜底）
   const { handleMenuKey: handleMenuKey37 } = cmd37;
   if (!handleMenuKey37({ name: 'return' } as never, s37) || s37.menu !== null || s37.sessionPick !== sid37) {
     console.error(`✗ 场景 37 面板确认未记录会话意图: pick=${s37.sessionPick} menu=${JSON.stringify(s37.menu)}`);
@@ -4381,29 +4382,31 @@ async function main(): Promise<void> {
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
   // hero 居中窗口 4 个选项（12..15 = 会话 7..4）→ 上下提示「↑ 还有 12 个 / ↓ 还有 4 个」
-  for (const expect of ['会话 7 ·', '会话 4 ·', '↑ 还有 12 个', '↓ 还有 4 个']) {
+  //（标题居左 + 条数右对齐的新格式：断言标题在窗内，不再带 `·`）
+  for (const expect of ['会话 7', '会话 4', '↑ 还有 12 个', '↓ 还有 4 个']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
   // 窗口 4 行（12..15），窗口外为 15/9/2
-  for (const outside of ['会话 9 ·', '会话 2 ·', '会话 15 ·']) {
+  for (const outside of ['会话 9', '会话 2', '会话 15']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
   // h7) 面板不显示模型名（用户确认「session 不需要显示模型名称」）+ 超长文本不撑破布局：
-  //     cardContentLine 对超宽内容兜底截断（省略号），行总宽恒 = contentWidth
+  //     cardContentLine 对超宽内容兜底截断（省略号），行总宽恒 = contentWidth；
+  //     标题居左 + 条数 right 右对齐撑满整行（用户要求单条文本撑满宽度）
   const s37h7 = createTuiState();
   await cmd37.openSessionMenu(s37h7, null);
   if (
     !s37h7.menu ||
     s37h7.menu.options.some((o) => o.label.includes('super-long-model-name')) ||
-    !s37h7.menu.options.some((o) => o.label.includes('会话 0 · 1 条'))
+    !s37h7.menu.options.some((o) => o.label.includes('会话 0') && o.right === '1 条')
   ) {
-    console.error(`✗ 场景 37 面板仍显示模型名或 label 格式错误: ${JSON.stringify(s37h7.menu?.options)}`);
+    console.error(`✗ 场景 37 面板仍显示模型名或 label/right 格式错误: ${JSON.stringify(s37h7.menu?.options)}`);
     process.exit(1);
   }
   const fmt37 = await import('../src/output/format.js');

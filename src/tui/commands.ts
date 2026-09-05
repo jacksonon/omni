@@ -1797,10 +1797,12 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
     id: 'session',
     title: t(state.language, 'menu.session.title'),
     options: shown.map((s) => ({
-      // 只显示「标题 · N 条」—— 不显示模型名：对选择会话信息量低，且模型名
-      // 超长会撑破面板（用户反馈「模型过长超出显示范围」；cardContentLine 另有兜底截断）。
-      // 标题按显示列截断（CJK 全角 2 列）+ 省略号；无标题回退 id 前 16 字符。
-      label: `${truncateToWidth(s.title || s.id.slice(0, 16), 24)} · ${s.messages} 条`,
+      // 标题居左、条数右对齐（menuPanelRows 按 right 撑满整行）—— 不显示模型名：
+      // 对选择会话信息量低，且模型名超长会撑破面板（用户反馈「模型过长超出显示范围」；
+      // cardContentLine 另有兜底截断）。标题按显示列截断（CJK 全角 2 列）+ 省略号；
+      // 无标题回退 id 前 16 字符。
+      label: truncateToWidth(s.title || s.id.slice(0, 16), 24),
+      right: `${s.messages} 条`,
       value: s.id,
     })),
     selectedIndex: 0,

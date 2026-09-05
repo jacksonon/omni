@@ -1998,6 +1998,9 @@ export function handleTuiMouseEvent(
         // 确认提示进面板后短暂停留自动收起（与键盘路径一致——键盘由 interactive 菜单
         // 分支调度；鼠标点选此前漏调度，「切换语言提示始终显示不消失」的根因）
         scheduleCmdPanelAutoClose(state, session, autoCloseDelayMs);
+        // 面板确认意图即时消费（键盘路径同语义；render 够不到 interactive 作用域，
+        // 经 state 回调排空；run 在飞时回调内跳过，循环开头兜底）
+        state.drainMenuIntents?.();
         void paint();
       }
     }

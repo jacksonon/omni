@@ -210,6 +210,108 @@ export async function runTuiInteractive(
     if (hasUser) out.onTurnEnd();
   };
 
+  /**
+   * 菜单确认意图即时消费（/session /rewind /mcp /skill /context 面板 Enter/数字/点击确认后）：
+   * confirmMenu 是纯 state 操作，只记录意图——以前只在每轮循环开头消费，
+   * 确认后必须再提交一次任意输入才生效（用户反馈「首次 /session 选择不加载，
+   * 第二次才加载」）。现在确认后立即排空：keypress/mouse 确认路径直接调，
+   * 每轮开头保留一次兜底（run 在飞时跳过即时消费，意图留到本轮结束）。
+   * 幂等：消费先同步清空意图字段，重复调用 no-op。
+   */
+  const drainMenuIntents = async (): Promise<void> => {
+    // /session 面板确认：恢复所选会话（异步加载；处理完清空意图）
+    if (state.sessionPick) {
+      const pick = state.sessionPick;
+      state.sessionPick = null;
+      const file = await findSessionById(pick);
+      if (!file) {
+        pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」不存在（/session 查看列表）` }, '/session');
+      } else {
+        const loaded = await loadSession(file);
+        if (!loaded) {
+          pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」加载失败` }, '/session');
+        } else {
+          await restoreSession(file, loaded.messages);
+          // 恢复会话标题（若有）→ 终端窗口标题
+          if (loaded.meta.title) {
+            state.sessionTitle = loaded.meta.title;
+            setTerminalTitle(loaded.meta.title);
+          }
+          pushCmdLine(
+            state,
+            `已继续会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`,
+            '/session'
+          );
+        }
+      }
+      await session.paint();
+    }
+    // /rewind 面板确认：回滚到所选检查点的文件状态（只改工作区文件，对话保留；
+    // 处理完清空意图）
+    if (state.rewindPick != null) {
+      const n = state.rewindPick;
+      state.rewindPick = null;
+      const target = await loadCheckpoint(runOpts.sessionPath, n);
+      if (!target) {
+        pushCmdLine(state, { kind: 'warn', text: `/rewind <序号>：检查点 #${n} 不存在（/rewind 查看列表）` }, '/rewind');
+      } else {
+        const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
+        pushCmdLine(state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` }, '/rewind');
+        for (const r of results) pushCmdLine(state, { kind: 'meta', text: `· ${r}` }, '/rewind');
+        messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+      }
+      await session.paint();
+    }
+    // /mcp 面板确认：srv:<name> 输出服务器详情 / __reconnect__ 异步重建工具链
+    if (state.mcpPick) {
+      const pick = state.mcpPick;
+      state.mcpPick = null;
+      if (pick === '__reconnect__') {
+        pushCmdLine(state, { kind: 'meta', text: '正在重连 MCP 服务器…' }, '/mcp');
+        await session.paint();
+        closeMcpClients();
+        const handles = await discoverMcpServers(runOpts.mcpServers);
+        runOpts.mcpHandles = handles;
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
+        const instrContent = mcpInstructionsMessage(handles);
+        if (instrContent) {
+          const instrPrefix = '[MCP server instructions';
+          const existingIdx = messages.findIndex(
+            (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
+          );
+          const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
+          if (existingIdx >= 0) messages[existingIdx] = instrMsg;
+          else messages.unshift(instrMsg);
+        }
+        pushCmdLine(state, { kind: 'meta', text: '已重连（工具链已更新，新工具对模型可见）' }, '/mcp');
+      } else if (pick.startsWith('srv:')) {
+        const name = pick.slice(4);
+        for (const l of mcpServerDetailLines(name, runOpts.mcpServers ?? {}, runOpts.mcpHandles ?? [])) {
+          pushCmdLine(state, { kind: 'meta', text: l }, '/mcp');
+        }
+      }
+      await session.paint();
+    }
+    // /skill 面板确认：加载所选技能完整内容
+    if (state.skillPick) {
+      const name = state.skillPick;
+      state.skillPick = null;
+      await pushSkillShow(state, name);
+      await session.paint();
+    }
+    // /context 面板确认：落盘 + 同步运行时（与直接键入同语义）
+    if (state.contextLimitSave != null) {
+      const v = state.contextLimitSave;
+      state.contextLimitSave = null;
+      applyContextLimitChoice(state, runOpts.cfg, runOpts, state.model, v === 'clear' ? 'clear' : Number(v));
+      await session.paint();
+    }
+  };
+  // 鼠标确认路径（render.ts 菜单点击）够不到本作用域——经 state 回调排空意图
+  state.drainMenuIntents = (): void => {
+    if (!state.loading) void drainMenuIntents().then(() => session.paint().catch(() => {}));
+  };
+
   // Ctrl+X 前缀快捷键的目标上下文：ctx 在每轮循环内重建（含当前 client/model），
   // 这里在循环里每轮更新引用——前缀动作（/settings theme /permission /undo 等）
   // 与手输斜杠命令走同一 runCommand 分发，完全等价。
@@ -310,6 +412,12 @@ export async function runTuiInteractive(
       // 菜单确认（Enter/数字）后：确认提示进面板，短暂停留后自动收起（无需按 Esc 关闭）
       if (!state.menu && state.cmdPanel && state.cmdPanel.lines.length > 0) {
         scheduleCmdPanelAutoClose(state, session);
+      }
+      // 面板确认意图即时消费（确认关菜单的同时加载/回滚/重建，不等下一次提交；
+      // run 在飞时跳过，意图留到本轮结束——drainMenuIntents 幂等，循环开头会兜底）
+      if (!state.menu && !state.loading &&
+        (state.sessionPick || state.rewindPick != null || state.mcpPick || state.skillPick || state.contextLimitSave != null)) {
+        void drainMenuIntents().then(() => session.paint().catch(() => {}));
       }
       paintNow();
       return;
@@ -632,93 +740,9 @@ export async function runTuiInteractive(
           }
         }
       }
-      // /session 面板确认：恢复所选会话（异步加载；每轮只处理一次，处理完清空意图）
-      if (state.sessionPick) {
-        const pick = state.sessionPick;
-        state.sessionPick = null;
-        const file = await findSessionById(pick);
-        if (!file) {
-          pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」不存在（/session 查看列表）` }, '/session');
-        } else {
-          const loaded = await loadSession(file);
-          if (!loaded) {
-            pushCmdLine(state, { kind: 'warn', text: `会话「${pick}」加载失败` }, '/session');
-          } else {
-            await restoreSession(file, loaded.messages);
-            // 恢复会话标题（若有）→ 终端窗口标题
-            if (loaded.meta.title) {
-              state.sessionTitle = loaded.meta.title;
-              setTerminalTitle(loaded.meta.title);
-            }
-            pushCmdLine(
-              state,
-              `已继续会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`,
-              '/session'
-            );
-          }
-        }
-        await session.paint();
-      }
-      // /rewind 面板确认：回滚到所选检查点的文件状态（只改工作区文件，对话保留；
-      // 每轮只处理一次，处理完清空意图）
-      if (state.rewindPick != null) {
-        const n = state.rewindPick;
-        state.rewindPick = null;
-        const target = await loadCheckpoint(runOpts.sessionPath, n);
-        if (!target) {
-          pushCmdLine(state, { kind: 'warn', text: `/rewind <序号>：检查点 #${n} 不存在（/rewind 查看列表）` }, '/rewind');
-        } else {
-          const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-          pushCmdLine(state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` }, '/rewind');
-          for (const r of results) pushCmdLine(state, { kind: 'meta', text: `· ${r}` }, '/rewind');
-          messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
-        }
-        await session.paint();
-      }
-      // /mcp 面板确认：srv:<name> 输出服务器详情 / __reconnect__ 异步重建工具链
-      if (state.mcpPick) {
-        const pick = state.mcpPick;
-        state.mcpPick = null;
-        if (pick === '__reconnect__') {
-          pushCmdLine(state, { kind: 'meta', text: '正在重连 MCP 服务器…' }, '/mcp');
-          await session.paint();
-          closeMcpClients();
-          const handles = await discoverMcpServers(runOpts.mcpServers);
-          runOpts.mcpHandles = handles;
-          runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
-          const instrContent = mcpInstructionsMessage(handles);
-          if (instrContent) {
-            const instrPrefix = '[MCP server instructions';
-            const existingIdx = messages.findIndex(
-              (m) => typeof m.content === 'string' && m.content.startsWith(instrPrefix)
-            );
-            const instrMsg = { role: 'system' as const, content: `${instrPrefix}]\n${instrContent}` };
-            if (existingIdx >= 0) messages[existingIdx] = instrMsg;
-            else messages.unshift(instrMsg);
-          }
-          pushCmdLine(state, { kind: 'meta', text: '已重连（工具链已更新，新工具对模型可见）' }, '/mcp');
-        } else if (pick.startsWith('srv:')) {
-          const name = pick.slice(4);
-          for (const l of mcpServerDetailLines(name, runOpts.mcpServers ?? {}, runOpts.mcpHandles ?? [])) {
-            pushCmdLine(state, { kind: 'meta', text: l }, '/mcp');
-          }
-        }
-        await session.paint();
-      }
-      // /skill 面板确认：加载所选技能完整内容
-      if (state.skillPick) {
-        const name = state.skillPick;
-        state.skillPick = null;
-        await pushSkillShow(state, name);
-        await session.paint();
-      }
-      // /context 面板确认：落盘 + 同步运行时（与直接键入同语义）
-      if (state.contextLimitSave != null) {
-        const v = state.contextLimitSave;
-        state.contextLimitSave = null;
-        applyContextLimitChoice(state, runOpts.cfg, runOpts, state.model, v === 'clear' ? 'clear' : Number(v));
-        await session.paint();
-      }
+      // 面板确认意图排空（/session /rewind /mcp /skill /context：drainMenuIntents；
+      // 确认路径已即时消费，这里是 run 在飞时跳过的兜底 + 其它意图的安全网）
+      await drainMenuIntents();
       // 菜单打开时跳过“等待输入”状态刷新（会清掉面板提示）；面板由 keypress handler 驱动
       // 待发送积压优先：回合结束后自动消费——steer（打断）消息插入时在最前、queue 追加在末尾，
       // shift() 天然按 打断优先 → 排队顺序 发送；用户可在此之前用 ↑ 选中管理（排序/删除/编辑）

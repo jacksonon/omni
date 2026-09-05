@@ -21,7 +21,7 @@ import {
 } from '../output/format.js';
 import { INLINE_CODE_FG, markdownToRows, type MdChunk } from './markdown.js';
 import { t, tf, type TuiLang } from './i18n.js';
-import { CONTENT_PAD, STREAM_CURSOR, colToChar, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
+import { CONTENT_PAD, STREAM_CURSOR, colToChar, fitCount, formatCompact, formatToolDur, userPadRow, wrapChunks, wrapRow, wrapUserLine } from './layout.js';
 import { visualWidth } from './width.js';
 import { isLightTheme, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, type CmdPanel, type TuiLineKind, type TuiMenu, type TuiState, type ToolStatus } from './state.js';
@@ -376,8 +376,24 @@ export function menuPanelRows(
     }
     const cursor = k === menu.selectedIndex ? '› ' : '  ';
     const check = opt.value === menu.currentValue ? ' ✓' : '';
+    // 右对齐尾段（session 条数等）：左 label + 右 right 撑满整行（用户要求单条文本撑满宽度）
+    // 预算 = contentWidth - 2（flatPanelLine 内 truncateToWidth 留 width-2 列 + `…`，
+    // 行首再占 1 列空格；超预算会被它截断吃字——`条` 变 `…` 的根因）
+    const right = typeof opt.right === 'string' && opt.right ? opt.right : '';
+    let rowText = `${cursor}${opt.label}${check}`;
+    if (right) {
+      const budget = contentWidth - 2;
+      const maxLeft = Math.max(4, budget - 2 - visualWidth(right));
+      let left = rowText;
+      if (visualWidth(left) > maxLeft) {
+        const cut = fitCount(left, maxLeft - 1);
+        left = `${left.slice(0, Math.max(0, cut))}…`;
+      }
+      const gap = Math.max(2, budget - visualWidth(left) - visualWidth(right));
+      rowText = `${left}${' '.repeat(gap)}${right}`;
+    }
     rows.push({
-      text: flatPanelLine(`${cursor}${opt.label}${check}`, contentWidth),
+      text: flatPanelLine(rowText, contentWidth),
       style: k === menu.selectedIndex ? { fg: 'cyan', bold: true } : {},
       menuIdx: k,
     });

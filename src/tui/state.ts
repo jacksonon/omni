@@ -222,7 +222,7 @@ export interface TuiMenu {
   /** 面板标题（如「主题」） */
   title: string;
   /** 选项（group=true 为分组头行：dim 展示、不可选中、不参与 ↑/↓/数字选择） */
-  options: { label: string; value: string; group?: boolean }[];
+  options: { label: string; value: string; group?: boolean; right?: string }[];
   /** 当前高亮的选项下标（› 光标） */
   selectedIndex: number;
   /** 当前生效的值（✓ 标记） */
@@ -493,6 +493,12 @@ export interface TuiState {
    * 上下文上限随新模型刷新，不再等下一次提交（同 cancelRun 的 state 回调模式）。
    */
   applyModelSwitch?: () => void;
+  /**
+   * 面板确认意图即时排空回调（runTuiInteractive 注入 drainMenuIntents）。
+   * /session /rewind /mcp /skill /context 面板确认只记意图——键盘/鼠标确认路径
+   * 调它立即消费（加载/回滚/重建不等下一次提交）；run 在飞时内部跳过，循环开头兜底。
+   */
+  drainMenuIntents?: () => void;
   /**
    * 待持久化的思考级别（/variants 面板确认时写入，interactive 每轮消费并写入
    * 配置文件顶层 reasoningEffort 字段——下次启动仍是切换后的思考级别）。
