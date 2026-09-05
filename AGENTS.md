@@ -164,6 +164,12 @@ src/
                         #   设置·模型配置为单一滚动视图（列表完全展开，随 .settings-content 整体一滚到底，无嵌套滚动）；
                         #   模型列表加载时（空列表）不显示灰底（.mc-tbody.bare —— 简体 loading），自动获取只在首次
                         #   （localStorage 持久化 omni.mcAutoFetched_<provider> 标记，之后需手动点「获取/刷新模型列表」）
+                        #   输入区斜杠命令直达原生 UI（非纯面板）：/model·/variants 无参开模型面板（有参走后端但渲染为通知+面板重绘）/
+                        #   /permission 无参开权限 pop（有参后端切换+通知）/ /plan 直切开关+通知 / /settings 开设置面板（支持面板名直达）/
+                        #   /rewind 开检查点面板（<N> 直接 REST 回滚）/ /fork 开分叉对话框（<N> 直接 REST 分叉）/ /export 直接下载 /
+                        #   /rename 走 REST（广播 title）/ /session·/resume 开切换面板（有参本地匹配直达）/ /clear 走后端但只通知不清面板；
+                        #   纯文本命令（/status /context /diff /review 等）保留 cmd-panel；后端 /rename 广播 title、/fork 广播 session.created、
+                        #   /settings 兜底提示面板位置（前端拦截为主）
   cli/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
@@ -292,7 +298,7 @@ for step in 1..maxSteps:
 | `skill` | **技能**：按 name 加载已安装技能（SKILL.md）的完整指令内容（对标 opencode；只读，不修改文件） |
 | `web_search` | **Web 搜索**（运行时注入，Brave Search API）：关键词 → 搜索结果列表（标题/URL/摘要）；key 配 `webSearchApiKey` 或环境变量 `BRAVE_API_KEY`，结果可再交 `web_fetch` 抓取 |
 | `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方**扁平面板**（无边框/无底色，紧贴输入区；A-D 勾选 / **独立自定义输入**——打字进面板缓冲不进主输入框 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
-| `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）
+| `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）。**过程可视化（1.0）**：运行中的 delegate 在**输入区上方面板**（command 样式——TUI delegateBox / Web #delegate-panel）逐条显示，进度事件带工具配对 seq 精确归集（并行/嵌套不互相覆盖）；点击就地展开查看思考（think）与工具调用明细（toolStart/toolEnd）；展开内 **⏹ 停止**（per-subagent AbortController——断流/步间退出，不再幽灵跑完）；完成后面板行移除、对话流留结果摘要卡（点击展开全过程） |
 | `/skill` 命令 | **技能管理**（TUI/CLI 交互）：`/skill` 列出已发现（含标签：全局/仅手动/子代理）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性） |
 | `/compact` 命令 | **手动压缩上下文**：把旧消息合并为摘要（复用 summarizeContext，保留最近 8 条原文）
 | `/agents` 命令 | **查看子代理配置**：delegate 启用状态 / 模型 / 步骤上限 / 子代理可用工具 + 已发现子代理定义（`.agents/subagents/*.md`，只读）

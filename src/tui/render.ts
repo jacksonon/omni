@@ -72,6 +72,7 @@ import { visualWidth } from './width.js';
 import {
   cmdPanelRows,
   computeRows,
+  delegatePanelRows,
   hitTestApproval,
   hitTestCard,
   hitTestThinking,
@@ -206,6 +207,14 @@ export interface TuiTree {
   /** 任务清单小视图（输入框上方、待发送区上方：todo_write 更新实时显示 ✓/▸/·） */
   todoBox: BoxRenderable | null;
   todoCells: TextRenderable[];
+  /**
+   * 运行中 delegate 面板（输入框正上方、todo/待发送区上方：command 样式——footerBg
+   * 底 + 左侧深灰竖线；每条运行中 delegate 一行，点击展开明细 + ⏹ 停止）。
+   */
+  delegateBox: BoxRenderable | null;
+  delegateCells: TextRenderable[];
+  /** 每次重绘刷新：delegate 面板行的屏幕 y → 动作（toggle 展开/收起 · stop 停止；点击命中用） */
+  delegateRects: Map<number, { run: number; kind: 'toggle' | 'stop' }>;
   /** 每次重绘刷新：待发送消息行的屏幕 y → pending 下标（点击选中用；仅消息行，不含标题/还有 N 条） */
   pendingRects: Map<number, number>;
   /** 每次重绘刷新：卡片 id → 本次可见的屏幕 y 范围（点击命中用） */
@@ -297,6 +306,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   const queueCells: TextRenderable[] = [];
   let todoBox: BoxRenderable | null = null;
   const todoCells: TextRenderable[] = [];
+  let delegateBox: BoxRenderable | null = null;
+  const delegateCells: TextRenderable[] = [];
   let askBox: BoxRenderable | null = null;
   const askCells: TextRenderable[] = [];
   if (opts?.withInput) {
@@ -444,6 +455,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     metaRow.add(metaCtx);
     // 注意：metaRow 挂到 root 尾部（bottomBlock 之后，见 mount 末尾）——
     // 早挂会被渲染到内容区顶部（root 子节点顺序 = 渲染顺序）
+    // hero（无对话 / /clear 后回到初始居中态）下整行隐藏——该行的左侧文件夹
+    // 与右侧上下文/输入输出都随「对话是否存在」出现，初始态不显示
+    metaRow.visible = false;
   }
 
   // 子节点顺序：内容行（动态）→ 状态栏 → 灰色块（marginTop:auto 钉底）。
@@ -608,11 +622,15 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   //（每条一行「N queued · 文本」，对标 Claude Code queued 样式——用户要求），不参与
   // 内容区滚动；回合结束后 interactive 按序消费。行数随 pending 长度变化（最多 4 条 +
   // 超出时「还有 N 条」1 行）。
+  // **command 面板同款样式**（用户要求）：输入区同底色 footerBg（与灰色块连成一体，
+  // 待发送区紧贴输入区上方）+ 行首左侧深灰竖线 ▍（同联想/命令面板写法，行内逐行渲染）。
+  // paddingX 0——竖线贴面板左缘（与灰块圆角边框同列），行内容用「▍ + 空格」自排版。
   queueBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
-    paddingX: 1,
+    paddingX: 0,
     gap: 0,
     visible: false,
+    backgroundColor: theme.footerBg,
   });
   for (let i = 0; i < 7; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
@@ -623,11 +641,14 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   // 任务清单小视图：待发送区上方（todo_write 工具更新 → RunOptions.onTodo 镜像
   // state.todoList → 这里渲染 ✓ 完成 / ▸ 进行中 / · 待办，最多 4 条 + 超出提示）。
   // 空清单隐藏（不占布局）。显示但不点击（todo 状态由模型维护，非用户操作对象）。
+  // 与待发送区同款 command 面板背景 + 左侧竖线——两者都紧贴输入区，视觉上是一整块
+  // 从灰块向上延伸的连续面板（todo 在上、queue 在下）。
   todoBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
-    paddingX: 1,
+    paddingX: 0,
     gap: 0,
     visible: false,
+    backgroundColor: theme.footerBg,
   });
   for (let i = 0; i < 6; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
@@ -652,6 +673,24 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     askCells.push(c);
   }
 
+  // 运行中 delegate 面板（ask 之下、todo/queue 之上）：**command 面板同款样式**——
+  // footerBg 底 + 行首深灰竖线 ▍（同 queue/todo 面板，视觉上从灰块向上连续延伸）。
+  // 每条运行中 delegate 一行：`→ 子代理 · 摘要`（可点击展开明细 + ⏹ 停止）；
+  // 空列表隐藏（不占布局）。细胞池预分配充足行数（单条展开明细最多约 12 行 + 标题，
+  // 并行最多 3 条 → 池 48 行；超出部分不渲染（池不足时行数预算已收缩内容区）。
+  delegateBox = new BoxRenderable(ctx, {
+    flexDirection: 'column',
+    paddingX: 0,
+    gap: 0,
+    visible: false,
+    backgroundColor: theme.footerBg,
+  });
+  for (let i = 0; i < 48; i++) {
+    const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    delegateBox.add(c);
+    delegateCells.push(c);
+  }
+
   // 底部固定块：**待发送消息区 + 灰色块** 一起钉在视口底部（marginTop:auto 吸收
   // 自由空间——待发送区永远紧贴输入框上方，不随内容浮动；点击命中区域因此确定）。
   // 空待发送时 queueBox 不可见（不占布局），底部块只剩灰色块，行为与之前一致。
@@ -660,6 +699,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     marginTop: 'auto',
   });
   if (askBox) bottomBlock.add(askBox);
+  if (delegateBox) bottomBlock.add(delegateBox);
   if (todoBox) bottomBlock.add(todoBox);
   if (queueBox) bottomBlock.add(queueBox);
   if (footerBox) bottomBlock.add(footerBox);
@@ -693,6 +733,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     queueCells,
     todoBox,
     todoCells,
+    delegateBox,
+    delegateCells,
+    delegateRects: new Map(),
     pendingRects: new Map(),
     cardRects: new Map(),
     thinkingRects: new Map(),
@@ -829,9 +872,12 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 任务清单小视图（待发送区上方）行数预算：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）。
   const todoCount = state.todoList.length;
   const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) : 0;
+  // 运行中 delegate 面板（输入区上方、ask 之下）：折叠 1 行/条，展开加明细（delegatePanelRows 纯函数，
+  // 与 computeRows/hero 预算同源——delegateBox 实际渲染行数 = 该值，见下方 delegateBox 渲染段）。
+  const delegateRows = opts?.withInput ? delegatePanelRows(state) : 0;
   // 灰色块顶部（0-based 屏幕行）。联想/菜单/命令面板浮层共用：
   // 浮层底边钳制在此行上方——永不遮住输入区。inputLines 刷新后（下方 if 块内）重新赋值。
-  let footerTop = (height ?? 24) - 7 - pendingRows - todoRows - 1;
+  let footerTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - 1;
   // 状态栏：dark 保持 dim 白字（原样）；light 去掉 dim 属性 + 显式深灰文字
   //（浅底上 dim 白字看不见，dim+深灰又会半亮发浅）
   (tree.status as { attributes?: number }).attributes = createTextAttributes(isLightTheme(theme) ? {} : { dim: true });
@@ -864,17 +910,19 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     // 居中组（自上而下）：状态栏 marginTop(1)——hero 隐藏「就绪」后空文本高 0 但
     // margin 仍占 1 行（visible=false 不摘除布局节点，探针实测）+ 大号字标
     //（OMNI_BANNER = HERO_LINES 行）+ 间距(1) + 底部固定块[灰色块 inputLines+4 +
-    // 任务清单 todoRows + 待发送区 pendingRows + ask 面板] + 灰块外底行(margin 1 + 行 1)。
+    // 任务清单 todoRows + 待发送区 pendingRows + ask 面板]。灰块外底行（metaRow，
+    // margin 1 + 行 1）hero 下整行隐藏：visible=false 摘除内容行但 marginTop:1
+    // 残留占 1 行（探针实测），故组高只计 margin 1 行——按全 2 行预算会让居中偏上。
     const inputLines = Math.max(1, state.inputLines);
     const askRows = state.ask ? state.ask.options.length + 5 : 0;
-    const groupH = 1 + HERO_LINES + 1 + todoRows + pendingRows + askRows + (inputLines + 4) + 2;
+    const groupH = 1 + HERO_LINES + 1 + todoRows + pendingRows + delegateRows + askRows + (inputLines + 4) + 1;
     // 居中偏移 = 内容盒（视口 - 根 paddingY 2）剩余空间的一半，**round 而非 floor**：
     // yoga 对半行居中做四舍五入（floor 会在奇数剩余时把灰块算低 1 行 → 联想浮层
     // 与输入区之间漏出 1 行缝隙；40 例宽高矩阵探针实测，见 scripts/probe-tmp/dbg-hero-formula.ts）
     const groupTop = Math.max(1, 1 + Math.round(((height ?? 24) - 2 - groupH) / 2));
-    // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - todoRows - inputLines
+    // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - todoRows - delegateRows - inputLines
     const grayTopCentered = groupTop + 1 + HERO_LINES + 1;
-    const grayTopBottom = (height ?? 24) - 7 - pendingRows - todoRows - inputLines;
+    const grayTopBottom = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - inputLines;
     heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
@@ -891,10 +939,25 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     // **必须用显式 width 而非 maxWidth**：alignSelf:center 下容器宽 = 内容宽，flexGrow
     // 没有剩余空间可分 → maxWidth 设多大都不会撑开（实测盒子缩到内容宽）。显式 width
     // 给了确定宽度供 contentCol flexGrow 填满 + 居中。退出 hero 恢复（else 分支清 width）。
+    // 待发送/任务清单面板（todo/queue）跟随灰块同宽居中——它们是灰块的上延面板，
+    // 边角场景（/clear 后残留）下背景与灰块对齐，不会整行通铺。
     if (tree.footerBox) {
       const avail = Math.max(24, (width ?? 80) - CONTENT_PAD);
+      const footerW = Math.max(32, Math.round(avail * 0.75));
       tree.footerBox.alignSelf = 'center';
-      tree.footerBox.width = Math.max(32, Math.round(avail * 0.75));
+      tree.footerBox.width = footerW;
+      if (tree.delegateBox) {
+        tree.delegateBox.alignSelf = 'center';
+        tree.delegateBox.width = footerW;
+      }
+      if (tree.todoBox) {
+        tree.todoBox.alignSelf = 'center';
+        tree.todoBox.width = footerW;
+      }
+      if (tree.queueBox) {
+        tree.queueBox.alignSelf = 'center';
+        tree.queueBox.width = footerW;
+      }
     }
     footerTop -= heroOffset; // 浮层/菜单/命令面板/ask 全部按居中后的灰块顶钳制
   } else {
@@ -905,6 +968,18 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     if (tree.footerBox) {
       tree.footerBox.alignSelf = 'stretch';
       tree.footerBox.width = 'auto';
+    }
+    if (tree.delegateBox) {
+      tree.delegateBox.alignSelf = 'stretch';
+      tree.delegateBox.width = 'auto';
+    }
+    if (tree.todoBox) {
+      tree.todoBox.alignSelf = 'stretch';
+      tree.todoBox.width = 'auto';
+    }
+    if (tree.queueBox) {
+      tree.queueBox.alignSelf = 'stretch';
+      tree.queueBox.width = 'auto';
     }
   }
   // 蓝色细线：按最新 inputLines 同步——内容 = 圆角边框 2 + 内部（输入 + 间距 1 + 模型）
@@ -926,8 +1001,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.input && opts?.withInput) {
     state.inputText = tree.input.plainText;
     // 面板是圆角方框（内部行 + 上下边框 2）：底部边框距灰色块 ≥1 行、顶部 ≥1 行
-    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 任务清单(todoRows) - 待发送区(pendingRows) - 灰色块(inputLines+4，含圆角边框)）
-    footerTop = (height ?? 24) - 7 - pendingRows - todoRows - state.inputLines - heroOffset; // 灰色块顶部（0-based 屏幕行）；hero 居中模式再减 heroOffset
+    // → 最大内部行数 ≤ footerTop - 3（footerTop = 视口 - 根底内边距(1) - 任务清单(todoRows) - 待发送区(pendingRows) - delegate 面板(delegateRows) - 灰色块(inputLines+4，含圆角边框)）
+    footerTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset; // 灰色块顶部（0-based 屏幕行）；hero 居中模式再减 heroOffset
     if (!state.menu && state.inputText.startsWith('/')) {
       // 用户按 Esc 关闭过联想且文本未变 → 保持隐藏（否则 repaintTree 每次
       // 按 inputText 重新生成列表，Esc 就失效了——review 抓到的 bug）
@@ -991,6 +1066,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 全路径时退化为当前文件夹名（basename），再放不下头部截断。
   // 右侧：输入/输出 · 缓存（从模型行移入，dim 色）+ 上下文用量（迷你条 + 用量）。
   // 注意：宽度按本地字符串计算——TextRenderable.content 读回的不是 string。
+  // hero（无对话 / /clear 后回到初始居中态）下整行隐藏（mount 已初始 visible=false，
+  // 这里每帧按是否有对话刷新；有对话后恢复显示）。
+  if (tree.metaRow) tree.metaRow.visible = state.lines.length > 0;
   const loadingNow = state.loading && state.loadingIndex >= 0;
   const en = state.language === 'en';
   const lastPrompt = state.lastPromptTokens || 0;
@@ -1031,8 +1109,6 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.metaLeft) {
     tree.metaLeft.content = leftText;
     tree.metaLeft.fg = parseColor(theme.footerDim);
-    // 初始态（未发送消息）不显示文件夹，有对话内容才出现
-    tree.metaLeft.visible = state.lines.length > 0;
   }
   if (tree.footerIO) {
     tree.footerIO.content = ioText;
@@ -1118,10 +1194,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 见 startTui）——消息行位于灰色块正上方（todoRows 之下）。
   if (tree.queueBox) {
     tree.queueBox.visible = pendingCount > 0;
+    // 主题切换（/theme）每帧跟随（与灰块/联想浮层同底）
+    tree.queueBox.backgroundColor = theme.footerBg;
     tree.pendingRects.clear();
     let idx = 0;
     if (pendingCount > 0) {
       const lang = state.language;
+      // command 面板同款左侧深灰竖线 ▍（同联想/命令面板 barChunk：bg 与面板同色）
+      const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
       for (let i = 0; i < pendingVisibleMsgs; i++) {
         const m = state.pending[i]!;
         const t = m.text.replace(/\s+/g, ' ').trim();
@@ -1130,10 +1210,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const body = t.length > 38 ? `${t.slice(0, 37)}…` : t;
         const cell = tree.queueCells[idx++]!;
         cell.visible = true;
+        const lineFg = parseColor(selected ? theme.accentBlue : theme.footerText);
         try {
+          // 行 = 竖线 ▍ + 1 空格 + 选中标记/序号 + 文本（透明处露出面板 footerBg 底；
+          // 文本起始与输入区文字同列——灰块内是 蓝线1 + padding 1）
           cell.content = new StyledText([
-            { __isChunk: true as const, text: `${selected ? '› ' : '  '}${label}`, fg: parseColor(selected ? theme.accentBlue : theme.footerText), attributes: TextAttributes.BOLD },
-            { __isChunk: true as const, text: ` · ${body}`, fg: parseColor(selected ? theme.accentBlue : theme.footerText), attributes: selected ? TextAttributes.BOLD : 0 },
+            barChunk,
+            { __isChunk: true as const, text: ` ${selected ? '›' : ' '} ${label}`, fg: lineFg, attributes: TextAttributes.BOLD },
+            { __isChunk: true as const, text: ` · ${body}`, fg: lineFg, attributes: selected ? TextAttributes.BOLD : 0 },
           ]);
         } catch (e) {
           logCrash('pending-row', e);
@@ -1142,7 +1226,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (pendingCount > 4) {
         const c2 = tree.queueCells[idx++]!;
         c2.visible = true;
-        c2.content = tf(state.language, 'pending.more', { n: pendingCount - 4 });
+        c2.content = new StyledText([
+          barChunk,
+          { __isChunk: true as const, text: ` ${tf(state.language, 'pending.more', { n: pendingCount - 4 })}`, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+        ]);
       }
     }
     // 未用的池细胞必须隐藏——否则仍占布局行（7 个细胞占 7 行而非 5 行），
@@ -1152,13 +1239,127 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.queueCells[idx]!.visible = false;
     }
   }
+  // 运行中 delegate 面板（输入区上方 command 样式面板）：每条 delegate 一行
+  // `→ 子代理 · 摘要`（点击展开/收起）；展开态在其下显示明细（💭 思考 / → 工具 /
+  // ✓·✗ 结果，最多 10 条 + 省略提示）与 `⏹ 停止`（运行中）/`⏹ 已停止`（已停止）。
+  // 行数预算 = delegateRows（delegatePanelRows——computeRows/footerTop 同步减）。
+  // 点击命中：标题行 y → toggle（run 下标）；停止行 y → stop（render.ts 鼠标 handler）。
+  if (tree.delegateBox) {
+    tree.delegateBox.visible = state.delegateRuns.length > 0;
+    tree.delegateBox.backgroundColor = theme.footerBg; // 主题切换每帧跟随
+    tree.delegateRects.clear();
+    let idx = 0;
+    // 面板行内容宽 = 视口 - 根 paddingX(2)（bottomBlock stretch 全宽；行文本单行截断）
+    const panelW = Math.max(20, (width ?? 80) - CONTENT_PAD);
+    const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
+    for (let ri = 0; ri < state.delegateRuns.length; ri++) {
+      const run = state.delegateRuns[ri]!;
+      const cell = tree.delegateCells[idx++]!;
+      cell.visible = true;
+      // 标题行：`→ 子代理 · 摘要` + 状态（运行中 spinner 由全局 loading 帧驱动？——面板行保持静态文本）
+      const statusFg = run.stopped ? theme.diffRem : run.stopRequested ? theme.footerDim : theme.accentBlue;
+      const mark = run.expanded ? '▾' : '▸';
+      try {
+        const titleBody = fitAsk(run.title, Math.max(10, panelW - 24));
+        cell.content = new StyledText([
+          barChunk,
+          { __isChunk: true as const, text: ` ${mark} ${titleBody}`, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
+          { __isChunk: true as const, text: ` · ${run.status}`, fg: parseColor(statusFg), attributes: run.stopRequested ? 0 : TextAttributes.BOLD },
+        ]);
+      } catch (e) {
+        logCrash('delegate-title', e);
+      }
+      // 展开明细（与 delegatePanelRows 预算严格一致：明细 ≤10 条 + 省略 1 + 停止/状态 1）
+      if (run.expanded) {
+        const shown = Math.min(10, run.items.length);
+        for (let i = run.items.length - shown; i < run.items.length; i++) {
+          const it = run.items[i]!;
+          const c2 = tree.delegateCells[idx++]!;
+          c2.visible = true;
+          try {
+            if (it.kind === 'think') {
+              const text = fitAsk(`💭 ${it.text}`, Math.max(8, panelW - 6));
+              c2.content = new StyledText([
+                barChunk,
+                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(theme.footerDim), attributes: 0 },
+              ]);
+            } else if (it.kind === 'tool') {
+              const text = fitAsk(`→ ${it.text}`, Math.max(8, panelW - 6));
+              c2.content = new StyledText([
+                barChunk,
+                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
+              ]);
+            } else {
+              const ok = it.ok !== false;
+              const text = fitAsk(`${ok ? '✓' : '✗'} ${it.text}`, Math.max(8, panelW - 6));
+              c2.content = new StyledText([
+                barChunk,
+                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(ok ? theme.footerDim : theme.diffRem), attributes: 0 },
+              ]);
+            }
+          } catch (e) {
+            logCrash('delegate-item', e);
+          }
+        }
+        if (run.items.length > shown || run.dropped > 0) {
+          const c3 = tree.delegateCells[idx++]!;
+          c3.visible = true;
+          const lang = state.language;
+          const extra = run.dropped > 0 ? tf(lang, 'delegate.extraTruncated', { n: run.dropped }) : '';
+          const hidden = run.items.length - shown;
+          c3.content = new StyledText([
+            barChunk,
+            { __isChunk: true as const, text: `  ${tf(lang, 'delegate.earlierHidden', { n: hidden })}${extra}`, fg: parseColor(theme.footerDim), attributes: 0 },
+          ]);
+        }
+        // 停止/已停止行（role 语义经文本标识——点击命中按行文本「⏹」判定；统一在
+        // delegateRects 登记 stop，鼠标 handler 按 stopRequested 防重复）
+        const c4 = tree.delegateCells[idx++]!;
+        c4.visible = true;
+        const stoppedTxt = run.stopped || run.stopRequested ? t(state.language, 'delegate.stoppedBtn') : t(state.language, 'delegate.stopBtn');
+        c4.content = new StyledText([
+          barChunk,
+          { __isChunk: true as const, text: `  ${stoppedTxt}`, fg: parseColor(theme.diffRem), attributes: TextAttributes.BOLD },
+        ]);
+      }
+    }
+    // 未用细胞隐藏（防占布局行——同 queue/todo 池语义）
+    for (; idx < tree.delegateCells.length; idx++) {
+      tree.delegateCells[idx]!.content = '';
+      tree.delegateCells[idx]!.visible = false;
+    }
+    // 命中区登记：delegateBox 在 bottomBlock 内（ask 下 / todo 上）——整块钉在视口底。
+    // 行序（自下而上）：footer(灰块) ← queue ← todo ← delegate ← ask；queue 首行
+    // y = wrapperTop（与 pendingRects 同式），delegate 首行 = wrapperTop - todoRows
+    // - delegateRows。逐 run 登记：折叠 1 行；展开时明细行不可点、停止行可点
+    //（run 未停止/未请求停止时）。
+    if (state.delegateRuns.length > 0 && opts?.withInput) {
+      const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset;
+      let y = wrapperTop - todoRows - delegateRows;
+      for (let ri = 0; ri < state.delegateRuns.length; ri++) {
+        const run = state.delegateRuns[ri]!;
+        tree.delegateRects.set(y, { run: ri, kind: 'toggle' });
+        y += 1;
+        if (run.expanded) {
+          const shown = Math.min(10, run.items.length);
+          y += shown;
+          if (run.items.length > shown || run.dropped > 0) y += 1;
+          if (!run.stopped && !run.stopRequested) tree.delegateRects.set(y, { run: ri, kind: 'stop' });
+          y += 1;
+        }
+      }
+    }
+  }
   // 任务清单小视图（待发送区上方）：每条一行「✓/▸/· 内容」——完成 dim、进行中
   // accent 加粗、待办 dim；最多 4 条 + 超出「还有 N 项」提示。空清单隐藏。纯显示
   //（不参与点击——todo 状态由模型维护）。
   if (tree.todoBox) {
     tree.todoBox.visible = todoCount > 0;
+    // 主题切换（/theme）每帧跟随（同 queue 面板底）
+    tree.todoBox.backgroundColor = theme.footerBg;
     let idx = 0;
     if (todoCount > 0) {
+      const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
       for (let i = 0; i < Math.min(4, todoCount); i++) {
         const item = state.todoList[i]!;
         const done = item.status === 'completed';
@@ -1168,8 +1369,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const cell = tree.todoCells[idx++]!;
         cell.visible = true;
         try {
+          // 行 = 竖线 ▍ + 1 空格 + 状态标记（同 queue 面板风格，竖线连续贯通）
           cell.content = new StyledText([
-            { __isChunk: true as const, text: `${mark} `, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
+            barChunk,
+            { __isChunk: true as const, text: ` ${mark} `, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
             { __isChunk: true as const, text, fg: parseColor(active ? theme.footerText : theme.footerDim), attributes: 0 },
           ]);
         } catch (e) {
@@ -1179,7 +1382,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (todoCount > 4) {
         const c2 = tree.todoCells[idx++]!;
         c2.visible = true;
-        c2.content = tf(state.language, 'todo.more', { n: todoCount - 4 });
+        c2.content = new StyledText([
+          barChunk,
+          { __isChunk: true as const, text: ` ${tf(state.language, 'todo.more', { n: todoCount - 4 })}`, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+        ]);
       }
     }
     for (; idx < tree.todoCells.length; idx++) {
@@ -1214,8 +1420,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       | { kind: 'item'; itemIdx: number };
     let builtRows: SugRow[] = [];
     if (visible && picker) {
-      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows)；hero 居中模式再减 heroOffset
-      const footerTop = (height ?? 24) - 7 - pendingRows - state.inputLines - heroOffset;
+      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows) - todo(delegateRows)；hero 居中模式再减 heroOffset
+      const footerTop = (height ?? 24) - 7 - pendingRows - delegateRows - state.inputLines - heroOffset;
       // 紧凑下拉：内部行（含提示行）≤ 8（小视口按剩余空间收缩）——面板不铺满整个内容区，
       // 而是悬停在输入框上方的一小片下拉（用户反馈菜单铺满全屏不像“输入框上方的菜单”）
       const interiorBudget = Math.max(3, Math.min(8, footerTop - 3));
@@ -1617,14 +1823,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       else tree.approvalRect = { top: y, bottom: y };
     }
   }
-  // 待发送消息行的点击区域：底部固定块（todo + 待发送区 + 灰色块）被 marginTop:auto 钉在视口
+  // 待发送消息行的点击区域：底部固定块（ask + delegate + todo + 待发送区 + 灰色块）被 marginTop:auto 钉在视口
   // 底部，位置是**确定**的（与内容长度/滚动无关）——底部块顶 = 视口 - 根底内边距(1)
-  // - 任务清单(todoRows) - 待发送区(pendingRows) - 灰色块(inputLines+4)。
+  // - delegate 面板(delegateRows) - 任务清单(todoRows) - 待发送区(pendingRows) - 灰色块(inputLines+4)。
   // 每条消息一行（无标题行）：消息 i 在 y = wrapperTop + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
     // hero 居中模式下底部块随根居中上移 heroOffset，命中区同步换算
-    const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - state.inputLines - heroOffset;
+    const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset;
     for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + i, i);
   }
   // ask_user 提问面板（输入区上方）：**扁平面板 + 独立自定义输入**——? 问题（单选/多选，
@@ -1671,9 +1877,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         applyRowToCell(cell, aRows[i], theme);
       }
-      // 面板底 = footer 顶 - todoRows - pendingRows（todo/待发送区在面板与灰色块之间）；
+      // 面板底 = footer 顶 - todoRows - pendingRows - delegateRows（delegate/todo/待发送区在面板与灰色块之间）；
       // 顶 = 底 - 行数（hero 居中再减 heroOffset）
-      const aBottom = (height ?? 24) - 6 - state.inputLines - todoRows - pendingRows - heroOffset;
+      const aBottom = (height ?? 24) - 6 - state.inputLines - todoRows - pendingRows - delegateRows - heroOffset;
       const aTop = aBottom - aRows.length;
       // 行 y → 类型：顶部留白行后，问题行下标 1、选项行下标 2+i、自定义行 2+n、确认行 3+n
       for (let i = 0; i < a.options.length; i++) {
@@ -1964,6 +2170,23 @@ export function handleTuiMouseEvent(
     }
     // ④ 思考模块 / token 统计模块：点击切换展开/收起；
     // ⑤ 命中工具卡片 → 切换展开/收起。
+    // ⑥ 运行中 delegate 面板（输入区上方 command 样式）：标题行 toggle 展开/收起；
+    //    ⏹ 停止行 → 标记 stopRequested（防重复）+ state.stopSubagent(run.seq) 触发停止。
+    const dAct = tree.delegateRects.get(e.y);
+    if (dAct) {
+      const run = state.delegateRuns[dAct.run];
+      if (run) {
+        if (dAct.kind === 'toggle') {
+          run.expanded = !run.expanded;
+        } else if (!run.stopped && !run.stopRequested) {
+          run.stopRequested = true;
+          run.status = t(state.language, 'delegate.stopping');
+          state.stopSubagent?.(run.seq);
+        }
+      }
+      void paint();
+      return;
+    }
     if (hitTestThinking(state, tree.thinkingRects, e.y)) void paint();
     else if (hitTestTokens(state, tree.tokensRects, e.y)) void paint();
     else if (hitTestCard(state, tree.cardRects, e.y)) void paint();
@@ -2146,7 +2369,7 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
       } catch (err) {
         logCrash('destroy-on-ctrl-c', err);
       }
-      if (hint) process.stdout.write(`\n${dim(`💬 恢复此会话：${hint}`)}\n`);
+      if (hint) process.stdout.write(`\n${dim(tf(state.language, 'meta.resumeHint', { hint }))}\n`);
     });
   };
   const unsubCtrlC = () => {
@@ -2219,7 +2442,7 @@ export async function startTui(state: TuiState, opts?: { withInput?: boolean }):
       }
       const ok = openInEditor(file);
       if (!ok) {
-        pushLine(state, { kind: 'warn', text: `无法启动编辑器打开 ${file}（设置 $EDITOR）` });
+        pushLine(state, { kind: 'warn', text: tf(state.language, 'meta.editorOpenFailed', { file }) });
       }
       try {
         renderer.resume();

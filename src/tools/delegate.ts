@@ -2,16 +2,22 @@
  * delegate：委托工具——把一段独立的子任务交给子代理（subagent）完成。
  *
  * 模型侧：主代理觉得某个子任务「值得隔离上下文、独立验证」时调用它；
- * 执行侧：subagent.ts 跑一个无 UI 的嵌套循环（隔离上下文、小步数上限、
- * 共用安全护栏），只把最终结论文本返回给主代理（画成普通工具卡片）。
+ * 执行侧：subagent.ts 跑一个嵌套循环（隔离上下文、小步数上限、共用安全护栏），
+ * 把最终结论文本返回给主代理（画成工具卡片）。
  *
- * 第六节「子代理与编排」扩展（P1）：
+ * 过程可视化（1.0）：runSubagent 的 start/step/think/toolStart/toolEnd/end 事件经
+ * onEvent 分发（Output.onSubagentEvent → TUI/Web delegate 卡片 live 状态 + 展开明细）
+ * + EventRecorder（/trace 嵌套树）。事件带工具配对 seq（ToolContext.toolSeq）——
+ * 并行多委托/嵌套精确归集到各自卡片。delegate.execute 创建 per-subagent
+ * AbortController 注册进 runOpts.subagentStops（key = seq），UI「⏹ 停止」按 seq
+ * abort——断流/步间退出，不再幽灵跑完。
+ *
+ * 其余能力见下：
  *  · **agent 参数**——delegate 可按 `.agents/subagents/*.md` 定义的命名子代理
  *    （SubagentDef）委托：per-agent 模型 / 权限 / 工具白名单 / 技能预载 / 步数上限；
  *  · **嵌套**——子代理的可用工具里再挂一个 delegate（深度 < maxSubagentDepth，
  *    默认 5 层上限），子代理可再委托子任务，parentId/depth 表达层级；
- *  · **进度可视化**——runSubagent 的 start/step/end 事件经 onEvent 分发
- *    （Output.onSubagentEvent → TUI 卡片 live 状态）+ EventRecorder（/trace 嵌套树）；
+ *    嵌套 delegate 沿用父 seq（parentSeq）归集到根卡片；
  *  · **模型路由**——architect/editor（第六节 P1）：/plan 用 architect 强模型、
  *    执行用 editor 轻模型（缺省 = 当前模型）；定义子代理的 model 字段优先。
  *
@@ -55,6 +61,12 @@ export interface DelegateToolOptions {
   /** 父代理 id（嵌套用；null = 主代理） */
   parentId?: string | null;
   /**
+   * 根委托卡片的工具配对序号（嵌套 delegate 沿用）：子代理再委托（子代理内部工具
+   * 调用不经主循环、无 ToolContext.toolSeq）时用它把事件归集到根 delegate 卡片。
+   * 由 buildSubTools 透传；null = 无配对。
+   */
+  parentSeq?: number | null;
+  /**
    * 进度事件回调（attachRuntime 注入：Output.onSubagentEvent + 轨迹事件落盘）。
    * 嵌套子代理的事件沿同一回调链汇聚。
    */
@@ -71,12 +83,14 @@ export interface DelegateToolOptions {
  * 给「子代理」生成一份工具列表：从调用方的工具里剔除 delegate 自身，若嵌套深度
  * 未达上限则再注入一个新的 delegate（子代理可再委托；深度 +1）。
  * parentId = 父代理实例 id（execute 分配后传入——嵌套子代理的事件用它关联父级）。
+ * parentSeq = 根委托卡片的工具配对序号（嵌套 delegate 沿用——子代理再委托的
+ * 事件仍归集到根卡片，同一卡片内按 depth 展示层级）。
  */
-function buildSubTools(opts: DelegateToolOptions, depth: number, parentId: string | null): Tool[] {
+function buildSubTools(opts: DelegateToolOptions, depth: number, parentId: string | null, parentSeq: number | null | undefined): Tool[] {
   const subTools = opts.tools.filter((t) => t.name !== 'delegate');
   const maxDepth = opts.maxDepth ?? 5;
   if (depth + 1 < maxDepth) {
-    subTools.push(createDelegateTool({ ...opts, tools: subTools, depth: depth + 1, parentId }));
+    subTools.push(createDelegateTool({ ...opts, tools: subTools, depth: depth + 1, parentId, parentSeq: parentSeq ?? null }));
   }
   return subTools;
 }
@@ -114,7 +128,7 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
       },
       required: ['task'],
     },
-    async execute(args) {
+    async execute(args, toolCtx) {
       const task = String(args.task ?? '').trim();
       if (!task) return '错误：delegate 需要 task 参数（子任务描述）';
       const agentName = typeof args.agent === 'string' && args.agent.trim() ? args.agent.trim() : undefined;
@@ -157,6 +171,19 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
       // 由子代理事件带出，parentId 用父代理 id）
       const id = nextSubagentId();
       const parentId = opts.parentId ?? null;
+      // 工具配对序号：主循环配对（ToolContext.toolSeq）优先，嵌套 delegate（子代理
+      // 内部调用不经 loop）沿用 parentSeq 归集到根卡片；/orchestrate 直驱无 seq。
+      const toolSeq = toolCtx?.toolSeq ?? opts.parentSeq ?? null;
+      // per-subagent 取消控制器（1.0 子代理可视化）：UI「停止」按钮按 seq 调
+      // runOpts.stopSubagent → abort 此控制器 → runSubagent 断流/步间退出（不再幽灵跑完）。
+      // 无 seq → 不注册独立停止（跟随整体运行取消）。
+      const subCtrl = new AbortController();
+      let registered = false;
+      if (toolSeq != null && runOpts) {
+        if (!runOpts.subagentStops) runOpts.subagentStops = new Map();
+        runOpts.subagentStops.set(toolSeq, () => subCtrl.abort());
+        registered = true;
+      }
       // 模型路由（第六节 P1 architect/editor + 定义子代理 model 字段优先）：
       // · 定义子代理 model → 用它（per-agent 固定模型）
       // · 否则按 planMode 路由：/plan 用 architect 强模型、执行用 editor 轻模型
@@ -169,17 +196,19 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
       // 进度事件汇聚（UI 可视化 + /trace 轨迹）：UI 回调 + 事件记录器
       const onEvent = (ev: SubagentEvent): void => {
         opts.onEvent?.(ev);
-        // /trace 嵌套树：子代理事件也进轨迹记录器（subagent/start·step·end）
+        // /trace 嵌套树：子代理生命周期事件也进轨迹记录器（subagent/start·step·end）；
+        // think/toolStart/toolEnd 是 UI 明细（展开详情），不进 /trace 账本（过程在卡片内）
         if (runOpts?.events) {
           const e = runOpts.events;
           if (ev.type === 'start') e.subagentStart(ev.id, ev.parentId, ev.depth, ev.name, ev.task ?? '');
           else if (ev.type === 'step') e.subagentStep(ev.id, ev.depth, ev.step ?? 0, ev.maxSteps ?? 0);
-          else e.subagentEnd(ev.id, ev.depth, ev.status === 'ok', ev.summary ?? '', ev.steps ?? 0, ev.durationMs ?? 0);
+          else if (ev.type === 'end') e.subagentEnd(ev.id, ev.depth, ev.status === 'ok', ev.summary ?? '', ev.steps ?? 0, ev.durationMs ?? 0);
         }
       };
       // 子代理可用工具：剔除 delegate 后按深度注入新的 delegate（嵌套）——
-      // parentId = 本实例 id：嵌套子代理的事件用它关联父级
-      const subTools = buildSubTools(opts, depth, id);
+      // parentId = 本实例 id：嵌套子代理的事件用它关联父级；
+      // parentSeq = 本实例 seq：子代理再委托时沿用（嵌套事件归集到根卡片）
+      const subTools = buildSubTools(opts, depth, id, toolSeq);
       // 定义子代理配置：工具白名单（缺省 = 全部）/ 步数上限 / 技能预载 / 权限
       const whitelist = def?.tools ? new Set(def.tools) : null;
       const tools = whitelist ? subTools.filter((t) => whitelist.has(t.name)) : subTools;
@@ -196,47 +225,57 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
         }
         if (parts.length > 0) skillsText = parts.join('\n\n');
       }
-      const answer = await runSubagent(opts.modelRuntime.client, routed, task, {
-        tools,
-        gate: opts.gate,
-        maxSteps,
-        hooks: opts.hooks,
-        permission: def?.permission,
-        auditLog: opts.auditLog,
-        requestApproval: opts.requestApproval,
-        summarize: opts.summarize,
-        skills: skillsText,
-        name: def?.name ?? 'delegate',
-        onEvent,
-        id,
-        parentId,
-        depth,
-        cwd: wtPath ?? undefined,
-      });
-      // worktree 收尾：改动统计 + 保留/清理 + 合并提示
-      if (wtPath) {
-        const { execSync } = await import('node:child_process');
-        let stat = '';
-        try {
-          const st = execSync(`git -C ${JSON.stringify(wtPath)} status --porcelain`, { encoding: 'utf8', timeout: 10_000 });
-          const files = st.split('\n').filter((l) => l.trim());
-          stat = `${files.length} 个文件改动`;
-        } catch {
-          stat = '（无法读取工作树状态）';
-        }
-        const doCleanup = args.cleanup === true;
-        if (doCleanup) {
+      // per-subagent 取消控制器已在上方注册（toolSeq 决议 + subCtrl）
+      try {
+        const answer = await runSubagent(opts.modelRuntime.client, routed, task, {
+          tools,
+          gate: opts.gate,
+          maxSteps,
+          hooks: opts.hooks,
+          permission: def?.permission,
+          auditLog: opts.auditLog,
+          requestApproval: opts.requestApproval,
+          summarize: opts.summarize,
+          skills: skillsText,
+          name: def?.name ?? 'delegate',
+          onEvent,
+          id,
+          parentId,
+          depth,
+          cwd: wtPath ?? undefined,
+          seq: toolSeq ?? null,
+          signal: subCtrl.signal,
+        });
+        // worktree 收尾：改动统计 + 保留/清理 + 合并提示
+        if (wtPath) {
+          const { execSync } = await import('node:child_process');
+          let stat = '';
           try {
-            execSync(`git worktree remove --force ${JSON.stringify(wtPath)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
-            wtNote = `（worktree 已清理；分支 ${wtBranch} 保留，可 git diff main..${wtBranch} 查看改动）`;
+            const st = execSync(`git -C ${JSON.stringify(wtPath)} status --porcelain`, { encoding: 'utf8', timeout: 10_000 });
+            const files = st.split('\n').filter((l) => l.trim());
+            stat = `${files.length} 个文件改动`;
           } catch {
-            wtNote = `（清理失败——worktree 保留在 ${wtPath}）`;
+            stat = '（无法读取工作树状态）';
           }
-        } else {
-          wtNote = `（worktree 保留：${wtPath} · ${stat} · 分支 ${wtBranch}。合并：git -C "${wtPath}" diff > patch 后 git apply，或 git merge ${wtBranch}）`;
+          const doCleanup = args.cleanup === true;
+          if (doCleanup) {
+            try {
+              execSync(`git worktree remove --force ${JSON.stringify(wtPath)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
+              wtNote = `（worktree 已清理；分支 ${wtBranch} 保留，可 git diff main..${wtBranch} 查看改动）`;
+            } catch {
+              wtNote = `（清理失败——worktree 保留在 ${wtPath}）`;
+            }
+          } else {
+            wtNote = `（worktree 保留：${wtPath} · ${stat} · 分支 ${wtBranch}。合并：git -C "${wtPath}" diff > patch 后 git apply，或 git merge ${wtBranch}）`;
+          }
+        }
+        return `子代理结果${def ? `（${def.name}）` : ''}${wtNote ? ` [worktree:${wtBranch}]` : ''}：\n${truncate(answer)}${wtNote ? `\n\n${wtNote}` : ''}`;
+      } finally {
+        // 子代理结束（含被停止）：注销停止句柄，防 Map 泄漏（下一轮同 seq 不复用）
+        if (registered && runOpts?.subagentStops) {
+          runOpts.subagentStops.delete(toolSeq!);
         }
       }
-      return `子代理结果${def ? `（${def.name}）` : ''}${wtNote ? ` [worktree:${wtBranch}]` : ''}：\n${truncate(answer)}${wtNote ? `\n\n${wtNote}` : ''}`;
     },
   };
 }

@@ -751,6 +751,17 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
+  // 场景 13d：/clear 后会话级统计归零（模型行 tok/s + 底行输入/输出/缓存/上下文全部消失；
+  // 有对话 → 恢复 hero 初始态，统计行整行隐藏——上一段累计不得残留）
+  out13.clearScrollback();
+  await fakeSession13.paint();
+  const frame13d = t13b.captureCharFrame();
+  for (const gone of ['700 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '/w/s13']) {
+    if (frame13d.includes(gone)) {
+      console.error(`✗ 场景 13 /clear 后仍残留「${gone}」\n实际帧:\n${frame13d}`);
+      process.exit(1);
+    }
+  }
   console.log('✓ 场景 13 通过：模型行 + 底行输入输出/缓存/上下文（44 全显/24 超窄隐藏/事件累计/完整示例格式）渲染正确');
 
   // 场景 13m：对话流 Build/Plan 头行与输入区模式色一致（用户要求）——
@@ -1135,6 +1146,23 @@ async function main(): Promise<void> {
     console.log(frame15);
     process.exit(1);
   }
+  // d0) command 面板同款样式（用户要求）：待发送区行首左侧深灰竖线 ▍——每条消息行
+  //     都在同一列有 ▍（竖线连续贯通），且与灰块左侧蓝线/边框同列（面板左缘 = 灰块左缘；
+  //     根 paddingX:1 使内容列整体从列 1 开始，故用 indexOf 列号而非 startsWith）
+  const queueRows15 = lines15.slice(firstRowIdx15, firstRowIdx15 + 4);
+  const barCol15 = queueRows15[0]?.indexOf('▍');
+  const greyLeftCol15 = lines15[greyTop15]?.indexOf('▍');
+  if (
+    barCol15 === undefined ||
+    barCol15 < 0 ||
+    !queueRows15.every((l) => l.indexOf('▍') === barCol15) ||
+    greyLeftCol15 === undefined ||
+    barCol15 !== greyLeftCol15
+  ) {
+    console.error(`✗ 场景 15 待发送区缺少 command 面板同款左侧竖线（barCol=${barCol15} greyLeftCol=${greyLeftCol15}）`);
+    console.log(frame15);
+    process.exit(1);
+  }
   // 选中高亮：选中第 3 条（下标 2）→ 该行显示 › 且 pendingRects 命中真实消息行
   s15.pendingSelected = 2;
   repaintTree(t15.renderer, tree15, s15, { withInput: true });
@@ -1180,6 +1208,20 @@ async function main(): Promise<void> {
   const queueIdx15 = lines15t.findIndex((l) => l.includes('1 打断 ·'));
   if (todoIdx15 < 0 || queueIdx15 < 0 || queueIdx15 - todoIdx15 !== 3) {
     console.error(`✗ 场景 15 todo 应紧贴待发送区上方（todo=${todoIdx15} queue=${queueIdx15}，应差 3 行）`);
+    console.log(frame15t);
+    process.exit(1);
+  }
+  // todo 与待发送区同款 command 面板竖线：两段各行 ▍ 列号一致（竖线从 todo 贯通到 queue）
+  const todoRows15t = lines15t.slice(todoIdx15, todoIdx15 + 3);
+  const queueRows15t = lines15t.slice(queueIdx15, queueIdx15 + 4);
+  const barCol15t = lines15t[todoIdx15]?.indexOf('▍');
+  if (
+    barCol15t === undefined ||
+    barCol15t < 0 ||
+    !todoRows15t.every((l) => l.indexOf('▍') === barCol15t) ||
+    !queueRows15t.every((l) => l.indexOf('▍') === barCol15t)
+  ) {
+    console.error(`✗ 场景 15 todo/queue 竖线列不一致（barCol=${barCol15t}）`);
     console.log(frame15t);
     process.exit(1);
   }
@@ -4720,6 +4762,150 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 41 通过：read_file 一行式/多文件合并/新建全文/write 统一 diff（行号 gutter + 红绿灰行级着色）');
 
+  // 场景 41s：delegate 子代理卡片（1.0 可视化）——运行中展开显示执行明细
+  //（思考 think / 工具 tool / 结果 result / 已停止 stopped）+ 停止行；收起显示进度摘要
+  console.log('=== 场景 41s：delegate 子代理卡片（明细/停止）===');
+  {
+    const { toolCardLines } = await import('../src/output/format.js');
+    // 运行中 + 展开：明细应含 思考增量/工具调用/工具结果，且底部有「⏹ 停止」可点行
+    const cardRun = {
+      name: 'delegate',
+      summary: '子代理 delegate · ⠋ search_code 1/10',
+      status: 'running' as const,
+      output: [],
+      expanded: true,
+      _cmd: '→ 子代理 · 搜索代码',
+      subagentDetail: {
+        status: 'search_code 1/10',
+        stopped: false,
+        dropped: 0,
+        items: [
+          { kind: 'think' as const, text: '先搜索关键函数定义位置' },
+          { kind: 'tool' as const, name: 'search_code', text: '* Grep "loadConfig"' },
+          { kind: 'result' as const, name: 'search_code', ok: true, text: 'src/config/index.ts:1 处匹配' },
+        ],
+      },
+      canStop: true,
+    };
+    const lines41s = toolCardLines(cardRun as never, 60);
+    const texts41s = lines41s.map((l) => l.text).join('\n');
+    if (!texts41s.includes('💭 先搜索关键函数定义位置') || !texts41s.includes('→ * Grep "loadConfig"') || !texts41s.includes('✓ src/config/index.ts')) {
+      console.error(`✗ 场景 41s delegate 展开明细缺失:\n${texts41s}`);
+      process.exit(1);
+    }
+    if (!lines41s.some((l) => l.role === 'stop' && l.text.includes('⏹ 停止'))) {
+      console.error(`✗ 场景 41s delegate 运行中应显示 ⏹ 停止行:\n${texts41s}`);
+      process.exit(1);
+    }
+    // 已停止：不再显示停止行，显示「⏹ 已停止」
+    const cardStopped = {
+      ...cardRun,
+      status: 'err' as const,
+      canStop: false,
+      subagentDetail: { status: '已停止', stopped: true, dropped: 0, items: cardRun.subagentDetail.items },
+    };
+    const lines41t = toolCardLines(cardStopped as never, 60);
+    const texts41t = lines41t.map((l) => l.text).join('\n');
+    if (!texts41t.includes('⏹ 已停止') || texts41t.includes('⏹ 停止\n')) {
+      console.error(`✗ 场景 41s delegate 停止态渲染错误:\n${texts41t}`);
+      process.exit(1);
+    }
+    // 收起态（完成）：命令行 + 结果行 `✓ 子代理 delegate · N 步`
+    const cardDone = {
+      ...cardStopped,
+      expanded: false,
+      subagent: { name: 'delegate', ok: true, steps: 3, summary: '完成搜索' },
+    };
+    const lines41u = toolCardLines(cardDone as never, 60);
+    const texts41u = lines41u.map((l) => l.text).join('\n');
+    if (!texts41u.includes('✓ 子代理 delegate · 3 步')) {
+      console.error(`✗ 场景 41s delegate 收起态结果行缺失:\n${texts41u}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 41s 通过：delegate 子代理卡片（展开明细 思考/工具/结果 · 运行中 ⏹ 停止 · 停止态 · 收起结果行）');
+
+  // 场景 41t：delegate 输入区上方面板（command 面板模型）——运行中 delegate 在
+  // bottomBlock 面板逐条显示（折叠=标题行；展开=明细+停止行），不占对话流
+  console.log('=== 场景 41t：delegate 面板（输入区上方）===');
+  {
+    const { mountTree: mount41t, repaintTree: repaint41t } = await import('../src/tui/render.js');
+    const s41t = createTuiState();
+    s41t.version = '0.1.0';
+    s41t.model = 'mock';
+    // 对话流只 push 一条 user（delegate 运行不占用流内行）
+    pushLine(s41t, { kind: 'user', text: '查一下天气' });
+    // 运行中 delegate 两条：A 折叠、B 展开（明细含 think/tool/result）
+    s41t.delegateRuns.push({
+      seq: 1, title: '→ 子代理 · 查天气', name: 'delegate', status: '思考中 0/10',
+      stopped: false, stopRequested: false, expanded: false, items: [], dropped: 0,
+    });
+    s41t.delegateRuns.push({
+      seq: 2, title: '→ 子代理 · 查穿衣建议', name: 'delegate', status: '⠋ search_code 1/10',
+      stopped: false, stopRequested: false, expanded: true, items: [
+        { kind: 'think', text: '先找天气接口' },
+        { kind: 'tool', text: '* Grep "weather"' },
+        { kind: 'result', ok: true, text: 'src/weather.ts:1 处匹配' },
+      ], dropped: 0,
+    });
+    const t41t = await createTestRenderer({ width: 80, height: 24 });
+    const tree41t = mount41t(t41t.renderer, s41t, { withInput: true });
+    const sess41t: TuiSession = {
+      paint: async () => {
+        repaint41t(t41t.renderer, tree41t, s41t, { withInput: true });
+        await t41t.renderOnce();
+      },
+      stop: async () => {},
+      input: null,
+      clearScrollback: () => {},
+    } as unknown as TuiSession;
+    await sess41t.paint();
+    const frame41t = t41t.captureCharFrame();
+    // 面板在输入区上方：灰块（╮）上方应出现 delegate 标题行（含 ▸ 折叠标记）与展开明细
+    if (!frame41t.includes('查天气') || !frame41t.includes('查穿衣建议')) {
+      console.error('✗ 场景 41t delegate 面板缺标题行');
+      console.log(frame41t);
+      process.exit(1);
+    }
+    if (!frame41t.includes('先找天气接口') || !frame41t.includes('* Grep "weather"')) {
+      console.error('✗ 场景 41t delegate 展开行缺明细');
+      console.log(frame41t);
+      process.exit(1);
+    }
+    // 对话流不应出现 delegate 色块卡（运行中不占流）：user 行后没有第二张工具卡
+    const lines41t = frame41t.split('\n');
+    const greyTop41t = lines41t.findIndex((l) => l.includes('╮'));
+    const delTitleY41t = lines41t.findIndex((l) => l.includes('查穿衣建议'));
+    if (greyTop41t < 0 || delTitleY41t < 0 || delTitleY41t >= greyTop41t - 1) {
+      console.error('✗ 场景 41t delegate 面板未紧贴输入区上方');
+      console.log(frame41t);
+      process.exit(1);
+    }
+    // 展开明细含停止行：点击停止 → stopRequested（delegateRects 命中 stop）
+    const stopY41t = [...tree41t.delegateRects.entries()].find(([, v]) => v.kind === 'stop')?.[0];
+    if (stopY41t === undefined) {
+      console.error('✗ 场景 41t delegateRects 未登记停止行');
+      process.exit(1);
+    }
+    const stopAct41t = tree41t.delegateRects.get(stopY41t)!;
+    s41t.delegateRuns[stopAct41t.run]!.stopRequested = true;
+    s41t.delegateRuns[stopAct41t.run]!.status = '停止中…';
+    await sess41t.paint();
+    const frame41t2 = t41t.captureCharFrame();
+    if (!frame41t2.includes('停止中…')) {
+      console.error('✗ 场景 41t 停止后状态未更新');
+      console.log(frame41t2);
+      process.exit(1);
+    }
+    // 折叠行（A）点击 toggle → 展开
+    const togY41t = [...tree41t.delegateRects.entries()].find(([, v]) => v.kind === 'toggle')?.[0];
+    if (togY41t === undefined) {
+      console.error('✗ 场景 41t delegateRects 未登记标题行');
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 41t 通过：delegate 面板（输入区上方 · 折叠/展开明细/停止命中 · 不占对话流）');
+
   // 场景 42：当次 token 使用统计模块（/settings tokens 开关）
   // —— 每一次发送消息、返回消息结束后，插入当次 token 统计：输入/输出/缓存。
   // 默认收起显示汇总；点开显示每次 LLM 请求的明细（一行一条，加起来 = 汇总）；
@@ -4887,8 +5073,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // b) 模型行中部分段按语言：中文（输入/输出/缓存）· 英文（In/Out/Cache）
+  // 注意：底行（输入/输出 · 缓存 · 上下文）只在有对话（非 hero）时显示——
+  // /clear 回到初始态后整行隐藏，故这里 push 一条消息退出 hero 再断言
   const s43f = createTuiState();
   s43f.cwd = '/w/s43';
+  pushLine(s43f, { kind: 'user', text: '你好' });
   s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 2000, cached: 900 };
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
   const t43f = await createTestRenderer({ width: 120, height: 20 });

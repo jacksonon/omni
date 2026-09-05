@@ -46,9 +46,13 @@ function ok(cond: boolean, desc: string): void {
 
 let mockProc: ReturnType<typeof spawn> | null = null;
 async function startMock(extra: Record<string, string> = {}): Promise<void> {
-  mockProc?.kill();
+  if (mockProc) {
+    mockProc.kill('SIGKILL'); // mock server 不捕获 SIGTERM？——实测 kill(SIGTERM) 后旧进程仍占端口
+    await wait(400); // 等旧进程退出/端口释放——否则新进程 EADDRINUSE 崩溃、connect 连到旧进程（段间污染根因）
+  }
   const env = { ...ENV, ...extra };
   mockProc = spawn('node', ['scripts/mock-server.mjs'], { env, stdio: 'ignore' });
+  await wait(250); // 让新进程完成 bind
   for (let i = 0; i < 50; i++) {
     try {
       await new Promise<void>((resolve, reject) => {
@@ -213,36 +217,86 @@ async function main(): Promise<void> {
     const steps = evs.filter((e) => e.k === 'subagent/step').length;
     ok(steps >= 1, `G1 轨迹含 subagent/step（${steps} 个）`);
 
-    // G2：TuiOutput 卡片——start/step/end 驱动后 card.subagent 摘要正确、step 带 tool
+    // G2：TuiOutput 面板模型——运行中 delegate 走输入区上方 delegateRuns 面板行
+    //（不入对话流）；end 后 onToolResult 收尾：面板行移除 + 对话流留结果卡
     const { TuiOutput } = await import('../../src/tui/output.js');
     const { createTuiState, pushLine } = await import('../../src/tui/state.js');
     const s = createTuiState();
     s.model = 'mock';
     pushLine(s, { kind: 'user', text: 'hi' });
     const out = new TuiOutput(s, { showThinking: true }, { paint: () => {}, clearScrollback: () => {} } as never);
-    out.onToolStep(1, 50, 'delegate', 'delegate task=检查项目根目录', { task: '检查项目根目录' });
-    // 找到刚创建的 delegate 卡片
-    const cardLine = s.lines[s.lines.length - 1];
-    ok(cardLine.kind === 'tool' && cardLine.card?.name === 'delegate' && cardLine.card.status === 'running',
-      'G2a delegate 卡片已创建（running）');
-    out.onSubagentEvent({ type: 'start', id: 'sub1', parentId: null, depth: 0, name: 'delegate', task: '检查项目根目录' });
-    out.onSubagentEvent({ type: 'step', id: 'sub1', parentId: null, depth: 0, name: 'delegate', step: 0, maxSteps: 10, tool: 'run_command' });
-    ok(cardLine.card?.summary.includes('run_command'), `G2b step 带 tool 显示当前动作（${cardLine.card?.summary}）`);
+    out.onToolStep(1, 50, 'delegate', 'delegate task=检查项目根目录', { task: '检查项目根目录' }, 1);
+    // 运行中 delegate 不进对话流、进面板行
+    ok(s.lines.length === 1, 'G2a-0 运行中 delegate 不 push 对话流行（仍只有 user 行）');
+    ok(s.delegateRuns.length === 1 && s.delegateRuns[0].seq === 1 && s.delegateRuns[0].title.includes('检查项目根目录'),
+      'G2a delegate 面板行已创建（seq/title）');
+    out.onSubagentEvent({ type: 'start', id: 'sub1', parentId: null, depth: 0, name: 'delegate', task: '检查项目根目录', seq: 1 });
+    out.onSubagentEvent({ type: 'step', id: 'sub1', parentId: null, depth: 0, name: 'delegate', step: 0, maxSteps: 10, tool: 'run_command', seq: 1 });
+    ok(s.delegateRuns[0].status.includes('run_command'), `G2b step 带 tool 显示当前动作（${s.delegateRuns[0].status}）`);
+    out.onSubagentEvent({ type: 'think', id: 'sub1', parentId: null, depth: 0, name: 'delegate', text: '先看目录', seq: 1 });
+    out.onSubagentEvent({ type: 'toolStart', id: 'sub1', parentId: null, depth: 0, name: 'delegate', text: 'run_command', argsPreview: '$ ls', seq: 1 });
+    out.onSubagentEvent({ type: 'toolEnd', id: 'sub1', parentId: null, depth: 0, name: 'delegate', toolOk: true, outputPreview: ['（目录）ok'], seq: 1 });
+    ok(s.delegateRuns[0].items.length === 3, `G2c 面板行明细含 think+toolStart+toolEnd（${s.delegateRuns[0].items.length} 条）`);
     out.onSubagentEvent({
       type: 'end', id: 'sub1', parentId: null, depth: 0, name: 'delegate',
-      status: 'ok', summary: '项目结构正常，无问题。\n细节见 trace', steps: 2, durationMs: 1200,
+      status: 'ok', summary: '项目结构正常，无问题。\n细节见 trace', steps: 2, durationMs: 1200, seq: 1,
     });
-    ok(cardLine.card?.subagent?.ok === true && cardLine.card.subagent.steps === 2, 'G2c end 结果摘要存入 card.subagent');
-    ok(cardLine.card?.summary === 'delegate task=检查项目根目录', `G2d 命令行未被覆盖（${cardLine.card?.summary}）`);
-    // 收起态卡片渲染：命令 + `✓ 子代理 delegate · 2 步 · 结果首行`
+    ok(s.delegateRuns[0].status.startsWith('完成'), `G2d end 后面板行状态收尾（${s.delegateRuns[0].status}）`);
+    // onToolResult：面板行移除 + 对话流留结果卡
+    out.onToolResult(true, 44, ['项目结构正常，无问题。'], undefined, 1);
+    ok(s.delegateRuns.length === 0, 'G2e-1 onToolResult 移除面板行');
+    const cardLine = s.lines[s.lines.length - 1];
+    ok(cardLine.kind === 'tool' && cardLine.card?.name === 'delegate' && cardLine.card.status === 'ok',
+      'G2e-2 对话流留 delegate 结果卡');
+    ok(cardLine.card?.subagent?.ok === true, 'G2e-3 结果卡含 subagent 摘要');
+    // 结果卡收起态渲染：命令 + `✓ 子代理 delegate · N 步 · 结果首行`
     const { toolCardLines } = await import('../../src/output/format.js');
     const lines = toolCardLines(
       { ...cardLine.card, name: 'delegate', status: 'ok', expanded: false, spinner: undefined } as never,
       60
     );
     const resultRow = lines.find((l) => l.role === 'exec');
-    ok(!!resultRow && resultRow.text.includes('✓') && resultRow.text.includes('2 步') && resultRow.text.includes('项目结构正常'),
-      `G2e 收起态显示结果摘要行（${resultRow?.text.trim() ?? '无'}）`);
+    ok(!!resultRow && resultRow.text.includes('✓') && resultRow.text.includes('项目结构正常'),
+      `G2e-4 结果卡收起态显示结果摘要行（${resultRow?.text.trim() ?? '无'}）`);
+
+    // G2f：并行多 delegate 按 seq 精确配对——两条面板行，事件带各自 seq 归集互不覆盖
+    const s2 = createTuiState();
+    s2.model = 'mock';
+    const out2 = new TuiOutput(s2, { showThinking: true }, { paint: () => {}, clearScrollback: () => {} } as never);
+    out2.onToolStep(1, 50, 'delegate', '→ 子代理A', { task: 'A' }, 1);
+    out2.onToolStep(1, 50, 'delegate', '→ 子代理B', { task: 'B' }, 2);
+    const runA = s2.delegateRuns.find((r) => r.seq === 1)!;
+    const runB = s2.delegateRuns.find((r) => r.seq === 2)!;
+    ok(!!runA && !!runB, 'G2f-1 两条面板行按 seq 分别入列');
+    out2.onSubagentEvent({ type: 'step', id: 'subB', parentId: null, depth: 0, name: 'delegate', step: 0, maxSteps: 10, tool: 'search_code', seq: 2 });
+    out2.onSubagentEvent({ type: 'think', id: 'subB', parentId: null, depth: 0, name: 'delegate', text: 'B 的思考', seq: 2 });
+    out2.onSubagentEvent({ type: 'toolStart', id: 'subB', parentId: null, depth: 0, name: 'delegate', text: 'search_code', argsPreview: '* Grep "x"', seq: 2 });
+    ok(runB.status.includes('search_code') && !runA.status.includes('search_code'), 'G2f-2 seq=2 事件归集到 B 行');
+    ok(runB.items.length === 2 && runA.items.length === 0, 'G2f-3 B 行明细含 think+toolStart，A 行不被污染');
+
+    // G2g：停止链路——stop 标记 + stopped 事件 → 面板行停止态；onToolResult 收尾成结果卡
+    // （stopped 经 render 点击入口：标记 stopRequested → state.stopSubagent；这里直接驱动事件）
+    runB.stopRequested = true;
+    runB.status = '停止中…';
+    out2.onSubagentEvent({ type: 'stopped', id: 'subB', parentId: null, depth: 0, name: 'delegate', steps: 1, durationMs: 500, seq: 2 });
+    ok(runB.stopped === true && runB.status === '已停止', 'G2g-1 stopped 标记面板行停止态');
+    out2.onToolResult(false, 10, ['已停止'], undefined, 2);
+    ok(s2.delegateRuns.length === 1 && s2.delegateRuns[0].seq === 1, 'G2g-2 stopped 后 onToolResult 移除对应面板行（A 仍在）');
+    // 收尾 A：正常完成路径
+    out2.onToolResult(true, 20, ['A 完成'], undefined, 1);
+    ok(s2.delegateRuns.length === 0, 'G2g-2b A 完成后面板清空');
+    const stoppedCard = [...s2.lines].reverse().find(
+      (l) => l.kind === 'tool' && l.card?.name === 'delegate' && l.card.subagent?.ok === false
+    );
+    ok(!!stoppedCard && stoppedCard.card?.status === 'err', 'G2g-3 停止结果卡为 err 态');
+    const linesB = toolCardLines(
+      { ...stoppedCard!.card, name: 'delegate', expanded: true, spinner: undefined } as never,
+      60
+    );
+    const textB = linesB.map((l) => l.text).join('\n');
+    ok(textB.includes('B 的思考') && textB.includes('* Grep "x"'), 'G2g-4 结果卡展开明细含 think+tool');
+    ok(textB.includes('⏹ 已停止'), 'G2g-5 停止结果卡渲染 ⏹ 已停止');
+    ok(!linesB.some((l) => l.role === 'stop'), 'G2g-6 结果卡无 ⏹ 停止按钮（停止只作用于运行中面板）');
 
     // G3：/agents <name> 展开查看角色全文（TUI 命令面板）
     const { runCommand: rc } = await import('../../src/tui/commands.js');

@@ -44,6 +44,7 @@ const state = {
   sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached, lastPrompt }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
   steerText: null,      // 运行中 Cmd+Enter 打断消息（仅当前会话，优先于 queue）
+  delegateRuns: [],     // 运行中 delegate 子代理（输入框上方面板；{seq,title,status,stopped,stopRequested,expanded,items,dropped}）
   attachments: [],      // 输入区附件（+ 按钮/拖拽采集；{ id, kind: image|text|path, name, size, dataUrl?, content? }）
 };
 
@@ -161,8 +162,13 @@ const I18N_ZH = {
   'thinking.collapsed': 'thinking · {dur}',
   'tool.running': '执行中',
   'tool.failed': '失败',
+  'tool.ok': '完成',
   'tool.noOutput': '（无输出）',
   'tool.nchars': '{n} 字符',
+  // 子代理
+  'subagent.running': '运行中',
+  'subagent.thinking': '思考中',
+  'subagent.stopped': '已停止',
   // 命令面板 / meta
   'cmd.title': '命令输出',
   'cmd.executed': '命令已执行。',
@@ -371,11 +377,87 @@ const I18N_ZH = {
   'shortcut.noMatch': '没有匹配「{q}」的快捷键——试试功能名、分组或键位（如 ⌘K）',
   // 模态框
   'modal.rewindTitle': '会话检查点（/rewind）',
+  'modal.rewindSub': '每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。',
+  'settings.language': '界面语言',
+  'settings.languageDesc': '设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。',
   'modal.dirTitle': '选择工作目录',
   'modal.up': '上级',
   'modal.cancel': '取消',
   'modal.select': '选择此目录',
   'modal.close': '关闭',
+  // 工作区 / 会话（侧栏 chrome + 操作菜单）
+  'ws.unknown': '（未知工作区）',
+  'ws.actions': '工作区操作',
+  'ws.newIn': '在 {name} 新建会话',
+  'ws.remove': '移除工作区',
+  'ws.removeConfirm': '移除工作区「{name}」？\n其下 {count} 个会话将被一并删除（目录本身不受影响）。',
+  'ws.current': '当前工作区',
+  'session.actions': '会话操作',
+  'session.rename': '重命名',
+  'session.titlePrompt': '会话标题',
+  'session.fork': '分叉新会话（/fork）',
+  'session.export': '导出 Markdown（/export）',
+  'session.rewind': '会话检查点（/rewind）',
+  'session.delete': '删除会话',
+  'session.deleteConfirm': '删除该会话？此操作不可恢复。',
+  'session.deleteNamedConfirm': '删除会话「{name}」？此操作不可恢复。',
+  'session.unknown': '未知会话',
+  'session.msgCount': '{n} 条消息',
+  'approval.confirmTitle': '该操作需要你的确认',
+  // /fork 对话框
+  'fork.prompt': '分叉新会话：保留前 N 条消息（1..{max}，原会话保留）',
+  'fork.invalid': 'N 须为 1..{max} 的整数',
+  // /rewind 检查点面板
+  'rewind.loading': '加载检查点…',
+  'rewind.empty': '暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）',
+  'rewind.loadFailed': '加载失败：{msg}',
+  'rewind.noText': '（无文本）',
+  'rewind.diff': '与当前差 Δ{n} 行（+{add} −{rem}）',
+  'rewind.same': '与当前一致',
+  'rewind.files': '{n} 个文件',
+  'rewind.rollback': '回滚到此处',
+  'rewind.confirm': '回滚工作区文件到检查点 #{index}？（对话历史保留）',
+  'rewind.done': '已回滚到检查点 #{index}（{n} 个文件处理）',
+  'rewind.failed': '回滚失败：{msg}',
+  // delegate / 工具卡（动态状态）
+  'subagent.label': '子代理',
+  'subagent.work': '工具',
+  'subagent.stop': '⏹ 停止',
+  'subagent.stopping': '停止中…',
+  'subagent.stoppedBtn': '⏹ 已停止',
+  'subagent.earlierDropped': '… 更早 {n} 条已省略',
+  'subagent.depth': '运行中（深度 {n}）',
+  'subagent.doneSteps': '完成 · {n} 步',
+  'tool.runningEllipsis': '运行中…',
+  'tool.liveHidden': '… {n} 行被隐藏',
+  // composer / 状态
+  'composer.planMode': '计划模式',
+  'composer.standardMode': '标准模式',
+  'composer.ctxTitle': '上下文: {used} / {limit} ({pct}%)',
+  'composer.ctxTitleShort': '上下文: {used}',
+  'turn.firstToken': ' · 首 token {dur}',
+  'model.head': '模型',
+  'model.none': '当前无可用模型',
+  'model.effortHead': '思考级别',
+  'model.noEffort': '该模型未提供思考级别',
+  'queue.toSteer': '转为 steer 打断消息',
+  'queue.toQueue': '转为排队消息',
+  'queue.remove': '删除',
+  // 目录选择器
+  'dir.loading': '加载中…',
+  'dir.empty': '此目录下没有子目录',
+  'dir.unreadable': '无法读取目录：{msg}',
+  // 错误通知（catch 模板）
+  'err.workspaceSwitch': '切换工作目录失败：{msg}',
+  'err.openSession': '打开会话失败：{msg}',
+  'err.fork': 'fork 失败：{msg}',
+  'err.delete': '删除失败：{msg}',
+  'err.remove': '移除失败：{msg}',
+  'err.rename': '重命名失败：{msg}',
+  'err.switchModel': '切换失败：{msg}',
+  'err.settings': '设置失败：{msg}',
+  'err.lang': '语言设置失败：{msg}',
+  'err.readImage': '⚠ 无法读取图片：{name}',
 };
 const I18N_EN = {
   'sidebar.new': 'New chat',
@@ -453,8 +535,13 @@ const I18N_EN = {
   'thinking.collapsed': 'thinking · {dur}',
   'tool.running': 'Running',
   'tool.failed': 'Failed',
+  'tool.ok': 'Done',
   'tool.noOutput': '(no output)',
   'tool.nchars': '{n} chars',
+  // 子代理
+  'subagent.running': 'Running',
+  'subagent.thinking': 'Thinking',
+  'subagent.stopped': 'Stopped',
   'cmd.title': 'Command output',
   'cmd.executed': 'Command executed.',
   'cmd.loading': 'Running…',
@@ -597,6 +684,9 @@ const I18N_EN = {
   'settings.server': 'Server',
   'settings.tools': 'Available tools',
   'modal.rewindTitle': 'Session checkpoints (/rewind)',
+  'modal.rewindSub': 'The workspace is snapshotted after every turn; roll files back to that turn\'s state (conversation is kept). The list also shows diffs against the current workspace.',
+  'settings.language': 'Interface language',
+  'settings.languageDesc': 'Switch in Settings → General → Language (中文 / English); takes effect immediately after saving.',
   'modal.dirTitle': 'Choose workspace',
   'modal.up': 'Up',
   'modal.cancel': 'Cancel',
@@ -664,6 +754,79 @@ const I18N_EN = {
   'shortcut.searchPlaceholder': 'Search feature or shortcut… (click an item to rebind in settings)',
   'shortcut.jumpToSettings': 'Click to rebind in Settings → Shortcuts',
   'shortcut.noMatch': 'No shortcut matches "{q}" — try a feature name, group, or key like ⌘K',
+  // workspace / session (sidebar chrome + action menus)
+  'ws.unknown': '(unknown workspace)',
+  'ws.actions': 'Workspace actions',
+  'ws.newIn': 'New session in {name}',
+  'ws.remove': 'Remove workspace',
+  'ws.removeConfirm': 'Remove workspace "{name}"?\nIts {count} sessions will be deleted too (the folder itself is untouched).',
+  'ws.current': 'Current workspace',
+  'session.actions': 'Session actions',
+  'session.rename': 'Rename',
+  'session.titlePrompt': 'Session title',
+  'session.fork': 'Fork new session (/fork)',
+  'session.export': 'Export as Markdown (/export)',
+  'session.rewind': 'Session checkpoints (/rewind)',
+  'session.delete': 'Delete session',
+  'session.deleteConfirm': 'Delete this session? This cannot be undone.',
+  'session.deleteNamedConfirm': 'Delete session "{name}"? This cannot be undone.',
+  'session.unknown': 'Unknown session',
+  'session.msgCount': '{n} messages',
+  'approval.confirmTitle': 'This action needs your confirmation',
+  // /fork dialog
+  'fork.prompt': 'Fork new session: keep the first N messages (1..{max}; the original session is kept)',
+  'fork.invalid': 'N must be an integer from 1 to {max}',
+  // /rewind checkpoint panel
+  'rewind.loading': 'Loading checkpoints…',
+  'rewind.empty': 'No checkpoints yet — sessions are snapshotted automatically each turn (modified workspace files are recorded when you submit a message)',
+  'rewind.loadFailed': 'Failed to load: {msg}',
+  'rewind.noText': '(no text)',
+  'rewind.diff': 'Δ{n} lines different from current (+{add} −{rem})',
+  'rewind.same': 'same as current',
+  'rewind.files': '{n} files',
+  'rewind.rollback': 'Roll back to here',
+  'rewind.confirm': 'Roll workspace files back to checkpoint #{index}? (chat history is kept)',
+  'rewind.done': 'Rolled back to checkpoint #{index} ({n} files processed)',
+  'rewind.failed': 'Rollback failed: {msg}',
+  // delegate / tool card (dynamic states)
+  'subagent.label': 'Subagent',
+  'subagent.work': 'tool',
+  'subagent.stop': '⏹ Stop',
+  'subagent.stopping': 'Stopping…',
+  'subagent.stoppedBtn': '⏹ Stopped',
+  'subagent.earlierDropped': '… {n} earlier entries omitted',
+  'subagent.depth': 'Running (depth {n})',
+  'subagent.doneSteps': 'Done · {n} steps',
+  'tool.runningEllipsis': 'Running…',
+  'tool.liveHidden': '… {n} lines hidden',
+  // composer / status
+  'composer.planMode': 'Plan mode',
+  'composer.standardMode': 'Standard mode',
+  'composer.ctxTitle': 'Context: {used} / {limit} ({pct}%)',
+  'composer.ctxTitleShort': 'Context: {used}',
+  'turn.firstToken': ' · first token {dur}',
+  'model.head': 'Model',
+  'model.none': 'No model available',
+  'model.effortHead': 'Reasoning',
+  'model.noEffort': 'This model has no reasoning levels',
+  'queue.toSteer': 'Convert to steer interrupt message',
+  'queue.toQueue': 'Convert to queued message',
+  'queue.remove': 'Remove',
+  // folder picker
+  'dir.loading': 'Loading…',
+  'dir.empty': 'No subdirectories here',
+  'dir.unreadable': 'Cannot read directory: {msg}',
+  // error notifications (catch templates)
+  'err.workspaceSwitch': 'Failed to switch workspace: {msg}',
+  'err.openSession': 'Failed to open session: {msg}',
+  'err.fork': 'Fork failed: {msg}',
+  'err.delete': 'Delete failed: {msg}',
+  'err.remove': 'Remove failed: {msg}',
+  'err.rename': 'Rename failed: {msg}',
+  'err.switchModel': 'Switch failed: {msg}',
+  'err.settings': 'Settings update failed: {msg}',
+  'err.lang': 'Failed to set language: {msg}',
+  'err.readImage': '⚠ Could not read image: {name}',
 };
 function t(key, vars) {
   const lang = state.language === 'en' ? I18N_EN : I18N_ZH;
@@ -687,6 +850,8 @@ function applyLanguage(lang) {
   renderShortcutsSettings();
   const lg = $('#set-language');
   if (lg) lg.value = state.language;
+  const aboutLang = $('#about-language');
+  if (aboutLang) aboutLang.textContent = state.language === 'en' ? 'English' : '中文';
   return state.language;
 }
 
@@ -1115,7 +1280,7 @@ async function handleAttachFiles(fileList) {
         continue;
       }
       const dataUrl = await compressImage(file);
-      if (!dataUrl) { notify(`⚠ 无法读取图片：${file.name}`, 'error'); continue; }
+      if (!dataUrl) { notify(t('err.readImage', { name: file.name }), 'error'); continue; }
       state.attachments.push({ id: attachId(), kind: 'image', name: file.name, size: file.size, dataUrl });
     } else if (isTextFile(file)) {
       let content = '';
@@ -1353,7 +1518,8 @@ function toolBlock(sessionId, data) {
         diffWrap.innerHTML = window.OmniMarkdown.renderFileDiff(diff.original, diff.content, diff.path);
       } else {
         const title = name === 'write_file' ? `← Write ${data.args?.path || ''}` : `← Edit ${data.args?.path || ''}`;
-        diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${esc(title)}</div><pre class="tc-output">${esc((r.preview || []).join('\n') || (r.ok ? '（无输出）' : r.error || '失败'))}</pre></div>`;
+        const noOut = r.ok ? t('tool.noOutput') : (r.error || t('tool.failed'));
+        diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${esc(title)}</div><pre class="tc-output">${esc((r.preview || []).join('\n') || noOut)}</pre></div>`;
       }
       scrollBottom();
     };
@@ -1366,6 +1532,14 @@ function toolBlock(sessionId, data) {
   if (name === 'run_command') {
     const cmd = (data.args?.command || data.argsPreview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '').replace(/^\$\s*/, '');
     head.innerHTML = `<span class="tool-prompt">$</span> <span class="tool-cmd">${esc(cmd)}</span> <span class="spin">${SPIN[0]}</span>`;
+  } else if (name === 'delegate') {
+    // 子代理卡片（1.0 可视化）：标题 = 委托摘要，状态 = 运行中 spinner；
+    // body 折叠容器 = 执行明细（subagent 事件驱动追加：思考/工具/结果）
+    const summary = data.argsPreview || 'delegate';
+    head.innerHTML = `<span class="tc-cmd">${esc(t('subagent.label'))}</span> <span class="tc-delegate-task">${esc(summary)}</span> <span class="spin">${SPIN[0]}</span>`;
+    st = el('span', 'tc-state');
+    st.textContent = t('subagent.running');
+    head.appendChild(st);
   } else {
     head.appendChild(el('span', 'tc-cmd', data.name || 'tool'));
     st = el('span', 'tc-state');
@@ -1385,7 +1559,7 @@ function toolBlock(sessionId, data) {
   msgList().appendChild(wrap);
   b._card = card; b._head = head; b._st = st; b._body = body; b._live = live; b._data = data;
   b._input = data.args && Object.keys(data.args).length ? JSON.stringify(data.args, null, 2) : data.argsPreview || '';
-  b._output = '运行中…';
+  b._output = t('tool.runningEllipsis');
   b._error = false;
   b._liveBuf = [];
   b.spin = (frame) => {
@@ -1405,7 +1579,7 @@ function toolBlock(sessionId, data) {
       b._live.appendChild(row);
     }
     if (hidden > 0) {
-      b._live.appendChild(el('div', 'tc-live-meta', `… ${hidden} 行被隐藏`));
+      b._live.appendChild(el('div', 'tc-live-meta', t('tool.liveHidden', { n: hidden })));
     }
     b._live.classList.remove('hidden');
     scrollBottom();
@@ -1414,6 +1588,12 @@ function toolBlock(sessionId, data) {
     card.classList.remove('running');
     const sp = head.querySelector('.spin');
     if (sp) sp.remove();
+    if (name === 'delegate') {
+      // delegate 卡片：结果区由子代理明细接管（tool.result 只负责摘除运行态；
+      // 明细内容已在 subagent end 事件渲染，这里避免用输出预览覆盖它）
+      if (st) st.textContent = r.ok ? t('tool.ok') : t('tool.failed');
+      return;
+    }
     const ok = r.ok;
     if (st) st.textContent = ok ? t('tool.nchars', { n: r.chars }) : t('tool.failed');
     const lines = (r.preview || []).slice(0, 12).join('\n');
@@ -1431,6 +1611,82 @@ function toolBlock(sessionId, data) {
       body.classList.add('hidden');
     }
   };
+  // 子代理事件驱动更新（delegate 卡片；非 delegate 无操作）：追加明细 + 状态 + 停止按钮。
+  // 明细行数上限（防超长子代理把 DOM 撑爆）：超出丢最早、显示省略提示。
+  b._subItems = [];
+  b._subDropped = 0;
+  b._subStop = null;
+  const subPaint = () => {
+    // 全量重建明细 DOM（含停止按钮；先摘除旧按钮引用）
+    if (b._subStop) { b._subStop.remove(); b._subStop = null; }
+    body.innerHTML = '';
+    if (b._subDropped > 0) body.appendChild(el('div', 'tc-live-meta', t('subagent.earlierDropped', { n: b._subDropped })));
+    for (const it of b._subItems) {
+      if (it.kind === 'think') body.appendChild(el('div', 'tc-sub-think', `💭 ${it.text}`));
+      else if (it.kind === 'tool') body.appendChild(el('div', 'tc-sub-tool', `→ ${it.text}`));
+      else body.appendChild(el('div', 'tc-sub-result' + (it.ok === false ? ' err' : ''), `${it.ok === false ? '✗' : '✓'} ${it.text}`));
+    }
+    const running = card.classList.contains('running');
+    const showStop = running && !b._subStopped;
+    if (!running) {
+      if (b._subStopped) body.appendChild(el('div', 'tc-sub-stopped', t('subagent.stoppedBtn')));
+    } else if (showStop) {
+      b._subStop = el('button', 'tc-sub-stop', t('subagent.stop'));
+      b._subStop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        b._subStop.disabled = true;
+        b._subStop.textContent = t('subagent.stopping');
+        fetch(`/api/sessions/${encodeURIComponent(state.session)}/subagents/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seq: data.seq }),
+        }).catch(() => {
+          if (b._subStop) { b._subStop.disabled = false; b._subStop.textContent = t('subagent.stop'); }
+        });
+      });
+      body.appendChild(b._subStop);
+    }
+  };
+  b.subagent = (ev) => {
+    if (name !== 'delegate') return;
+    if (ev.type === 'start') {
+      if (st) st.textContent = t('subagent.running');
+    } else if (ev.type === 'step') {
+      const act = ev.tool || t('subagent.thinking');
+      if (st) st.textContent = `${act} ${ev.step}/${ev.maxSteps}`;
+    } else if (ev.type === 'think') {
+      b._subItems.push({ kind: 'think', text: ev.text || '' });
+    } else if (ev.type === 'toolStart') {
+      b._subItems.push({ kind: 'tool', text: ev.argsPreview || ev.text || '' });
+    } else if (ev.type === 'toolEnd') {
+      const head0 = ((ev.outputPreview || [])[0] || '').split('\n')[0];
+      b._subItems.push({ kind: 'result', text: head0 || (ev.toolOk === false ? t('tool.failed') : t('tool.noOutput')), ok: ev.toolOk !== false });
+    } else if (ev.type === 'stopped') {
+      b._subStopped = true;
+      if (st) st.textContent = t('subagent.stopped');
+      if (b._subStop) { b._subStop.remove(); b._subStop = null; }
+    } else if (ev.type === 'end') {
+      card.classList.remove('running');
+      const sp = head.querySelector('.spin');
+      if (sp) sp.remove();
+      if (st) st.textContent = ev.status === 'ok' ? t('tool.ok') : t('tool.failed');
+      if (b._subStop) { b._subStop.remove(); b._subStop = null; }
+      body.classList.remove('hidden'); // 完成后展开显示明细（结果比命令重要）
+    }
+    // 截断：超过 60 条丢最早
+    const MAX = 60;
+    if (b._subItems.length > MAX) {
+      const drop = b._subItems.length - MAX;
+      b._subItems.splice(0, drop);
+      b._subDropped += drop;
+    }
+    // 展开（或运行中用户已打开）时实时刷新；head 点击展开后也重绘最新明细
+    if (!body.classList.contains('hidden')) subPaint();
+  };
+  // head 点击展开/收起：原 toggle handler 已存在，展开后追加重绘最新明细
+  head.addEventListener('click', () => {
+    if (!body.classList.contains('hidden')) subPaint();
+  });
   return b;
 }
 
@@ -1562,7 +1818,7 @@ function sessionLabel(sid) {
   const s = state.sessions.find((x) => x.id === sid);
   if (s?.title) return s.title;
   if (s?.project) return s.project.split('/').filter(Boolean).pop() || s.project;
-  return String(sid || '').slice(0, 8) || '未知会话';
+  return String(sid || '').slice(0, 8) || t('session.unknown');
 }
 function interactionCard(ev) {
   const b = makeBlock(ev.type, ev.sessionId);
@@ -1579,7 +1835,7 @@ function interactionCard(ev) {
   if (ev.type === 'approval') {
     body.appendChild(el('div', 'ic-question', ev.reason));
     const meta = el('div', 'ic-meta', ev.summary);
-    meta.title = '该操作需要你的确认';
+    meta.title = t('approval.confirmTitle');
     body.appendChild(meta);
     const acts = el('div', 'ic-actions');
     const allow = el('button', 'primary', t('approval.allow'));
@@ -1665,7 +1921,7 @@ function renderSessionList() {
   const cwd = state.status?.cwd || '';
   const groups = new Map();
   for (const s of all) {
-    const p = s.project || '(未知工作区)';
+    const p = s.project || t('ws.unknown');
     if (!groups.has(p)) groups.set(p, []);
     groups.get(p).push(s);
   }
@@ -1698,14 +1954,14 @@ function renderSessionList() {
     head.appendChild(el('span', 'ws-gname', projectName(project)));
     head.appendChild(el('span', 'ws-gcount', String(items.length)));
     const addBtn = el('span', 'ws-gadd', '＋');
-    addBtn.title = `在 ${projectName(project)} 新建会话`;
+    addBtn.title = t('ws.newIn', { name: projectName(project) });
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      switchWorkspace(project).then(() => newSession()).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
+      switchWorkspace(project).then(() => newSession()).catch((err) => notify(t('err.workspaceSwitch', { msg: err.message }), 'error'));
     });
     head.appendChild(addBtn);
     const moreBtn = el('span', 'ws-gadd', '⋯');
-    moreBtn.title = '工作区操作';
+    moreBtn.title = t('ws.actions');
     moreBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       showWorkspaceActions(e, project, items.length);
@@ -1726,16 +1982,18 @@ function renderSessionList() {
       // 运行中：不加绿点——左侧竖条改为彩色呼吸（.running::before；当前会话仍以背景高亮区分）
       if (state.runningSessions.has(s.id) || state._localRunning.has(s.id)) item.classList.add('running');
       const d = new Date(s.updated || s.created);
-      const ts = `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      const ts = state.language === 'en'
+        ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ` ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        : `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       const copy = el('div', 'session-copy');
       copy.appendChild(el('div', 'stitle', s.title || t('session.new')));
       const meta = el('div', 'smeta');
-      meta.appendChild(el('span', '', `${s.messages || 0} 条消息`));
+      meta.appendChild(el('span', '', t('session.msgCount', { n: s.messages || 0 })));
       meta.appendChild(el('span', '', ts));
       copy.appendChild(meta);
       item.appendChild(copy);
       const more = el('span', 'session-more', '⋯');
-      more.title = '会话操作';
+      more.title = t('session.actions');
       more.addEventListener('click', (e) => {
         e.stopPropagation();
         showSessionActions(e, s);
@@ -1743,10 +2001,10 @@ function renderSessionList() {
       item.appendChild(more);
       // 点击跨工作区的会话：先切到该工作区（工具/记忆/系统提示跟随），再加载对话
       item.addEventListener('click', () => {
-        const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
+        const target = s.project && s.project !== t('ws.unknown') ? s.project : null;
         const needSwitch = target && target !== (state.status?.cwd || '');
         const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
-        if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(`打开会话失败：${err.message}`, 'error'));
+        if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(t('err.openSession', { msg: err.message }), 'error'));
         else doSelect();
       });
       body.appendChild(item);
@@ -1755,9 +2013,9 @@ function renderSessionList() {
   }
 }
 
-/** 工作区分组显示名：目录 basename（根目录显示 /） */
+/** 工作区分组显示名：目录 basename（根目录显示 /）；未知工作区显示翻译占位 */
 function projectName(p) {
-  if (!p || p === '(未知工作区)') return p || '(未知工作区)';
+  if (!p || p === t('ws.unknown')) return p || t('ws.unknown');
   const parts = p.split('/').filter(Boolean);
   return parts.length ? parts[parts.length - 1] : '/';
 }
@@ -1783,19 +2041,19 @@ function showChatActions(e) {
     b.addEventListener('click', () => { closeSessionActions(); fn(sid); });
     return b;
   };
-  const ren = mk('重命名', async (id) => {
-    const t = prompt('会话标题', $('#chat-title').textContent || '');
-    if (!t || !t.trim()) return;
-    await api(`/api/sessions/${id}/rename`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: t.trim() }) });
-    $('#chat-title').textContent = t.trim();
+  const ren = mk(t('session.rename'), async (id) => {
+    const title = prompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
+    if (!title || !title.trim()) return;
+    await api(`/api/sessions/${id}/rename`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title.trim() }) });
+    $('#chat-title').textContent = title.trim();
     refreshSessions().catch(() => {});
   });
-  const forkB = mk('分叉新会话（/fork）', (id) => openForkDialog({ id }));
-  const exp = mk('导出 Markdown（/export）', (id) => window.open(`/api/sessions/${id}/export`, '_blank'));
-  const rw = mk('会话检查点（/rewind）', (id) => openRewindModal(id));
-  const del = mk('删除会话', async (id) => {
-    if (!confirm('删除该会话？此操作不可恢复。')) return;
-    await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => notify(`删除失败：${err.message}`, 'error'));
+  const forkB = mk(t('session.fork'), (id) => openForkDialog({ id }));
+  const exp = mk(t('session.export'), (id) => window.open(`/api/sessions/${id}/export`, '_blank'));
+  const rw = mk(t('session.rewind'), (id) => openRewindModal(id));
+  const del = mk(t('session.delete'), async (id) => {
+    if (!confirm(t('session.deleteConfirm'))) return;
+    await api(`/api/sessions/${id}/delete`, { method: 'DELETE' }).catch((err) => notify(t('err.delete', { msg: err.message }), 'error'));
   });
   menu.append(ren, forkB, exp, rw, del);
   document.body.appendChild(menu);
@@ -1812,17 +2070,17 @@ function showChatActions(e) {
 function openForkDialog(s) {
   api(`/api/sessions/${s.id}/messages`).then((data) => {
     const maxN = data.messages.length;
-    const raw = prompt(`分叉新会话：保留前 N 条消息（1..${maxN}，原会话保留）`, String(Math.max(1, Math.min(maxN, 4))));
+    const raw = prompt(t('fork.prompt', { max: maxN }), String(Math.max(1, Math.min(maxN, 4))));
     if (raw === null) return;
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < 1 || n > maxN) { notify(`N 须为 1..${maxN} 的整数`, 'error'); return; }
+    if (!Number.isInteger(n) || n < 1 || n > maxN) { notify(t('fork.invalid', { max: maxN }), 'error'); return; }
     api(`/api/sessions/${s.id}/fork`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ n }),
     })
       .then(() => refreshSessions())
-      .catch((err) => notify(`fork 失败：${err.message}`, 'error'));
+      .catch((err) => notify(t('err.fork', { msg: err.message }), 'error'));
   }).catch(() => {});
 }
 
@@ -1830,26 +2088,26 @@ function openForkDialog(s) {
 async function openRewindModal(sessionId) {
   $('#rewind-modal').classList.remove('hidden');
   const list = $('#rewind-list');
-  list.innerHTML = '<div class="dir-empty">加载检查点…</div>';
+  list.innerHTML = `<div class="dir-empty">${esc(t('rewind.loading'))}</div>`;
   try {
     const cps = await api(`/api/sessions/${sessionId}/checkpoints`);
     list.innerHTML = '';
     if (!cps.length) {
-      list.innerHTML = '<div class="dir-empty">暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）</div>';
+      list.appendChild(el('div', 'dir-empty', t('rewind.empty')));
       return;
     }
     [...cps].reverse().forEach((c) => {
       const row = el('div', 'rewind-row');
       const main = el('div', 'rewind-main');
-      main.appendChild(el('div', 'rewind-msg', `#${c.index} · ${c.userMessage || '（无文本）'}`));
+      main.appendChild(el('div', 'rewind-msg', `#${c.index} · ${c.userMessage || t('rewind.noText')}`));
       const d = c.diff || { add: 0, rem: 0 };
-      const diffTxt = d.add + d.rem > 0 ? `与当前差 Δ${d.add + d.rem} 行（+${d.add} −${d.rem}）` : '与当前一致';
-      main.appendChild(el('div', 'rewind-meta', `${new Date(c.time).toLocaleString()} · ${c.files} 个文件 · ${diffTxt}`));
+      const diffTxt = d.add + d.rem > 0 ? t('rewind.diff', { n: d.add + d.rem, add: d.add, rem: d.rem }) : t('rewind.same');
+      main.appendChild(el('div', 'rewind-meta', `${new Date(c.time).toLocaleString()} · ${t('rewind.files', { n: c.files })} · ${diffTxt}`));
       row.appendChild(main);
-      const btn = el('button', 'primary', '回滚到此处');
+      const btn = el('button', 'primary', t('rewind.rollback'));
       btn.type = 'button';
       btn.addEventListener('click', async () => {
-        if (!confirm(`回滚工作区文件到检查点 #${c.index}？（对话历史保留）`)) return;
+        if (!confirm(t('rewind.confirm', { index: c.index }))) return;
         try {
           await api(`/api/sessions/${sessionId}/rewind`, {
             method: 'POST',
@@ -1857,14 +2115,15 @@ async function openRewindModal(sessionId) {
             body: JSON.stringify({ index: c.index }),
           });
           $('#rewind-modal').classList.add('hidden');
-          notify(`已回滚到检查点 #${c.index}（${c.files} 个文件处理）`, 'success');
-        } catch (err) { notify(`回滚失败：${err.message}`, 'error'); }
+          notify(t('rewind.done', { index: c.index, n: c.files }), 'success');
+        } catch (err) { notify(t('rewind.failed', { msg: err.message }), 'error'); }
       });
       row.appendChild(btn);
       list.appendChild(row);
     });
   } catch (err) {
-    list.innerHTML = `<div class="dir-empty">加载失败：${esc(err.message)}</div>`;
+    list.innerHTML = '';
+    list.appendChild(el('div', 'dir-empty', t('rewind.loadFailed', { msg: err.message })));
   }
 }
 $('#btn-close-rewind').addEventListener('click', () => $('#rewind-modal').classList.add('hidden'));
@@ -1896,11 +2155,11 @@ $('#sw-search').addEventListener('keydown', (e) => {
 function showWorkspaceActions(e, project, count) {
   closeSessionActions();
   const menu = el('div', 'ctx-menu');
-  const del = el('button', 'ctx-item danger', '移除工作区');
+  const del = el('button', 'ctx-item danger', t('ws.remove'));
   del.type = 'button';
   del.addEventListener('click', () => {
     closeSessionActions();
-    if (!confirm(`移除工作区「${projectName(project)}」？\n其下 ${count} 个会话将被一并删除（目录本身不受影响）。`)) return;
+    if (!confirm(t('ws.removeConfirm', { name: projectName(project), count }))) return;
     api('/api/workspace/remove', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1921,7 +2180,7 @@ function showWorkspaceActions(e, project, count) {
         }
         renderSessionList();
       })
-      .catch((err) => notify(`移除失败：${err.message}`, 'error'));
+      .catch((err) => notify(t('err.remove', { msg: err.message }), 'error'));
   });
   menu.append(del);
   document.body.appendChild(menu);
@@ -1937,33 +2196,33 @@ function showWorkspaceActions(e, project, count) {
 function showSessionActions(e, s) {
   closeSessionActions();
   const menu = el('div', 'ctx-menu');
-  const ren = el('button', 'ctx-item', '重命名');
+  const ren = el('button', 'ctx-item', t('session.rename'));
   ren.type = 'button';
   ren.addEventListener('click', () => {
     closeSessionActions();
-    const t = prompt('会话标题', s.title || '');
-    if (t === null) return;
-    const title = t.trim();
-    if (!title) return;
+    const title = prompt(t('session.titlePrompt'), s.title || '');
+    if (title === null) return;
+    const newTitle = title.trim();
+    if (!newTitle) return;
     api(`/api/sessions/${s.id}/rename`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ title: newTitle }),
     })
       .then(() => {
-        s.title = title;
+        s.title = newTitle;
         const live = state.sessions.find((x) => x.id === s.id);
-        if (live) live.title = title;
-        if (state.session === s.id) $('#chat-title').textContent = title;
+        if (live) live.title = newTitle;
+        if (state.session === s.id) $('#chat-title').textContent = newTitle;
         renderSessionList();
       })
-      .catch((err) => notify(`重命名失败：${err.message}`, 'error'));
+      .catch((err) => notify(t('err.rename', { msg: err.message }), 'error'));
   });
-  const del = el('button', 'ctx-item danger', '删除会话');
+  const del = el('button', 'ctx-item danger', t('session.delete'));
   del.type = 'button';
   del.addEventListener('click', () => {
     closeSessionActions();
-    if (!confirm(`删除会话「${s.title || s.id}」？此操作不可恢复。`)) return;
+    if (!confirm(t('session.deleteNamedConfirm', { name: s.title || s.id }))) return;
     api(`/api/sessions/${s.id}/delete`, { method: 'DELETE' })
       .then(() => {
         state.sessions = state.sessions.filter((x) => x.id !== s.id);
@@ -1977,16 +2236,16 @@ function showSessionActions(e, s) {
         }
         renderSessionList();
       })
-      .catch((err) => notify(`删除失败：${err.message}`, 'error'));
+      .catch((err) => notify(t('err.delete', { msg: err.message }), 'error'));
   });
   if (s.project === (state.status?.cwd || '')) {
-    const forkB = el('button', 'ctx-item', '分叉新会话（/fork）');
+    const forkB = el('button', 'ctx-item', t('session.fork'));
     forkB.type = 'button';
     forkB.addEventListener('click', () => { closeSessionActions(); openForkDialog(s); });
-    const exp = el('button', 'ctx-item', '导出 Markdown（/export）');
+    const exp = el('button', 'ctx-item', t('session.export'));
     exp.type = 'button';
     exp.addEventListener('click', () => { closeSessionActions(); window.open(`/api/sessions/${s.id}/export`, '_blank'); });
-    const rw = el('button', 'ctx-item', '会话检查点（/rewind）');
+    const rw = el('button', 'ctx-item', t('session.rewind'));
     rw.type = 'button';
     rw.addEventListener('click', () => { closeSessionActions(); openRewindModal(s.id); });
     menu.append(forkB, exp, rw);
@@ -2023,7 +2282,9 @@ function clearMessages() {
 function clearPendingMessages() {
   state.messageQueue = [];
   state.steerText = null;
+  state.delegateRuns.length = 0; // delegate 面板同属「当前会话运行中」的临时 UI
   const ql = $('#queue-list'); if (ql) { ql.classList.add('hidden'); ql.innerHTML = ''; }
+  renderDelegatePanel();
   updateComposer();
 }
 
@@ -2060,7 +2321,7 @@ function updateDetails() {
   } else {
     label.textContent = '—';
   }
-  $('#composer-mode').textContent = state.planMode ? '计划模式' : '标准模式';
+  $('#composer-mode').textContent = state.planMode ? t('composer.planMode') : t('composer.standardMode');
   updatePermissionPill();
   updateContextRing();
 }
@@ -2104,8 +2365,8 @@ function updateContextRing() {
   tag.style.setProperty('--ctx-color', color);
   tag.classList.remove('hidden');
   tag.title = limit > 0
-    ? `上下文: ${fmtCompact(lastPrompt)} / ${fmtCompact(limit)} (${pct}%)`
-    : `上下文: ${fmtCompact(lastPrompt)}`;
+    ? t('composer.ctxTitle', { used: fmtCompact(lastPrompt), limit: fmtCompact(limit), pct })
+    : t('composer.ctxTitleShort', { used: fmtCompact(lastPrompt) });
   updateComposerMetaVisibility();
 }
 
@@ -2177,7 +2438,7 @@ function renderPermissionPop() {
       btn.appendChild(ck);
     }
     btn.addEventListener('click', () => {
-      applySettings({ permission: it.v }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+      applySettings({ permission: it.v }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
       closeAllComposerPops();
     });
     list.appendChild(btn);
@@ -2216,7 +2477,7 @@ function renderTurnFooter(sessionId, data) {
   const rate = genMs > 0 ? Math.round(compTok / (genMs / 1000)) : (durMs > 0 ? Math.round(compTok / (durMs / 1000)) : 0);
   const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
   const ftAvg = data.firstTokenAvg;
-  const ftStr = (ftAvg != null && ftAvg > 0) ? ` · 首 token ${fmtToolDur(ftAvg)}` : '';
+  const ftStr = (ftAvg != null && ftAvg > 0) ? t('turn.firstToken', { dur: fmtToolDur(ftAvg) }) : '';
 
   const metaDiv = el('div', 'turn-meta', `Build · ${modelName} · ${durStr}${ftStr}${rateStr}`);
   footer.appendChild(metaDiv);
@@ -2262,7 +2523,7 @@ async function renderSessionHistory(id) {
   try {
     const data = await api(`/api/sessions/${id}/messages`);
     const s = state.sessions.find((x) => x.id === id);
-    $('#chat-title').textContent = s?.title || (data.meta?.title) || '会话';
+    $('#chat-title').textContent = s?.title || (data.meta?.title) || t('session.title');
     // 会话级累计按历史重建（底部状态行 = 全会话平均，不只是本页新消息）
     rebuildSessionStats(id, data.messages);
     updateComposerMeta();
@@ -2475,7 +2736,7 @@ function refreshStatus() {
     // 主题：后端配置优先（覆盖本地缓存），并同步本地缓存
     const theme = applyTheme(s.webTheme || 'system');
     storeTheme(theme);
-    const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || '当前工作区' : '当前工作区';
+    const workspaceName = s.cwd ? s.cwd.split('/').filter(Boolean).pop() || t('ws.current') : t('ws.current');
     $('#hero-workspace-name').textContent = workspaceName;
     updateDetails();
     updateComposer();
@@ -2515,6 +2776,7 @@ function updateComposer() {
   if (!state.messageQueue.length && !state.steerText) {
     const ql = $('#queue-list'); if (ql) ql.classList.add('hidden');
   } else renderQueueList();
+  renderDelegatePanel(); // 运行中 delegate 面板（空时自隐藏）——会话切换/发送/结束即刷新
   updateComposerMeta(); // 输入区下方元信息行（会话切换/发送/结束即刷新）
 }
 
@@ -2658,7 +2920,7 @@ function browseWorkspace() {
   if (window.omni && typeof window.omni.pickDirectory === 'function') {
     window.omni.pickDirectory()
       .then((dir) => {
-        if (dir) switchWorkspace(dir).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
+        if (dir) switchWorkspace(dir).catch((err) => notify(t('err.workspaceSwitch', { msg: err.message }), 'error'));
       })
       // 原生对话框异常（IPC 崩溃 / 桥接失效）→ 回退页面内目录浏览器，而不是静默失败
       .catch(() => openDirPicker(state.status?.cwd || '/'));
@@ -2855,6 +3117,27 @@ const currentTools = new Map(); // seq -> toolBlock（并行工具结果乱序�
 bus.on('tool.start', (ev) => {
   if (ev.sessionId !== state.session) return;
   statsOf(ev.sessionId).steps += 1;
+  // delegate 子代理（1.0 面板模型）：运行中不渲染流内工具卡，进入输入框上方的
+  // delegate 面板（state.delegateRuns + renderDelegatePanel）；完成后 tool.result
+  // 移除面板行 + 对话流留结果摘要。
+  if (ev.name === 'delegate' && ev.seq != null) {
+    if (!state.delegateRuns.some((r) => r.seq === ev.seq)) {
+      state.delegateRuns.push({
+        seq: ev.seq,
+        title: ev.argsPreview || t('subagent.label'),
+        status: t('subagent.running'),
+        stopped: false,
+        stopRequested: false,
+        expanded: false,
+        items: [],
+        dropped: 0,
+      });
+      renderDelegatePanel();
+    }
+    state.inFlight++;
+    updateComposerMeta();
+    return;
+  }
   const block = toolBlock(ev.sessionId, ev);
   currentTools.set(ev.seq ?? `f${currentTools.size}`, block);
   state.inFlight++;
@@ -2873,6 +3156,16 @@ bus.on('tool.output', (ev) => {
 bus.on('tool.result', (ev) => {
   if (ev.sessionId !== state.session) return;
   const key = ev.seq;
+  // delegate 子代理完成：移除面板行 + 对话流留结果摘要卡（含明细，点击展开）
+  const drIdx = state.delegateRuns.findIndex((r) => r.seq === key);
+  if (drIdx >= 0) {
+    const [run] = state.delegateRuns.splice(drIdx, 1);
+    renderDelegatePanel();
+    delegateResultBlock(ev.sessionId, ev, run);
+    state.inFlight--;
+    updateComposerMeta();
+    return;
+  }
   let currentTool = null;
   if (key !== undefined) {
     currentTool = currentTools.get(key) ?? null;
@@ -2912,12 +3205,164 @@ bus.on('usage', (ev) => {
 
 bus.on('subagent', (ev) => {
   if (ev.sessionId !== state.session) return;
-  if (ev.ev && ev.ev.type === 'start') {
+  const sev = ev.ev;
+  if (!sev) return;
+  // 按工具配对 seq 更新 delegate 面板行（并行多委托各自归集）；无 seq 回退最近运行行
+  let run = null;
+  if (sev.seq != null) {
+    run = state.delegateRuns.find((r) => r.seq === sev.seq) ?? null;
+  }
+  if (!run) {
+    run = [...state.delegateRuns].reverse().find((r) => !r.stopped && !r.stopRequested) ?? null;
+  }
+  if (run) {
+    if (sev.type === 'start') {
+      run.status = sev.depth > 0 ? t('subagent.depth', { n: sev.depth }) : t('subagent.running');
+    } else if (sev.type === 'step') {
+      run.status = `${sev.tool || t('subagent.thinking')} ${sev.step}/${sev.maxSteps}`;
+    } else if (sev.type === 'think') {
+      const txt = String(sev.text || '').slice(0, 400);
+      if (txt) { run.items.push({ kind: 'think', text: txt }); trimRun(run); }
+    } else if (sev.type === 'toolStart') {
+      run.items.push({ kind: 'tool', text: sev.argsPreview || sev.text || t('subagent.work') });
+      run.status = `⠋ ${sev.text || t('subagent.work')}…`;
+      trimRun(run);
+    } else if (sev.type === 'toolEnd') {
+      const head0 = String((sev.outputPreview || [])[0] || '').split('\n')[0];
+      run.items.push({ kind: 'result', text: head0 || (sev.toolOk === false ? t('tool.failed') : t('tool.noOutput')), ok: sev.toolOk !== false });
+      trimRun(run);
+    } else if (sev.type === 'stopped') {
+      run.stopped = true;
+      run.status = t('subagent.stopped');
+    } else if (sev.type === 'end') {
+      run.status = sev.status === 'ok' ? t('subagent.doneSteps', { n: sev.steps || 0 }) : t('tool.failed');
+    }
+    renderDelegatePanel();
+  } else {
+    // 无面板行（/orchestrate worker 等无 seq 流卡）：回退找 currentTools 里的 delegate 卡
+    let block = null;
+    if (sev.seq != null) block = currentTools.get(sev.seq) ?? null;
+    if (!block) {
+      for (const [, tb] of currentTools) {
+        if (tb._data && tb._data.name === 'delegate') { block = tb; break; }
+      }
+    }
+    if (block && block.subagent) block.subagent(sev);
+  }
+  if (sev.type === 'start') {
     state.inFlight++;
-  } else if (ev.ev && ev.ev.type === 'end') {
+  } else if (sev.type === 'end') {
     state.inFlight--;
   }
+  updateComposerMeta();
 });
+
+/* delegate 明细截断（超出 120 条丢最早） */
+function trimRun(run) {
+  const MAX = 120;
+  if (run.items.length > MAX) {
+    const drop = run.items.length - MAX;
+    run.items.splice(0, drop);
+    run.dropped += drop;
+  }
+}
+
+/* 输入框上方 delegate 面板全量重绘（运行中的子代理；点击展开明细 + ⏹ 停止） */
+function renderDelegatePanel() {
+  const panel = $('#delegate-panel');
+  if (!panel) return;
+  const runs = state.delegateRuns;
+  if (!runs.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+  panel.classList.remove('hidden');
+  panel.innerHTML = '';
+  for (const run of runs) {
+    const item = el('div', 'dp-item' + (run.expanded ? ' open' : ''));
+    const head = el('button', 'dp-head');
+    const arrow = el('span', 'dp-arrow', '▶');
+    const title = el('span', 'dp-title', run.title);
+    const status = el('span', 'dp-status' + (run.stopped || run.stopRequested ? ' stopped' : ' running'), run.status);
+    head.appendChild(arrow); head.appendChild(title); head.appendChild(status);
+    head.addEventListener('click', () => {
+      run.expanded = !run.expanded;
+      renderDelegatePanel();
+    });
+    item.appendChild(head);
+    const body = el('div', 'dp-body');
+    if (run.dropped > 0) body.appendChild(el('div', 'dp-more', t('subagent.earlierDropped', { n: run.dropped })));
+    // 明细最多显示最近 40 条（DOM 防爆）
+    const shown = run.items.slice(-40);
+    if (run.items.length > 40 && run.dropped === 0) {
+      body.appendChild(el('div', 'dp-more', t('subagent.earlierDropped', { n: run.items.length - 40 })));
+    }
+    for (const it of shown) {
+      if (it.kind === 'think') body.appendChild(el('div', 'dp-think', `💭 ${it.text}`));
+      else if (it.kind === 'tool') body.appendChild(el('div', 'dp-tool', `→ ${it.text}`));
+      else body.appendChild(el('div', 'dp-result' + (it.ok === false ? ' err' : ''), `${it.ok === false ? '✗' : '✓'} ${it.text}`));
+    }
+    if (run.stopped || run.stopRequested) {
+      body.appendChild(el('div', 'dp-stopped', t('subagent.stoppedBtn')));
+    } else {
+      const stopBtn = el('button', 'dp-stop', t('subagent.stop'));
+      stopBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        run.stopRequested = true;
+        run.status = t('subagent.stopping');
+        stopBtn.disabled = true;
+        stopBtn.textContent = t('subagent.stopping');
+        renderDelegatePanel();
+        fetch(`/api/sessions/${encodeURIComponent(state.session)}/subagents/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seq: run.seq }),
+        }).catch(() => {
+          run.stopRequested = false;
+          renderDelegatePanel();
+        });
+      });
+      body.appendChild(stopBtn);
+    }
+    item.appendChild(body);
+    panel.appendChild(item);
+  }
+}
+
+/* delegate 完成 → 对话流结果摘要卡（点击展开明细） */
+function delegateResultBlock(sessionId, r, run) {
+  setEmptyState(false);
+  const b = makeBlock('tool', sessionId);
+  const wrap = el('div', 'msg');
+  const stopped = run.stopped || run.stopRequested;
+  const ok = r.ok && !stopped;
+  const card = el('div', 'tool-card');
+  const head = el('div', 'tc-head');
+  head.innerHTML = `<span class="tc-cmd">${esc(t('subagent.label'))}</span> <span class="tc-delegate-task">${esc(run.title)}</span>`;
+  const st = el('span', 'tc-state');
+  st.textContent = ok ? t('tool.ok') : t('tool.failed');
+  if (stopped) st.textContent = t('subagent.stopped');
+  head.appendChild(st);
+  const body = el('div', 'tc-body');
+  body.classList.add('hidden');
+  head.addEventListener('click', () => {
+    body.classList.toggle('hidden');
+    if (!body.classList.contains('hidden')) paint();
+    scrollBottom();
+  });
+  const paint = () => {
+    body.innerHTML = '';
+    if (run.dropped > 0) body.appendChild(el('div', 'tc-live-meta', t('subagent.earlierDropped', { n: run.dropped })));
+    for (const it of run.items.slice(-60)) {
+      if (it.kind === 'think') body.appendChild(el('div', 'tc-sub-think', `💭 ${it.text}`));
+      else if (it.kind === 'tool') body.appendChild(el('div', 'tc-sub-tool', `→ ${it.text}`));
+      else body.appendChild(el('div', 'tc-sub-result' + (it.ok === false ? ' err' : ''), `${it.ok === false ? '✗' : '✓'} ${it.text}`));
+    }
+    if (stopped) body.appendChild(el('div', 'tc-sub-stopped', t('subagent.stoppedBtn')));
+  };
+  paint();
+  card.appendChild(head); card.appendChild(body);
+  wrap.appendChild(card);
+  msgList().appendChild(wrap);
+  scrollBottom();
+}
 
 bus.on('run.end', async (ev) => {
   state.runningSessions.delete(ev.sessionId);
@@ -2926,6 +3371,9 @@ bus.on('run.end', async (ev) => {
   updateComposerMeta();
   if (ev.sessionId !== state.session) { refreshSessions(); return; }
   currentTools.clear(); // 取消/打断时部分工具可能无 result 到达，清理避免错配下一轮
+  // 回合结束兜底：delegate 面板清空（正常路径 tool.result 已逐个移除；取消/异常时残留）
+  state.delegateRuns.length = 0;
+  renderDelegatePanel();
   if (currentThinking) { currentThinking.finish(); currentThinking = null; }
   if (currentAssistant) {
     currentAssistant.paint();
@@ -3102,7 +3550,7 @@ function refreshSessions() {
     renderSessionList();
     const s = state.sessions.find((x) => x.id === state.session);
     if (s) {
-      $('#chat-title').textContent = s.title || '会话';
+      $('#chat-title').textContent = s.title || t('session.title');
     }
     updateDetails();
   }).catch(() => {});
@@ -3114,17 +3562,17 @@ const SLASH_COMMANDS = [
   { name: '/status', desc: '会话状态汇总' },
   { name: '/context', desc: '上下文用量（消息/token 估算）' },
   { name: '/clear', desc: '清空当前会话上下文' },
-  { name: '/plan', desc: '切换计划模式（只读调研）' },
-  { name: '/permission', desc: '切换安全权限档位（低/中/高/全量）' },
-  { name: '/model', desc: '查看/切换/添加模型（/model fetch 拉取网关模型清单）' },
-  { name: '/variants', desc: '切换思考级别（low/medium/high）' },
+  { name: '/plan', desc: '切换计划模式（只读调研，直接切换开关）' },
+  { name: '/permission', desc: '权限面板切换（无参数打开面板，有参数直接切换）' },
+  { name: '/model', desc: '模型面板切换（无参数打开面板，/model <名> 直接切换）' },
+  { name: '/variants', desc: '思考级别面板切换（无参数打开面板，有参数直接切换）' },
   { name: '/models', desc: '模型能力快照：/models refresh 在线更新（models.dev）' },
   { name: '/undo', desc: '撤销最近的文件修改（all = 全部）' },
   { name: '/redo', desc: '重做上次撤销（all = 全部）' },
   { name: '/compact', desc: '手动压缩上下文为摘要' },
   { name: '/review', desc: '代码审查（typecheck + git diff）' },
   { name: '/diff', desc: '查看未提交改动（--stat 只看统计 · --full 不截断）' },
-  { name: '/rewind', desc: '会话检查点：回滚工作区到历史回合（列表 / <N> 恢复）' },
+  { name: '/rewind', desc: '检查点面板（无参数打开面板，/rewind <N> 直接回滚）' },
   { name: '/trace', desc: '查看运行轨迹账本' },
   { name: '/agents', desc: '查看子代理配置与定义' },
   { name: '/orchestrate', desc: '并行编排（fan-out delegate → 汇总 → 审查）' },
@@ -3133,16 +3581,16 @@ const SLASH_COMMANDS = [
   { name: '/thinking', desc: '展开/收起全部思考过程' },
   { name: '/skill', desc: '技能管理（列出/find/add/show）' },
   { name: '/init', desc: '生成 AGENTS.md 项目记忆（--global 全局）' },
-  { name: '/export', desc: '导出会话为 Markdown' },
+  { name: '/export', desc: '导出会话为 Markdown（直接下载文件）' },
   { name: '/config', desc: '查看配置文件路径' },
   { name: '/mcp', desc: 'MCP 管理：reconnect / resources / prompts（设置面板可 add/remove/install/login）' },
-  { name: '/rename', desc: '修改会话标题' },
-  { name: '/session', desc: '会话管理（列出/恢复/all 全部）' },
-  { name: '/resume', desc: '恢复历史会话（列出/恢复）' },
+  { name: '/rename', desc: '重命名会话（无参数弹窗输入，有参数直接改名）' },
+  { name: '/session', desc: '会话切换面板（无参数打开面板，有参数直接跳转）' },
+  { name: '/resume', desc: '会话切换面板（无参数打开面板，有参数直接跳转）' },
   { name: '/doctor', desc: '环境诊断（Node/API/配置）' },
   { name: '/spec', desc: '规格三件套（/spec <特性>）：requirements(EARS)/design/tasks 落盘 .omni/specs/' },
   { name: '/preset', desc: '能力一键预设（/preset browser 安装浏览器自动化双雄 MCP）' },
-  { name: '/settings', desc: '打开设置面板' },];
+  { name: '/settings', desc: '打开设置面板（/settings <面板> 直达对应页）' },];
 
 const cmdPalette = $('#cmd-palette');
 const mentionPop = $('#mention-pop');
@@ -3205,6 +3653,9 @@ function moveMentionSel(delta) {
   mentionSelIdx = (mentionSelIdx + delta + mentionItems.length) % mentionItems.length;
   const items = mentionPop.querySelectorAll('.mention-item');
   items.forEach((n, i) => n.classList.toggle('selected', i === mentionSelIdx));
+  // 选中项滚进可视区（文件较多超出 max-height 时保证当前项可见）
+  const cur = items[mentionSelIdx];
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
 }
 
 function acceptMention() {
@@ -3238,7 +3689,7 @@ function renderCmdPalette(query) {
     return;
   }
   cmdPalette.innerHTML = '';
-  cmdFiltered.slice(0, 10).forEach((c, i) => {
+  cmdFiltered.forEach((c, i) => {
     const item = el('div', 'cmd-item' + (i === 0 ? ' selected' : ''));
     item.innerHTML = '<span class="cmd-name">' + esc(c.name) + '</span><span class="cmd-desc">' + esc(c.desc) + '</span>';
     item.addEventListener('click', () => {
@@ -3253,11 +3704,14 @@ function renderCmdPalette(query) {
 }
 
 function moveCmdSel(delta) {
-  const max = Math.min(cmdFiltered.length, 10);
+  const max = cmdFiltered.length;
   if (!max) return;
   cmdSelIdx = (cmdSelIdx + delta + max) % max;
   const items = cmdPalette.querySelectorAll('.cmd-item');
   items.forEach((n, i) => n.classList.toggle('selected', i === cmdSelIdx));
+  // 选中项滚进可视区（列表超出 max-height 时上下键能预览到最下面的 item）
+  const cur = items[cmdSelIdx];
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
 }
 
 function acceptCmdSel() {
@@ -3302,9 +3756,89 @@ $('#cmd-panel').addEventListener('click', (e) => {
   if (e.target === $('#cmd-panel')) closeCmdPanel();
 });
 
+/* —— 斜杠命令与 Web UI 联动（输入区命令直达真实功能，不只弹面板） ——
+ * 有原生 UI 的命令走 UI（面板/弹窗/下载/切换），无 UI 的才走后端 /api/command 面板展示：
+ *   模型/权限/计划/设置/检查点/分叉/导出/重命名/会话切换 → 原生 UI；
+ *   状态/上下文/diff/review/诊断等纯文本命令 → 保留 cmd-panel 展示。
+ * 后端联动型（/plan 带参切换类）走 /api/command 但渲染为右上角通知 + 状态刷新，
+ * 不再弹 cmd-panel，保证“执行结果落到界面上”。 */
+function parseSlash(cmd) {
+  const s = String(cmd || '').trim();
+  const sp = s.indexOf(' ');
+  if (sp < 0) return { base: s, arg: '' };
+  return { base: s.slice(0, sp), arg: s.slice(sp + 1).trim() };
+}
+/** 打开设置面板并直达指定 pane（general/theme/apikey/shortcuts/about；大小写/中文别名兼容） */
+function openSettingsPane(arg) {
+  openSettings();
+  const a = String(arg || '').trim().toLowerCase();
+  if (!a) return;
+  const alias = {
+    general: 'general', '通用': 'general',
+    theme: 'theme', '主题': 'theme',
+    apikey: 'apikey', api: 'apikey', model: 'apikey', '模型': 'apikey', '模型配置': 'apikey',
+    shortcuts: 'shortcuts', shortcut: 'shortcuts', '快捷键': 'shortcuts',
+    about: 'about', '关于': 'about',
+  };
+  const target = alias[a] || alias[a.split(/\s+/)[0]] || null;
+  if (!target) return;
+  document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n.dataset.pane === target));
+  document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === target));
+}
+/** 打开权限面板（composer 内联 pop） */
+function openPermissionPop() {
+  closeCmdPanel();
+  renderPermissionPop();
+  $('#permission-pop').classList.remove('hidden');
+  $('#model-pop').classList.add('hidden');
+}
+/** 会话切换面板：带过滤预填（/session <关键词> 多命中/未命中时用） */
+function openSessionSwitchWithFilter(q) {
+  openSessionSwitch();
+  const inp = $('#sw-search');
+  if (inp) {
+    inp.value = q || '';
+    swFilter = q || '';
+    swSelIdx = 0;
+    renderSessionSwitch();
+    inp.focus();
+  }
+}
+/** 后端联动型命令：走 /api/command，但渲染为通知 + 状态刷新，不弹 cmd-panel。
+ * 适用于 /plan /permission<档位> /model<名> /variants<级别> /clear ——执行结果直接落到 UI 控件上。 */
+async function runBackendLinked(cmd) {
+  try {
+    const result = await api('/api/command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: cmd, sessionId: state.session, background: true }),
+    });
+    closeCmdPanel();
+    const lines = Array.isArray(result.lines) ? result.lines : [];
+    if (lines.length) notify(lines.join('\n'), 'success');
+    await refreshStatus().catch(() => {});
+    // 弹层若开着即时重绘（模型/权限切换后面板内的选中态同步）
+    try {
+      if (!$('#model-pop').classList.contains('hidden')) renderModelPop(state.status || {});
+      if (!$('#permission-pop').classList.contains('hidden')) renderPermissionPop();
+    } catch { /* 渲染失败不阻塞 */ }
+    // /clear 靠 clear 事件清消息流；这里补刷侧栏标题（标题可能已变）与状态条
+    if (parseSlash(cmd).base === '/clear') refreshSessions().catch(() => {});
+  } catch (e) {
+    notify(t('cmd.failed', { msg: e.message }), 'error');
+  }
+}
+
 async function runSlashCommand(cmd) {
-  // 某些命令在前端直接处理，避免不必要的往返
-  if (cmd === '/thinking') {
+  const { base, arg } = parseSlash(cmd);
+  // —— 1. 纯前端 UI 命令（不经过后端） ——
+  // /model、/variants 无参数 → 打开输入区的模型选择面板（模型下拉 + 思考级别滑条）
+  if ((base === '/model' || base === '/variants') && !arg) {
+    closeCmdPanel();
+    openModelPop();
+    return;
+  }
+  if (base === '/thinking') {
     // 前端切换：展开/收起全部思考模块（不控制后端事件广播）
     state.thinkingCollapsed = !state.thinkingCollapsed;
     document.querySelectorAll('.thinking').forEach((box) => {
@@ -3323,6 +3857,114 @@ async function runSlashCommand(cmd) {
     });
     return;
   }
+  // /permission 无参数 → 打开权限面板（composer 内联 pop，与胶囊按钮同款）
+  if (base === '/permission' && !arg) {
+    openPermissionPop();
+    return;
+  }
+  // /plan → 直接切换计划开关（与 composer 计划 toggle 同链路，不弹面板）
+  if (base === '/plan') {
+    closeCmdPanel();
+    try { togglePlanMode(); } catch { /* toggle 内部已处理 */ }
+    notify(state.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。', 'success');
+    return;
+  }
+  // /settings → 打开设置面板（支持 /settings <面板名> 直达）
+  if (base === '/settings') {
+    closeCmdPanel();
+    openSettingsPane(arg);
+    return;
+  }
+  // /rewind 无参数 → 打开检查点面板；带参数 → 直接调 REST 回滚（与面板同接口）
+  if (base === '/rewind') {
+    if (!state.session) { notify(t('session.new'), 'info'); return; }
+    if (!arg) { closeCmdPanel(); openRewindModal(state.session); return; }
+    const n = Number(arg.split(/\s+/)[0]);
+    if (!Number.isInteger(n)) { notify('用法：/rewind <序号>（无参数打开检查点面板）', 'error'); return; }
+    try {
+      const r = await api(`/api/sessions/${state.session}/rewind`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ index: n }),
+      });
+      const cnt = Array.isArray(r.results) ? r.results.length : '';
+      notify(cnt === '' ? `已回滚到检查点 #${n}` : t('rewind.done', { index: n, n: cnt }), 'success');
+    } catch (e) { notify(t('rewind.failed', { msg: e.message }), 'error'); }
+    return;
+  }
+  // /fork 无参数 → 打开分叉对话框；带参数 → 直接调 REST 分叉（与对话框同接口）
+  if (base === '/fork') {
+    if (!state.session) { notify(t('session.new'), 'info'); return; }
+    if (!arg) { closeCmdPanel(); openForkDialog({ id: state.session }); return; }
+    const n = Number(arg.split(/\s+/)[0]);
+    if (!Number.isInteger(n) || n < 1) { notify(t('fork.invalid', { max: '?' }), 'error'); return; }
+    try {
+      await api(`/api/sessions/${state.session}/fork`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ n }),
+      });
+      await refreshSessions().catch(() => {});
+      notify('已分叉新会话（侧栏可见）', 'success');
+    } catch (e) { notify(t('err.fork', { msg: e.message }), 'error'); }
+    return;
+  }
+  // /export → 直接下载（与会话菜单“导出”同接口，不弹面板）
+  if (base === '/export') {
+    if (!state.session) { notify(t('session.new'), 'info'); return; }
+    closeCmdPanel();
+    window.open(`/api/sessions/${state.session}/export`, '_blank');
+    return;
+  }
+  // /rename → 走 REST 重命名（广播 title 事件，侧栏/标题即时更新；无参数弹窗输入）
+  if (base === '/rename') {
+    if (!state.session) { notify(t('session.new'), 'info'); return; }
+    let title = arg;
+    if (!title) {
+      const raw = prompt(t('session.titlePrompt'), $('#chat-title').textContent || '');
+      if (raw === null) return;
+      title = raw.trim();
+      if (!title) return;
+    }
+    try {
+      await api(`/api/sessions/${state.session}/rename`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      // SSE title 事件会更新标题；这里乐观更新避免等待往返
+      $('#chat-title').textContent = title;
+      const live = state.sessions.find((x) => x.id === state.session);
+      if (live) live.title = title;
+      renderSessionList();
+      notify(t('notify.saved'), 'success');
+    } catch (e) { notify(t('err.rename', { msg: e.message }), 'error'); }
+    return;
+  }
+  // /session /resume → 会话切换面板（无参数/all 打开面板，有参数本地匹配直达）
+  if (base === '/session' || base === '/resume') {
+    if (!arg || arg === 'all' || arg === 'list') { closeCmdPanel(); openSessionSwitch(); return; }
+    const key = arg.split(/\s+/)[0].toLowerCase();
+    const matches = (state.sessions || []).filter((s) =>
+      (s.id || '').toLowerCase().startsWith(key) ||
+      (s.id || '').toLowerCase() === key ||
+      (s.title || '').toLowerCase().includes(key)
+    );
+    closeCmdPanel();
+    if (matches.length === 1) { pickSession(matches[0]); return; }
+    if (matches.length > 1) { openSessionSwitchWithFilter(arg.split(/\s+/)[0]); notify(`找到 ${matches.length} 个匹配，已打开切换面板`, 'info'); return; }
+    // 本地无命中：尝试按完整 id 直接加载（磁盘会话可能尚未进列表），失败则打开面板
+    try { await selectSession(arg.split(/\s+/)[0]); }
+    catch { openSessionSwitchWithFilter(arg.split(/\s+/)[0]); notify(`会话「${arg.split(/\s+/)[0]}」不存在，已打开切换面板`, 'error'); }
+    return;
+  }
+  // —— 2. 后端联动型（走后端，但渲染为通知+UI 刷新，不弹面板） ——
+  // /plan 已在上节直连 toggle；这里处理带参切换类与 /clear
+  if (base === '/permission' && arg) { await runBackendLinked(cmd); return; }
+  if (base === '/clear') { await runBackendLinked(cmd); return; }
+  if (base === '/model' && arg) {
+    const sub = arg.split(/\s+/)[0];
+    // add/fetch 走后端复杂流程（拉取网关清单/持久化），保留面板展示
+    if (sub !== 'add' && sub !== 'fetch') { await runBackendLinked(cmd); return; }
+  }
+  if (base === '/variants' && arg) { await runBackendLinked(cmd); return; }
   // 显示加载状态
   openCmdPanel([]);
   $('#cmd-panel-body').innerHTML = '';
@@ -3341,18 +3983,34 @@ async function runSlashCommand(cmd) {
     } else {
       openCmdPanel([t('cmd.executed')]);
     }
-    // 某些命令改变了状态/会话列表，刷新
-    const statusCmds = ['/plan', '/permission', '/variants', '/model', '/clear', '/thinking', '/mcp reconnect'];
-    if (statusCmds.some((c) => cmd.startsWith(c))) {
+    // 某些命令改变了状态/会话列表/当前消息，按类刷新界面（执行结果要"落到界面上"）
+    const c = cmd.trim();
+    // ① 改运行时状态（模型/权限/计划/思考级别/上下文统计等）→ 刷新状态条
+    //    （/clear 靠 clear 事件清消息流，此处再刷状态条清底部 context/缓存统计）
+    const statusCmds = ['/plan', '/permission', '/variants', '/model', '/models', '/thinking', '/preset', '/clear'];
+    if (statusCmds.some((x) => c === x || c.startsWith(x + ' '))) {
       refreshStatus().catch(() => {});
     }
-    const refreshCmds = ['/session', '/resume', '/rename', '/init', '/skill add', '/undo', '/redo', '/compact'];
-    if (refreshCmds.some((c) => cmd.startsWith(c))) {
+    // ② 改会话列表/侧栏（新建/删除/改名/分叉/记忆/跨会话消息落盘）→ 刷新侧栏
+    const sessionCmds = ['/rename', '/session', '/resume', '/fork', '/init', '/skill add', '/memory-apply', '/send'];
+    if (sessionCmds.some((x) => c === x || c.startsWith(x + ' '))) {
+      refreshSessions().catch(() => {});
+    }
+    // ③ /compact 折叠了当前会话旧消息为摘要 → 空闲时整段重拉历史让结果落到消息流
+    //    （运行中不重拉避免打断实时流；/undo /redo /rewind 只改工作区文件与 system 消息，
+    //     system 不渲染故无需重拉；/clear 已有 clear 事件清空）
+    if (c === '/compact' && state.session && !sessionRunning()) {
+      renderSessionHistory(state.session).catch(() => {});
+    }
+    // ④ MCP 工具链变化 → 状态栏工具数刷新（status 里含 tools）
+    const mcpCmds = ['/mcp add', '/mcp remove', '/mcp login', '/mcp reconnect', '/mcp install'];
+    if (mcpCmds.some((x) => c.startsWith(x))) {
+      refreshStatus().catch(() => {});
       refreshSessions().catch(() => {});
     }
     // /session <id> 或 /resume <id>：直接加载会话
-    if (state.session && (cmd.startsWith('/session ') || cmd.startsWith('/resume ')) && !cmd.includes('all') && !cmd.includes('list')) {
-      const arg = cmd.split(/\s+/)[1];
+    if (state.session && (c.startsWith('/session ') || c.startsWith('/resume ')) && !c.includes('all') && !c.includes('list')) {
+      const arg = c.split(/\s+/)[1];
       if (arg) selectSession(arg).catch(() => {});
     }
   } catch (e) {
@@ -3525,7 +4183,7 @@ function focusSessionSearch() {
 function cyclePermission() {
   const cur = state.status?.permission || 'safe';
   const next = PERM_ORDER[(PERM_ORDER.indexOf(cur) + 1) % PERM_ORDER.length] || 'read';
-  applySettings({ permission: next }).catch((err) => notify(`设置失败：${err.message}`, 'error')); // 静默切换（D12），失败才提示
+  applySettings({ permission: next }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error')); // 静默切换（D12），失败才提示
 }
 function cycleTheme() {
   const cur = getStoredTheme() || state.status?.webTheme || 'system';
@@ -3546,7 +4204,7 @@ function togglePlanMode() {
   const sp = $('#set-plan');
   if (sp) sp.checked = next;
   updateComposer();
-  applySettings({ planMode: next }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+  applySettings({ planMode: next }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 }
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -3669,17 +4327,20 @@ function renderSessionSwitch() {
   swItems.forEach((s, i) => {
     const row = el('div', 'sw-item' + (i === swSelIdx ? ' selected' : ''));
     row.appendChild(el('div', 'sw-title', s.title || t('session.new')));
-    row.appendChild(el('div', 'sw-meta', `${projectName(s.project || '(未知工作区)')} · ${s.messages || 0} 条消息`));
+    row.appendChild(el('div', 'sw-meta', `${projectName(s.project || t('ws.unknown'))} · ${t('session.msgCount', { n: s.messages || 0 })}`));
     row.addEventListener('click', () => pickSession(s));
     list.appendChild(row);
   });
+  // 上下键切换后选中项滚进可视区（会话多超出 sw-list 高度时保证当前项可见）
+  const selRow = list.querySelector('.sw-item.selected');
+  if (selRow) selRow.scrollIntoView({ block: 'nearest' });
 }
 function pickSession(s) {
   closeSessionSwitch();
-  const target = s.project && s.project !== '(未知工作区)' ? s.project : null;
+  const target = s.project && s.project !== t('ws.unknown') ? s.project : null;
   const needSwitch = target && target !== (state.status?.cwd || '');
   const doSelect = () => selectSession(s.id).catch((e) => console.error(e));
-  if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(`打开会话失败：${err.message}`, 'error'));
+  if (needSwitch) switchWorkspace(target).then(doSelect).catch((err) => notify(t('err.openSession', { msg: err.message }), 'error'));
   else doSelect();
 }
 
@@ -4067,12 +4728,12 @@ function renderQueueList() {
     const toggleBtn = el('button', 'qi-btn', '');
     if (!item.steer) {
       // Q → ↑（转 steer）
-      toggleBtn.title = '转为 steer 打断消息';
+      toggleBtn.title = t('queue.toSteer');
       toggleBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="currentColor" stroke="none"/></svg>';
       toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); toSteer(i); });
     } else {
       // ↑ → Q（转 queue）
-      toggleBtn.title = '转为排队消息';
+      toggleBtn.title = t('queue.toQueue');
       toggleBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" stroke-width="2"/></svg>';
       toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); toQueue(i); });
     }
@@ -4080,7 +4741,7 @@ function renderQueueList() {
 
     // 删除按钮
     const delBtn = el('button', 'qi-btn', '');
-    delBtn.title = '删除';
+    delBtn.title = t('queue.remove');
     delBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
     delBtn.addEventListener('click', (e) => { e.stopPropagation(); removeQueueItem(i); });
     actions.appendChild(delBtn);
@@ -4360,9 +5021,9 @@ function renderModelPop(s) {
   const efforts = Array.isArray(s.reasoningEffortOptions) ? s.reasoningEffortOptions.filter(Boolean) : [];
 
   // 模型：下拉框（change 即切换）
-  pop.appendChild(el('div', 'pop-head', '模型'));
+  pop.appendChild(el('div', 'pop-head', t('model.head')));
   if (!models.length) {
-    pop.appendChild(el('div', 'pop-empty', '当前无可用模型'));
+    pop.appendChild(el('div', 'pop-empty', t('model.none')));
   } else {
     const sel = document.createElement('select');
     sel.className = 'pop-select';
@@ -4383,7 +5044,7 @@ function renderModelPop(s) {
           renderModelPop(state.status || {});
           notify(t('notify.modelSwitched', { model: (picked ? modelLabel(picked) : v) }), 'success');
         })
-        .catch((err) => notify(`切换失败：${err.message}`, 'error'));
+        .catch((err) => notify(t('err.switchModel', { msg: err.message }), 'error'));
     });
     pop.appendChild(sel);
   }
@@ -4395,9 +5056,9 @@ function renderModelPop(s) {
   //    思考级别），点击弹层外或 Esc 才关闭。原生 range 保留为透明交互层（拖拽 / 点击跳转 /
   //    键盘方向键 / aria）。
   pop.appendChild(el('div', 'pop-sep'));
-  pop.appendChild(el('div', 'pop-head', '思考级别'));
+  pop.appendChild(el('div', 'pop-head', t('model.effortHead')));
   if (!efforts.length) {
-    pop.appendChild(el('div', 'pop-empty', '该模型未提供思考级别'));
+    pop.appendChild(el('div', 'pop-empty', t('model.noEffort')));
   } else {
     const curEff = s.reasoningEffort || efforts[0];
     // 不显示 slider 上方的当前档位文字（.pop-val）：底部标签高亮已足够；
@@ -4425,7 +5086,7 @@ function renderModelPop(s) {
     range.max = String(efforts.length - 1);
     range.step = 'any'; // 无级拖拽：拖动过程不跳格
     range.value = String(idx);
-    range.setAttribute('aria-label', '思考级别');
+    range.setAttribute('aria-label', t('model.effortHead'));
     wrap.appendChild(range);
     pop.appendChild(wrap);
     // 档位刻度点（视觉指示；点击直达走底部标签——交互层盖住轨道）
@@ -4489,7 +5150,7 @@ function renderModelPop(s) {
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
         .then(() => { applied = pos; }) // 不关闭：用户可能反复调整思考级别，点弹层外才关闭
-        .catch((err) => { notify(`设置失败：${err.message}`, 'error'); range.value = String(applied); });
+        .catch((err) => { notify(t('err.settings', { msg: err.message }), 'error'); range.value = String(applied); });
     });
   }
 }
@@ -4535,7 +5196,7 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
   });
 });
 $('#set-plan').addEventListener('change', (e) => {
-  applySettings({ planMode: e.target.checked }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+  applySettings({ planMode: e.target.checked }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 
 $('#session-search').addEventListener('input', (e) => {
@@ -4558,7 +5219,7 @@ $('#btn-sidebar-toggle').addEventListener('click', () => {
 $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.toggle('sidebar-open'));
 
 $('#set-permission').addEventListener('change', (e) => {
-  applySettings({ permission: e.target.value }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+  applySettings({ permission: e.target.value }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 $('#set-language').addEventListener('change', (e) => {
   applyLanguage(e.target.value);
@@ -4566,12 +5227,12 @@ $('#set-language').addEventListener('change', (e) => {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ language: e.target.value }),
-  }).catch((err) => notify(`语言设置失败：${err.message}`, 'error'));
+  }).catch((err) => notify(t('err.lang', { msg: err.message }), 'error'));
 });
 $('#set-concurrency').addEventListener('change', (e) => {
   const val = Math.max(1, Math.min(16, parseInt(e.target.value) || 3));
   e.target.value = String(val);
-  applySettings({ webConcurrency: val }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+  applySettings({ webConcurrency: val }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 /* ---------------- 模型配置（providers 分组：一个端点配置多个模型，设置面板「模型配置」tab） ---------------- */
 let cfgProviderSel = null;   // 当前选中分组：null=未选、'name'=provider、'__new__'=新建
@@ -5350,7 +6011,7 @@ $('#mc-model-search')?.addEventListener('input', () => {
   renderModelList(s, group, isNew);
 });
 $('#plan-mode').addEventListener('change', (e) => {
-  applySettings({ planMode: e.target.checked }).catch((err) => notify(`设置失败：${err.message}`, 'error'));
+  applySettings({ planMode: e.target.checked }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 
 /* ---------------- 文件夹浏览器（页面内，服务端列目录） ---------------- */
@@ -5369,14 +6030,14 @@ function closeDirPicker() {
 async function navigateDirPicker(p) {
   const list = $('#dirpicker-list');
   list.innerHTML = '';
-  list.appendChild(el('div', 'dir-empty', '加载中…'));
+  list.appendChild(el('div', 'dir-empty', t('dir.loading')));
   try {
     const data = await api(`/api/fs/dirs?path=${encodeURIComponent(p)}`);
     dirPickerPath = data.current;
     $('#dirpicker-current').textContent = data.current;
     list.innerHTML = '';
     if (!data.dirs.length) {
-      list.appendChild(el('div', 'dir-empty', '此目录下没有子目录'));
+      list.appendChild(el('div', 'dir-empty', t('dir.empty')));
       return;
     }
     for (const name of data.dirs) {
@@ -5388,7 +6049,7 @@ async function navigateDirPicker(p) {
     }
   } catch (e) {
     list.innerHTML = '';
-    list.appendChild(el('div', 'dir-empty', `无法读取目录：${e.message}`));
+    list.appendChild(el('div', 'dir-empty', t('dir.unreadable', { msg: e.message })));
   }
 }
 
@@ -5398,7 +6059,7 @@ $('#btn-dir-up').addEventListener('click', () => {
 $('#btn-dir-select').addEventListener('click', () => {
   if (!dirPickerPath) return;
   closeDirPicker();
-  switchWorkspace(dirPickerPath).catch((err) => notify(`切换工作目录失败：${err.message}`, 'error'));
+  switchWorkspace(dirPickerPath).catch((err) => notify(t('err.workspaceSwitch', { msg: err.message }), 'error'));
 });
 $('#btn-dir-cancel').addEventListener('click', closeDirPicker);
 $('#btn-close-dirpicker').addEventListener('click', closeDirPicker);

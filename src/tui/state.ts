@@ -58,6 +58,13 @@ export type ToolStatus = 'running' | 'ok' | 'err';
  */
 export interface ToolCard {
   id: number;
+  /**
+   * 主循环工具配对序号（loop 的 toolSeq，onToolStep 第 6 参；与 delegate 子代理
+   * 事件的 ev.seq / runOpts.subagentStops 注册 key 同一命名空间）。card.id 是
+   * TUI 本地自增（点击命中/展开唯一）；seq 用于子代理事件/停止的精确配对——
+   * 二者不同源（loop 每轮从 0 起、TUI 全局递增），不可混用。
+   */
+  seq?: number;
   name: string;
   /** 人类可读摘要（如 `$ echo mock-ok` / `→ Read 路径`） */
   summary: string;
@@ -80,6 +87,28 @@ export interface ToolCard {
   subagent?: { name: string; ok: boolean; steps: number; summary?: string };
   /** delegate 原命令行快照（onSubagentEvent start 保存，end 还原——运行中 summary 被进度覆盖） */
   _cmd?: string;
+  /**
+   * delegate 子代理执行明细（1.0 可视化：点击展开查看思考与工具全过程）。
+   * subagentRun = 运行中动态状态（状态文案/当前步/是否停止请求中）；items =
+   * 按序追加的事件明细（think 思考增量 / tool 工具调用 / result 输出预览）。
+   * 存储截断：明细行数上限（subagentDetailMax）——超长任务只保留最近片段，防爆 UI。
+   */
+  subagentDetail?: {
+    /** 当前进度文案（如 `思考中 2/10` / `⠋ search_code 3/10`；停止后 = 已停止） */
+    status: string;
+    /** 是否已被用户停止（stopped 事件置 true；渲染「已停止」态） */
+    stopped: boolean;
+    /** 明细条目（按到达顺序；最多 subagentDetailMax 条） */
+    items: {
+      kind: 'think' | 'tool' | 'result';
+      text: string;
+      /** tool 条目工具名 / result 条目 ok 标记（渲染颜色用） */
+      name?: string;
+      ok?: boolean;
+    }[];
+    /** 明细总行数（含被截断丢弃的——渲染「… 更早 N 条已省略」用） */
+    dropped: number;
+  };
 }
 
 export interface TuiLine {
@@ -96,6 +125,41 @@ export interface TuiLine {
   /** kind === 'tokens' 时携带当次 token 统计（usages + 展开态） */
   tokens?: TurnTokens;
 }
+
+/**
+ * 运行中的 delegate 子代理（输入框上方 command 样式面板一行，见 state.delegateRuns）。
+ * 生命周期：onToolStep(delegate) 创建 → onSubagentEvent 更新 status/明细 →
+ * onToolResult（delegate 完成）移除面板行 + 对话流留结果卡。
+ */
+export interface DelegateRun {
+  /** 工具配对序号（loop toolSeq；事件/停止路由 key；同时是结果卡 ToolCard.seq） */
+  seq: number;
+  /** 标题：委托摘要（formatToolCall 结果，如 `→ 子代理 · 检查目录`） */
+  title: string;
+  /** 子代理名（delegate/agent 名；start 事件到达后可用） */
+  name: string;
+  /** 进度文案（`运行中` / `思考中 2/10` / `⠋ search_code 3/10` / 停止态） */
+  status: string;
+  /** 是否已被用户停止（stopped 事件置 true） */
+  stopped: boolean;
+  /** 停止请求已发出（点击停止后置位，防重复；stopped/end 事件清除面板行） */
+  stopRequested: boolean;
+  /** 是否已收尾（end 事件：完成或失败——面板行等待 onToolResult 移除，不再接收新事件） */
+  ended: boolean;
+  /** 是否失败结束（end 事件 status!=='ok' 置位；渲染结果卡 ✗ 态） */
+  failed: boolean;
+  /** 是否展开明细（点击标题行切换；就地展开/收起） */
+  expanded: boolean;
+  /** 委托任务（start 事件携带；展开明细时可选展示） */
+  task?: string;
+  /** 明细条目（截断上限 DelegateRun.ITEM_MAX；超限丢最早计 dropped） */
+  items: { kind: 'think' | 'tool' | 'result'; text: string; ok?: boolean }[];
+  /** 被截断丢弃的明细条数（渲染「更早 N 条已省略」） */
+  dropped: number;
+}
+
+/** DelegateRun 明细条数上限（超出丢最早——防超长子代理把面板/内存撑爆） */
+export const DELEGATE_ITEM_MAX = 120;
 
 /** 右上角 toast 提示类型：info 信息 / success 成功 / error 错误 */
 export type TuiToastType = 'info' | 'success' | 'error';
@@ -525,6 +589,12 @@ export interface TuiState {
    */
   cancelRun: (() => void) | null;
   /**
+   * 停止指定 delegate 子代理（interactive 注册：按工具配对 seq 调 runOpts.stopSubagent）。
+   * 卡片运行中点击「停止」调用——只停该子代理，不影响主循环/其它并行卡片。
+   * 空闲置 null。缺省 null = 无停止入口（非交互/单任务）。
+   */
+  stopSubagent: ((seq: number) => void) | null;
+  /**
    * 待发送消息（运行中提交，显示在输入框正上方小视图——与灰色块一起钉在视口底部）：
    * 顺序即发送顺序——steer（打断）消息在插入时放最前（unshift），queue 追加在末尾，
    * 回合结束后 interactive 按 shift() 消费（打断优先）。每条带 mode 徽标（· queue / ↑ steer）；
@@ -541,7 +611,13 @@ export interface TuiState {
    */
   todoList: { content: string; status: 'in_progress' | 'completed' | 'pending' }[];
   /**
-   * 本次提交的模式：keypress 检测 Enter（queue）/ Cmd|Ctrl|Option+Enter（steer）写入，
+   * 运行中的 delegate 子代理（输入框正上方 command 样式面板逐条显示，不占对话流）：
+   * onToolStep(delegate) 入列、onSubagentEvent 更新状态/明细、完成（end/tool.result）后
+   * 移出并往对话流 push 结果卡。seq = 工具配对序号（事件/停止精确路由）。每条可点击
+   * 就地展开明细（思考/工具）+ ⏹ 停止。
+   */
+  delegateRuns: DelegateRun[];
+  /** 本次提交的模式：keypress 检测 Enter（queue）/ Cmd|Ctrl|Option+Enter（steer）写入，
    * submit 回调消费后重置为 queue。运行中提交处理据此分流。
    */
   submitMode: 'queue' | 'steer';
@@ -641,10 +717,12 @@ export function createTuiState(): TuiState {
     askKeyJustConsumed: false,
     running: false,
     cancelRun: null,
+    stopSubagent: null,
     pending: [],
     pendingSelected: -1,
     pendingSeq: 0,
     todoList: [],
+    delegateRuns: [],
     submitMode: 'queue',
     traceOpen: false,
     traceRows: [],

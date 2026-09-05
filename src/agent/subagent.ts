@@ -22,6 +22,8 @@ import { truncate } from '../tools/index.js';
 import type { Tool } from '../tools/types.js';
 import type { SubagentEvent } from './types.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
+import { extractReasoning } from './thinking.js';
+import { formatToolCall, previewOutput } from '../output/format.js';
 
 /** 子代理基础系统提示（委托任务 + 命名子代理的 instructions 拼接在任务段之后） */
 const SUBAGENT_PROMPT =
@@ -31,6 +33,19 @@ const SUBAGENT_PROMPT =
 
 /** 子代理实例 id 递增（进程内唯一；parentId 关联嵌套层级） */
 let subagentSeq = 0;
+
+/** 思考增量批量上报：累积少量再发（事件通道不过载；think 事件 text 截断到 400 字） */
+function emitThink(opts: SubagentOptions, text: string): void {
+  if (!text) return;
+  // 子代理思考只在展开详情时展示，增量事件保持粗粒度（≤400 字/次）
+  const trimmed = text.length > 400 ? text.slice(0, 400) : text;
+  emit(opts, { type: 'think', text: trimmed });
+}
+
+/** 判断是否已请求停止（signal abort 或已发 stopped） */
+function isStopped(opts: SubagentOptions): boolean {
+  return opts.signal?.aborted === true;
+}
 
 export interface SubagentOptions {
   /** 子代理可用工具（调用方已按需剔除/注入 delegate——嵌套由 delegate 工具按深度控制） */
@@ -70,9 +85,21 @@ export interface SubagentOptions {
    * 路径解析与命令执行都落在独立工作树里；缺省 undefined = 进程 cwd。
    */
   cwd?: string;
+  /**
+   * 主循环工具配对序号（delegate 卡片精确路由）：runSubagent 直驱的委托工具
+   * 对应的 onToolStep toolSeq。所有进度事件带 seq 透传——TUI/Web 按它把事件归集
+   * 到正确的 delegate 卡片（并行多委托/嵌套不再互相覆盖）。缺省 null = 无配对。
+   */
+  seq?: number | null;
+  /**
+   * 子代理取消信号（per-subagent AbortController）：主循环 Esc 取消/UI「停止」按钮
+   * 触发。abort 后：流式 LLM 请求立即断连（iter.return）、工具执行循环在步间退出，
+   * 发 stopped 进度事件并以明确文案结束（不再幽灵跑完）。
+   */
+  signal?: AbortSignal;
 }
 
-/** 事件回调统一收口（start/step/end；onEvent 缺省 no-op） */
+/** 事件回调统一收口（start/step/end/think/toolStart/toolEnd；onEvent 缺省 no-op） */
 function emit(opts: SubagentOptions, ev: Omit<SubagentEvent, 'id' | 'parentId' | 'depth' | 'name'>): void {
   opts.onEvent?.({
     ...ev,
@@ -80,6 +107,7 @@ function emit(opts: SubagentOptions, ev: Omit<SubagentEvent, 'id' | 'parentId' |
     parentId: opts.parentId ?? null,
     depth: opts.depth ?? 0,
     name: opts.name ?? 'delegate',
+    seq: opts.seq ?? null,
   });
 }
 
@@ -117,8 +145,17 @@ export async function runSubagent(
           summarize: opts.summarize,
         })
       : opts.gate;
-  // 所有返回路径统一收尾：SubagentStop（结论回传）+ end 进度事件 + 最终回答
+  // 所有返回路径统一收尾：SubagentStop（结论回传）+ end 进度事件 + 最终回答。
+  // 被主动停止（signal abort）时：先发 stopped 进度事件（UI 知道这是用户停止而非
+  // 自然失败），再走常规 finish 链（hooks + end 事件，status='err'、文案标明停止）。
   const finish = (answer: string, steps: number): string => {
+    if (isStopped(opts)) {
+      emit(opts, { type: 'stopped', steps, durationMs: Date.now() - t0 });
+      const stoppedAnswer = answer.startsWith('（子代理') ? answer : `（子代理已停止）${answer ? `：${answer}` : ''}`;
+      opts.hooks?.subagentStop(stoppedAnswer);
+      emit(opts, { type: 'end', status: 'err', summary: '已停止', steps, durationMs: Date.now() - t0 });
+      return stoppedAnswer;
+    }
     const status: 'ok' | 'err' =
       /^(错误|执行失败|已拦截)/.test(answer) || answer.includes('（子代理') ? 'err' : 'ok';
     opts.hooks?.subagentStop(answer);
@@ -127,6 +164,7 @@ export async function runSubagent(
   };
 
   for (let step = 0; step < maxSteps; step++) {
+    if (isStopped(opts)) return finish('', step); // 停止请求在步间到达 → 立即退出
     emit(opts, { type: 'step', step, maxSteps }); // 思考/请求中（无工具名）
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     try {
@@ -135,24 +173,49 @@ export async function runSubagent(
         messages,
         tools: toolSchemas,
         stream: true,
+        // 子代理取消：abort 信号透传给 SDK——用户停止后流式请求立即断连
+        ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (err: any) {
+      // 主动停止导致的请求中断（AbortError）→ 按停止收尾，不当作请求失败
+      if (isStopped(opts) || err?.name === 'AbortError' || err?.name === 'APIUserAbortError') {
+        return finish('', step);
+      }
       return finish(`子代理请求失败：${err?.message ?? err}`, step);
     }
 
     let content = '';
+    let reasoningBuf = '';
     const toolCalls = new Map<number, ToolCallAccum>();
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
-      if (delta?.content) content += delta.content;
-      for (const tc of delta?.tool_calls ?? []) {
-        const cur = toolCalls.get(tc.index) ?? { id: '', name: '', args: '' };
-        if (tc.id) cur.id += tc.id;
-        if (tc.function?.name) cur.name += tc.function.name;
-        if (tc.function?.arguments) cur.args += tc.function.arguments;
-        toolCalls.set(tc.index, cur);
+    let aborted = false;
+    try {
+      for await (const chunk of stream) {
+        if (isStopped(opts)) {
+          aborted = true;
+          break; // 停止请求到达：断流退出（SDK signal 也会在下次拉取时抛错）
+        }
+        const delta = chunk.choices[0]?.delta;
+        // 思考增量（reasoning_content / 兼容字段）：实时上报 think 事件（展开详情展示）
+        const piece = extractReasoning(delta);
+        if (piece) {
+          reasoningBuf += piece;
+          emitThink(opts, piece);
+        }
+        if (delta?.content) content += delta.content;
+        for (const tc of delta?.tool_calls ?? []) {
+          const cur = toolCalls.get(tc.index) ?? { id: '', name: '', args: '' };
+          if (tc.id) cur.id += tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.args += tc.function.arguments;
+          toolCalls.set(tc.index, cur);
+        }
       }
+    } catch (err: any) {
+      // SDK 抛 AbortError = 我们的 signal 断连 → 按停止收尾
+      if (isStopped(opts) || err?.name === 'AbortError' || err?.name === 'APIUserAbortError') aborted = true;
+      else throw err;
     }
+    if (aborted) return finish('', step);
 
     const assistantMsg = buildAssistantMessage(content, toolCalls);
     messages.push(assistantMsg);
@@ -176,9 +239,19 @@ export async function runSubagent(
     const results = await Promise.all(
       calls.map(async (call) => {
         const tool = opts.tools.find((t) => t.name === call.function.name);
-        if (!tool) return `错误：未知工具「${call.function.name}」`;
+        if (!tool) {
+          emit(opts, { type: 'toolStart', text: call.function.name, argsPreview: '' });
+          emit(opts, { type: 'toolEnd', text: call.function.name, toolOk: false, outputPreview: ['未知工具'] });
+          return `错误：未知工具「${call.function.name}」`;
+        }
         const parsed = parseArgs(call.function.arguments);
-        if (!parsed.ok) return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
+        if (!parsed.ok) {
+          emit(opts, { type: 'toolStart', text: tool.name, argsPreview: '' });
+          emit(opts, { type: 'toolEnd', text: tool.name, toolOk: false, outputPreview: ['参数非法 JSON'] });
+          return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
+        }
+        // 明细上报：工具开始（摘要 = formatToolCall 人类可读行；卡片展开后展示）
+        emit(opts, { type: 'toolStart', text: tool.name, argsPreview: formatToolCall(tool.name, parsed.args) });
         // Hooks：PreToolUse（与主循环同语义——block 跳过闸门与执行、updatedInput 改写参数）
         let args = parsed.args;
         let hookBlocked: string | null = null;
@@ -198,6 +271,8 @@ export async function runSubagent(
           result = `已拦截：${g!.reason}`;
         } else {
           try {
+            // 工具执行本身不可中途取消（execute 无 signal）；与主循环同策略——
+            // 停止时由外层放弃等待，工具副作用继续（结果丢弃）
             result = await tool.execute(args, { cwd: opts.cwd });
           } catch (err: any) {
             result = `执行失败：${err?.message ?? err}`;
@@ -207,9 +282,14 @@ export async function runSubagent(
             if (post.extra.length > 0) result = `${result}\n\n[hook 输出]\n${post.extra.join('\n')}`;
           }
         }
+        // 明细上报：工具完成（结果预览行；与主循环 onToolResult preview 同构）
+        const ok = !/^(错误|执行失败|已拦截)/.test(result);
+        emit(opts, { type: 'toolEnd', text: tool.name, toolOk: ok, outputPreview: previewOutput(result, 3, 300) });
         return result;
       })
     );
+    // 停止在工具执行期间到达：工具仍在后台跑（结果丢弃），子代理立即结束
+    if (isStopped(opts)) return finish('', step + 1);
     results.forEach((result, i) => {
       messages.push({ role: 'tool', tool_call_id: calls[i].id, content: truncate(result) });
     });

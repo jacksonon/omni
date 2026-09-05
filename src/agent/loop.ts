@@ -837,9 +837,12 @@ export async function runAgent(
             } else {
               try {
                 // run_command 实时输出：通过 ToolContext.onCommandOutput 注入回调，
-                // 渲染端（TUI/Web/console）订阅后做原地刷新 / DOM 追加
+                // 渲染端（TUI/Web/console）订阅后做原地刷新 / DOM 追加。
+                // toolSeq：本次调用的配对序号——delegate 工具透传进子代理事件，
+                // 子代理进度据此路由到正确卡片（并行多委托不互相覆盖）。
                 const toolCtx: import('../tools/types.js').ToolContext = {
                   cwd: process.cwd(),
+                  toolSeq: seq,
                   ...(tool.name === 'run_command' && output.onCommandOutput
                     ? {
                         onCommandOutput: (line: string, isErr: boolean) =>

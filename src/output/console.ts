@@ -276,7 +276,8 @@ export class ConsoleOutput implements Output {
     for (const l of lines) console.log(dim(`hook[${event}] ${l}`));
   }
 
-  /** 子代理进度事件（第六节 P1 可视化）：dim 行打印到 stderr（不污染 stdout 结果/管道） */
+  /** 子代理进度事件（第六节 P1 可视化）：dim 行打印到 stderr（不污染 stdout 结果/管道）。
+   *  think/toolStart/toolEnd 明细只在 TUI/Web 卡片展开展示；console 无展开 UI，跳过。 */
   onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {
     if (!this.opts.stream) return;
     const indent = '  '.repeat(ev.depth);
@@ -285,7 +286,9 @@ export class ConsoleOutput implements Output {
     } else if (ev.type === 'step') {
       // step 事件带当前动作（工具名，执行前补发）：`子代理 X · ⠙ run_command 3/10`
       console.log(dim(`${indent}⠙ 子代理 ${ev.name} · ${ev.tool ?? '思考中'} ${ev.step}/${ev.maxSteps}`));
-    } else {
+    } else if (ev.type === 'stopped') {
+      console.log(dim(`${indent}⏹ 子代理 ${ev.name} 已停止`));
+    } else if (ev.type === 'end') {
       console.log(
         dim(`${indent}${ev.status === 'ok' ? '✓' : '✗'} 子代理 ${ev.name} 完成 · ${ev.steps} 步 · ${((ev.durationMs ?? 0) / 1000).toFixed(1)}s`)
       );

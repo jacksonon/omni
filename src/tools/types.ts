@@ -19,6 +19,13 @@ export interface ToolContext {
    * 仅 run_command 工具会读取，其它工具忽略。
    */
   onCommandOutput?: (line: string, isError: boolean) => void;
+  /**
+   * 本次调用的工具配对序号（loop 的 onToolStep toolSeq；与卡片精确配对）。
+   * delegate 工具读取它并透传进子代理事件（SubagentEvent.seq）——子代理进度
+   * 事件据此路由到正确的 delegate 卡片（并行多委托不再互相覆盖）。
+   * 缺省 undefined = 非 loop 链路直驱（/orchestrate 等），事件按 id 归集。
+   */
+  toolSeq?: number;
 }
 
 export interface Tool {

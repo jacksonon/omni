@@ -45,7 +45,7 @@
 <div id="app" class="app-frame empty-session">
   <aside id="sidebar" class="sidebar" aria-label="工作区与会话">
     <div class="logo-row">
-      <button id="btn-new-brand" class="brand" type="button" aria-label="新会话">
+      <button id="btn-new-brand" class="brand" type="button" aria-label="新会话" data-i18n-title="sidebar.new">
         <img class="brand-fish" src="/icon.png" alt="omni">
         <span class="brand-name">omni</span>
         <span id="ver" class="build-revision">local</span>
@@ -73,7 +73,7 @@
     <header id="chat-header" class="conversation-header">
       <div class="title-row">
         <div class="title-cluster">
-          <button id="btn-mobile-sidebar" class="icon-button mobile-only" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
+          <button id="btn-mobile-sidebar" class="icon-button mobile-only" type="button" title="打开导航" aria-label="打开导航" data-i18n-title="sidebar.openNav"><svg><use href="#i-menu"/></svg></button>
           <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" title="会话操作（分叉/导出/检查点…）" data-i18n-title="header.sessionActions">新会话</button></nav>
         </div>
         <div class="header-actions">
@@ -88,19 +88,20 @@
         <div class="hero-workspace"><svg><use href="#i-folder"/></svg><span id="hero-workspace-name" data-i18n="hero.workspace">当前工作区</span><svg><use href="#i-chevron-down"/></svg></div>
         <div class="hero-glow" aria-hidden="true"></div>
         <div id="interaction-stack"></div>
+        <div id="delegate-panel" class="delegate-panel hidden"></div>
         <div id="queue-list" class="queue-list hidden"></div>
         <div class="composer-card" id="composer-card">
           <div id="cmd-palette" class="cmd-palette hidden"></div>
           <div id="mention-pop" class="mention-pop hidden"></div>
           <div id="attach-list" class="attach-list hidden"></div>
-          <textarea id="input" rows="1" placeholder="随心输入" aria-label="消息输入"></textarea>
+          <textarea id="input" rows="1" placeholder="随心输入" aria-label="消息输入" data-i18n-placeholder="composer.input"></textarea>
           <div class="composer-row">
             <div class="composer-tools">
               <div class="attach-wrap">
                 <button id="btn-attach" class="attach-button" type="button" title="选择文件/图片" aria-label="选择文件/图片" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
                 <input id="attach-input" type="file" multiple accept="image/*,text/*,.md,.txt,.json,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.go,.rs,.rb,.java,.c,.h,.cpp,.hpp,.cs,.sh,.bash,.zsh,.yml,.yaml,.toml,.ini,.xml,.html,.css,.scss,.sql,.csv,.log" hidden>
               </div>
-              <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label">完全访问</span></button>
+              <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label" data-i18n="perm.full">完全访问</span></button>
               <label class="plan-toggle" title="计划模式" data-i18n-title="shortcut.planModeDesc"><input type="checkbox" id="plan-mode"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
               <button id="btn-composer-settings" class="mode-button hidden" type="button" title="运行设置" data-i18n-title="composer.settings"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
             </div>
@@ -112,7 +113,7 @@
           </div>
           <div id="permission-pop" class="permission-pop hidden"></div>
         </div>
-        <div id="composer-note" class="composer-note">选择或新建会话</div>
+        <div id="composer-note" class="composer-note" data-i18n="composer.chooseSession">选择或新建会话</div>
         <div id="composer-meta" class="composer-meta hidden"><span id="composer-mid" class="meta-mid hidden"></span><span id="composer-ctx" class="meta-ctx hidden"><span class="ctx-track"><span id="composer-ctx-fill" class="ctx-fill"></span></span><span id="composer-ctx-text"></span></span></div>
       </footer>
     </div>
@@ -124,7 +125,7 @@
 <div id="cmd-panel" class="cmd-panel hidden" role="dialog" aria-label="命令输出">
   <div class="cmd-panel-head">
     <div class="cmd-panel-title" data-i18n="cmd.title">命令输出</div>
-    <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button>
+    <button class="icon-button" id="btn-close-cmd" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button>
   </div>
   <div class="cmd-panel-body" id="cmd-panel-body"></div>
 </div>
@@ -132,8 +133,8 @@
 
 <div id="rewind-modal" class="modal hidden" role="dialog" aria-label="会话检查点">
   <div class="modal-card">
-    <div class="modal-head"><h2 data-i18n="modal.rewindTitle">会话检查点（/rewind）</h2><button class="icon-button" id="btn-close-rewind" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
-    <p class="pane-sub">每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。</p>
+    <div class="modal-head"><h2 data-i18n="modal.rewindTitle">会话检查点（/rewind）</h2><button class="icon-button" id="btn-close-rewind" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <p class="pane-sub" data-i18n="modal.rewindSub">每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。</p>
     <div id="rewind-list" class="rewind-list"></div>
   </div>
 </div>
@@ -265,6 +266,9 @@
             <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.version">版本</h4></div><code id="about-version" class="mono-value"></code></div>
             <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.server">服务地址</h4></div><code id="about-server" class="mono-value"></code></div>
             <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.tools">可用工具</h4><p id="about-tools" class="tools-list"></p></div></div>
+            <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.language">界面语言</h4><p data-i18n="settings.languageDesc">设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。</p></div>
+              <div class="setting-control-static"><span id="about-language">中文</span></div>
+            </div>
           </div>
         </section>
       </div>
@@ -280,7 +284,7 @@
 
 <div id="session-switch-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sw-title">
   <div class="modal-card sw-card">
-    <div class="modal-head"><h2 id="sw-title" data-i18n="shortcut.switchTitle">切换会话</h2><button class="icon-button" id="btn-close-sw" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h2 id="sw-title" data-i18n="shortcut.switchTitle">切换会话</h2><button class="icon-button" id="btn-close-sw" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
     <input type="text" id="sw-search" class="sw-search" placeholder="搜索会话，无匹配时 Enter 新建…" autocomplete="off" spellcheck="false" data-i18n-placeholder="shortcut.switchPlaceholder">
     <div id="sw-list" class="sw-list"></div>
   </div>
@@ -288,7 +292,7 @@
 
 <div id="shortcuts-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sc-title">
   <div class="modal-card shortcuts-card">
-    <div class="modal-head"><h2 id="sc-title" data-i18n="shortcut.cheatsheetTitle">快捷键速查表</h2><button class="icon-button" id="btn-close-sc" type="button" title="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h2 id="sc-title" data-i18n="shortcut.cheatsheetTitle">快捷键速查表</h2><button class="icon-button" id="btn-close-sc" type="button" title="关闭" aria-label="关闭" data-i18n-title="modal.close"><svg><use href="#i-x"/></svg></button></div>
     <input type="text" id="sc-search" class="sw-search" placeholder="搜索功能或快捷键…" autocomplete="off" spellcheck="false" data-i18n-placeholder="shortcut.searchPlaceholder">
     <div id="shortcuts-body" class="shortcuts-body"></div>
     <p class="cheatsheet-hint" data-i18n="shortcut.cheatsheetHint">可在 设置 → 快捷键 重新绑定</p>

@@ -175,6 +175,19 @@ export interface ToolCardView {
   liveLines?: string[];
   /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示 `✓ N 步 · 结果首行` */
   subagent?: { name: string; ok: boolean; steps: number; summary?: string };
+  /**
+   * delegate 子代理执行明细（1.0 可视化：展开后查看思考与工具全过程）。
+   * 运行中 = 动态状态；items = 按序事件明细；dropped = 超限丢弃的早先条数。
+   * TUI 专用（ToolCard.subagentDetail 的展示子集）；Web 端由前端自行聚合。
+   */
+  subagentDetail?: {
+    status?: string;
+    stopped?: boolean;
+    items: { kind: 'think' | 'tool' | 'result'; text: string; name?: string; ok?: boolean }[];
+    dropped?: number;
+  };
+  /** delegate 运行中且可停止（TUI 有停止入口时）：展开明细底部显示 `⏹ 停止` 可点行 */
+  canStop?: boolean;
 }
 
 /**
@@ -251,7 +264,7 @@ export function wrapText(text: string, width: number): string[] {
  * 每行恰好 1 个终端行（内容先折行再补齐宽度），整块被背景色填满，TUI 行数预算不变。
  * console 端仍用增量方框（cardContentLine/cardSepLine/cardBottomLine），不在此处。
  */
-export type ToolCardRole = 'top' | 'cmd' | 'exec' | 'result' | 'sep' | 'out' | 'hint' | 'diff' | 'bottom';
+export type ToolCardRole = 'top' | 'cmd' | 'exec' | 'result' | 'sep' | 'out' | 'hint' | 'diff' | 'bottom' | 'stop';
 
 export interface ToolCardLine {
   text: string;
@@ -580,7 +593,9 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
     }
   }
 
-  if (card.status === 'running') {
+  // delegate 运行中不占 liveLines 分支（子代理过程走明细渲染——展开实时可见，
+  // 收起只显示命令行 + spinner）；run_command 等其它工具保持原逻辑
+  if (card.status === 'running' && card.name !== 'delegate') {
     if (card.liveLines && card.liveLines.length > 0) {
       const maxShow = 3;
       const shown = card.liveLines.slice(-maxShow);
@@ -636,6 +651,58 @@ export function toolCardLines(card: ToolCardView, contentWidth: number): ToolCar
         lines.push({ text: padInner(`  … diff 超长，仅展示前 ${DIFF_MAX_ROWS} 行`, contentWidth), role: 'out' });
       }
     }
+  } else if (card.name === 'delegate' && card.expanded) {
+    // delegate 子代理展开：**子代理执行全过程**（1.0 可视化）——
+    // 分隔线 + 明细（思考 think / 工具 tool / 结果 result 三类条目按到达顺序）+ 省略提示。
+    // 收起态只显示命令行 + 结果行（结果比命令重要）；展开后能看到子代理内部每一步。
+    lines.push({ text: padInner(`  ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
+    const det = card.subagentDetail;
+    const items = det?.items ?? [];
+    const dropped = det?.dropped ?? 0;
+    const stopped = det?.stopped === true;
+    if (!det || items.length === 0) {
+      // 运行中尚无明细（委托刚建立）：只给操作提示；停止行在下方统一渲染
+      if (!card.canStop) {
+        lines.push({ text: padInner('  （子代理过程明细暂不可用——运行结束后重试）', contentWidth), role: 'out' });
+      }
+    } else {
+      // 展开显示条数上限：明细可能很长（每步思考 + 工具），超过只保留最近片段
+      const MAX_SHOW = 36;
+      const from = Math.max(0, items.length - MAX_SHOW);
+      const hidden = items.length - from;
+      if (hidden > 0 || dropped > 0) {
+        const extra = dropped > 0 ? `（含更早 ${dropped} 条已截断）` : '';
+        lines.push({ text: padInner(`  … 更早 ${hidden} 条已省略${extra}`, contentWidth), role: 'out' });
+      }
+      for (let i = from; i < items.length; i++) {
+        const it = items[i]!;
+        if (it.kind === 'think') {
+          // 思考增量：折叠成单行块（dim 前缀）；长思考截断到可视宽度并折行
+          for (const seg of wrapText(`💭 ${it.text}`, Math.max(8, inner - 3))) {
+            lines.push({ text: padInner(`  ${seg}`, contentWidth), role: 'out' });
+          }
+        } else if (it.kind === 'tool') {
+          // 工具调用：accent 风格摘要（与主循环工具 cmd 行同构）
+          for (const seg of wrapText(`→ ${it.text}`, Math.max(8, inner - 3))) {
+            lines.push({ text: padInner(`  ${seg}`, contentWidth), role: 'cmd' });
+          }
+        } else {
+          // 工具结果：✓/✗ + 输出预览首行
+          const ok = it.ok !== false;
+          const head = it.text.split('\n').find((l) => l.trim()) ?? '（无输出）';
+          const prefix = ok ? '✓' : '✗';
+          lines.push({ text: padInner(`  ${prefix} ${truncateToWidth(head, Math.max(8, inner - 5))}`, contentWidth), role: 'out' });
+        }
+      }
+    }
+    // 停止/已停止行：独立于明细区——运行中可停止（canStop）显示 `⏹ 停止`，
+    // 已停止显示 `⏹ 已停止`（两者都贴明细底部）
+    if (stopped) {
+      lines.push({ text: padInner('  ⏹ 已停止', contentWidth), role: 'exec' });
+    } else if (card.canStop) {
+      lines.push({ text: padInner('  ⏹ 停止', contentWidth), role: 'stop' });
+    }
+    lines.push({ text: padInner('  ▾ 点击收起', contentWidth), role: 'hint' });
   } else if (card.expanded) {
     lines.push({ text: padInner(`  ${'─'.repeat(Math.max(1, inner - 2))}`, contentWidth), role: 'sep' });
     const out = card.output.filter((l) => !isExitCodeZeroLine(l));

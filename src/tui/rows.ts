@@ -61,6 +61,8 @@ export interface Row {
   chunks?: MdChunk[];
   /** 所属工具卡片的 id（用于点击命中判定；非卡片行为 undefined） */
   cardId?: number;
+  /** 工具卡片的「⏹ 停止」行（delegate 子代理运行中）：点击停止而非展开/收起 */
+  cardStop?: boolean;
   /** 所属思考行的下标（折叠态下可点击单独展开/收起；非思考行为 undefined） */
   thinkingIdx?: number;
   /** 所属 token 统计模块的行下标（tokens 行点击展开/收起；非 tokens 行为 undefined） */
@@ -209,6 +211,9 @@ function toolRowStyle(role: ToolCardRole, status: ToolStatus, theme: TuiTheme): 
     case 'hint':
       // 状态色深字：与底色（淡绿/淡红/淡黄）协调
       return { fg: dim };
+    case 'stop':
+      // 子代理「⏹ 停止」可点行：红字加粗（diffRem 删除红在浅底上可读，两主题统一）
+      return { fg: theme.diffRem, bold: true };
     case 'diff':
       // diff 行颜色按半列/整行在 toolCardRow 里逐 chunk 指定（红=删除、绿=新增）
       return {};
@@ -426,9 +431,9 @@ export function approvalPanelRows(
 ): Row[] {
   const inner = cardInnerWidth(contentWidth);
   const rows: Row[] = [{ text: `╭${'─'.repeat(inner)}╮`, style: { fg: 'yellow' } }];
-  rows.push({ text: cardContentLine(`需要审批：${approval.tool}`, inner), style: { bold: true } });
+  rows.push({ text: cardContentLine(tf(lang, 'approval.tool', { tool: approval.tool }), inner), style: { bold: true } });
   rows.push({ text: cardContentLine(approval.summary, inner), style: { dim: true } });
-  rows.push({ text: cardContentLine(`原因：${approval.reason}`, inner), style: { dim: true } });
+  rows.push({ text: cardContentLine(tf(lang, 'approval.reason', { reason: approval.reason }), inner), style: { dim: true } });
   rows.push({
     text: cardContentLine(t(lang, 'approval.hint'), inner),
     style: { bold: true },
@@ -552,6 +557,8 @@ export function buildBody(state: TuiState, width: number): Row[] {
       // card.expanded 决定（点击切换）。执行中（status=running）时把当前 spinner
       // 帧传进卡片——执行中行只显示动画 loading、**无「执行中…」文字**（用户要求）；
       // 帧由 TuiOutput 的 200ms 定时器推进，无动画（spinnerIndex=-1）时缺省 ⏳。
+      // delegate 运行中已走输入区上方面板（delegateRuns，不在此渲染）；流内 delegate
+      // 卡是完成后的**结果卡**（无停止入口——停止只作用于运行中的面板行）。
       const spinner =
         state.spinnerIndex >= 0 ? SPINNER_FRAMES[state.spinnerIndex % SPINNER_FRAMES.length] : undefined;
       const lines = toolCardLines({ ...line.card, spinner }, width);
@@ -600,7 +607,7 @@ export function buildBody(state: TuiState, width: number): Row[] {
       const genMs = line.tokens.genMs ?? line.tokens.durMs ?? 0;
       const rate = genMs > 0 ? Math.round(compSum / (genMs / 1000)) : 0;
       const ftAvg = line.tokens.firstTokenAvg;
-      const ftStr = ftAvg != null && ftAvg > 0 ? ` · 首 token ${(ftAvg / 1000).toFixed(1)}s` : '';
+      const ftStr = ftAvg != null && ftAvg > 0 ? tf(state.language, 'turn.firstToken', { dur: (ftAvg / 1000).toFixed(1) }) : '';
       const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
       // 模式标签与配色跟随本轮模式快照（plan?: boolean）——与输入区模型行 Build 青/Plan 洋红
       // 一致（用户要求对话流与输入区同色；旧历史无 plan 字段 → 按 Build 渲染）
@@ -781,7 +788,27 @@ export function buildBody(state: TuiState, width: number): Row[] {
 }
 
 /**
- * 状态 → 可见内容行（尾部窗口 + 滚动）。状态栏、灰色块与路径/token 行是独立的
+ * 运行中 delegate 面板的总行数预算（computeRows / repaintTree / hero 布局共用）：
+ * 每条运行中 delegate 占：
+ *   · 折叠态 = 标题 1 行；
+ *   · 展开态 = 标题 1 + 明细行（最多 10 条，超出省略提示 1）+ 底部状态/停止行 1。
+ * 明细展开上限与渲染保持一致（见 render.ts delegateBox 渲染段）。
+ */
+export function delegatePanelRows(state: TuiState): number {
+  let rows = 0;
+  for (const r of state.delegateRuns) {
+    rows += 1;
+    if (r.expanded) {
+      const shown = Math.min(10, r.items.length);
+      rows += shown;
+      if (r.items.length > shown || r.dropped > 0) rows += 1; // … 更早 N 条已省略
+      rows += 1; // ⏹ 停止 / 已停止 / 状态行
+    }
+  }
+  return rows;
+}
+
+/** 状态 → 可见内容行（尾部窗口 + 滚动）。状态栏、灰色块与路径/token 行是独立的
  * renderable，不在这里。
  *
  * 行数预算：根 Box paddingY(2) = 2 行固定（无边框）；
@@ -822,8 +849,10 @@ export function computeRows(
   // ask_user 提问面板（输入区上方）：留白 1 + ? 问题行 1 + 每选项 1 行 + 自定义行 1 +
   // 确认行 1 + 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
   const askRows = opts?.withInput && state.ask ? state.ask.options.length + 5 : 0;
-  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 任务清单(todoRows) + 待发送区(pendingRows) + ask 面板(askRows)
-  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + todoRows + askRows : 2));
+  // 运行中 delegate 面板（输入区上方、ask 之下）：每条 delegate 折叠 1 行 / 展开含明细
+  const delegateRows = opts?.withInput ? delegatePanelRows(state) : 0;
+  // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 任务清单(todoRows) + 待发送区(pendingRows) + ask 面板(askRows) + delegate 面板(delegateRows)
+  const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + todoRows + askRows + delegateRows : 2));
   const total = body.length;
 
   // 消费滚动意图（按键/滚轮 → 一次性指令 → 这里换算成 scrollTop）

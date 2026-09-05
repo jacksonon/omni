@@ -272,7 +272,7 @@ export async function runTuiInteractive(
             .catch((err) => {
               pushLine(state, {
                 kind: 'warn',
-                text: `命令执行出错：${(err as Error)?.message ?? String(err)}`,
+                text: `${tf(state.language, 'meta.cmdError', { msg: (err as Error)?.message ?? String(err) })}`,
               });
               return session.paint();
             });
@@ -943,6 +943,17 @@ export async function runTuiInteractive(
       runOpts.rearmAbort();
       state.running = true;
       state.cancelRun = () => abortCtrl.ctrl?.abort();
+      // 子代理独立停止：delegate.execute 把 per-subagent abort 注册进 runOpts.subagentStops
+      //（key = 工具配对 seq）；这里把查询/触发接到 state——卡片「⏹ 停止」点击时只停该
+      // 子代理（Esc 取消整个回合不受影响）
+      runOpts.stopSubagent = (seq: number) => {
+        const stop = runOpts.subagentStops?.get(seq);
+        if (stop) {
+          stop();
+          runOpts.subagentStops?.delete(seq);
+        }
+      };
+      state.stopSubagent = runOpts.stopSubagent;
       out.startLoading(); // 会话进行中：统计行左侧 loading 一直转（Esc 取消/会话结束 stopLoading 消失）
       // 运行中提交处理（Enter / Cmd|Ctrl+Enter 都经此分流）：
       //   · Enter 且文本非空 → queue 入待发送列表（输入框正上方小视图，回合结束后按序发送）
@@ -983,7 +994,7 @@ export async function runTuiInteractive(
             } catch (err) {
               pushLine(state, {
                 kind: 'warn',
-                text: `命令执行出错：${(err as Error)?.message ?? String(err)}`,
+                text: tf(state.language, 'meta.cmdError', { msg: (err as Error)?.message ?? String(err) }),
               });
             }
           })();
@@ -997,13 +1008,16 @@ export async function runTuiInteractive(
       } catch (err) {
         pushLine(state, {
           kind: 'warn',
-          text: `运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`,
+          text: tf(state.language, 'meta.runError', { msg: (err as Error)?.message ?? String(err) }),
         });
       } finally {
         state.running = false;
         state.cancelRun = null;
+        state.stopSubagent = null;
         runOpts.abortSignal = undefined;
         runOpts.rearmAbort = undefined;
+        runOpts.stopSubagent = undefined;
+        runOpts.subagentStops?.clear(); // 本回合 delegate 已全部结束：清理停止句柄
         input.onSubmit = undefined; // 恢复：下次提交由 waitForSubmit 接管
         out.stopLoading(); // 回合结束（含 Esc 取消）：loading 消失
         // 回合已自然结束（abort 未生效/未打断流，如最终回答恰在打断前完成）：

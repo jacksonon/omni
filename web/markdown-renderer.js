@@ -505,7 +505,7 @@
     } else if (content == null && original != null) {
       diffText = String(original).split('\n').map((l) => '-' + l).join('\n');
     } else if (original == null && content == null) {
-      return `<div class="md-diff"><div class="md-diff-meta">（空内容）</div></div>`;
+      return `<div class="md-diff"><div class="md-diff-meta">${document.documentElement.lang === 'en' ? '(empty)' : '（空内容）'}</div></div>`;
     } else {
       diffText = buildUnifiedDiffText(original, content);
     }
@@ -514,7 +514,7 @@
     let truncated = false;
     let rendered = diffText;
     if (lines.length > FILE_DIFF_MAX_ROWS) {
-      rendered = lines.slice(0, FILE_DIFF_MAX_ROWS).join('\n') + `\n…（已截断，超 ${FILE_DIFF_MAX_ROWS} 行）`;
+      rendered = lines.slice(0, FILE_DIFF_MAX_ROWS).join('\n') + (document.documentElement.lang === 'en' ? `\n… (truncated, over ${FILE_DIFF_MAX_ROWS} lines)` : `\n…（已截断，超 ${FILE_DIFF_MAX_ROWS} 行）`);
       truncated = true;
     }
     const headPrefix = isNew ? '← Write' : '← Edit';

@@ -446,6 +446,16 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .tc-live { margin: 4px 0 0 4px; padding: 4px 0 4px 12px; max-height: 132px; overflow: hidden; border-left: 2px solid var(--line-2); border-radius: 0; background: transparent; }
 .tc-live-line { color: var(--text-secondary); font: 12px/18px var(--mono); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .tc-live-meta { color: var(--text-tertiary); font: 11px/16px var(--mono); padding-top: 2px; }
+/* 子代理卡片（delegate）：委托任务摘要 + 执行明细（思考/工具/结果）+ 停止按钮 */
+.tc-delegate-task { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); margin-left: 8px; }
+.tc-sub-think { color: var(--text-tertiary); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding: 2px 14px 0; }
+.tc-sub-tool { color: var(--text-secondary); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding: 4px 14px 0; font-weight: 600; }
+.tc-sub-result { color: var(--text-tertiary); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding: 1px 14px 0 26px; }
+.tc-sub-result.err { color: var(--red); }
+.tc-sub-stopped { color: var(--red); font-size: 12px; line-height: 18px; padding: 6px 14px; font-weight: 600; }
+.tc-sub-stop { margin: 8px 14px 10px; align-self: flex-start; border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 12px; background: transparent; color: var(--red); font-size: 12px; line-height: 18px; cursor: pointer; }
+.tc-sub-stop:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
+.tc-sub-stop:disabled { opacity: 0.5; cursor: default; }
 .meta-line { display: flex; align-items: center; gap: 8px; margin: 2px auto; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .meta-line code { font: inherit; }
 
@@ -643,6 +653,29 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .qi-btn:hover { background: var(--surface-hover); color: var(--text); }
 .qi-btn svg { width: 14px; height: 14px; }
 
+/* ---- 运行中子代理面板（输入框上方 command 面板风格：整条 delegate 状态 + 展开明细 + 停止）---- */
+.delegate-panel { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: var(--composer-width); margin: 0 auto 4px; }
+.dp-item { overflow: hidden; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-1); }
+.dp-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; background: transparent; color: var(--text); font: 500 13px/20px var(--font); text-align: left; cursor: pointer; }
+.dp-head:hover { background: var(--surface-hover); }
+.dp-arrow { flex: none; color: var(--text-caption); font-size: 11px; transition: transform .12s var(--ease); }
+.dp-item.open .dp-arrow { transform: rotate(90deg); }
+.dp-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-status { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); }
+.dp-status.running { color: var(--blue); }
+.dp-status.stopped { color: var(--red); }
+.dp-body { display: none; padding: 2px 12px 10px; border-top: 1px solid var(--line-1); }
+.dp-item.open .dp-body { display: block; }
+.dp-think { color: var(--text-tertiary); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding-top: 6px; }
+.dp-tool { color: var(--text-secondary); font: 600 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding-top: 4px; }
+.dp-result { color: var(--text-tertiary); font: 12px/18px var(--mono); white-space: pre-wrap; word-break: break-all; padding-left: 14px; }
+.dp-result.err { color: var(--red); }
+.dp-more { color: var(--text-tertiary); font: 11px/16px var(--mono); padding-top: 4px; }
+.dp-stop { margin-top: 8px; border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 12px; background: transparent; color: var(--red); font-size: 12px; line-height: 18px; cursor: pointer; }
+.dp-stop:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.dp-stop:disabled { opacity: .5; cursor: default; }
+.dp-stopped { margin-top: 6px; color: var(--red); font-size: 12px; line-height: 18px; font-weight: 600; }
+
 /* Modal 基础（设置 / 目录选择共用） */
 .modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .24); backdrop-filter: blur(3px); }
 .modal-card { width: min(520px, 100%); max-height: min(720px, 90vh); overflow: auto; border: 1px solid var(--line-2); border-radius: 16px; background: var(--surface); box-shadow: 0 24px 80px rgba(0, 0, 0, .18); }
@@ -673,6 +706,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .setting-info p { margin: 3px 0 0; color: var(--text-tertiary); font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; }
 .setting-info p.tools-list { margin-top: 2px; color: var(--text-secondary); font: 12px/20px var(--mono); }
 .setting-control { flex: none; width: 220px; height: 38px; padding: 0 16px; border: 1px solid var(--line-2); border-radius: 999px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; cursor: pointer; }
+.setting-control-static { flex: none; min-width: 120px; color: var(--text); font-size: 13px; text-align: right; }
 .setting-control:focus { border-color: var(--blue); }
 .mono-value { max-width: 340px; color: var(--text-secondary); font: 12px/19px var(--mono); overflow-wrap: anywhere; }
 .cfg-text { width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 10px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; }

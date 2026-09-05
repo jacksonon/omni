@@ -91,6 +91,15 @@ export interface RunOptions {
    */
   rearmAbort?: () => void;
   /**
+   * 运行中 delegate 子代理的停止句柄表（key = 工具配对序号 toolSeq）：delegate.execute
+   * 创建 per-subagent AbortController 后注册（abort 函数）；UI（TUI 停止入口 /
+   * Web 停止按钮）按 seq 调 stopSubagent 触发——只停那一张子代理卡片，不影响主循环。
+   * delegate 结束（含停止）后自动清理对应条目。TUI/Web 进程各一个 runOpts，天然隔离。
+   */
+  subagentStops?: Map<number, () => void>;
+  /** 停止指定 delegate 子代理（按工具配对序号；未找到 = no-op）。UI 层注入实现 */
+  stopSubagent?: (seq: number) => void;
+  /**
    * 轨迹事件记录器（/trace 数据源）：loop 在轮生命周期/LLM 请求/工具调用/压缩
    * 等关键节点直驱写入（不依赖 Output——单任务模式也记录）。交互入口
    * （prepareSessionPersistence）创建并注入；每轮对话结束经 persistTurn flush
@@ -188,9 +197,16 @@ export interface RunOptions {
  *  · Output.onSubagentEvent（TUI 更新 delegate 卡片 live 状态 / console 打印 dim 行）
  *  · EventRecorder（/trace 面板嵌套树——subagent/start·step·end 轨迹事件）
  * 嵌套子代理的 parentId 关联父代理 id，depth 表达层级（0 = 主代理直接委托）。
+ *
+ * 1.0 子代理可视化扩展：
+ *  · **seq**——主循环工具配对序号（onToolStep 的 toolSeq）：delegate 卡片精确路由。
+ *    并行多 delegate / 嵌套时各事件按 seq 归集到各自卡片，不再互相覆盖。
+ *  · **think**——子代理流式思考增量（process 事件；卡片展开后逐字显示）。
+ *  · **toolStart / toolEnd**——子代理内部工具调用明细（摘要 + 结果预览，
+ *    卡片展开后与主循环工具卡片同构展示；toolStart 携带 argsPreview）。
  */
 export interface SubagentEvent {
-  type: 'start' | 'step' | 'end';
+  type: 'start' | 'step' | 'end' | 'think' | 'toolStart' | 'toolEnd' | 'stopped';
   /** 子代理实例 id（每次调用递增，进程内唯一） */
   id: string;
   /** 父代理 id（null = 主代理直接委托） */
@@ -199,6 +215,12 @@ export interface SubagentEvent {
   depth: number;
   /** 子代理名（delegate 的 agent 参数选用的定义名；缺省 'delegate'） */
   name: string;
+  /**
+   * 主循环工具配对序号（delegate 工具执行对应的 toolSeq；嵌套子代理沿用根委托
+   * 卡片的 seq——同一卡片内按 depth/id 表达层级）。null = 无配对（/orchestrate 等
+   * 非 loop 链路直驱的委托，UI 按 id 归集）。
+   */
+  seq?: number | null;
   /** 委托任务（start 事件携带） */
   task?: string;
   /** step 事件：当前步数 / 步数上限 */
@@ -213,6 +235,13 @@ export interface SubagentEvent {
   /** end 事件：实际步数 / 耗时 ms */
   steps?: number;
   durationMs?: number;
+  /** think / toolStart 事件的增量文本或工具摘要（截断到事件通道可承受长度） */
+  text?: string;
+  /** toolStart 事件的工具参数摘要（formatToolCall 结果；渲染层按工具类型展示） */
+  argsPreview?: string;
+  /** toolEnd 事件：工具执行成功/失败 + 输出预览行（截断） */
+  toolOk?: boolean;
+  outputPreview?: string[];
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */

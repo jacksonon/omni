@@ -560,6 +560,16 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       run.controller = newController;
       ro.abortSignal = newController.signal;
     };
+    // 子代理独立停止（1.0 可视化）：delegate.execute 把 per-subagent abort 注册在
+    // **共享** runOpts.subagentStops（key = 工具配对 seq）；这里把触发接到 REST 路由——
+    // 只停指定子代理，不影响整轮运行/其它并行卡片
+    ro.stopSubagent = (seq: number) => {
+      const stop = runOpts.subagentStops?.get(seq);
+      if (stop) {
+        stop();
+        runOpts.subagentStops?.delete(seq);
+      }
+    };
 
     const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, runOpts.modelRuntime?.model);
     currentOutput = output;
@@ -1006,6 +1016,56 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const handles = runOpts.mcpHandles ?? [];
       const arg = cmd.slice(4).trim();
       const sub = arg.split(/\s+/)[0] ?? '';
+      // 增删/OAuth 走与 /api/mcp REST 完全相同的底层逻辑（persist + 运行时重建工具链）
+      if (sub === 'add') {
+        const { parseMcpAddArgs, persistMcpServerToConfig } = await import('../config/write.js');
+        const parsed = parseMcpAddArgs(arg.slice('add'.length).trim());
+        if (!parsed.ok) { add(parsed.error); return { lines }; }
+        if (parsed.name in servers) { add(`服务器「${parsed.name}」已存在（用 /mcp remove ${parsed.name} 先移除）`); return { lines }; }
+        add(`正在连接 MCP 服务器「${parsed.name}」…`);
+        const pr = persistMcpServerToConfig(parsed.name, parsed.cfg, cfg);
+        runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [parsed.name]: parsed.cfg };
+        closeMcpClients();
+        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        runOpts.mcpHandles = newHandles;
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        invalidateSessionRuntimes();
+        add(`已添加并连接 MCP 服务器「${parsed.name}」（工具已对模型可见）`);
+        add(pr.message);
+        return { lines };
+      }
+      if (sub === 'remove') {
+        const serverName = arg.split(/\s+/)[1] ?? '';
+        if (!serverName) { add('用法：/mcp remove <名称>'); return { lines }; }
+        if (!(serverName in servers)) { add(`未配置 MCP 服务器「${serverName}」（/mcp 查看列表）`); return { lines }; }
+        const { removeMcpServerFromConfig } = await import('../config/write.js');
+        const pr = removeMcpServerFromConfig(serverName, cfg);
+        delete runOpts.mcpServers?.[serverName];
+        closeMcpClients();
+        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        runOpts.mcpHandles = newHandles;
+        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        invalidateSessionRuntimes();
+        add(`已移除 MCP 服务器「${serverName}」（工具链已更新）`);
+        if (!pr.ok) add(pr.message);
+        return { lines };
+      }
+      if (sub === 'login') {
+        const serverName = arg.split(/\s+/)[1] ?? '';
+        if (!serverName) { add('用法：/mcp login <名称>'); return { lines }; }
+        const srv = servers[serverName];
+        if (!srv) { add(`未配置 MCP 服务器「${serverName}」（/mcp 查看列表）`); return { lines }; }
+        if (!srv.url) { add(`「${serverName}」是 stdio 服务器（不需要 OAuth 登录；HTTP 服务器才用 /mcp login）`); return { lines }; }
+        add(`正在打开浏览器完成 OAuth 授权…（60s 内未完成将取消）`);
+        const { oauthLogin } = await import('../tools/mcp-oauth.js');
+        try {
+          const token = await oauthLogin(new URL(srv.url).origin);
+          add(token ? `已登录「${serverName}」（token 已保存，之后请求自动携带）` : '登录未完成（取消或超时）');
+        } catch (err) {
+          add(`登录失败：${err instanceof Error ? err.message : err}`);
+        }
+        return { lines };
+      }
       if (sub === 'resources') {
         if (names.length === 0) { add('未配置 MCP 服务器'); return { lines }; }
         const target = arg.split(/\s+/)[1] ?? '';
@@ -1028,17 +1088,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         return { lines };
       }
-      if (names.length === 0) { add('未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add 添加）'); return { lines }; }
-      const mcpToolNames = (runOpts.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
-      add(`已配置 ${names.length} 个服务器：${names.join('、')} · 工具：${mcpToolNames.length > 0 ? mcpToolNames.map((t) => t.name).join('、') : '（无）'}`);
-      for (const h of handles) {
-        const bits: string[] = [];
-        if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
-        if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
-        if (h.instructions) bits.push('instructions ✓');
-        if (bits.length > 0) add(`  ${h.name}：${bits.join(' · ')}`);
-      }
       if (sub === 'reconnect') {
+        if (names.length === 0) { add('未配置 MCP 服务器（/mcp add 添加）'); return { lines }; }
         add('正在重连 MCP…');
         closeMcpClients();
         const newHandles = await discoverMcpServers(runOpts.mcpServers);
@@ -1046,14 +1097,36 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes(); // 工具链变化 → 会话级克隆重建
         add(`已重连（当前 ${runOpts.tools.length} 个工具）`);
-      } else { add('子命令：resources / prompts / reconnect；add/remove/login 请用 CLI 或编辑配置文件'); }
+        return { lines };
+      }
+      // 无子命令：概览列表（含 0 服务器时的引导）
+      if (!sub) {
+        if (names.length === 0) { add('未配置 MCP 服务器（/mcp add <名称> <command|--url> 添加）'); return { lines }; }
+        const mcpToolNames = (runOpts.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
+        add(`已配置 ${names.length} 个服务器：${names.join('、')} · 工具：${mcpToolNames.length > 0 ? mcpToolNames.map((t) => t.name).join('、') : '（无）'}`);
+        for (const h of handles) {
+          const bits: string[] = [];
+          if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
+          if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
+          if (h.instructions) bits.push('instructions ✓');
+          if (bits.length > 0) add(`  ${h.name}：${bits.join(' · ')}`);
+        }
+        add('子命令：add / remove <名> / login <名> / reconnect / resources / prompts');
+        return { lines };
+      }
+      add(`未知子命令 /mcp ${sub}（可用：add / remove / login / reconnect / resources / prompts）`);
       return { lines };
     }
 
     if (cmd === '/rename' || cmd.startsWith('/rename ')) {
       const title = cmd.slice('/rename'.length).trim();
       if (!title) { add('用法：/rename <标题>'); return { lines }; }
-      if (s) { s.title = title; if (s.file) await updateSessionTitle(s.file, title).catch(() => {}); }
+      if (s) {
+        s.title = title;
+        if (s.file) await updateSessionTitle(s.file, title).catch(() => {});
+        // 与 REST 重命名端点对齐：广播 title，前端侧栏/标题即时更新（不再只靠刷新）
+        for (const l of listeners) l('title', { sessionId: s.id, title });
+      }
       add(`会话标题已改为「${title}」`);
       return { lines };
     }
@@ -1093,9 +1166,18 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         add(`/fork <N>：N 须为 1..${persistable.length} 的整数`);
         return { lines };
       }
-      if (!runOpts.sessionPath) { add('当前会话未落盘（无法 fork）'); return { lines }; }
-      const forkFile = await forkSession(runOpts.sessionPath, n, process.cwd(), model);
-      add(forkFile ? `已分叉新会话（${sessionIdFromPath(forkFile)} · ${n} 条消息 · 原会话保留，侧栏刷新可见）` : 'fork 失败');
+      // 会话文件优先取当前 Web 会话（s.file），回退全局 runOpts.sessionPath（CLI 兼容）
+      const srcFile = s?.file ?? runOpts.sessionPath;
+      if (!srcFile) { add('当前会话未落盘（无法 fork）'); return { lines }; }
+      const forkFile = await forkSession(srcFile, n, process.cwd(), model);
+      if (forkFile) {
+        // 与 REST fork 端点对齐：广播 session.created，侧栏即时出现新会话
+        const newId = sessionIdFromPath(forkFile);
+        for (const l of listeners) l('session.created', { id: newId, title: `${s?.title || '会话'}（分叉）` });
+        add(`已分叉新会话（${newId} · ${n} 条消息 · 原会话保留，侧栏刷新可见）`);
+      } else {
+        add('fork 失败');
+      }
       return { lines };
     }
 
@@ -1358,6 +1440,21 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         return { lines };
       }
       add('用法：/skill（列出）· /skill find <词>（检索）· /skill add <repo>（安装）· /skill show <名>（查看）');
+      return { lines };
+    }
+
+    if (cmd === '/settings' || cmd.startsWith('/settings ')) {
+      // Web 端 /settings 由前端直接打开设置面板（见 app.js runSlashCommand 联动）；
+      // 后端保留兜底：非 Web 客户端调用时给出面板位置提示，避免“未知命令”。
+      const arg = cmd.slice('/settings'.length).trim();
+      const panes = ['general（通用）', 'theme（主题）', 'apikey（模型配置）', 'shortcuts（快捷键）', 'about（关于）'];
+      if (!arg) {
+        add('Web 设置面板已在前端打开（通用 / 主题 / 模型配置 / 快捷键 / 关于）。');
+        add(`可用面板：${panes.join(' / ')}（用法：/settings <面板名>，如 /settings theme）`);
+      } else {
+        add(`Web 设置面板已在前端打开（请求面板：${arg}）。`);
+        add(`可用面板：${panes.join(' / ')}`);
+      }
       return { lines };
     }
 
@@ -1635,6 +1732,23 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         if (p === sessionPath('cancel') && req.method === 'POST') {
           runs.get(sid)?.controller.abort();
+          json(res, 200, { ok: true });
+          return;
+        }
+        // 子代理独立停止：body = { seq }（工具配对序号）→ 只停那一张 delegate 卡片
+        if (p === sessionPath('subagents/stop') && req.method === 'POST') {
+          const body = await readBody(req);
+          const seq = Number(body.seq);
+          if (!Number.isFinite(seq)) {
+            json(res, 400, { error: 'seq 非法' });
+            return;
+          }
+          const ro = runs.get(sid) ? runtimeFor(sessions.get(sid)!) : null;
+          if (!ro?.stopSubagent) {
+            json(res, 409, { error: '当前会话未在运行或子代理已结束' });
+            return;
+          }
+          ro.stopSubagent(seq);
           json(res, 200, { ok: true });
           return;
         }

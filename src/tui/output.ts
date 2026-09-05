@@ -11,7 +11,7 @@ import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
 import type { TuiSession } from './render.js';
-import { appendLine, clearLines, openCmdPanel, pushCmdLine, pushLine, pushToast, SPINNER_FRAMES, type TuiState, type ToolStatus, type TuiToastType } from './state.js';
+import { appendLine, clearLines, DELEGATE_ITEM_MAX, openCmdPanel, pushCmdLine, pushLine, pushToast, SPINNER_FRAMES, type DelegateRun, type TuiState, type ToolStatus, type TuiToastType } from './state.js';
 import { t, tf } from './i18n.js';
 
 export class TuiOutput implements Output {
@@ -362,7 +362,7 @@ export class TuiOutput implements Output {
 
   /** fallback 回退成功（P0）：meta 行提示（对话流可见，不打断流程） */
   onFallback(model: string): void {
-    pushLine(this.state, { kind: 'meta', text: `↩ 已回退到备用模型 ${model}` });
+    pushLine(this.state, { kind: 'meta', text: tf(this.state.language, 'meta.fallbackModel', { model }) });
     this.schedulePaint();
   }
 
@@ -382,7 +382,7 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>): void {
+  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>, toolSeq?: number): void {
     // 步数统计：每次工具调用 +1（footer 统计行）
     this.state.stats.steps += 1;
     // read_file 并行多读**合并成一张卡片**（对标 opencode 的 `→ Read N files`，点击
@@ -403,12 +403,60 @@ export class TuiOutput implements Output {
         return;
       }
     }
-    // 工具调用画成卡片（kind='tool'）：标题 + 摘要；完成后收起、点击展开
+    // 工具调用画成卡片（kind='tool'）：标题 + 摘要；完成后收起、点击展开。
+    // seq = loop 工具配对序号（子代理事件/停止用它精确配对；见 ToolCard.seq 注释）。
+    // **delegate 例外**（输入区上方 command 面板模型）：运行中不入对话流（不 pushLine），
+    // 而是 upsert 到 state.delegateRuns 面板行——完成后由 onToolResult 从面板移除、
+    // 往对话流 push 一张结果卡（流内留最终结果，运行过程在输入区正上方实时可见）。
+    if (name === 'delegate') {
+      const seq = toolSeq;
+      if (seq == null) {
+        // 无配对序号（非 loop 直驱，如 /orchestrate worker）：仍画成普通流卡兜底
+        pushLine(this.state, {
+          kind: 'tool',
+          text: argsPreview,
+          card: {
+            id: ++this.toolSeq,
+            name,
+            summary: argsPreview,
+            status: 'running',
+            output: [],
+            expanded: false,
+          },
+        });
+        return;
+      }
+      const existing = this.state.delegateRuns.find((r) => r.seq === seq);
+      if (existing) {
+        existing.title = argsPreview;
+        existing.status = t(this.state.language, 'subagent.status.running');
+      } else {
+        this.state.delegateRuns.push({
+          seq,
+          title: argsPreview,
+          name: 'delegate',
+          status: t(this.state.language, 'subagent.status.running'),
+          stopped: false,
+          stopRequested: false,
+          ended: false,
+          failed: false,
+          expanded: false,
+          items: [],
+          dropped: 0,
+        });
+      }
+      this.state.spinnerIndex = 0;
+      this.state.status = '';
+      this.startSpinner('');
+      this.schedulePaint();
+      return;
+    }
     pushLine(this.state, {
       kind: 'tool',
       text: argsPreview,
       card: {
         id: ++this.toolSeq,
+        seq: toolSeq,
         name,
         summary: argsPreview,
         status: 'running',
@@ -426,7 +474,9 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
-  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
+  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail, toolSeq?: number): void {
+    // delegate 子代理完成：面板行 → 流内结果卡（用配对 seq 精确路由，不依赖到达顺序）
+    if (this.finishDelegateRun(toolSeq, ok, chars, preview)) return;
     // 找到最近一个执行中的卡片，填入结果（默认收起，点击展开看输出）；
     // 并行多读合并后只剩一张卡片：多次 onToolResult 中首个填结果，其余无执行中卡片自然跳过
     for (let i = this.state.lines.length - 1; i >= 0; i--) {
@@ -508,7 +558,7 @@ export class TuiOutput implements Output {
   }
 
   onMaxSteps(max: number): void {
-    pushLine(this.state, { kind: 'warn', text: `已达到最大步数（${max}），任务可能未完成` });
+    pushLine(this.state, { kind: 'warn', text: tf(this.state.language, 'meta.maxSteps', { max }) });
     this.state.status = t(this.state.language, 'status.aborted');
     this.schedulePaint();
   }
@@ -520,52 +570,123 @@ export class TuiOutput implements Output {
   }
 
   /**
-   * 子代理进度事件（第六节 P1 可视化）：更新**最近一个执行中的 delegate 卡片**——
-   * 委托中可见 live 状态（`子代理 X · ⠋ search_code 3/10`——step 事件带当前动作），
-   * 完成后把**结果摘要**存进 card.subagent（收起态显示命令行 + `✓ 5 步 · 结果首行`，
-   * 不覆盖命令行）。嵌套子代理的事件沿同一回调链汇聚到同一张卡片（只显示最内层
-   * 活跃子代理的进度——精确嵌套树在 /trace 面板，见 foldTrace 的 subagent 行）。
-   * 并行多委托时各事件按到达顺序更新同一卡片，最终 onToolResult 填各自结果。
+   * 子代理进度事件（1.0 可视化扩展）：delegate 子代理生命周期 + 执行明细。
+   *
+   * 目标：state.delegateRuns 面板行（输入框正上方 command 样式面板）——优先按
+   * **seq 精确配对**（loop toolSeq），并行多委托各自一行、事件归集互不覆盖；
+   * 无 seq（/orchestrate 直驱、旧链路）回退「最近一个运行中的 delegate 面板行」。
+   * end/stopped 到达时面板行保留（等待 onToolResult 收尾→移除+流内结果卡）。
    */
   onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {
-    const card = this.findRunningDelegateCard();
-    if (!card) return;
+    const run = this.findDelegateRun(ev);
+    if (!run) return;
+    const lang = this.state.language;
     if (ev.type === 'start') {
-      // start：保存原命令行（onToolStep 的 argsPreview），运行中显示进度；
-      // end 时还原命令行（end 事件不带 task，不能靠它重建）
-      if (card._cmd === undefined) card._cmd = card.summary;
-      card.summary = `子代理 ${ev.name} · 运行中${ev.depth > 0 ? `（深度 ${ev.depth}）` : ''}`;
+      run.name = ev.name;
+      run.task = ev.task;
+      run.status = ev.depth > 0 ? tf(lang, 'subagent.status.runningDepth', { depth: ev.depth }) : t(lang, 'subagent.status.running');
     } else if (ev.type === 'step') {
-      card.summary = `子代理 ${ev.name} · ⠋ ${ev.tool ?? '思考中'} ${ev.step}/${ev.maxSteps}`;
-      card.status = 'running';
-      this.state.spinnerIndex = 0; // 委托中保持卡片 loading 帧
+      run.status = `${ev.tool ?? t(lang, 'subagent.status.thinking')} ${ev.step}/${ev.maxSteps}`;
+      this.state.spinnerIndex = 0; // 委托中保持底部 loading 帧
+    } else if (ev.type === 'think') {
+      // 思考增量：追加明细（展开就地显示；截断防单条过长——run.items 上限兜底）
+      const text = (ev.text ?? '').slice(0, 400);
+      if (text) this.pushRunItem(run, { kind: 'think', text });
+    } else if (ev.type === 'toolStart') {
+      // 工具开始：追加工具条目（摘要行，展开后与主循环工具卡同构）
+      this.pushRunItem(run, { kind: 'tool', text: ev.argsPreview || ev.text || t(lang, 'subagent.status.tool') });
+      run.status = `⠋ ${ev.text ?? t(lang, 'subagent.status.tool')}…`;
+    } else if (ev.type === 'toolEnd') {
+      // 工具结束：结果条目（✓/✗ + 输出预览首行截断）
+      this.pushRunItem(run, {
+        kind: 'result',
+        ok: ev.toolOk !== false,
+        text: (ev.outputPreview ?? []).join('\n').slice(0, 300),
+      });
+    } else if (ev.type === 'stopped') {
+      run.stopped = true;
+      run.ended = true;
+      run.status = t(lang, 'subagent.status.stopped');
     } else {
-      // end：结果摘要存进 card.subagent + 还原命令行；收起态渲染
-      // 命令行 + `✓ N 步 · 结果首行`（第二层预览：结果比命令重要，对标 write diff）
-      card.subagent = {
-        name: ev.name,
-        ok: ev.status === 'ok',
-        steps: ev.steps ?? 0,
-        summary: (ev.summary ?? '').split('\n')[0] || undefined,
-      };
-      if (card._cmd !== undefined) card.summary = card._cmd;
+      // end：面板行状态收尾（onToolResult 到达后移除面板、流内留结果卡）
+      run.ended = true;
+      run.failed = ev.status !== 'ok';
+      run.status = ev.status === 'ok' ? tf(lang, 'subagent.status.doneSteps', { steps: ev.steps ?? 0 }) : t(lang, 'subagent.status.failed');
+      run.name = ev.name;
     }
     this.schedulePaint();
   }
 
-  /** 找最近一个执行中的 delegate 卡片（子代理进度事件的目标；无则返回 null） */
-  private findRunningDelegateCard(): {
-    name: string;
-    summary: string;
-    status: ToolStatus;
-    _cmd?: string;
-    subagent?: { name: string; ok: boolean; steps: number; summary?: string };
-  } | null {
-    for (let i = this.state.lines.length - 1; i >= 0; i--) {
-      const l = this.state.lines[i];
-      if (l.kind === 'tool' && l.card?.name === 'delegate' && l.card.status === 'running') return l.card;
+  /** 找子代理事件的目标面板行：优先按 seq（loop 配对序号）精确配对；无 seq 回退最近运行中 */
+  private findDelegateRun(ev: import('../agent/types.js').SubagentEvent): DelegateRun | null {
+    if (ev.seq != null) {
+      const r = this.state.delegateRuns.find((x) => x.seq === ev.seq);
+      if (r) return r;
+    }
+    for (let i = this.state.delegateRuns.length - 1; i >= 0; i--) {
+      const r = this.state.delegateRuns[i]!;
+      if (!r.stopped && !r.stopRequested && !r.ended) return r;
     }
     return null;
+  }
+
+  /** 追加一条面板行明细（超限截断：丢最早、计数 dropped——防超长子代理把面板撑爆） */
+  private pushRunItem(run: DelegateRun, item: DelegateRun['items'][number]): void {
+    run.items.push(item);
+    if (run.items.length > DELEGATE_ITEM_MAX) {
+      run.items.shift();
+      run.dropped += 1;
+    }
+  }
+
+  /**
+   * delegate 完成收尾（onToolResult 调用）：从输入区上方面板移除该行，往对话流
+   * push 一张**结果卡**（流内留最终结果；卡片含 subagent 摘要与全过程明细——点击
+   * 展开可回看思考/工具）。stopped 的 run 同样收尾（结果卡标注已停止）。
+   * 返回是否处理了 delegate（调用方据此跳过普通工具卡收尾）。
+   */
+  private finishDelegateRun(seq: number | undefined, ok: boolean, chars: number, preview?: string[]): boolean {
+    if (seq == null) return false;
+    const idx = this.state.delegateRuns.findIndex((r) => r.seq === seq);
+    if (idx < 0) return false;
+    const [run] = this.state.delegateRuns.splice(idx, 1);
+    const stopped = run.stopped || run.stopRequested;
+    const doneOk = ok && !stopped;
+    // 结果卡（收起态显示 `✓ N 步 · 结果首行`；展开看明细）——summary 还原为委托标题
+    pushLine(this.state, {
+      kind: 'tool',
+      text: run.title,
+      card: {
+        id: ++this.toolSeq,
+        seq: run.seq,
+        name: 'delegate',
+        summary: run.title,
+        status: stopped ? 'err' : doneOk ? 'ok' : 'err',
+        output: preview ?? [],
+        chars,
+        expanded: false,
+        subagent: {
+          name: run.name || 'delegate',
+          ok: doneOk,
+          steps: 0,
+          summary: preview?.find((l) => l.trim())?.slice(0, 120) || (stopped ? t(this.state.language, 'subagent.status.stopped') : undefined),
+        },
+        subagentDetail: run.items.length > 0 || run.dropped > 0
+          ? { status: run.status, stopped, items: run.items, dropped: run.dropped }
+          : undefined,
+      },
+    });
+    // 并行工具：还有面板行/卡片在跑则保持 spinner；全部结束停止动画
+    const stillRunning =
+      this.state.delegateRuns.length > 0 ||
+      this.state.lines.some((l) => l.kind === 'tool' && l.card?.status === 'running');
+    if (!stillRunning) {
+      this.stopSpinner();
+      this.state.spinnerIndex = -1;
+      this.state.status = '';
+    }
+    this.schedulePaint();
+    return true;
   }
 
   /**
@@ -660,6 +781,9 @@ export class TuiOutput implements Output {
     this.stopSpinner();
     this.state.spinnerIndex = -1;
     this.state.status = '';
+    // 回合结束兜底：清空 delegate 面板残留（正常路径 onToolResult 已逐个移除；
+    // 取消/异常中断时可能有未收尾 run——delegate 子代理继续在后台跑，面板行不再显示）
+    this.state.delegateRuns.length = 0;
     // 当次 token 使用统计（用户要求「每一次发送消息、返回消息结束后，增加当次 token
     // 使用统计。输入多少、输出、缓存」）：默认收起显示汇总，点击展开看每次 LLM 请求的
     // 明细（输入/输出/缓存，一行一条，加起来 = 汇总）。/tokens 关闭时不插入（数据
@@ -696,6 +820,8 @@ export class TuiOutput implements Output {
 
   clearScrollback(): void {
     clearLines(this.state);
+    // 运行中 delegate 面板行是会话级临时 UI（非对话记录）：/clear 一并清空
+    this.state.delegateRuns.length = 0;
     // /clear 清空全部内容行：thinking 内部状态同步复位——否则行下标全部失效，
     // 残留的 thinkingShown/thinkingLineIdx 会让下一轮 start() 被挡或 finish 操作错行
     this.thinkingShown = false;
@@ -703,6 +829,19 @@ export class TuiOutput implements Output {
     this.thinkingLineIdx = -1;
     this.contentThoughtMode = false;
     this.contentThoughtIdx = -1;
+    // /clear = 新一轮会话：会话级累计统计一并归零（与 restoreSession 重建前清零同一
+    // 清单）——否则模型行的会话平均速率（tok/s）与灰块外底行的输入/输出/缓存/上下文
+    // 仍显示上一段的累计值，与「整段对话已清空」不符
+    this.state.stats = { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 };
+    this.state.tokens = { prompt: 0, completion: 0, total: 0 };
+    this.state.lastPromptTokens = 0;
+    this.state.liveTokens = 0;
+    this.state.liveGenMs = 0;
+    this.turnUsages = [];
+    this.turnLlmMs = 0;
+    this.turnGenMs = 0;
+    this.turnFirstTokenSum = 0;
+    this.turnFirstTokenCount = 0;
     this.schedulePaint();
   }
 
