@@ -2,6 +2,16 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百六十九次）**：**write diff 去行级底色**——用户截图：新建文件全文 `+` 行绿底连成绿板，违和。两处 `diffRole` 分支（`rows.ts`）去 `diffAddBg/diffRemBg/diffCtxBg` 行底，只留字色（新增绿/删除红/上下文灰，对标 diff 纯文本风）；快照 41f 同步（gutter 定位 diff 行，断言字色+无底）。**验证**：typecheck ✓ · tui:snapshot 全绿。
+
+- **2026-09-05（第二百六十八次）**：**只有 Build 渐变、Plan 静态**——用户要求。渲染层 `footerMode` 取色分支：Build 走 `modeCycleColor`，Plan 取 `theme.modePlan`；快照 16b 同步（去 Plan 错相断言，加换 hue 下 Plan 恒静态断言）。**验证**：typecheck ✓ · tui:snapshot 全绿。
+
+- **2026-09-05（第二百六十七次）**：**右上角 toast 扁平化**——用户截图嫌绿字边框盒子丑，四个方案选了"扁平无边框+图标着色"。`toastBox` 去边框/底色/padding（透终端底，gap 1），拆图标格 + 正文格：图标按类型着色（✓ diffAdd 绿/✕ cardErrDim 红/info 无图标）、正文恒 dim 灰；文案自带 ✓/✕ 前缀剥掉由图标格统一着色（防重复）；右缘对齐与截断逻辑保留。快照 48 加 b2（图标/正文分离+图标绿+正文 dim 灰）。**验证**：typecheck ✓ · tui:snapshot 全绿 · 字符帧确认无框。
+
+- **2026-09-05（第二百六十六次）**：**TUI 退出提示去 emoji**——用户嫌 `💬 恢复此会话` 不专业。三处同源一起去（`tui-entry.ts` /exit 路径内联串、`i18n.ts` 中英 `meta.resumeHint` 供 Ctrl+C 路径、`Doc/使用指导.md` + `Usage-Guide.md` 示例行）。**验证**：typecheck ✓ · tui:snapshot 全绿。
+
+- **2026-09-05（第二百六十五次）**：**提示词编排策略 + Prompt Cache 命中优化四件**——用户问"提示词有什么可优化/还有cache优化空间"。① 主 prompt 加第 10/11 条（todo_write 建清单、delegate 并行、skill 命中加载全文；ask_user 提问克制）；② skill 超量提示删"可直接尝试调用未列出的技能名"（诱导幻觉调用，留计数+`/skill 查看全部`）；③ Claude `cache_control` 断点从 `system[0]` 移到**头部连续 system run 末尾**（记忆/repomap/技能/预载/MCP instructions 几十 KB 静态前缀进同一缓存块，tools 断点保留，共 2 个≤4 上限）；④ SessionStart hook note 记忆到 `runOpts.sessionHookNote`（首轮拼、次轮复用，system 前缀跨轮逐字稳定）。探针（断点 idx/两轮 system 一致/文案）全绿。**验证**：typecheck ✓ · tui:snapshot 全绿 · skills 套件 5/5 · eval:mock 重跑中（上一轮 0/2 系测试僵尸进程抢 mock 端口毒化，已清理重跑）。
+
 - **2026-09-05（第二百六十四次）**：**底行分隔符不断开（无缓存时 Out 与上下文之间）**——用户报告无缓存时 `Out` 与上下文之间没有 `·`。排查：渲染层逻辑本就正确（上下文段 `· ` 前缀，快照渲染器实测 `输入 1.2K · 输出 567 · ░░░ 300`），用户侧为改前启动的旧进程；附带修：隐藏段 content 残留 `'· '`（visible=false 虽不渲染，隐藏时清空）；快照分隔符断言漏写 flex gap 空格（`'输出 567· '` 永假，改为 `'输出 567 · '` / `'缓存 50% · '` 真覆盖）。宽度预算保持原公式（SEP_W 计入会挤掉 44 列窄屏缓存段，flex 实际排得下）。**验证**：typecheck ✓ · tui:snapshot 全绿。
 
 - **2026-09-05（第二百六十三次）**：**模型行 Build/Plan 跟横幅一起循环变色**——`theme.modeCycleColor`（bannerHue 驱动全色相，Plan 错相 180° 永可区分，亮度跟横幅同规则）+ `hslToHex` 下沉到 theme.ts；渲染层取色；动画定时器复用（hero 每帧，有对话后 ~1.2s 一帧，幂等重绘）；历史轮次 Build 行与 `$` 提示符保持静态主题色（历史不动，只有当前态动）。快照 16b（hue 驱动/错相回绕/亮暗亮度/渲染同源）。**验证**：typecheck ✓ · tui:snapshot 全绿 · 真机确认变色且 hero 不受影响。——原中部 `输入·输出·缓存` 是一个整体文本；拆为输入/输出/缓存/上下文四个独立项（右对齐，可见项之间自动 `·` 分隔，hidden 项不参与）。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。

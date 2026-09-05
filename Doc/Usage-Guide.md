@@ -598,7 +598,7 @@ restore.
 omni -l                      # list saved sessions (id + project + time + first message)
 omni -c "<task>"               # resume the most recent session of the current project
 omni -s <session-id> "<task>"   # resume a specific session (-r is a synonym)
-# After exiting the TUI (/exit or Ctrl+C) the terminal prints: 💬 Resume this session: omni -s <id>
+# After exiting the TUI (/exit or Ctrl+C) the terminal prints: Resume this session: omni -s <id>
 ```
 
 In-session commands: `/session` (history sessions of the same directory — list/continue),

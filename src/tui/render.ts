@@ -247,8 +247,9 @@ export interface TuiTree {
    * up 时若 selectionMoved 为 false（纯点击）则清除不复制。
    */
   sel: TuiSelection | null;
-  /** 右上角 toast 浮层（Alert notification：绝对定位右上角，短暂显示自动消失） */
+  /** 右上角 toast 浮层（扁平无边框：图标着色 + 正文 dim，不压内容） */
   toastBox: BoxRenderable | null;
+  toastIcon: TextRenderable | null;
   toastCell: TextRenderable | null;
 }
 
@@ -554,21 +555,19 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     cmdPanelCells.push(c);
   }
 
-  // 右上角 toast 浮层（Alert notification）：绝对定位右上角（top=1、右缘=1），
-  // 短暂显示自动消失；zIndex 最高（11）——不被菜单/命令面板遮挡。
-  // 宽度按文本显示宽每帧重算（clamp 到视口内）；无 toast 时整体隐藏。
+  // 右上角 toast 浮层（扁平无边框：图标着色 + 正文 dim，不压内容）。
+  // 绝对定位右上角（top=1、右缘=1），短暂显示自动消失；zIndex 最高（11）。
+  // 无边框无底色（透出终端底色/内容），只有「图标 + dim 正文」一行。
   const toastBox = new BoxRenderable(ctx, {
     position: 'absolute',
     zIndex: 11,
     flexDirection: 'row',
+    gap: 1, // 图标与正文之间 1 列
     visible: false,
-    backgroundColor: theme.suggestBg,
-    border: true,
-    borderStyle: 'rounded',
-    borderColor: theme.suggestBorder,
-    paddingX: 1,
   });
   root.add(toastBox);
+  const toastIcon = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+  toastBox.add(toastIcon);
   const toastCell = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
   toastBox.add(toastCell);
 
@@ -713,6 +712,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     lastRows: [],
     sel: null,
     toastBox,
+    toastIcon,
     toastCell,
   };
   repaintTree(ctx, tree, state, opts);
@@ -1095,9 +1095,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const modelText = `${state.model}${state.provider ? ` ${state.provider}` : ''}`;
   const effortText = state.reasoningEffort ? tf(state.language, 'footer.effort', { effort: state.reasoningEffort }) : '';
   if (tree.footerModel && tree.footerMode) {
-    // 模式前缀循环色（对标 hero 横幅彩虹：bannerHue 驱动，Plan 错相 180°）
+    // Build 跟横幅一起循环变色（bannerHue 驱动）；Plan 用静态主题色（用户要求：只有 Build 渐变）
     tree.footerMode.content = modeText;
-    tree.footerMode.fg = parseColor(modeCycleColor(state.bannerHue, state.planMode, isLightTheme(theme)));
+    tree.footerMode.fg = parseColor(
+      state.planMode ? theme.modePlan : modeCycleColor(state.bannerHue, false, isLightTheme(theme))
+    );
     tree.footerModel.content = modelText;
   }
   if (tree.footerEffort) {
@@ -1625,34 +1627,32 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     }
   }
 
-  // 右上角 toast（Alert notification）：短暂显示自动消失，不占对话流、不阻塞输入。
-  // 绝对定位右上角（top=1、右缘=1）；宽度按文本显示宽重算（clamp 到视口内，长文截断）；
-  // 类型着色：success 绿 / error 红 / info 默认；主题切换（/theme 或检测晚到）底色跟随刷新。
-  if (tree.toastBox && tree.toastCell) {
+  // 右上角 toast（扁平无边框）：图标着色 + 正文 dim，不占对话流、不阻塞输入。
+  // 绝对定位右上角（top=1、右缘=1）；宽度按文本显示宽重算（clamp 到视口内，长文截断）。
+  // 图标色：success 绿 / error 红 / info 无图标；正文恒 dim 灰（原来整行高亮太刺眼）。
+  if (tree.toastBox && tree.toastIcon && tree.toastCell) {
     const toast = state.toast;
     if (!toast || Date.now() >= toast.expiresAt) {
       if (toast) state.toast = null; // 过期：repaintTree 兜底清除（pushToast 定时器也会清）
       tree.toastBox.visible = false;
     } else {
-      tree.toastBox.backgroundColor = theme.suggestBg;
-      tree.toastBox.borderColor = parseColor(theme.suggestBorder);
-      // 内容 = 类型图标 + 文本（文本已带 ✓/✕ 前缀则不再叠加——拖选复制 pushToast 的
-      // 文案自带「✓ 已复制」；命令/错误提示不带则这里补图标）；按显示宽算浮层宽（paddingX 2 + 边框 2）
-      const hasIcon = /^[✓✕]\s/.test(toast.text);
-      const icon = !hasIcon ? (toast.type === 'success' ? '✓ ' : toast.type === 'error' ? '✕ ' : '') : '';
-      const full = icon + toast.text;
-      const avail = Math.max(8, (width ?? 80) - 4); // 视口 - 右缘 1 - 根 padding 1 - 边框余量
-      const textW = visualWidth(full);
-      const w = Math.min(textW, avail);
-      const shown = textW > avail ? full.slice(0, Math.max(0, fitCount(full, avail - 1))) + '…' : full;
+      // 文案自带 ✓/✕ 前缀（拖选复制 pushToast 的「✓ 已复制」）→ 剥掉，由图标格统一着色
+      const text = toast.text.replace(/^[✓✕]\s*/, '');
+      const icon = toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : '';
+      const avail = Math.max(8, (width ?? 80) - 4); // 视口 - 右缘 1 - 根 padding 1 - 余量
+      const iconW = icon ? visualWidth(icon) + 1 : 0; // 图标 + gap 1 列
+      const textW = visualWidth(text);
+      const w = Math.min(iconW + textW, avail);
       // 浮层宽度由内容自适应（OpenTUI 由子文本决定宽，显式 width 会压缩内部）
       tree.toastBox.top = 1;
-      tree.toastBox.left = Math.max(1, (width ?? 80) - (w + 2) - 1); // 右缘贴视口右边界
+      tree.toastBox.left = Math.max(1, (width ?? 80) - w - 1); // 右缘贴视口右边界
+      tree.toastIcon.content = icon;
+      tree.toastIcon.visible = icon !== '';
+      // 成功绿（✓ 语义色；不随 modeBuild 青——模式色只属于模型行前缀与 $ 提示符）
+      tree.toastIcon.fg = parseColor(toast.type === 'success' ? theme.diffAdd : theme.cardErrDim);
       tree.toastCell.visible = true;
-      tree.toastCell.content = shown;
-      // 成功用 diffAdd 绿（✓ 语义色；不随 modeBuild 青——模式色只属于模型行前缀与 $ 提示符）
-      const fg = toast.type === 'success' ? theme.diffAdd : toast.type === 'error' ? theme.cardErrDim : theme.suggestText;
-      tree.toastCell.fg = parseColor(fg);
+      tree.toastCell.content = textW > avail - iconW ? text.slice(0, Math.max(0, fitCount(text, avail - iconW - 1))) + '…' : text;
+      tree.toastCell.fg = parseColor(theme.footerDim);
       tree.toastBox.visible = true;
     }
   }

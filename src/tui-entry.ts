@@ -153,7 +153,7 @@ async function run(): Promise<void> {
     // 退出后（终端已恢复，见 stop() 内 destroy）打印会话恢复提示：
     // /exit 与 Ctrl+C（render.ts onCtrlC）退出时都给用户 omni -s <id> 恢复命令
     if (state.restoreHint) {
-      process.stdout.write(`\n${dim(`💬 恢复此会话：${state.restoreHint}`)}\n`);
+      process.stdout.write(`\n${dim(`恢复此会话：${state.restoreHint}`)}\n`);
     }
   }
 }

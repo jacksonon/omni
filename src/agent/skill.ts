@@ -234,7 +234,7 @@ export function skillMessage(skills: SkillInfo[], _taskText?: string): ChatCompl
     if (s.source) line += `［${s.source}］`;
     return line;
   }).join('\n');
-  const extra = total > SKILL_LIST_MAX ? `\n\n…还有 ${total - SKILL_LIST_MAX} 个技能未列出（/skill 查看全部；模型可直接尝试调用未列出的技能名）` : '';
+  const extra = total > SKILL_LIST_MAX ? `\n\n…还有 ${total - SKILL_LIST_MAX} 个技能未列出（/skill 查看全部）` : '';
   return {
     role: 'system',
     content: `${SKILL_PREFIX}，需要时用 skill 工具按 name 加载完整内容]\n${body}${extra}`,

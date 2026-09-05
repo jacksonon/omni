@@ -231,15 +231,15 @@ function toolRowStyle(role: ToolCardRole, status: ToolStatus, theme: TuiTheme): 
  * 不再是左右角透明的圆角块，四角直角、无缺口。
  *
  * diff 行（write_file 左右对比）：按 ToolCardLine.diff 的左右两半**逐 chunk 着色**
- * ——删除半列红、新增半列绿、未改动半列状态深字，中间 `│` 分隔；整行色（新增
- * 文件全文，diffRole='add'）整行绿色。
+ * ——删除半列红、新增半列绿、未改动半列状态深字，中间 `│` 分隔；统一 diff 行
+ *（diffRole）只着文字色（新增绿字/删除红字/上下文灰字），无行级背景。
  */
 function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, toolName?: string): Row {
   if (line.diffRole) {
-    // 整行 diff 色（统一 diff 行：新增绿/删除红/上下文灰）——行级背景色 + 文字色
+    // 整行 diff 色（统一 diff 行：新增绿字/删除红字/上下文灰字）——只着文字色，
+    // 不加行级背景（用户要求：新建文件全文绿底连成绿板太违和；对标 diff 纯文本风）
     const fg = line.diffRole === 'add' ? theme.diffAdd : line.diffRole === 'rem' ? theme.diffRem : theme.cardDim;
-    const lineBg = line.diffRole === 'add' ? theme.diffAddBg : line.diffRole === 'rem' ? theme.diffRemBg : theme.diffCtxBg;
-    const chunks: MdChunk[] = [{ text: line.text, fg, bg: lineBg }];
+    const chunks: MdChunk[] = [{ text: line.text, fg }];
     return { text: line.text, style: {}, chunks };
   }
 
@@ -300,11 +300,10 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
     return { text: line.text, style: {}, chunks };
   }
   if (line.diffRole) {
-    // 整行 diff 色（统一 diff 行：新增绿/删除红/上下文灰）——行级背景色 + 文字色，
-    // Claude Code Edit 风格：新增行淡绿底深绿字、删除行淡红底深红字、上下文行淡灰底深字
+    // 整行 diff 色（统一 diff 行：新增绿字/删除红字/上下文灰字）——只着文字色无底色
+    //（同上：去行级背景，防全文绿板）
     const fg = line.diffRole === 'add' ? theme.diffAdd : line.diffRole === 'rem' ? theme.diffRem : theme.cardDim;
-    const lineBg = line.diffRole === 'add' ? theme.diffAddBg : line.diffRole === 'rem' ? theme.diffRemBg : theme.diffCtxBg;
-    const chunks: MdChunk[] = [{ text: line.text, fg, bg: lineBg }];
+    const chunks: MdChunk[] = [{ text: line.text, fg }];
     return { text: line.text, style: {}, chunks };
   }
   const contentStyle = toolRowStyle(line.role, status, theme);

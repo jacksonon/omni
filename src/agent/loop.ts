@@ -124,12 +124,23 @@ function buildStreamParams(
           : t
       );
     }
-    requestMessages = requestMessages.map((m, idx) => {
-      if (idx === 0 && m.role === 'system') {
-        return { ...(m as unknown as Record<string, unknown>), cache_control: { type: 'ephemeral' } } as unknown as ChatCompletionMessageParam;
-      }
-      return m;
-    });
+    // 断点打到头部连续 system 消息的最后一条：首轮 system 之后，全局/项目记忆、
+    // repomap、技能清单、预载文件、MCP instructions 全是 system role 且首轮一次注入、
+    // 会话内稳定——整个静态前缀进同一个缓存块（之前只标 system[0]，后面几十 KB
+    // 脚手架每步重算）。动态对话从首条非 system 消息开始，不在断点覆盖内。
+    let lastStaticIdx = -1;
+    for (let i = 0; i < requestMessages.length; i++) {
+      if (requestMessages[i]?.role === 'system') lastStaticIdx = i;
+      else break;
+    }
+    if (lastStaticIdx >= 0) {
+      requestMessages = requestMessages.map((m, idx) => {
+        if (idx === lastStaticIdx) {
+          return { ...(m as unknown as Record<string, unknown>), cache_control: { type: 'ephemeral' } } as unknown as ChatCompletionMessageParam;
+        }
+        return m;
+      });
+    }
   }
 
   const params: Record<string, unknown> = {
@@ -194,6 +205,8 @@ export function buildSystemPrompt(
 7. 定向读取：工具结果超过 8000 字符会被截断并提示——需要完整内容时用 read_file 按 offset/limit 定向获取；
 8. 收尾总结：任务完成后，用简洁的中文总结你做了什么、结果如何、还有什么没做。
 9. 展示文件改动：需要向用户展示你对文件做了什么修改时，用 \`\`\`diff 代码块（围栏语言为 diff），前后对比一目了然。
+10. 任务编排：复杂多步任务先用 todo_write 建清单再逐项推进；相互独立的子任务用 delegate 并行分出去，不要自己串行啃；技能清单命中相关技能时，用 skill 工具加载全文再动手。
+11. 提问克制：只有多种合理方案、需要用户偏好或拍板时才用 ask_user 提问，可自行判断的小事直接决定，不要打扰用户。
 
 身份回答：当用户问“你是谁”或类似问题时，用一两句话自然介绍自己，
 例如“我是 Omni，运行在终端里的编程 Agent，可以帮你读写文件、搜索代码、执行命令。”
@@ -381,11 +394,13 @@ export async function runAgent(
   // Hooks：SessionStart——会话开始（每会话一次，sessionStart 内部标记去重）。
   // hookSpecificOutput 注入**首轮系统提示词**（如启动策略/环境快照）——不污染消息历史；
   // 后续回合 sessionStart 返回空（不再触发）
-  let sessionNote = '';
-  if (opts.hooks?.has('SessionStart')) {
+  // 缓存稳定性：首轮非空结果记忆到 opts.sessionHookNote，后续回合继续拼相同内容——
+  // 否则次回合起 system 前缀变化、整段 Prompt Cache 失效（配了 SessionStart hook 的会话每轮 miss）。
+  if (!opts.sessionHookNote && opts.hooks?.has('SessionStart')) {
     const lines = await opts.hooks.sessionStart();
-    if (lines.length > 0) sessionNote = `\n\n[SessionStart hook]\n${lines.join('\n')}`;
+    if (lines.length > 0) opts.sessionHookNote = `\n\n[SessionStart hook]\n${lines.join('\n')}`;
   }
+  const sessionNote = opts.sessionHookNote ?? '';
 
   for (let step = 0; step < maxSteps; step++) {
     // 系统提示词：每轮请求前构造带 system 消息的副本（不能 push 进 messages——

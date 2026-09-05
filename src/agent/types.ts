@@ -169,6 +169,13 @@ export interface RunOptions {
    */
   systemNote?: string;
   /**
+   * SessionStart hook 首轮注入的缓存（Prompt Cache 稳定性）：
+   * hook 在会话内只触发一次——首回合拼进 system、次回合起消失会导致 system 前缀
+   * 变化、整段缓存失效。首次非空结果记忆在此，后续回合继续拼相同内容。
+   * loop 内部维护，调用方无需设置。
+   */
+  sessionHookNote?: string;
+  /**
    * architect/editor 模型路由（第六节 P1）：
    * · architect —— /plan 计划模式使用的强推理模型（缺省 = 当前模型）
    * · editor   —— 执行模式使用的轻量模型（缺省 = 当前模型）

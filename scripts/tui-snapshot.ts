@@ -1004,18 +1004,14 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 16 通过：亮色主题灰色块/用户消息淡灰底+深字，内容区回答/思考/meta/markdown 代码块全部换深色文字，切回深色恢复');
 
-  // 场景 16b：模型行 Build/Plan 循环色（对标 hero 横幅彩虹）——bannerHue 驱动全色相
-  // 循环，Plan 固定错相 180°；亮度跟横幅同规则。渲染层取色与函数同源。
+  // 场景 16b：模型行 Build 循环色（对标 hero 横幅彩虹）+ Plan 静态主题色——
+  // 只有 Build 跟 bannerHue 渐变，Plan 恒取 theme.modePlan（用户要求）。
   {
-    const { hslToHex: hex16b, modeCycleColor: mcc16b } = await import('../src/tui/theme.js');
+    const { hslToHex: hex16b, modeCycleColor: mcc16b, themeFor: tf16b } = await import('../src/tui/theme.js');
     const { parseColor: pc16b } = await import('@opentui/core');
     const toInts = (c: unknown): number[] => ((c as { toInts: () => number[] }).toInts?.() ?? []).slice(0, 3);
     if (mcc16b(10, false, false) !== hex16b(10, 0.85, 0.64)) {
       console.error('✗ 场景 16b Build 未跟随 bannerHue');
-      process.exit(1);
-    }
-    if (mcc16b(10, true, false) !== hex16b(190, 0.85, 0.64) || mcc16b(200, true, false) !== hex16b(20, 0.85, 0.64)) {
-      console.error('✗ 场景 16b Plan 错相 180°/回绕错误');
       process.exit(1);
     }
     if (mcc16b(10, false, true) !== hex16b(10, 0.85, 0.42) || mcc16b(10, false, true) === mcc16b(10, false, false)) {
@@ -1037,8 +1033,19 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 16b 模型行未取循环色: ${fg16b}`);
       process.exit(1);
     }
+    // Plan：换 hue 也不动，恒为静态主题色
+    s16b2.planMode = true;
+    s16b2.bannerHue = 200;
+    repaintTree(t16b2.renderer, tree16b2, s16b2, { withInput: true });
+    await t16b2.renderOnce();
+    const fgPlan16b = JSON.stringify(toInts((tree16b2.footerMode as unknown as { fg?: unknown })?.fg));
+    const wantPlan16b = JSON.stringify(toInts(pc16b(tf16b(s16b2).modePlan)));
+    if (fgPlan16b !== wantPlan16b) {
+      console.error(`✗ 场景 16b Plan 未取静态主题色: ${fgPlan16b}`);
+      process.exit(1);
+    }
   }
-  console.log('✓ 场景 16b 通过：模型行 Build/Plan 循环色（hue 驱动/Plan 错相/亮暗亮度/渲染同源）');
+  console.log('✓ 场景 16b 通过：模型行 Build 循环色（hue 驱动/亮暗亮度/渲染同源）+ Plan 静态主题色');
 
   // 场景 15：输入区 16px 圆角灰块（rounded 边框 + 同色线模拟圆角）+ 右下角发送按钮
   // + 模型/思考强度行（思考强度淡色）；输入增高时灰块同步变高
@@ -4836,8 +4843,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // f) 渲染级（buildBody 真实路径）：统一 diff 行逐行着色——新增行淡绿底深绿字、
-  // 删除行淡红底深红字、上下文行淡灰底深字；整行宽度 == 内容宽
+  // f) 渲染级（buildBody 真实路径）：统一 diff 行逐行着色——新增绿字/删除红字/
+  // 上下文灰字，均无行级背景（去绿板）；整行宽度 == 内容宽
   {
     const s41 = createTuiState();
     s41.version = '0.1.0';
@@ -4857,34 +4864,34 @@ async function main(): Promise<void> {
       },
     });
     const rows41 = buildBody(s41, 60);
-    // diff 行 = 单 chunk 且 fg 为 diff 文字色（绿/红）或 bg 为上下文灰底
-    // （顶/底留白与状态行底色同卡底色 #dcfce7，不能用 bg 区分新增行）
+    // diff 行 = 单 chunk + 行号 gutter（`  1    a` / `  2 -  b` / `  2 +  x`），
+    // 卡片头（`← Edit …`）同 cardDim 色但无 gutter——用 gutter 区分
     const diffRows41 = rows41.filter(
       (r) =>
         r.cardId === 41 &&
         r.chunks &&
         r.chunks.length === 1 &&
-        (r.chunks[0].fg === '#4ade80' || r.chunks[0].fg === '#f87171' || r.chunks[0].bg === '#52525b')
+        /^\s*\d+\s+[-+ ] /.test(r.text)
     );
     if (diffRows41.length !== 5) {
       console.error(`✗ 场景 41 渲染 diff 行数错误: ${diffRows41.length}`);
       process.exit(1);
     }
-    // 删除行（第 2 条）：fg=diffRem 红、bg=diffRemBg 深红
+    // 删除行（第 2 条）：红字、无底色
     const remR = diffRows41[1];
-    if (remR.chunks![0].fg !== '#f87171' || remR.chunks![0].bg !== '#7f1d1d') {
-      console.error(`✗ 场景 41 删除行红字深红底缺失: ${JSON.stringify(remR.chunks![0])}`);
+    if (remR.chunks![0].fg !== '#f87171' || remR.chunks![0].bg) {
+      console.error(`✗ 场景 41 删除行红字无底缺失: ${JSON.stringify(remR.chunks![0])}`);
       process.exit(1);
     }
-    // 新增行（第 3 条）：fg=diffAdd 绿 + bg=diffAddBg 深绿
+    // 新增行（第 3 条）：绿字、无底色
     const addR = diffRows41[2];
-    if (addR.chunks![0].fg !== '#4ade80' || addR.chunks![0].bg !== '#14532d') {
-      console.error(`✗ 场景 41 新增行绿字深绿底缺失: ${JSON.stringify(addR.chunks![0])}`);
+    if (addR.chunks![0].fg !== '#4ade80' || addR.chunks![0].bg) {
+      console.error(`✗ 场景 41 新增行绿字无底缺失: ${JSON.stringify(addR.chunks![0])}`);
       process.exit(1);
     }
-    // 上下文行（第 1 条）：fg=cardDim（非红非绿）+ bg=diffCtxBg 灰
+    // 上下文行（第 1 条）：灰字（非红非绿）、无底色
     const ctxR = diffRows41[0];
-    if (ctxR.chunks![0].fg === '#f87171' || ctxR.chunks![0].fg === '#4ade80' || ctxR.chunks![0].bg !== '#52525b') {
+    if (ctxR.chunks![0].fg === '#f87171' || ctxR.chunks![0].fg === '#4ade80' || ctxR.chunks![0].bg) {
       console.error(`✗ 场景 41 上下文行误着色: ${JSON.stringify(ctxR.chunks![0])}`);
       process.exit(1);
     }
@@ -6160,6 +6167,29 @@ async function main(): Promise<void> {
     if (col48 < 40) {
       console.error(`✗ 场景 48 toast 不在右上角（列 ${col48}，期望 ≥40）:\n${frame48}`);
       process.exit(1);
+    }
+    // b2) 扁平样式：图标与正文分离（图标格 ✓ 着色、正文去前缀 dim 灰，无边框盒子）
+    {
+      const { themeFor: tf48 } = await import('../src/tui/theme.js');
+      const { parseColor: pc48 } = await import('@opentui/core');
+      const ints48 = (c: unknown): number[] => ((c as { toInts: () => number[] }).toInts?.() ?? []).slice(0, 3);
+      const theme48 = tf48(s48);
+      const iconContent48 = JSON.stringify((tree48.toastIcon as unknown as { content?: unknown })?.content);
+      const bodyContent48 = JSON.stringify((tree48.toastCell as unknown as { content?: unknown })?.content);
+      if (!iconContent48.includes('✓') || !bodyContent48.includes('已复制') || bodyContent48.includes('✓')) {
+        console.error(`✗ 场景 48 图标/正文未分离: icon=${iconContent48} body=${bodyContent48}`);
+        process.exit(1);
+      }
+      const iconFg48 = JSON.stringify(ints48((tree48.toastIcon as unknown as { fg?: unknown })?.fg));
+      const bodyFg48 = JSON.stringify(ints48((tree48.toastCell as unknown as { fg?: unknown })?.fg));
+      if (iconFg48 !== JSON.stringify(ints48(pc48((theme48 as unknown as { diffAdd: string }).diffAdd)))) {
+        console.error(`✗ 场景 48 success 图标非绿: ${iconFg48}`);
+        process.exit(1);
+      }
+      if (bodyFg48 !== JSON.stringify(ints48(pc48((theme48 as unknown as { footerDim: string }).footerDim)))) {
+        console.error(`✗ 场景 48 正文非 dim 灰: ${bodyFg48}`);
+        process.exit(1);
+      }
     }
     // c) 过期自动清除：把 expiresAt 改为过去 → 重绘后 toast 消失
     s48.toast!.expiresAt = Date.now() - 1;
