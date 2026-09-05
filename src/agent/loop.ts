@@ -25,6 +25,7 @@ import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, estimateTokens, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
+import { appendWriteDiff } from './session.js';
 
 /** 消息里是否含图片输入（多模态前置校验用：content 为分段数组且带 image 类型） */
 export function messagesHaveImage(messages: ChatCompletionMessageParam[]): boolean {
@@ -916,6 +917,14 @@ export async function runAgent(
                     content: String(args.content ?? ''),
                   },
                 };
+                // 改前落盘（重载会话后历史 diff 左半的来源；fire-and-forget，失败静默；
+                // 新建文件 original=null 也记——历史据此确信"是新建"而非"记录缺失"）
+                if (opts.sessionPath) {
+                  const sp = opts.sessionPath;
+                  const orig = snap.existed && typeof snap.content === 'string' ? snap.content : null;
+                  const rec = { callId: call.id, path: String(args.path ?? ''), original: orig };
+                  void appendWriteDiff(sp, rec).catch(() => {});
+                }
               }
             } else if (tool.name === 'edit_file') {
               const oldStr = String(args.old_string ?? '');

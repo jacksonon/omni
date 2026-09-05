@@ -329,6 +329,7 @@ for step in 1..maxSteps:
 | `/diff` 命令 | **查看未提交改动**（复用 review.ts 的 collectDiff，输出前 60 行） |
 | `/rename` 命令 | **改会话标题**：终端窗口标题（OSC 0）+ 会话 meta 落盘（SessionMeta.title，/resume 还原） |
 | `/resume` 命令 | **恢复历史会话**：无参列出 / `<id>` 恢复（替换 messages + sessionPath + 重置落盘计数 + 历史回放进对话流；onResume 回调由 interactive 组装） |
+| `/new` 命令 | **新建会话并回到初始状态**（与 `/clear` 的区别：新会话文件 + 统计/撤销栈/hook note 全重置，回到 hero；旧会话文件保留，可 `/session` 找回）——TUI（`onNewSession` 回调组装）/ CLI（内联）/ Web（前端原生：草稿态，与「新会话」按钮一致） |
 | `/fork` 命令 | **会话 fork**：从当前会话历史某点分叉独立新会话（原会话不丢）——`/fork` 无参列出可保留消息序号摘要，`/fork <N>` 保留前 N 条并自动切换（复用 onResume 链路；Web 端文件级 fork 侧栏可见） |
 | `/send` 命令 | **跨会话消息**：`/send <会话id> <消息>` 向指定会话发消息取结果——串行执行（保存当前上下文 → 载入目标会话 → 跑一轮 → 落盘 → 恢复），结果以 `[跨会话响应]` system 消息注入当前上下文（TUI/CLI 支持；Web 提示全局单运行限制） |
 | `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |

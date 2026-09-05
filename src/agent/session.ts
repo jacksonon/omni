@@ -236,6 +236,65 @@ export function sessionIdFromPath(file: string): string {
   return path.basename(file).replace(/\.jsonl$/, '');
 }
 
+/**
+ * write_file 改前内容 sidecar（`{"t":"wfile",...}` 行，与 `ev` 事件行同机制）：
+ * 实时 diff 只活在显示通道（loop 的 onToolResult detail），重载会话后历史只剩
+ * tool args（path+content）——改前 original 丢失，Web 历史的左右对比只剩右半。
+ * 此处按 tool callId 把 original 落盘，历史渲染按 callId 挂接恢复左半。
+ * （edit_file 的 old/new 已在 args 里，重载安全，不用记。）
+ * 新建文件（original=null）也记一条：历史据此确信"是新建"而非"记录缺失"。
+ */
+export interface WriteDiffRecord {
+  /** assistant tool_calls 的 call id（历史挂接键；同文件多次写入各记各的） */
+  callId: string;
+  path: string;
+  /** 写入前全文；null = 新建文件；超大文件跳过（不记） */
+  original: string | null;
+}
+
+/** 改前全文落盘上限（字符；超限跳过——历史左半缺失时前端降级显示） */
+export const WRITE_DIFF_MAX_CHARS = 100 * 1024;
+
+/** 追加一条改前记录（fire-and-forget 用；失败静默） */
+export async function appendWriteDiff(file: string, rec: WriteDiffRecord): Promise<boolean> {
+  try {
+    if (!rec.callId) return false;
+    if (typeof rec.original === 'string' && rec.original.length > WRITE_DIFF_MAX_CHARS) return false;
+    await appendFile(file, JSON.stringify({ t: 'wfile', ...rec }) + '\n', 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读回全部改前记录（callId → 记录；同 callId 多条取最后一条） */
+export async function loadWriteDiffs(file: string): Promise<Record<string, { path: string; original: string | null }>> {
+  const out: Record<string, { path: string; original: string | null }> = {};
+  try {
+    if (!existsSync(file)) return out;
+    const raw = await readFile(file, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        parsed && parsed.t === 'wfile' &&
+        typeof parsed.callId === 'string' &&
+        (typeof parsed.original === 'string' || parsed.original === null)
+      ) {
+        out[parsed.callId] = { path: typeof parsed.path === 'string' ? parsed.path : '', original: parsed.original };
+      }
+    }
+  } catch {
+    // 静默（历史降级显示）
+  }
+  return out;
+}
+
 /** 最近一个会话（当前项目；无则 null） */
 export async function latestSession(project: string): Promise<SessionInfo | null> {
   const list = await listSessions(project);

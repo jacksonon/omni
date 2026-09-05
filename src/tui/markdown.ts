@@ -38,6 +38,9 @@ export interface MdRow {
 export const INLINE_CODE_FG = '#e6b450';
 // 代码块行（蓝灰色）
 export const CODE_FG = '#8fa3bf';
+// diff 围栏行（与深色主题 diffAdd/diffRem 同值；亮色经 themeColor 映射压深）
+export const DIFF_ADD_FG = '#4ade80';
+export const DIFF_REM_FG = '#f87171';
 // 引用行（浅灰）
 export const QUOTE_FG = '#9aa4b2';
 
@@ -340,18 +343,38 @@ export function markdownToRows(text: string, contentWidth?: number): MdRow[] {
 
   const rows: MdRow[] = [];
   let inCode = false;
+  let codeLang = ''; // 围栏语言（```diff 等；只用于 diff 围栏行级着色）
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine.trimEnd();
     const trimmed = line.trimStart();
 
-    // 围栏代码块：``` / ~~~ 开闭围栏行隐藏（代码行单独着色）
-    if (/^```|^~~~/.test(trimmed)) {
+    // 围栏代码块：``` / ~~~ 开闭围栏行隐藏（代码行单独着色；兼容 ```js extra 元信息行）
+    const fence = /^(```+|~~~+)\s*(\S*)/.exec(trimmed);
+    if (fence) {
+      if (!inCode) codeLang = (fence[2] ?? '').toLowerCase();
+      else codeLang = '';
       inCode = !inCode;
       continue;
     }
     if (inCode) {
+      // diff 围栏：+ 绿 / - 红 / @@ 青 / 其余代码色（对标 Web markstream 的 diff 渲染；
+      // 模型常在回答里贴 ```diff，之前整块单色蓝灰，用户以为重载丢格式）
+      if (codeLang === 'diff') {
+        if (trimmed.startsWith('+')) {
+          rows.push({ chunks: [{ text: line, fg: DIFF_ADD_FG }] });
+          continue;
+        }
+        if (trimmed.startsWith('-')) {
+          rows.push({ chunks: [{ text: line, fg: DIFF_REM_FG }] });
+          continue;
+        }
+        if (trimmed.startsWith('@@')) {
+          rows.push({ chunks: [{ text: line, fg: 'cyan' }] });
+          continue;
+        }
+      }
       rows.push({ chunks: [{ text: line, fg: CODE_FG }] });
       continue;
     }

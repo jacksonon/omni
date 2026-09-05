@@ -729,6 +729,21 @@ function fitAsk(text: string, cols: number): string {
 let lastRowError = '';
 
 /**
+ * 面板行底色：行自带 footerBg（borderless 父盒底色刷不出来——/session 面板缩成窄条；
+ * suggestBox 行内 chunk 自带底是同模式的既有实现，这里是行级等价）。
+ * 调用点：menu / cmdpanel / ask / queue / todo / delegate（行文本已按面板宽铺满，
+ * 底色随行走，整行实底撑满面板宽）。
+ */
+function paintPanelCell(cell: TextRenderable, theme: TuiTheme): void {
+  (cell as { bg?: unknown }).bg = parseColor(theme.footerBg);
+}
+
+/** 文本按显示列右补空格到宽度（面板行铺满用；CJK 感知，超宽不动） */
+function padRowToWidth(text: string, w: number): string {
+  const v = visualWidth(text);
+  return v >= w ? text : text + ' '.repeat(w - v);
+}
+/**
  * 把一行内容原位应用到复用单元格（chunks 行 → StyledText；普通行 → 文本 + 样式）。
  *
  * 样式必须**无条件**复位：细胞跨帧复用，上一帧可能是蓝色 user 行、下一帧是
@@ -1161,6 +1176,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     let idx = 0;
     if (pendingCount > 0) {
       const lang = state.language;
+      // 行铺满输入区宽（同 ask 面板口径；hero 0.75 居中对齐）：短文本右补空格块自带底
+      const stripW = hero && !!tree.footerBox
+        ? Math.max(32, Math.round(Math.max(24, (width ?? 80) - CONTENT_PAD) * 0.75))
+        : Math.max(16, (width ?? 80) - CONTENT_PAD);
+      const padChunk = (used: number) => {
+        const n = Math.max(0, stripW - used);
+        return { __isChunk: true as const, text: ' '.repeat(n), bg: parseColor(theme.footerBg), attributes: 0 };
+      };
       // command 面板同款左侧深灰竖线 ▍（同联想/命令面板 barChunk：bg 与面板同色）
       const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
       for (let i = 0; i < pendingVisibleMsgs; i++) {
@@ -1175,11 +1198,15 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         try {
           // 行 = 竖线 ▍ + 1 空格 + 选中标记/序号 + 文本（透明处露出面板 footerBg 底；
           // 文本起始与输入区文字同列——灰块内是 蓝线1 + padding 1）
+          const mid = ` ${selected ? '›' : ' '} ${label}`;
+          const tail = ` · ${body}`;
           cell.content = new StyledText([
             barChunk,
-            { __isChunk: true as const, text: ` ${selected ? '›' : ' '} ${label}`, fg: lineFg, attributes: TextAttributes.BOLD },
-            { __isChunk: true as const, text: ` · ${body}`, fg: lineFg, attributes: selected ? TextAttributes.BOLD : 0 },
+            { __isChunk: true as const, text: mid, fg: lineFg, attributes: TextAttributes.BOLD },
+            { __isChunk: true as const, text: tail, fg: lineFg, attributes: selected ? TextAttributes.BOLD : 0 },
+            padChunk(1 + visualWidth(mid) + visualWidth(tail)),
           ]);
+          paintPanelCell(cell, theme);
         } catch (e) {
           logCrash('pending-row', e);
         }
@@ -1187,10 +1214,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (pendingCount > 4) {
         const c2 = tree.queueCells[idx++]!;
         c2.visible = true;
+        const moreText = ` ${tf(state.language, 'pending.more', { n: pendingCount - 4 })}`;
         c2.content = new StyledText([
           barChunk,
-          { __isChunk: true as const, text: ` ${tf(state.language, 'pending.more', { n: pendingCount - 4 })}`, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+          { __isChunk: true as const, text: moreText, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+          padChunk(1 + visualWidth(moreText)),
         ]);
+        paintPanelCell(c2, theme);
       }
     }
     // 未用的池细胞必须隐藏——否则仍占布局行（7 个细胞占 7 行而非 5 行），
@@ -1213,6 +1243,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     // 面板行内容宽 = 视口 - 根 paddingX(2)（bottomBlock stretch 全宽；行文本单行截断）
     const panelW = Math.max(20, (width ?? 80) - CONTENT_PAD);
     const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
+    // 行铺满面板宽：短文本右补空格块自带底（同 queue/todo 口径）
+    const dgPad = (used: number) => {
+      const n = Math.max(0, panelW - used);
+      return { __isChunk: true as const, text: ' '.repeat(n), bg: parseColor(theme.footerBg), attributes: 0 };
+    };
     for (let ri = 0; ri < state.delegateRuns.length; ri++) {
       const run = state.delegateRuns[ri]!;
       const cell = tree.delegateCells[idx++]!;
@@ -1222,11 +1257,15 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const mark = run.expanded ? '▾' : '▸';
       try {
         const titleBody = fitAsk(run.title, Math.max(10, panelW - 24));
+        const titleMid = ` ${mark} ${titleBody}`;
+        const titleTail = ` · ${run.status}`;
         cell.content = new StyledText([
           barChunk,
-          { __isChunk: true as const, text: ` ${mark} ${titleBody}`, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
-          { __isChunk: true as const, text: ` · ${run.status}`, fg: parseColor(statusFg), attributes: run.stopRequested ? 0 : TextAttributes.BOLD },
+          { __isChunk: true as const, text: titleMid, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
+          { __isChunk: true as const, text: titleTail, fg: parseColor(statusFg), attributes: run.stopRequested ? 0 : TextAttributes.BOLD },
+          dgPad(1 + visualWidth(titleMid) + visualWidth(titleTail)),
         ]);
+        paintPanelCell(cell, theme);
       } catch (e) {
         logCrash('delegate-title', e);
       }
@@ -1240,24 +1279,31 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
           try {
             if (it.kind === 'think') {
               const text = fitAsk(`💭 ${it.text}`, Math.max(8, panelW - 6));
+              const body = `  ${text}`;
               c2.content = new StyledText([
                 barChunk,
-                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(theme.footerDim), attributes: 0 },
+                { __isChunk: true as const, text: body, fg: parseColor(theme.footerDim), attributes: 0 },
+                dgPad(1 + visualWidth(body)),
               ]);
             } else if (it.kind === 'tool') {
               const text = fitAsk(`→ ${it.text}`, Math.max(8, panelW - 6));
+              const body = `  ${text}`;
               c2.content = new StyledText([
                 barChunk,
-                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
+                { __isChunk: true as const, text: body, fg: parseColor(theme.footerText), attributes: TextAttributes.BOLD },
+                dgPad(1 + visualWidth(body)),
               ]);
             } else {
               const ok = it.ok !== false;
               const text = fitAsk(`${ok ? '✓' : '✗'} ${it.text}`, Math.max(8, panelW - 6));
+              const body = `  ${text}`;
               c2.content = new StyledText([
                 barChunk,
-                { __isChunk: true as const, text: `  ${text}`, fg: parseColor(ok ? theme.footerDim : theme.diffRem), attributes: 0 },
+                { __isChunk: true as const, text: body, fg: parseColor(ok ? theme.footerDim : theme.diffRem), attributes: 0 },
+                dgPad(1 + visualWidth(body)),
               ]);
             }
+            paintPanelCell(c2, theme);
           } catch (e) {
             logCrash('delegate-item', e);
           }
@@ -1268,20 +1314,26 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
           const lang = state.language;
           const extra = run.dropped > 0 ? tf(lang, 'delegate.extraTruncated', { n: run.dropped }) : '';
           const hidden = run.items.length - shown;
+          const hiddenBody = `  ${tf(lang, 'delegate.earlierHidden', { n: hidden })}${extra}`;
           c3.content = new StyledText([
             barChunk,
-            { __isChunk: true as const, text: `  ${tf(lang, 'delegate.earlierHidden', { n: hidden })}${extra}`, fg: parseColor(theme.footerDim), attributes: 0 },
+            { __isChunk: true as const, text: hiddenBody, fg: parseColor(theme.footerDim), attributes: 0 },
+            dgPad(1 + visualWidth(hiddenBody)),
           ]);
+          paintPanelCell(c3, theme);
         }
         // 停止/已停止行（role 语义经文本标识——点击命中按行文本「⏹」判定；统一在
         // delegateRects 登记 stop，鼠标 handler 按 stopRequested 防重复）
         const c4 = tree.delegateCells[idx++]!;
         c4.visible = true;
         const stoppedTxt = run.stopped || run.stopRequested ? t(state.language, 'delegate.stoppedBtn') : t(state.language, 'delegate.stopBtn');
+        const stopBody = `  ${stoppedTxt}`;
         c4.content = new StyledText([
           barChunk,
-          { __isChunk: true as const, text: `  ${stoppedTxt}`, fg: parseColor(theme.diffRem), attributes: TextAttributes.BOLD },
+          { __isChunk: true as const, text: stopBody, fg: parseColor(theme.diffRem), attributes: TextAttributes.BOLD },
+          dgPad(1 + visualWidth(stopBody)),
         ]);
+        paintPanelCell(c4, theme);
       }
     }
     // 未用细胞隐藏（防占布局行——同 queue/todo 池语义）
@@ -1318,6 +1370,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.todoBox.visible = todoCount > 0;
     // 主题切换（/theme）每帧跟随（同 queue 面板底）
     tree.todoBox.backgroundColor = theme.footerBg;
+    // 行铺满输入区宽（同 queue 口径）：短文本右补空格块自带底
+    const todoStripW = hero && !!tree.footerBox
+      ? Math.max(32, Math.round(Math.max(24, (width ?? 80) - CONTENT_PAD) * 0.75))
+      : Math.max(16, (width ?? 80) - CONTENT_PAD);
+    const todoPad = (used: number) => {
+      const n = Math.max(0, todoStripW - used);
+      return { __isChunk: true as const, text: ' '.repeat(n), bg: parseColor(theme.footerBg), attributes: 0 };
+    };
     let idx = 0;
     if (todoCount > 0) {
       const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
@@ -1331,11 +1391,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         try {
           // 行 = 竖线 ▍ + 1 空格 + 状态标记（同 queue 面板风格，竖线连续贯通）
+          const mid = ` ${mark} `;
           cell.content = new StyledText([
             barChunk,
-            { __isChunk: true as const, text: ` ${mark} `, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
+            { __isChunk: true as const, text: mid, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
             { __isChunk: true as const, text, fg: parseColor(active ? theme.footerText : theme.footerDim), attributes: 0 },
+            todoPad(1 + visualWidth(mid) + visualWidth(text)),
           ]);
+          paintPanelCell(cell, theme);
         } catch (e) {
           logCrash('todo-row', e);
         }
@@ -1343,10 +1406,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       if (todoCount > 4) {
         const c2 = tree.todoCells[idx++]!;
         c2.visible = true;
+        const moreText = ` ${tf(state.language, 'todo.more', { n: todoCount - 4 })}`;
         c2.content = new StyledText([
           barChunk,
-          { __isChunk: true as const, text: ` ${tf(state.language, 'todo.more', { n: todoCount - 4 })}`, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+          { __isChunk: true as const, text: moreText, fg: parseColor(theme.footerDim), attributes: TextAttributes.DIM },
+          todoPad(1 + visualWidth(moreText)),
         ]);
+        paintPanelCell(c2, theme);
       }
     }
     for (; idx < tree.todoCells.length; idx++) {
@@ -1577,6 +1643,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         try {
           applyRowToCell(cell, panelRows[i], theme);
+          paintPanelCell(cell, theme); // 行自带底（面板行已铺满 panelW，整行实底）
         } catch (e) {
           logCrash('menu-row', e);
         }
@@ -1620,6 +1687,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         try {
           applyRowToCell(cell, panelRows[i], theme);
+          paintPanelCell(cell, theme); // 行自带底（同菜单浮层）
         } catch (e) {
           logCrash('cmdpanel-row', e);
         }
@@ -1760,6 +1828,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       });
       aRows.push({ text: `✓ ${t(lang, 'ask.confirm')}（Enter）`, style: { fg: 'green', bold: true } });
       aRows.push({ text: t(lang, 'ask.hint'), style: { dim: true } });
+      // 行铺满输入区宽 + 自带底（同菜单浮层；短文本居左、底色铺满整行）
+      const askW = hero && !!tree.footerBox
+        ? Math.max(32, Math.round(Math.max(24, (width ?? 80) - CONTENT_PAD) * 0.75))
+        : Math.max(16, (width ?? 80) - CONTENT_PAD);
+      for (const r of aRows) r.text = padRowToWidth(r.text, askW);
       for (let i = 0; i < tree.askCells.length; i++) {
         const cell = tree.askCells[i];
         if (i >= aRows.length) {
@@ -1768,6 +1841,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         }
         cell.visible = true;
         applyRowToCell(cell, aRows[i], theme);
+        paintPanelCell(cell, theme);
       }
       // 面板底 = footer 顶 - todoRows - pendingRows - delegateRows（delegate/todo/待发送区在面板与灰色块之间）；
       // 顶 = 底 - 行数（hero 居中再减 heroOffset）

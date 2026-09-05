@@ -20,7 +20,7 @@ import { createClient, type ModelEndpoint } from '../client.js';
 import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
-import { appendSessionMessages, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
+import { appendSessionMessages, createSession, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
 import { autoGitCommit, createCheckpoint, loadCheckpoint, restoreCheckpoint } from '../agent/rewind.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
@@ -874,6 +874,42 @@ export async function runTuiInteractive(
         // 会话文件 + 重置落盘计数 + 把历史回放进对话流；事件记录器同步重开）
         onResume: (file: string, msgs: ChatCompletionMessageParam[]) => {
           void restoreSession(file, msgs);
+        },
+        // /new：收尾旧会话 → 建新会话文件并切换 → 清空对话/统计/撤销栈/hook 状态 →
+        // 回到 hero 初始态（旧会话文件保留，可 /session 找回；undo 快照随旧会话失效）
+        onNewSession: async () => {
+          try {
+            const prevPath = runOpts.sessionPath;
+            if (prevPath) {
+              await finalizeSession(prevPath).catch(() => {});
+              // 刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿
+              await removeEmptySession(prevPath).catch(() => {});
+            }
+            const file = await createSession({ project: process.cwd(), model: state.model });
+            if (!file) return '创建会话失败（无法写入会话目录）';
+            messages.length = 0;
+            runOpts.sessionPath = file;
+            savedCount = 0;
+            const oldEvents = runOpts.events;
+            runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
+            runOpts.sessionHookNote = undefined; // 新会话：hook note 重新触发，不继承旧的
+            runOpts.hooks?.resetSessionStart();
+            runOpts.undoStack?.clear(); // 旧会话快照失效，新会话从空栈开始
+            state.stats = { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, firstTokenSum: 0, firstTokenCount: 0, genMs: 0, cached: 0 };
+            state.tokens = { prompt: 0, completion: 0, total: 0 };
+            state.lastPromptTokens = 0;
+            state.liveTokens = 0;
+            state.liveGenMs = 0;
+            state.todoList = [];
+            state.delegateRuns = [];
+            state.pending = [];
+            state.scrollTop = null;
+            state.restoreHint = `omni -s ${sessionIdFromPath(file)}`;
+            out.clearScrollback();
+            return null;
+          } catch (err) {
+            return err instanceof Error ? err.message : String(err);
+          }
         },
       };
       // Ctrl+X 前缀快捷键的 ctx 引用：每轮刷新（当前 client/model 等字段随之更新）

@@ -108,7 +108,7 @@ const ZH: Record<string, string> = {
   'help.title': '帮助',
   'help.intro': '直接输入消息开始对话，Enter 发送；Shift+Enter 换行（需终端支持修饰键；多行输入自动增高）。',
   'help.shortcuts': '快捷键：Ctrl+X 前缀——t 主题 · p 权限 · m 模型 · v 思考级别 · s 设置 · l 计划模式 · h 思考显示 · u 撤销 · r 重做 · c 清空 · ? 帮助（再按 Esc 取消）',
-  'help.commands': '/settings 设置（状态行 / 语言 / 主题 / token 统计 / 诊断 / 帮助 / 模型快照） · /permission 安全权限（只读/请求批准/帮我批准/完全访问） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /rewind 会话检查点（回滚工作区到历史回合） · /init [--global] 生成项目/全局记忆 · /agents 子代理配置 · /orchestrate 并行编排（fan-out+汇总+对抗审查） · /goal 目标机制（自动推导验收标准并循环直至达标） · /context 调整上下文窗口（256/400/512/750/1000K · 默认） · /status 会话状态（含上下文用量） · /exit 退出 · /clear 清空上下文',
+  'help.commands': '/settings 设置（状态行 / 语言 / 主题 / token 统计 / 诊断 / 帮助 / 模型快照） · /permission 安全权限（只读/请求批准/帮我批准/完全访问） · /thinking 思考展开/折叠 · /plan 计划模式（只读调研） · /undo 撤销本次会话的文件修改 · /rewind 会话检查点（回滚工作区到历史回合） · /init [--global] 生成项目/全局记忆 · /agents 子代理配置 · /orchestrate 并行编排（fan-out+汇总+对抗审查） · /goal 目标机制（自动推导验收标准并循环直至达标） · /context 调整上下文窗口（256/400/512/750/1000K · 默认） · /status 会话状态（含上下文用量） · /exit 退出 · /clear 清空上下文 · /new 新建会话（回到初始状态）',
   'help.scroll': '滚动：鼠标滚轮 / PgUp/PgDn 翻页 · Ctrl+U/Ctrl+D 翻页（输入框为空）· ↑/↓ 逐行（输入框为空）· End 回到底部',
   'help.more': '完整命令参考：omni --help（控制台）',
 
@@ -228,7 +228,7 @@ const EN: Record<string, string> = {
   'help.title': 'Help',
   'help.intro': 'Type a message to chat, Enter to send; Shift+Enter for newline (needs terminal modifier support; auto-grows for multi-line).',
   'help.shortcuts': 'Shortcuts: Ctrl+X prefix — t theme · p permission · m model · v thinking level · s settings · l plan mode · h thinking display · u undo · r redo · c clear · ? help (Esc cancels)',
-  'help.commands': '/settings settings (statusline / language / theme / token stats / diagnostics / help / model snapshot) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /rewind session checkpoints (roll workspace back to a past turn) · /init [--global] generate AGENTS.md · /agents subagent config · /orchestrate parallel pipeline (fan-out+combine+review) · /goal goal mechanism (derive criteria and loop until met) · /context set context window (256/400/512/750/1000K · default) · /status session status (incl. context usage) · /exit quit · /clear clear context',
+  'help.commands': '/settings settings (statusline / language / theme / token stats / diagnostics / help / model snapshot) · /permission security (read/safe/ask/full) · /thinking expand/collapse thinking · /plan plan mode (read-only) · /undo undo file changes · /rewind session checkpoints (roll workspace back to a past turn) · /init [--global] generate AGENTS.md · /agents subagent config · /orchestrate parallel pipeline (fan-out+combine+review) · /goal goal mechanism (derive criteria and loop until met) · /context set context window (256/400/512/750/1000K · default) · /status session status (incl. context usage) · /exit quit · /clear clear context · /new new session (reset to initial state)',
   'help.scroll': 'Scroll: mouse wheel / PgUp/PgDn pages · Ctrl+U/Ctrl+D pages (empty input) · ↑/↓ per line (empty input) · End to bottom',
   'help.more': 'Full command list: omni --help (console)',
 

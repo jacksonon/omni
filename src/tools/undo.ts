@@ -121,6 +121,15 @@ export class UndoStack {
   }
 
   /**
+   * 清空撤销/重做全部历史（/new 新建会话：旧会话的文件快照不再有效，
+   * 新会话从空栈开始；不碰工作区文件，只清内存记录）。
+   */
+  clear(): void {
+    this.entries.length = 0;
+    this.redoEntries.length = 0;
+  }
+
+  /**
    * pop 最近一次快照供 /undo，同时把「撤销前」状态（当前文件内容）捕获进 redo 栈
    * （/redo 恢复为撤销前的状态 = 本次写入后的内容）。返回快照（无则 null）。
    */

@@ -15,7 +15,7 @@ import { countDiffLines, sideBySideDiff, toolCardLines } from '../src/output/for
 import { findSummarizeSplit, selectRelevantFiles } from '../src/agent/context.js';
 import type { TrajEvent } from '../src/agent/events.js';
 import { gateTool } from '../src/safety/policy.js';
-import { CODE_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
+import { CODE_FG, DIFF_ADD_FG, DIFF_REM_FG, INLINE_CODE_FG, markdownToRows } from '../src/tui/markdown.js';
 import { computeRows, hitTestApproval, hitTestCard, mountTree, repaintTree, type CardRect, type TuiSession } from '../src/tui/render.js';
 import { buildBody } from '../src/tui/rows.js';
 import { enqueuePending, handlePendingKey, movePending, removePending } from '../src/tui/pending.js';
@@ -365,6 +365,17 @@ async function main(): Promise<void> {
   }
   if (!quoteRow.dim) {
     console.error(`✗ 场景 6 引用样式错误: ${JSON.stringify(quoteRow)}`);
+    process.exit(1);
+  }
+  // diff 围栏：+ 绿 / - 红 / @@ 青 / 上下文代码色；普通 js 围栏不受影响
+  const mdDiff = markdownToRows('```diff\n- old\n+ new\n@@ -1 +1 @@\n ctx\n```\n```js\n- notdiff\n```');
+  const fgOf = (i: number): string | undefined => mdDiff[i].chunks[0]?.fg;
+  if (fgOf(0) !== DIFF_REM_FG || fgOf(1) !== DIFF_ADD_FG || fgOf(2) !== 'cyan' || fgOf(3) !== CODE_FG) {
+    console.error(`✗ 场景 6 diff 围栏着色错误: ${JSON.stringify(mdDiff.map((r) => r.chunks[0]))}`);
+    process.exit(1);
+  }
+  if (fgOf(4) !== CODE_FG) {
+    console.error(`✗ 场景 6 普通围栏被 diff 着色污染: ${JSON.stringify(mdDiff[4].chunks[0])}`);
     process.exit(1);
   }
   console.log('✓ 场景 6 通过：加粗/行内代码/斜体/代码块/标题/引用样式正确，snake_case 不误伤');
@@ -1461,11 +1472,34 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 17 菜单浮层未贴住输入区: top=${top17} h=${h17} left=${left17} w=${w17}（footer x=${fb17.screenX} y=${fb17.screenY} w=${fb17.width}）`);
     process.exit(1);
   }
+  // 行自带底色 + 铺满面板宽（/session 窄条回归：borderless 父盒底刷不出，行自带底才实；
+  // 可见菜单格逐个断言 bg == footerBg，且文本列宽 == 面板宽 - 竖线 1）
+  {
+    const { themeFor: tf17b } = await import('../src/tui/theme.js');
+    const { parseColor: pc17b } = await import('@opentui/core');
+    const toInts17b = (c: unknown): number[] => ((c as { toInts: () => number[] }).toInts?.() ?? []).slice(0, 3);
+    const wantBg17b = JSON.stringify(toInts17b(pc17b(tf17b(s17e).footerBg)));
+    openThemeMenu(s17e);
+    repaintTree(t17e.renderer, tree17e, s17e, { withInput: true });
+    await t17e.renderOnce();
+    const cells17b = (tree17e.menuCells as unknown as { visible?: boolean; bg?: unknown }[]).filter((c) => c.visible);
+    if (cells17b.length === 0) {
+      console.error('✗ 场景 17 菜单行未渲染');
+      process.exit(1);
+    }
+    for (const c of cells17b) {
+      if (JSON.stringify(toInts17b(c.bg)) !== wantBg17b) {
+        console.error(`✗ 场景 17 菜单行缺行级底色: bg=${JSON.stringify(toInts17b(c.bg))}`);
+        process.exit(1);
+      }
+    }
+  }
   // 关闭面板 → 浮层隐藏
   closeMenu(s17e);
   repaintTree(t17e.renderer, tree17e, s17e, { withInput: true });
   await t17e.renderOnce();
   if (tree17e.menuOverlay.visible) {
+    console.error('✗ 场景 17 关闭面板后浮层未隐藏');
     console.error('✗ 场景 17 关闭面板后浮层未隐藏');
     process.exit(1);
   }
@@ -1649,8 +1683,13 @@ async function main(): Promise<void> {
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 31 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 31、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 32 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 32、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+    process.exit(1);
+  }
+  // b0) /new 在联想列表中（新建会话）
+  if (!s19.cmdSuggest || !s19.cmdSuggest.items.includes('new')) {
+    console.error(`✗ 场景 19 联想列表缺 /new: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // 扁平命令面板（无边框，标题 + 分组 + 选项整行高亮）：border 应关闭
@@ -1720,9 +1759,9 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 25 个」提示行
+  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 26 个」提示行
   //（无分组头——用户要求移除 section 组标题）
-  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 25 个'];
+  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 26 个'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);

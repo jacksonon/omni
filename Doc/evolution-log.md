@@ -2,6 +2,14 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百七十三次）**：**选择/输出面板行自带底色（修 /session 窄条）**——用户截图：session 面板缩在左上小块。根因：menu/cmdpanel/ask/queue/todo/delegate 行全透明，只靠 borderless 父盒 `backgroundColor`——而该底色实际刷不出来（有边框的输入灰块正常；行内 chunk 自带底的 suggestBox 也正常；两者对照定位）。修：行级 `paintPanelCell`（footerBg）+ ask/queue/todo/delegate 短行按输入区宽右补空格块（menu/cmdpanel 行本来就用 flatPanelLine 铺满）；menuBar 竖线本就有底不动。快照 17 加逐格底色断言。**验证**：typecheck ✓ · tui:snapshot 全绿。
+
+- **2026-09-05（第二百七十二次）**：**TUI 回答里 ```diff 围栏行级着色**——用户在 TUI 重载 Web 会话后看到 `-`/`+` 一片单色，误以为重载丢格式；查会话文件证实是 assistant 正文里的 ```diff 块（数据完好，wfile sidecar 也在），TUI markdown 对围栏语言一律单色蓝灰（Web markstream 会着色，所以看着像"重载丢了"）。修：`markdown.ts` 记围栏语言，`diff` 围栏内 `+` 绿/`-` 红/`@@` 青/上下文代码色（常量 `DIFF_ADD/REM_FG`，亮色经 `themeColor` 压深；普通围栏不动；未闭合流式同生效）。快照场景 6 加断言。**验证**：typecheck ✓ · tui:snapshot 全绿 · 用户真实会话原文（24 绿/22 红）探针全绿。
+
+- **2026-09-05（第二百七十一次）**：**新增 /new（新建会话回初始态）**——用户要求。`/clear` 只清内存对话（新对话仍追加进同一会话文件），`/new` 建新会话文件 + 全重置（对话/统计/token/待办/delegate 面板/排队消息/撤销栈/sessionHookNote/hook 状态/事件记录器，切 sessionPath + savedCount=0 + clearScrollback 回 hero；旧文件 finalize + 空占位清理，可 `/session` 找回）。TUI 经 `onNewSession` 回调（`UndoStack.clear()` 新增）/ CLI 内联 / Web 前端原生（草稿态，与「新会话」按钮一致，不立即落盘）。联想 32 项 + 快照 19（计数 26 + /new 在列）+ help.commands 中英 + Web 斜杠表/i18n/分组。**验证**：typecheck ✓ · tui:snapshot 全绿 · web:sync ✓。
+
+- **2026-09-05（第二百七十次）**：**重载会话保留 write diff 左半（改前内容）**——用户截图：Web 历史里 Write 卡左栏只剩行号，改前丢失。根因：`original` 只活在实时显示通道（`onToolResult detail`），从没落盘。修：会话 JSONL 加 `{"t":"wfile"}` sidecar 行（与 `ev` 同机制，`loadSession` 天然跳过），按 tool callId 记 `original`（100KB 上限，超大跳过；**新建文件 original=null 也记**，历史据此确信"是新建"而非"记录缺失"；`edit_file` 的 old/new 已在 args 里不用记；子代理独立循环本来就没 diff 明细，不管）；落点在 loop 组装 detail 处（UndoStack 快照同源，fire-and-forget）；`GET messages` 附 `writeDiffs` map，前端历史渲染按 callId 挂接（实时 SSE 路径不动）。**验证**：sidecar 单元往返 8 项全绿（覆盖/新建/超大/复写/JSON 合法）· Web 全链路 e2e（mock 首轮强制 write → 历史 writeDiffs 恢复原文）探针待绿 · typecheck ✓ · web:sync ✓。
+
 - **2026-09-05（第二百六十九次）**：**write diff 去行级底色**——用户截图：新建文件全文 `+` 行绿底连成绿板，违和。两处 `diffRole` 分支（`rows.ts`）去 `diffAddBg/diffRemBg/diffCtxBg` 行底，只留字色（新增绿/删除红/上下文灰，对标 diff 纯文本风）；快照 41f 同步（gutter 定位 diff 行，断言字色+无底）。**验证**：typecheck ✓ · tui:snapshot 全绿。
 
 - **2026-09-05（第二百六十八次）**：**只有 Build 渐变、Plan 静态**——用户要求。渲染层 `footerMode` 取色分支：Build 走 `modeCycleColor`，Plan 取 `theme.modePlan`；快照 16b 同步（去 Plan 错相断言，加换 hue 下 Plan 恒静态断言）。**验证**：typecheck ✓ · tui:snapshot 全绿。

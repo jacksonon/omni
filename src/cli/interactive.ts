@@ -42,7 +42,7 @@ import {
   fullStatusReport,
   memoryFilesFromMessages,
 } from '../agent/report.js';
-import { findSessionCandidates, listSessions, loadSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
+import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
 import {
   autoGitCommit,
   checkpointSummaryLine,
@@ -145,6 +145,31 @@ export async function runInteractive(
       savedCount = 0;
       runOpts.hooks?.resetSessionStart(); // 新一轮会话：SessionStart hook 重新触发
       console.log(dim('（已清空上下文，开始新一轮对话）'));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/new') {
+      // 新建会话并回到初始状态（旧会话文件保留，可 --continue/-r 找回）；
+      // 与 /clear 的区别：新会话文件 + 统计/撤销栈/hook note 全重置
+      if (runOpts.sessionPath) {
+        await finalizeSession(runOpts.sessionPath).catch(() => {});
+        await removeEmptySession(runOpts.sessionPath).catch(() => {});
+      }
+      const file = await createSession({ project: process.cwd(), model: currentModel }).catch(() => null);
+      if (!file) {
+        console.log(dim('（创建会话失败，无法写入会话目录）'));
+        safePrompt();
+        continue;
+      }
+      messages.length = 0;
+      runOpts.sessionPath = file;
+      savedCount = 0;
+      const oldEvents = runOpts.events;
+      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
+      runOpts.sessionHookNote = undefined;
+      runOpts.hooks?.resetSessionStart();
+      runOpts.undoStack?.clear();
+      console.log(dim('（已新建会话，回到初始状态）'));
       safePrompt();
       continue;
     }

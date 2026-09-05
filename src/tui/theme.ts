@@ -4,7 +4,7 @@
  * 从 render.ts 拆出（业务划分）：渲染编排（mount/repaint/事件）留在 render.ts，
  * 主题取色逻辑独立成层，mountTree/repaintTree/rows 共用。
  */
-import { CODE_FG, INLINE_CODE_FG, QUOTE_FG } from './markdown.js';
+import { CODE_FG, DIFF_ADD_FG, DIFF_REM_FG, INLINE_CODE_FG, QUOTE_FG } from './markdown.js';
 import type { TuiState } from './state.js';
 
 /**
@@ -200,6 +200,8 @@ const LIGHT_COLOR_MAP: Record<string, string> = {
   yellow: '#a16207', // 亮黄 → 深琥珀
   [INLINE_CODE_FG]: '#a16207', // markdown 行内代码（琥珀）→ 深琥珀
   [CODE_FG]: '#475569', // markdown 代码块（浅蓝灰）→ 深蓝灰
+  [DIFF_ADD_FG]: '#15803d', // markdown diff 围栏新增行 → 深绿（同浅色主题 diffAdd）
+  [DIFF_REM_FG]: '#b91c1c', // markdown diff 围栏删除行 → 深红（同浅色主题 diffRem）
   [QUOTE_FG]: '#52525b', // markdown 引用（浅灰）→ 深灰
 };
 

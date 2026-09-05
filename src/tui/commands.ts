@@ -137,6 +137,11 @@ export interface TuiCommandContext {
    */
   onResume?: (file: string, msgs: ChatCompletionMessageParam[]) => void;
   /**
+   * /new 新建会话回调（interactive 组装）：收尾旧会话文件 → 建新会话文件并切换 →
+   * 清空对话/统计/撤销栈/hook 状态 → 回到 hero 初始态。返回错误信息或 null（成功）。
+   */
+  onNewSession?: () => Promise<string | null>;
+  /**
    * /model <名称> 切换回调（interactive 组装）：按名称从 runOpts.models 找端点并切换
    * （重建 client + 更新 modelRuntime，主循环/子代理同步）。返回错误信息或 null。
    */
@@ -543,6 +548,20 @@ export const TUI_COMMANDS: TuiCommand[] = [
       ctx.out.clearScrollback();
       // 新一轮会话：SessionStart hook 重新触发（sessionStart 每会话一次，/clear 后重置）
       ctx.hooks?.resetSessionStart();
+    },
+  },
+  {
+    name: 'new',
+    description: '新建会话并回到初始状态（旧会话保留，可 /session找回）',
+    descriptionEn: 'Start a new session (old one kept, find it via /session)',
+    run: async (ctx) => {
+      if (!ctx.onNewSession) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持新建会话' });
+        return;
+      }
+      const err = await ctx.onNewSession().catch((e) => String((e as Error)?.message ?? e));
+      if (err) pushCmdLine(ctx.state, { kind: 'warn', text: err });
+      else pushCmdLine(ctx.state, { kind: 'meta', text: '已新建会话，回到初始状态（旧会话保留，可用 /session 找回）' });
     },
   },
   {

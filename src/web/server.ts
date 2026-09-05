@@ -41,6 +41,7 @@ import {
   isPersistable,
   listSessions,
   loadSession,
+  loadWriteDiffs,
   persistableMessages,
   removeEmptySession,
   sessionIdFromPath,
@@ -1610,9 +1611,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   /** 取会话消息（过滤脚手架 system；供客户端刷历史/重连恢复） */
   async function sessionMessages(
     sessionId: string
-  ): Promise<{ meta: { title: string | null } | null; messages: ChatCompletionMessageParam[] }> {
+  ): Promise<{ meta: { title: string | null } | null; messages: ChatCompletionMessageParam[]; writeDiffs: Record<string, { path: string; original: string | null }> }> {
     const s = await ensureSession(sessionId);
-    return { meta: { title: s.title || null }, messages: s.messages.filter(isPersistable) };
+    // write_file 改前落盘（历史 diff 左半按 callId 挂接；读失败降级为空）
+    const writeDiffs = s.file ? await loadWriteDiffs(s.file).catch(() => ({})) : {};
+    return { meta: { title: s.title || null }, messages: s.messages.filter(isPersistable), writeDiffs };
   }
 
   /** 404 语义错误（路由 catch 区分 404 与 400） */

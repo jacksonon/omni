@@ -178,6 +178,7 @@ const I18N_ZH = {
   'cmd.none': '命令执行完成（无输出）',
   'send.failed': '✗ 发送失败：{msg}',
   'session.new': '新会话',
+  'session.newStarted': '已新建会话（旧会话保留在列表）',
   'session.title': '会话',
   'empty.sessions': '暂无会话',
   'history.more': '显示更早 {n} 条（{t} 轮）',
@@ -596,6 +597,7 @@ const I18N_EN = {
   'cmd.none': 'Command executed (no output)',
   'send.failed': '✗ Send failed: {msg}',
   'session.new': 'New chat',
+  'session.newStarted': 'New session started (old one kept in the list)',
   'session.title': 'Session',
   'empty.sessions': 'No sessions',
   'history.more': 'Show {n} earlier ({t} turns)',
@@ -1820,7 +1822,7 @@ function renderHistoryThinking(sessionId, reasoning, reasoningMs) {
 }
 
 /* 从历史消息渲染已完成的工具卡片（刷新恢复用） */
-function renderHistoryTool(sessionId, name, argsJson, output) {
+function renderHistoryTool(sessionId, name, argsJson, output, callId) {
   setEmptyState(false);
   const b = makeBlock('tool', sessionId);
   const wrap = el('div', 'msg');
@@ -1829,6 +1831,13 @@ function renderHistoryTool(sessionId, name, argsJson, output) {
 
   let parsedArgs = {};
   try { parsedArgs = JSON.parse(argsJson || '{}'); } catch {}
+  // 重载会话：改前 original 不在 tool args 里，按 callId 从历史接口的 writeDiffs 恢复
+  //（落盘 sidecar；新建文件记录 original=null；无记录=老会话/超大文件，走原启发式。
+  // 本轮实时渲染走 SSE detail 不受影响）
+  if (name === 'write_file' && parsedArgs.original == null && callId) {
+    const saved = state.historyCache?.data?.writeDiffs?.[callId];
+    if (saved && 'original' in saved) parsedArgs.original = saved.original ?? null;
+  }
   const preview = formatToolArgs(name, parsedArgs);
 
   if (isExplored) {
@@ -2762,7 +2771,7 @@ function paintHistoryFromCache(id, keepPosition = false) {
             (mm) => mm.role === 'tool' && mm.tool_call_id === tc.id
           );
           const toolTxt = typeof toolMsg?.content === 'string' ? toolMsg.content : '';
-          renderHistoryTool(id, tc.function?.name || 'tool', tc.function?.arguments || '', toolTxt);
+          renderHistoryTool(id, tc.function?.name || 'tool', tc.function?.arguments || '', toolTxt, tc.id);
         }
       }
       if (txt) {
@@ -3743,6 +3752,7 @@ const SLASH_COMMANDS = [
   { name: '/status', desc: '会话状态汇总（含上下文用量）' },
   { name: '/context', desc: '调整上下文窗口（无参数打开面板，256|400|512|750|1000K · 默认）' },
   { name: '/clear', desc: '清空当前会话上下文' },
+  { name: '/new', desc: '新会话（旧会话保留在列表，可切换找回）' },
   { name: '/plan', desc: '切换计划模式（只读调研，直接切换开关）' },
   { name: '/permission', desc: '权限面板切换（无参数打开面板，有参数直接切换）' },
   { name: '/model', desc: '模型面板切换（无参数打开面板，/model <名> 直接切换）' },
@@ -4179,6 +4189,14 @@ async function runSlashCommand(cmd) {
     catch { openSessionSwitchWithFilter(arg.split(/\s+/)[0]); notify(`会话「${arg.split(/\s+/)[0]}」不存在，已打开切换面板`, 'error'); }
     return;
   }
+  // /new → 新会话（草稿态，与「新会话」按钮一致：不立即落盘，首条消息发出时建文件；
+  // 旧会话保留在列表；TUI/CLI 的 /new 立建文件是终端语义，Web 侧沿用草稿惯例）
+  if (base === '/new') {
+    closeCmdPanel();
+    await newSession();
+    notify(t('session.newStarted'), 'success');
+    return;
+  }
   // —— 2. 后端联动型（走后端，但渲染为通知+UI 刷新，不弹面板） ——
   // /plan 已在上节直连 toggle；这里处理带参切换类与 /clear
   if (base === '/permission' && arg) { await runBackendLinked(cmd); return; }
@@ -4219,7 +4237,7 @@ async function runSlashCommand(cmd) {
       refreshStatus().catch(() => {});
     }
     // ② 改会话列表/侧栏（新建/删除/改名/分叉/记忆/跨会话消息落盘）→ 刷新侧栏
-    const sessionCmds = ['/rename', '/session', '/resume', '/fork', '/init', '/skill add', '/memory-apply', '/send'];
+    const sessionCmds = ['/rename', '/session', '/resume', '/new', '/fork', '/init', '/skill add', '/memory-apply', '/send'];
     if (sessionCmds.some((x) => c === x || c.startsWith(x + ' '))) {
       refreshSessions().catch(() => {});
     }
