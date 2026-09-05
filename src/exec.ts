@@ -51,6 +51,8 @@ export interface ExecParseResult {
   outputSchema?: Record<string, unknown>;
   /** --model：模型覆盖（走既有 overrides，这里只透传展示用） */
   model?: string;
+  /** --quiet/-q：静默 stderr 进度（只留 stdout 结果） */
+  quiet?: boolean;
 }
 
 /** 解析 exec 子命令参数（exec 专属 flag；--model/--config 已被 parseArgs 收进 overrides） */
@@ -62,6 +64,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   let allowedTools: string[] | undefined;
   let outputSchema: Record<string, unknown> | undefined;
   let model: string | undefined;
+  let quiet = false;
   const positionals: string[] = [];
 
   // 子命令形态：`omni exec resume <id> [prompt]`
@@ -119,6 +122,16 @@ export function parseExecArgs(args: string[]): ExecParseResult {
       case '--model':
         model = takeValue();
         break;
+      case '--quiet':
+      case '-q':
+        quiet = true;
+        break;
+      case '--help':
+      case '-h':
+        throw new Error(
+          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--resume <id>]\n' +
+            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。'
+        );
       case '--':
         positionals.push(...args.slice(i + 1));
         i = args.length;
@@ -134,7 +147,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
     promptRaw = '[继续上次任务]';
   }
   if (!promptRaw) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
-  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model };
+  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet };
 }
 
 /* ─────────────────────────────── Exec 输出（stdout 干净） ─────────────────────────────── */
@@ -163,13 +176,34 @@ export class ExecOutput implements Output {
   /** 最终回答文本（onAnswer 累计；结果提取以 messages 为准，这里仅兜底） */
   answerText = '';
 
-  constructor(private quiet = false) {
+  constructor(
+    private quiet = false,
+    private showThinking = true
+  ) {
+    // 思考流式输出到 stderr（与 stdout 结果隔离），连续写不加换行——
+    // 之前用 log(dim(piece)) 逐片加换行，导致终端每词一行（竖排 bug）。
+    // shown 跟随是否正在输出：loop 在正文/工具开始与流结束时 finish() 补换行。
+    let started = false;
+    const self = this;
     this.thinking = {
       get shown() {
-        return false;
+        return started;
       },
-      write: (piece) => this.log(dim(piece)),
-      finish() {},
+      write(piece: string) {
+        if (self.quiet || !self.showThinking) return;
+        if (!piece) return;
+        // 归一化 \r（与 console 一致，避免光标回行首破坏显示）
+        const clean = piece.replace(/\r\n/g, '\n').replace(/\r/g, '');
+        if (!clean) return;
+        started = true;
+        process.stderr.write(dim(clean));
+      },
+      finish() {
+        if (!started) return;
+        started = false;
+        if (self.quiet || !self.showThinking) return;
+        process.stderr.write('\n');
+      },
     };
   }
 
@@ -507,7 +541,7 @@ export async function runExec(args: string[], overrides: ConfigOverrides): Promi
   }
   const ctx = prepareRun(overrides);
   const { cfg } = ctx;
-  const output = new ExecOutput();
+  const output = new ExecOutput(opts.quiet === true, cfg.showThinking !== false);
   await attachRuntime(ctx, output);
   applyExecOpts(ctx.runOpts, opts);
   const res = await runHeadless(ctx, output, {

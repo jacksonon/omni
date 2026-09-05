@@ -562,7 +562,7 @@ export async function runInteractive(
         if (subCmd === '') {
           console.log(dim('/settings 子设置：help 帮助 · models [refresh] 模型能力快照 · language 界面语言（TUI 面板） · theme 主题（TUI 面板） · tokens 当次 token 统计（TUI） · doctor 环境诊断（TUI） · statusline 见下'));
         } else {
-          printHelp();
+          printHelp(runOpts.cfg?.language ?? 'zh');
         }
         safePrompt();
         continue;

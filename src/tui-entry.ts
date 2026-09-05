@@ -54,9 +54,9 @@ process.on('exit', (code) => {
 
 async function run(): Promise<void> {
   logLifecycle('start', `omni v${VERSION} pid=${process.pid} args=${JSON.stringify(process.argv.slice(2))}`);
-  const { taskArgs, overrides, flags, resumeId, help, version } = parseArgs(process.argv.slice(2));
+  const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
   if (help) {
-    printHelp();
+    printHelp(lang ?? 'en');
     return;
   }
   if (version) {
@@ -64,7 +64,7 @@ async function run(): Promise<void> {
     return;
   }
   if (flags.listSessions) {
-    await printSessions();
+    await printSessions(flags.listAll);
     return;
   }
 

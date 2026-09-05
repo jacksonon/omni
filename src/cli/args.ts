@@ -6,21 +6,24 @@ import type { ConfigOverrides } from '../config/index.js';
 export interface ParsedArgs {
   taskArgs: string[];
   overrides: ConfigOverrides;
-  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean };
+  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean; listAll: boolean };
   /** --resume/-r <id>：要恢复的会话 id（null = 未指定） */
   resumeId: string | null;
   help: boolean;
   version: boolean;
+  /** --lang <zh|en>：仅影响 --help 展示语言（默认英文；--lang zh 显示中文） */
+  lang: 'zh' | 'en' | null;
 }
 
 /** 解析参数：支持 --flag value 与 --flag=value 两种写法 */
 export function parseArgs(args: string[]): ParsedArgs {
   const taskArgs: string[] = [];
   const overrides: ConfigOverrides = {};
-  const flags = { noTui: false, listSessions: false, continueSession: false };
+  const flags = { noTui: false, listSessions: false, continueSession: false, listAll: false };
   let resumeId: string | null = null;
   let help = false;
   let version = false;
+  let lang: 'zh' | 'en' | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -66,14 +69,112 @@ export function parseArgs(args: string[]): ParsedArgs {
       case '-l':
         flags.listSessions = true;
         break;
+      case '-lf':
+      case '-fl':
+        flags.listSessions = true;
+        flags.listAll = true;
+        break;
+      case '--lang':
+      case '--language': {
+        const v = (takeValue() ?? '').toLowerCase();
+        if (v === 'zh' || v === 'zh-cn' || v === 'cn' || v === '中文') lang = 'zh';
+        else if (v === 'en' || v === 'en-us' || v === '英文') lang = 'en';
+        break;
+      }
       default:
+        // --lang=zh 粘连写法兼容（上方 eq 切分已处理 name，但 --lang 在 switch 前需取值；
+        // 此处兜底：taskArgs 里形如 --lang=zh 的残留不應出現，忽略）
         taskArgs.push(a);
     }
   }
-  return { taskArgs, overrides, flags, resumeId, help, version };
+  // -l 的 -f/--full/--all 修饰：仅在列表模式下从位置参数里提取（`omni -l -f`），
+  // 避免 `omni exec "任务" -f` 等子命令的参数被顶层误吞（exec 有自己的 flag 体系）。
+  if (flags.listSessions) {
+    const keep: string[] = [];
+    for (const t of taskArgs) {
+      if (t === '-f' || t === '--full' || t === '--all') flags.listAll = true;
+      else keep.push(t);
+    }
+    taskArgs.length = 0;
+    taskArgs.push(...keep);
+  }
+  return { taskArgs, overrides, flags, resumeId, help, version, lang };
 }
 
-export function printHelp(): void {
+export function printHelp(lang: 'zh' | 'en' = 'en'): void {
+  if (lang === 'zh') {
+    printHelpZh();
+    return;
+  }
+  printHelpEn();
+}
+
+function printHelpEn(): void {
+  console.log(`Usage:
+  omni "<task>"    Run a single task
+  omni                Interactive mode (/exit to quit; /init [--global] generate memory; /undo undo; /redo redo; /rewind session checkpoints (roll workspace back to a past turn, /rewind <N> restore); /model switch/add models (/model <name> switch · /model add <name> [--base-url] [--api-key] add & persist); /variants reasoning effort; /permission permission; /plan plan mode; /agents subagent config (model routing/nesting depth/defined subagents); /orchestrate parallel pipeline (fan-out+combine+review); /goal goal mechanism (derive criteria and loop until met, /goal <goal> [--accept criteria] [--max N]); /compact compact context; /status status (incl. context usage); /context set context window (256/400/512/750/1000K · default); /session session management (list/continue history in cwd); /resume resume session; /export export; /diff view changes (--stat summary only · --full untruncated); /review review; /mcp MCP management; /skill skills; /doctor diagnose; /settings settings (help · models snapshot))
+
+Headless (compose omni as a Unix command, like codex exec / claude -p):
+  omni exec "<task>"                Non-interactive run: stdout = final result only, progress goes to stderr
+  omni exec -                      Read task from stdin (echo "task" | omni exec -)
+  echo "<context>" | omni exec "<task>"   stdin is injected as context
+  omni exec "<task>" --output-format json       Single object { result, cost_usd, duration_ms, num_turns, session_id, exit_code }
+  omni exec "<task>" --output-format stream-json One trace event per line {"t":"ev",...}, last line {"t":"result",...}
+  omni exec "<task>" --max-turns 20 --allowed-tools read_file,run_command
+  omni exec "<task>" --output-schema '{"type":"object","required":["verdict"]}'   # final answer must match JSON Schema (mismatch → non-zero exit)
+  omni exec "<task>" --quiet                 Suppress progress on stderr (stdout result only)
+  omni exec resume <session-id> "<follow-up>"   Resume a headless session (session_id from json output)
+  omni mcp-server                Run as MCP server (stdio JSON-RPC: omni_exec / omni_reply tools)
+  headless exit code: 0 = done; 1 = request failed / max steps reached / schema mismatch (use &&/|| to branch)
+
+Web service (local backend + web UI: CLI and browser share the same backend):
+  omni web                       Start backend service (REST + SSE) and serve Web UI (default http://127.0.0.1:3080)
+  omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
+  omni watch                     Watch mode: trigger agent on AI!/AI? comment markers (Aider-style; Ctrl+C to quit)
+  omni acp                       ACP endpoint (Agent Client Protocol, stdio JSON-RPC; Zed editor integration)
+  omni web --port 4000           Custom port
+  omni web --no-open             Do not open browser automatically
+  · Web UI supports multi-session / streaming replies / thinking & tool cards / approval & question cards / model & permission settings
+
+Session persistence (resume conversations across processes; Ctrl+C / /exit in TUI shows the resume command):
+  omni -c "follow-up"           Resume the latest session in current project and continue (interactive mode auto-creates session files)
+  omni -s <session-id> "follow-up"    Resume a specific session (id from -l output; -r is an alias)
+  omni -l                       List saved sessions in current directory (cwd only)
+  omni -l -f / --list-sessions --full   List all saved sessions across directories
+
+Options:
+  -m, --model <name>    Select model (overrides config file)
+  -c, --continue        Resume the latest session in current project (-c no longer means --config; use -C for config)
+  -C, --config <path>   Use a specific config file (overrides auto-discovery)
+      --profile <name>    Apply a config profile (config "profiles" field, e.g. work/personal/offline snapshots)
+  -s, -r, --resume <session-id>   Resume a specific session
+  -l, --list-sessions   List saved sessions (cwd only by default; add -f/--full/--all for all)
+  -f, --full, --all     With -l: list all sessions (default lists cwd only)
+      --lang <zh|en>    Help language (default en; --lang zh for Chinese help)
+      --no-tui          Disable fullscreen TUI (default: auto-enable on bun + TTY)
+  -h, --help            Show help (default English; add --lang zh for Chinese)
+  -v, --version         Show version
+
+Config files (JSON / JSONC, ascending priority):
+  1. Global   ~/.config/omni/omni.json
+  2. Project  omni.json / omni.jsonc (search upward from cwd)
+  3. Custom   OMNI_CONFIG env var or --config <path>
+  4. Env vars OMNI_API_KEY / OMNI_BASE_URL / OMNI_MODEL / OMNI_MAX_STEPS / OMNI_SHOW_THINKING
+  5. CLI args --model
+
+Config fields:
+  { "model": "deepseek-chat", "maxSteps": 20,
+    "showThinking": true,       // show thinking by default; false hides it (still saved to .omni/last-thinking.md)
+    "reasoningEffort": "medium", // reasoning level (switch via /variants; omit to skip reasoning_effort)
+    "providers": {              // multi-model endpoints (/model switch) — the only place for baseURL/apiKey:
+      "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm",
+        "models": { "glm-4-flash": {} } } // /model add adds & persists at runtime (single-model group)
+    } }
+
+Example: cp omni.example.jsonc omni.json then edit as needed.`);
+}
+
+function printHelpZh(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
   omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/rewind 会话检查点（回滚工作区到历史回合，/rewind <N> 恢复）；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排（fan-out+汇总+对抗审查）；/goal 目标机制（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/compact 压缩上下文；/status 状态（含上下文用量）；/context 调整上下文窗口（256/400/512/750/1000K · 默认）；/session 会话管理（列出/继续当前目录历史会话）；/resume 恢复会话；/export 导出；/diff 查看改动（--stat 只看统计 · --full 不截断）；/review 审查；/mcp MCP 管理；/skill 技能；/doctor 诊断；/settings 设置（help 帮助 · models 模型能力快照））
@@ -86,6 +187,7 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   omni exec "<任务>" --output-format stream-json 每行一个轨迹事件 {"t":"ev",...}，末行 {"t":"result",...}
   omni exec "<任务>" --max-turns 20 --allowed-tools read_file,run_command
   omni exec "<任务>" --output-schema '{"type":"object","required":["verdict"]}'   # 最终回答须符合 JSON Schema（不符 → 非零退出）
+  omni exec "<任务>" --quiet                 静默进度（stderr 不输出思考/工具进度，只留 stdout 结果）
   omni exec resume <会话id> "<继续任务>"   恢复 headless 会话继续（json 输出带 session_id）
   omni mcp-server                作为 MCP server（stdio JSON-RPC：omni_exec / omni_reply 工具）
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
@@ -101,8 +203,9 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
 
 会话持久化（跨进程恢复对话；Ctrl+C / /exit 退出 TUI 时会提示恢复命令）：
   omni -c "继续任务"           恢复当前项目最近一次会话并继续（交互模式自动创建会话文件）
-  omni -s <会话id> "继续任务"    恢复指定会话（id 见 --list-sessions 输出；-r 为同义别名）
-  omni -l / --list-sessions    列出已保存的会话
+  omni -s <会话id> "继续任务"    恢复指定会话（id 见 -l 输出；-r 为同义别名）
+  omni -l                      列出当前目录已保存的会话（仅当前文件夹）
+  omni -l -f / --list-sessions --full   列出全部已保存的会话（跨目录）
 
 参数：
   -m, --model <名称>    指定模型（覆盖配置文件）
@@ -110,8 +213,11 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   -C, --config <路径>   指定配置文件（覆盖自动发现）
       --profile <名>    套用配置档案（config profiles 字段；如工作/个人/离线多套快照）
   -s, -r, --resume <会话id>   恢复指定会话
+  -l, --list-sessions   列出会话（默认仅当前目录；加 -f/--full/--all 查看全部）
+  -f, --full, --all     配合 -l：查看全部会话（默认仅当前目录）
+      --lang <zh|en>    帮助语言（默认英文；--lang zh 显示中文）
       --no-tui          禁用全屏 TUI（默认：bun + 终端时自动启用）
-  -h, --help            显示帮助
+  -h, --help            显示帮助（默认英文；加 --lang zh 显示中文）
   -v, --version         显示版本
 
 配置文件（JSON / JSONC，优先级从低到高）：

@@ -469,14 +469,23 @@ export async function attachRuntime(
 
 /**
  * -l / --list-sessions：列出已保存的会话（无需 API Key，先于 prepareRun 处理）。
+ * 默认仅当前目录；-f/--full/--all 查看全部（跨目录）。
  * 返回 true = 已处理（调用方应 return）。
  */
-export async function printSessions(): Promise<boolean> {
-  const list = await listSessions();
+export async function printSessions(all = false): Promise<boolean> {
+  const list = await listSessions(all ? undefined : process.cwd());
   if (list.length === 0) {
-    console.log(dim('暂无已保存的会话（交互模式退出时自动落盘，可用 --continue 恢复）。'));
+    if (all) {
+      console.log(dim('暂无已保存的会话（交互模式退出时自动落盘，可用 --continue 恢复）。'));
+    } else {
+      console.log(dim('当前目录暂无已保存的会话（-l -f 查看全部；交互模式退出时自动落盘，可用 --continue 恢复）。'));
+    }
   } else {
-    console.log('已保存的会话（--continue 恢复最近一次，-r <id> 恢复指定）：');
+    if (all) {
+      console.log('已保存的会话（全部目录；--continue 恢复最近一次，-r <id> 恢复指定）：');
+    } else {
+      console.log('已保存的会话（当前目录；-l -f 查看全部；--continue 恢复最近一次，-r <id> 恢复指定）：');
+    }
     for (const s of list) console.log(formatSessionInfo(s));
   }
   return true;
@@ -527,9 +536,9 @@ export async function prepareSessionPersistence(
 }
 
 export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<void> {
-  const { taskArgs, overrides, flags, resumeId, help, version } = parseArgs(process.argv.slice(2));
+  const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
   if (help) {
-    printHelp();
+    printHelp(lang ?? 'en');
     return;
   }
   if (version) {
@@ -537,7 +546,7 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     return;
   }
   if (flags.listSessions) {
-    await printSessions();
+    await printSessions(flags.listAll);
     return;
   }
 

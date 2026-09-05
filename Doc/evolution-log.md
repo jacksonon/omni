@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百七十七次）**：**CLI 三改（help 英文化 / -l 限当前目录 / exec 竖排修复）**——用户三需求一次收口。① `omni --help` 默认英文（新增 `printHelpEn`，原中文移入 `printHelpZh`），`--lang zh`（`--language` 同义，支持 `=` 写法）才显示中文；会话内 `/settings help` 仍跟随配置语言。② `omni -l` 默认只列当前目录（`listSessions(process.cwd())`），`omni -l -f`（`--full`/`--all`/`-lf` 同义，仅列表模式从位置参数提取、不误吞 `exec` 子命令参数）列全部；`printSessions(all)` 空列表提示区分。③ `omni exec` 终端每词一行的竖排 bug：`ExecOutput.thinking.write` 逐片 `log()` 加换行，改为 stderr 连续写、loop 的 `finish()` 补换行（`shown` 跟随输出态）；`showThinking=false` 与新增 `exec --quiet/-q`（含 `exec --help` 用法）静默 stderr 进度，stdout 始终只留结果。**验证**：typecheck ✓ · mock e2e（stdout 单行 JSON 零污染、stderr 可读多行）· `-l`/`-l -f` 真机区分跨目录会话。
+
 - **2026-09-05（第二百七十六次）**：**thinking 行内数学转换（`$\\rightarrow$` → `→`）**——用户在 TUI 看到 `思考 $\rightarrow$ 调用工具…` 没转义。根因：thinking 正文走裸文本不经过 `scanInline`，`$…$` 无人处理（answer 行正常）。修：新增纯文本 helper `inlineMathToText`（只转数学 span、同守卫防误伤价格，零样式变化），thinking 正文与 delegate 面板 💭 行接入。快照场景 6 加断言。**验证**：typecheck ✓ · tui:snapshot 全绿。
 
 - **2026-09-05（第二百七十五次）**：**session 面板行标题左 + 条数右对齐撑满**——用户嫌单条文本挤在左边。`TuiMenuOption.right` 右对齐尾段（`menuPanelRows` 左右撑满；session 传 `right=N 条`）。坑：`flatPanelLine` 内 `truncateToWidth` 实际只留 `width-2` 列（循环 `> width-1` 跳出再拼 `…`），按 -1 算把行尾 `条` 截成 `…`——预算改 -2。快照 37（h7 新格式 + h6 去 `·`）。**验证**：typecheck ✓ · tui:snapshot 全绿 · 字符帧确认右对齐。
