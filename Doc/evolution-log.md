@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
 
+- **2026-09-05（第二百五十八次）**：**delegate 结果卡改 thought 式 + 步数修复**——用户反馈结果卡显示差、且恒显示“0 步”。a) **0 步根因**：`subagent.ts` 的 end 事件本就带真实 `steps/durationMs`，但 TUI 只用于面板文案、`finishDelegateRun` 硬编码 `steps: 0`——加 `DelegateRun.steps/durationMs` + 结果卡透传；b) **thought 式**（rows.ts 新分支，绕过整块底色卡片机）：收起单行 `+ Subagent: <标题> · ✓完成·N步`（失败/停止红色）、展开 `- Subagent: · … · 耗时` + 空行 + 4 缩进 dim 明细 + 结果摘要，点击整卡展开/收起走通用 cardId 链路；运行中面板与旧卡回退路径不动。快照 41u 重写（单行收起/真实步数/零底色）。**验证**：typecheck ✓ · tui:snapshot 全绿 · 真机帧确认。
+- **2026-09-05（第二百五十七次）**：**TUI delegate 结果卡去底色块（对齐 Web 透明卡）**——用户截图：流内 delegate 结果卡是整块灰底（白终端上显黑）。根因：`toolCardRow` 的 `isNoBg` 名单只覆盖只读类工具，delegate 结果卡走整行底色填充；而 Web `.tool-card` 早已是全透明扁平。改动（`src/tui/rows.ts`）：`isNoBg` 加 `delegate`——收起标题/`✓ N 步 · 结果首行`/展开明细全部走思考式扁平行，点击整卡展开/收起与 cardId 命中不变；运行中输入区面板（footerBg）不动。快照新增 41u（收起/展开零 bg chunk + 文案保留）。**验证**：typecheck ✓ · tui:snapshot 全绿（含 41u）。
 - **2026-09-05（第二百五十六次）**：**获取中不再占上方状态盒**——“获取中”只由模型列表内联 loading 行呈现（空列表 bare 行 / 有内容追加行），上方盒子只保留失败/空结果终态（失败分支补显式取消隐藏）。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。
 - **2026-09-05（第二百五十五次）**：**修复模型列表获取中的上方空白视图**——`fetchProviderModels` 把 loading 文案包在 `<div class="spin">` 里，而 `.spin` 全局 `display:none`（只在 tool-card/cmd 面板等特定上下文显示），导致 bordered 的 `#p-fetch-result` 盒子显示为空白（成功后隐藏，看似闪现）。改纯文本行，与失败/空结果态一致；排查其余 `.spin` 用法无同类问题。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿（首次失败系残留探针进程占端口，清进程重跑通过）。
 - **2026-09-05（第二百五十四次）**：**技能页两处修正**——查看按钮窄屏下被挤成竖排：行内按钮加 `flex:none + nowrap`；新建改弹窗（头部与刷新并排，回车确认，Esc/遮罩/取消关闭），去行内底部表单。**验证**：node --check ✓ · web:sync ✓ · probe:web 全绿。

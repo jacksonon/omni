@@ -244,6 +244,9 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
     return { text: line.text, style: {}, chunks };
   }
 
+  // 扁平无底色（对齐 Web `.tool-card` 透明卡）：执行中 / 已扁平化的只读类工具 /
+  // delegate 子代理结果卡（用户要求 delegate 不要整块背景色——收起标题 + 展开明细
+  // 全部走思考/meta 式扁平行，点击整卡展开/收起的交互不变）
   const isNoBg =
     status === 'running' ||
     toolName === 'read_file' ||
@@ -253,7 +256,8 @@ function toolCardRow(line: ToolCardLine, status: ToolStatus, theme: TuiTheme, to
     toolName === 'web_fetch' ||
     toolName === 'web_search' ||
     toolName === 'write_file' ||
-    toolName === 'edit_file';
+    toolName === 'edit_file' ||
+    toolName === 'delegate';
   if (isNoBg) {
     if (line.role === 'top' || line.role === 'bottom') {
       return { text: '', style: {} };
@@ -551,6 +555,80 @@ export function buildBody(state: TuiState, width: number): Row[] {
       // 与其它非主要模块（思考/meta）融合
       if (line.card.name === 'ask_user') {
         body.push({ text: line.card.summary, style: rowStyle('meta'), cardId: line.card.id });
+        continue;
+      }
+      // delegate 子代理结果卡：thought 式扁平渲染（对齐 thought/Web 透明卡——无底色块）：
+      // 收起单行 `  + Subagent: <标题> · <状态>`；展开头行 `  - Subagent: · <状态> · <耗时>`
+      // + 空行 + 4 格缩进 dim 明细（think 原文 / tool `→` / result `✓`/`✗`）+ 结果摘要。
+      // 点击整卡展开/收起走通用 cardId 链路（hitTestCard）。运行中（status=running）与
+      // 无摘要的旧卡仍走通用工具卡路径。
+      if (line.card.name === 'delegate' && line.card.status !== 'running' && line.card.subagent) {
+        const sa = line.card.subagent;
+        const dLang = state.language;
+        const dFailed = line.card.status === 'err' && !sa.stopped;
+        const dStatus = sa.stopped
+          ? `⏹ ${t(dLang, 'subagent.status.stopped')}`
+          : sa.ok && !dFailed
+            ? `✓ ${tf(dLang, 'subagent.status.doneSteps', { steps: sa.steps ?? 0 })}`
+            : `✗ ${t(dLang, 'subagent.status.failed')}`;
+        const dStrong = sa.stopped || dFailed; // 失败/停止红色高亮，其余走 thought 式 dim
+        const dLabel = t(dLang, 'subagent.label');
+        if (!line.card.expanded) {
+          const suffix = ` · ${dStatus}`;
+          const title = truncateToWidth(line.card.summary, Math.max(8, width - 14 - visualWidth(suffix)));
+          body.push({
+            text: `  + ${dLabel}: ${title}${suffix}`,
+            style: {},
+            chunks: [
+              { text: '  + ', dim: true },
+              { text: `${dLabel}:`, fg: 'yellow', bold: true },
+              { text: ` ${title}` },
+              { text: suffix, ...(dStrong ? { fg: theme.diffRem } : { dim: true }) },
+            ],
+            cardId: line.card.id,
+          });
+          continue;
+        }
+        const dDur = sa.durationMs != null && sa.durationMs > 0 ? ` · ${formatToolDur(sa.durationMs)}` : '';
+        body.push({
+          text: `  - ${dLabel}: · ${dStatus}${dDur}`,
+          style: {},
+          chunks: [
+            { text: '  - ', dim: true },
+            { text: `${dLabel}:`, fg: 'yellow', bold: true },
+            { text: ` · ${dStatus}`, ...(dStrong ? { fg: theme.diffRem } : { dim: true }) },
+            ...(dDur ? [{ text: dDur, dim: true }] : []),
+          ],
+          cardId: line.card.id,
+        });
+        body.push({ text: '', style: {}, chunks: [], cardId: line.card.id });
+        const dDet = line.card.subagentDetail;
+        const dItems = dDet?.items ?? [];
+        const dDropped = dDet?.dropped ?? 0;
+        const dPushIndented = (text: string, style: RowStyle) => {
+          // 与思考正文同式：按 width-4 折行，每个视觉行统一加 4 格前缀
+          const innerW = Math.max(1, width - 4);
+          for (const seg of text.split('\n')) {
+            if (!seg) {
+              body.push({ text: '', style: {}, chunks: [], cardId: line.card!.id });
+              continue;
+            }
+            for (const r of wrapRow({ text: seg, style }, innerW)) {
+              body.push({ ...r, text: `    ${r.text}`, cardId: line.card!.id });
+            }
+          }
+        };
+        if (dItems.length > 36 || dDropped > 0) {
+          const extra = dDropped > 0 ? tf(dLang, 'delegate.extraTruncated', { n: dDropped }) : '';
+          dPushIndented(`… ${tf(dLang, 'delegate.earlierHidden', { n: Math.max(0, dItems.length - 36) })}${extra}`, rowStyle('meta'));
+        }
+        for (const it of dItems.slice(-36)) {
+          if (it.kind === 'think') dPushIndented(it.text, rowStyle('meta'));
+          else if (it.kind === 'tool') dPushIndented(`→ ${it.text}`, {});
+          else dPushIndented(`${it.ok !== false ? '✓' : '✗'} ${it.text}`, it.ok !== false ? rowStyle('meta') : { fg: theme.diffRem });
+        }
+        // 结果摘要（停止态的摘要即“已停止”，头行已表达，不重复）
+        if (!sa.stopped && sa.summary) dPushIndented(sa.summary, rowStyle('meta'));
         continue;
       }
       // 工具调用卡片：颜色背景块（命令/执行缩略/结果缩略），收起/展开由

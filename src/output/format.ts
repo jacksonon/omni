@@ -173,8 +173,8 @@ export interface ToolCardView {
    * 显示在执行中行的下方（最多 3 行，超出显示 `… N 行被隐藏`），让用户看到命令在"打字"。
    */
   liveLines?: string[];
-  /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示 `✓ N 步 · 结果首行` */
-  subagent?: { name: string; ok: boolean; steps: number; summary?: string };
+  /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示命令行 + `✓ N 步 · 结果首行` */
+  subagent?: { name: string; ok: boolean; steps: number; summary?: string; stopped?: boolean; durationMs?: number };
   /**
    * delegate 子代理执行明细（1.0 可视化：展开后查看思考与工具全过程）。
    * 运行中 = 动态状态；items = 按序事件明细；dropped = 超限丢弃的早先条数。

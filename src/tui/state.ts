@@ -84,7 +84,7 @@ export interface ToolCard {
   /** run_command 实时输出流（行级 append；onCommandOutput 调用时填入；结果到达时清空） */
   liveLines?: string[];
   /** delegate 子代理结果摘要（onSubagentEvent end 填充）：收起态显示命令行 + `✓ N 步 · 结果首行` */
-  subagent?: { name: string; ok: boolean; steps: number; summary?: string };
+  subagent?: { name: string; ok: boolean; steps: number; summary?: string; stopped?: boolean; durationMs?: number };
   /** delegate 原命令行快照（onSubagentEvent start 保存，end 还原——运行中 summary 被进度覆盖） */
   _cmd?: string;
   /**
@@ -150,6 +150,10 @@ export interface DelegateRun {
   failed: boolean;
   /** 是否展开明细（点击标题行切换；就地展开/收起） */
   expanded: boolean;
+  /** 实际步数（end 事件 steps；收尾结果卡 `✓ N 步` 用——缺省回退工具明细条数） */
+  steps: number;
+  /** 实际耗时 ms（end 事件 durationMs；结果卡展开头行用） */
+  durationMs: number;
   /** 委托任务（start 事件携带；展开明细时可选展示） */
   task?: string;
   /** 明细条目（截断上限 DelegateRun.ITEM_MAX；超限丢最早计 dropped） */

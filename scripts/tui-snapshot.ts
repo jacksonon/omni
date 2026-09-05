@@ -4906,6 +4906,56 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 41t 通过：delegate 面板（输入区上方 · 折叠/展开明细/停止命中 · 不占对话流）');
 
+  // 场景 41u：delegate 结果卡 thought 式扁平（对齐 thought/Web 透明卡）——收起单行
+  // `+ Subagent:` / 展开头行 `- Subagent:` + 空行 + 缩进明细，全部行无 bg chunk；
+  // 步数/耗时来自 end 事件快照（不再恒为 0 步）；点击整卡展开/收起的交互不变。
+  console.log('=== 场景 41u：delegate 结果卡 thought 式 ===');
+  {
+    const s41u = createTuiState();
+    s41u.version = '0.1.0';
+    s41u.model = 'mock';
+    const cardBase41u = {
+      id: 7, seq: 9, name: 'delegate', summary: '查天气', status: 'ok',
+      output: ['今日晴'], chars: 9,
+      subagent: { name: 'general', ok: true, steps: 3, summary: '今日晴', stopped: false, durationMs: 12300 },
+      subagentDetail: {
+        status: '完成', stopped: false, dropped: 0,
+        items: [
+          { kind: 'think', text: '先找天气接口' },
+          { kind: 'tool', text: '* Grep "weather"' },
+          { kind: 'result', text: '今日晴', ok: true },
+        ],
+      },
+    };
+    // 收起：单行（标题 + 真实步数），无底色
+    s41u.lines.length = 0;
+    pushLine(s41u, { kind: 'tool', text: '查天气', card: { ...cardBase41u, expanded: false } as never });
+    const rows41u = buildBody(s41u, 60).filter((r) => r.cardId === 7);
+    if (rows41u.length !== 1) {
+      console.error(`✗ 场景 41u delegate 收起态应为单行（实际 ${rows41u.length} 行）`);
+      process.exit(1);
+    }
+    if (!rows41u[0].text.includes('子代理') || !rows41u[0].text.includes('3 步')) {
+      console.error(`✗ 场景 41u delegate 收起行缺标题/真实步数：\n${rows41u[0].text}`);
+      process.exit(1);
+    }
+    // 展开：头行 + 空行 + 缩进明细 + 摘要，全部无底色
+    s41u.lines.length = 0;
+    pushLine(s41u, { kind: 'tool', text: '查天气', card: { ...cardBase41u, expanded: true } as never });
+    const rows41uOpen = buildBody(s41u, 60).filter((r) => r.cardId === 7);
+    const withBg = rows41uOpen.filter((r) => (r.chunks ?? []).some((c) => (c as { bg?: unknown }).bg !== undefined));
+    if (withBg.length > 0) {
+      console.error(`✗ 场景 41u delegate 展开态带底色（${withBg.length} 行）`);
+      process.exit(1);
+    }
+    const text41u = rows41uOpen.map((r) => r.text).join('\n');
+    if (!text41u.includes('- 子代理') || !text41u.includes('先找天气接口') || !text41u.includes('今日晴')) {
+      console.error(`✗ 场景 41u delegate 展开态缺头行/明细/摘要:\n${text41u}`);
+      process.exit(1);
+    }
+  }
+  console.log('✓ 场景 41u 通过：delegate 结果卡 thought 式（单行收起/缩进展开 · 真实步数 · 零底色）');
+
   // 场景 42：当次 token 使用统计模块（/settings tokens 开关）
   // —— 每一次发送消息、返回消息结束后，插入当次 token 统计：输入/输出/缓存。
   // 默认收起显示汇总；点开显示每次 LLM 请求的明细（一行一条，加起来 = 汇总）；

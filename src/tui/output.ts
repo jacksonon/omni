@@ -441,6 +441,8 @@ export class TuiOutput implements Output {
           ended: false,
           failed: false,
           expanded: false,
+          steps: 0,
+          durationMs: 0,
           items: [],
           dropped: 0,
         });
@@ -606,12 +608,17 @@ export class TuiOutput implements Output {
     } else if (ev.type === 'stopped') {
       run.stopped = true;
       run.ended = true;
+      // stopped 事件同样带实际步数/耗时（subagent finish 透传）——结果卡不再显示 0 步
+      if (ev.steps != null) run.steps = ev.steps;
+      if (ev.durationMs != null) run.durationMs = ev.durationMs;
       run.status = t(lang, 'subagent.status.stopped');
     } else {
       // end：面板行状态收尾（onToolResult 到达后移除面板、流内留结果卡）
       run.ended = true;
       run.failed = ev.status !== 'ok';
-      run.status = ev.status === 'ok' ? tf(lang, 'subagent.status.doneSteps', { steps: ev.steps ?? 0 }) : t(lang, 'subagent.status.failed');
+      if (ev.steps != null) run.steps = ev.steps;
+      if (ev.durationMs != null) run.durationMs = ev.durationMs;
+      run.status = ev.status === 'ok' ? tf(lang, 'subagent.status.doneSteps', { steps: run.steps }) : t(lang, 'subagent.status.failed');
       run.name = ev.name;
     }
     this.schedulePaint();
@@ -652,7 +659,8 @@ export class TuiOutput implements Output {
     const [run] = this.state.delegateRuns.splice(idx, 1);
     const stopped = run.stopped || run.stopRequested;
     const doneOk = ok && !stopped;
-    // 结果卡（收起态显示 `✓ N 步 · 结果首行`；展开看明细）——summary 还原为委托标题
+    // 结果卡（thought 式扁平渲染见 rows.ts）：步数/耗时/停止态全部来自面板行快照
+    //（end/stopped 事件已写入 run；此前硬编码 steps: 0 导致恒显示“0 步”）
     pushLine(this.state, {
       kind: 'tool',
       text: run.title,
@@ -668,8 +676,10 @@ export class TuiOutput implements Output {
         subagent: {
           name: run.name || 'delegate',
           ok: doneOk,
-          steps: 0,
+          steps: run.steps,
           summary: preview?.find((l) => l.trim())?.slice(0, 120) || (stopped ? t(this.state.language, 'subagent.status.stopped') : undefined),
+          stopped,
+          durationMs: run.durationMs,
         },
         subagentDetail: run.items.length > 0 || run.dropped > 0
           ? { status: run.status, stopped, items: run.items, dropped: run.dropped }

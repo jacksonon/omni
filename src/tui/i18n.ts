@@ -50,6 +50,7 @@ const ZH: Record<string, string> = {
   'approval.tool': '需要审批：{tool}',
   'approval.reason': '原因：{reason}',
   // delegate 运行态 / 结果卡（output.ts / render.ts / rows.ts）
+  'subagent.label': '子代理',
   'subagent.status.running': '运行中',
   'subagent.status.runningDepth': '运行中（深度 {depth}）',
   'subagent.status.thinking': '思考中',
@@ -171,6 +172,7 @@ const EN: Record<string, string> = {
   'approval.tool': 'Approval needed: {tool}',
   'approval.reason': 'Reason: {reason}',
   // delegate runtime status / result card (output.ts / render.ts / rows.ts)
+  'subagent.label': 'Subagent',
   'subagent.status.running': 'Running',
   'subagent.status.runningDepth': 'Running (depth {depth})',
   'subagent.status.thinking': 'Thinking',
