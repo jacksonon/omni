@@ -520,9 +520,10 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* 输入区下方元信息行：左[文件夹/loading] · 中[输入输出/缓存] …… 右[上下文用量] */
 .composer-meta { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; max-width: var(--composer-width); margin: 0 auto; padding-top: 3px; color: var(--text-caption); font: 11px/16px var(--mono); white-space: nowrap; overflow: hidden; }
 .empty-session .composer-meta { display: none; }
-/* 四项独立（输入/输出/缓存/上下文）：可见项之间自动加 · 分隔（hidden 项不参与相邻匹配） */
+/* 六项独立（输入/输出/首 token/瞬时/缓存/上下文）：可见项之间自动加 · 分隔
+ * （.sep 由 app.js updateComposerMetaVisibility 按「首个可见项无前缀」计算，兼容任意隐藏组合） */
 .meta-item { flex: none; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
-.composer-meta > span + span::before { content: '·'; margin-right: 8px; opacity: .55; }
+.composer-meta > span.sep::before { content: '·'; margin-right: 8px; opacity: .55; }
 .meta-ctx { display: inline-flex; align-items: center; gap: 7px; flex: none; font-weight: 600; }
 /* 上下文渐变进度条：宽度过渡 + 流光动画 */
 .ctx-track { width: 72px; height: 6px; border-radius: 999px; background: var(--line-2); overflow: hidden; flex: none; }

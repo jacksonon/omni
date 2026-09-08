@@ -483,6 +483,12 @@ const I18N_ZH = {
   'composer.standardMode': '标准模式',
   'composer.ctxTitle': '上下文: {used} / {limit} ({pct}%)',
   'composer.ctxTitleShort': '上下文: {used}',
+  // 输入区下方元信息行：首 token / 瞬时速率（同 TUI statusline.speed 段）
+  'composer.ft': '首 token {dur}',
+  'composer.instant': '瞬时 {n} tok/s',
+  'composer.ftTitle': '本次会话首 token 平均延迟（TTFT）',
+  'composer.instantTitle': '瞬时生成速率（EMA 平滑；停止流动后回退隐藏）',
+  'composer.avgTitle': '会话平均速率（输出 token / 纯生成耗时，不含首 token 等待）',
   'turn.firstToken': ' · 首 token {dur}',
   'model.head': '模型',
   'model.none': '当前无可用模型',
@@ -899,6 +905,12 @@ const I18N_EN = {
   'composer.standardMode': 'Standard mode',
   'composer.ctxTitle': 'Context: {used} / {limit} ({pct}%)',
   'composer.ctxTitleShort': 'Context: {used}',
+  // Composer meta row: first token / instantaneous rate (same as TUI statusline.speed)
+  'composer.ft': 'First token {dur}',
+  'composer.instant': 'Instant {n} tok/s',
+  'composer.ftTitle': 'Average first-token latency (TTFT) this session',
+  'composer.instantTitle': 'Instantaneous generation rate (EMA smoothed; hides after the stream stalls)',
+  'composer.avgTitle': 'Session average rate (output tokens / generation time, excluding first-token wait)',
   'turn.firstToken': ' · first token {dur}',
   'model.head': 'Model',
   'model.none': 'No model available',
@@ -2459,6 +2471,7 @@ function updatePillAvg() {
   if (rate > 0) {
     tag.textContent = `· ${rate} tok/s`;
     tag.classList.remove('hidden');
+    tag.title = t('composer.avgTitle');
   } else {
     tag.textContent = '';
     tag.classList.add('hidden');
@@ -2623,9 +2636,13 @@ function renderTurnFooter(sessionId, data) {
 
   const tokensDiv = el('div', 'turn-tokens');
   const stepCount = Math.max(1, usages.length);
-  const headText = `- Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmtN(sumNew)} new · ${fmtN(sumCached)} cached · ${fmtN(sumTotal)} total`;
-  const tokensHead = el('div', 'turn-tokens-head', headText);
+  const tokensSummary = `Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmtN(sumNew)} new · ${fmtN(sumCached)} cached · ${fmtN(sumTotal)} total`;
+  const tokensHead = el('div', 'turn-tokens-head');
   const tokensTable = el('div', 'turn-tokens-table');
+  const paintTokensHead = (collapsed) => {
+    tokensHead.textContent = `${collapsed ? '+' : '-'} ${tokensSummary}`;
+    tokensHead.classList.toggle('collapsed', collapsed);
+  };
 
   const headerRow = el('div', 'token-row header');
   headerRow.innerHTML = `<span class="col-step">Step</span><span class="col-new">New</span><span class="col-cached">Cached</span><span class="col-total">Total</span>`;
@@ -2644,9 +2661,14 @@ function renderTurnFooter(sessionId, data) {
   }
 
   tokensHead.addEventListener('click', () => {
-    tokensTable.classList.toggle('hidden');
+    const collapsed = tokensTable.classList.toggle('hidden');
+    paintTokensHead(collapsed);
     scrollBottom();
   });
+
+  // 默认收起：明细需手动点开（收起 `+` / 展开 `-`，对齐 thinking 块规范）
+  tokensTable.classList.add('hidden');
+  paintTokensHead(true);
 
   tokensDiv.appendChild(tokensHead);
   tokensDiv.appendChild(tokensTable);
@@ -3003,7 +3025,8 @@ function sessionAvgRate(s, u) {
   // 全无计时数据（无请求、无 live）→ 报 0（调用方隐藏），避免 1ms 下限造出离谱峰值
   if (s.llmMs <= 0 && s.genMs <= 0 && (!live || live.liveGenMs <= 0)) return 0;
   const comp = u.completion + (live?.streamTokens ?? 0);
-  const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs);
+  // 无 genMs 的旧数据回退 llmMs - 首 token 等待（与 TUI sessionAvgRate 同口径）
+  const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - (s.ftSum || 0));
   const gen = baseGen + (live?.liveGenMs ?? 0);
   return gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
 }
@@ -3029,7 +3052,7 @@ function fmtCompact(n) {
 }
 function statsOf(sid) {
   if (!state.sessionStats.has(sid)) {
-    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, genMs: 0, cached: 0 });
+    state.sessionStats.set(sid, { turns: 0, steps: 0, llmMs: 0, toolsMs: 0, genMs: 0, cached: 0, ftSum: 0, ftCount: 0 });
   }
   return state.sessionStats.get(sid);
 }
@@ -3047,7 +3070,7 @@ function usageOf(sid) {
 function rebuildSessionStats(id, messages) {
   const s = statsOf(id);
   const u = usageOf(id);
-  s.turns = 0; s.steps = 0; s.llmMs = 0; s.genMs = 0; s.cached = 0;
+  s.turns = 0; s.steps = 0; s.llmMs = 0; s.genMs = 0; s.cached = 0; s.ftSum = 0; s.ftCount = 0;
   u.prompt = 0; u.completion = 0; u.total = 0; u.cached = 0; u.lastPrompt = 0;
   for (const m of messages || []) {
     if (m.role === 'user') { s.turns += 1; continue; }
@@ -3063,10 +3086,12 @@ function rebuildSessionStats(id, messages) {
     }
     if (typeof m.durMs === 'number') s.llmMs += m.durMs;
     if (typeof m.genMs === 'number') s.genMs += m.genMs;
+    // 首 token 延迟随 assistant 消息持久化（agent/messages.ts）：历史重建后会话级首 token 均值有数可算
+    if (typeof m.firstTokenMs === 'number' && m.firstTokenMs > 0) { s.ftSum += m.firstTokenMs; s.ftCount += 1; }
     if (Array.isArray(m.tool_calls)) s.steps += m.tool_calls.length;
   }
 }
-/** 渲染输入区下方元信息行：四项独立（输入/输出/缓存/上下文），可见项之间自动 · 分隔 */
+/** 渲染输入区下方元信息行：六项独立（输入/输出/首 token/瞬时速率/缓存/上下文），可见项之间自动 · 分隔 */
 function updateComposerMeta() {
   updatePillAvg();
   updateContextRing();
@@ -3074,6 +3099,7 @@ function updateComposerMeta() {
   if (!wrap) return;
   const s = state.session ? state.sessionStats.get(state.session) : null;
   const u = state.session ? state.sessionUsage.get(state.session) : null;
+  const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
   const en = state.language === 'en';
   const set = (sel, text) => {
     const n = $(sel);
@@ -3083,6 +3109,12 @@ function updateComposerMeta() {
   };
   set('#composer-in', u && u.prompt > 0 ? (en ? `In ${fmtCompact(u.prompt)}` : `输入 ${fmtCompact(u.prompt)}`) : '');
   set('#composer-out', u && u.completion > 0 ? (en ? `Out ${fmtCompact(u.completion)}` : `输出 ${fmtCompact(u.completion)}`) : '');
+  // 首 token：会话级均值（lap 累计 + 历史持久化重建）；会话尚无 lap 时回退当前流式请求的实时 TTFT
+  const ftAvg = (s && s.ftCount > 0) ? s.ftSum / s.ftCount : ((live && live.firstTokenMs > 0) ? live.firstTokenMs : 0);
+  set('#composer-ft', ftAvg > 0 ? t('composer.ft', { dur: fmtToolDur(ftAvg) }) : '');
+  // 瞬时速率：仅流式生成中显示（EMA 平滑 tps；>2.5s 无 chunk 视为停滞，回退隐藏旧值）
+  const liveTps = (live && typeof live.tps === 'number' && Date.now() - _liveStreamAt <= 2500) ? live.tps : 0;
+  set('#composer-speed', liveTps > 0 ? t('composer.instant', { n: Math.round(liveTps) }) : '');
   let cache = '';
   if (s && u && s.cached > 0 && u.prompt > 0) {
     const pct = Math.min(100, Math.round((s.cached / u.prompt) * 100));
@@ -3091,15 +3123,15 @@ function updateComposerMeta() {
   set('#composer-cache', cache);
   updateComposerMetaVisibility();
 }
-/** 整行显隐：四项全空才隐藏 */
+/** 整行显隐：任一项可见即显示；并给可见项计算 · 分隔（首个可见项无前缀，兼容任意隐藏组合） */
 function updateComposerMetaVisibility() {
   const wrap = $('#composer-meta');
   if (!wrap) return;
-  const show = ['#composer-in', '#composer-out', '#composer-cache', '#composer-ctx'].some((sel) => {
-    const n = $(sel);
-    return n && !n.classList.contains('hidden') && (n.textContent || '').trim() !== '';
-  });
-  wrap.classList.toggle('hidden', !show);
+  const visible = ['#composer-in', '#composer-out', '#composer-ft', '#composer-speed', '#composer-cache', '#composer-ctx']
+    .map((sel) => $(sel))
+    .filter((n) => n && !n.classList.contains('hidden') && ((n.id === 'composer-ctx') || (n.textContent || '').trim() !== ''));
+  visible.forEach((n, i) => n.classList.toggle('sep', i > 0));
+  wrap.classList.toggle('hidden', visible.length === 0);
 }
 
 /** 浏览新工作区：Electron 原生对话框；纯浏览器 → 页面内文件夹浏览器（服务端列目录，可导航到任意绝对路径）。
@@ -3623,10 +3655,12 @@ bus.on('turn.step', (ev) => {
   if (ev.sessionId !== state.session) return;
 });
 
-// stream.progress：流式生成实时速率与用量
+// stream.progress：流式生成实时速率与用量（tps=EMA 瞬时速率；_liveStreamAt 用于停滞后回退）
+let _liveStreamAt = 0;
 bus.on('stream.progress', (ev) => {
   if (ev.sessionId !== state.session) return;
   state.liveStream = ev;
+  _liveStreamAt = Date.now();
   updateComposerMeta();
 });
 
@@ -3637,7 +3671,12 @@ bus.on('lap', (ev) => {
   const s = statsOf(ev.sessionId);
   s.llmMs += ev.llmMs || 0;
   state.turnLlmMs += ev.llmMs || 0;
-  if (ev.firstTokenMs != null) { state.turnFirstTokenSum += ev.firstTokenMs; state.turnFirstTokenCount++; }
+  if (ev.firstTokenMs != null) {
+    state.turnFirstTokenSum += ev.firstTokenMs;
+    state.turnFirstTokenCount++;
+    s.ftSum += ev.firstTokenMs; // 会话级首 token 累计（元信息行均值用）
+    s.ftCount += 1;
+  }
   if (ev.genMs != null) { s.genMs += ev.genMs; state.turnGenMs += ev.genMs; }
   updateComposerMeta();
 });
@@ -6886,7 +6925,14 @@ window.addEventListener('beforeunload', () => {
 });
 
 /* spinner 动画 */
+let _instantStaled = false; // 瞬时速率停滞后已回退（避免每 200ms 重复重绘）
 setInterval(() => {
+  // 瞬时速率新鲜度：>2.5s 无流式 chunk（思考停顿/长工具间隔）→ 刷新元信息行，回退隐藏旧瞬时值
+  if (state.liveStream && Date.now() - _liveStreamAt > 2500) {
+    if (!_instantStaled) { _instantStaled = true; updateComposerMeta(); }
+  } else if (_instantStaled) {
+    _instantStaled = false; // 新 chunk 已到达（stream.progress 会重绘），仅复位标记
+  }
   spinIdx++;
   const frame = SPIN[spinIdx % SPIN.length];
   document.querySelectorAll('.tool-card.running .spin').forEach((n) => {
