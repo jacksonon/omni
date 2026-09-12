@@ -1,6 +1,8 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十一次）。
+
+- **2026-09-12（第二百四十一次）**：**纯提示类命令面板自动收起（修“确认窗口需手动 Esc 才消失”）**——排查确认：需手动消除的只有三类，审批卡片（`y/Enter` 批准、`n/Esc` 拒绝，`src/tui/output.ts:752`）/提问面板（`Enter` 提交/`Esc` 取消，`output.ts:782`）/选择菜单（`Enter`/数字确认/`Esc` 取消，`commands.ts:1987`）是安全与操作闸门，保持不动；用户所指是纯提示（动作已完成、只需告知）。修：`src/tui/commands.ts` —— `/new`·`/cd`·`/auto`·`/vim` 加 `autoClose: true`（执行完面板 1.5s 自动收，沿用 `/undo`·`/init` 既有模式）+ 成功 toast 镜像（沿用 `/mcp add/remove` 模式）；`/pin`·`/archive`·`/unarchive`·`/tasks stop`·`/plugin 装卸启停`成功时面板 + toast + 定时收（歧义候选/失败驻留供阅读）；`/tasks`·`/team` 空态·`/diff`·`/review` 无改动·`/context` 覆盖/清除·未信任警告·未知顶层命令仅面板定时收（无 toast）；长内容（status/agents/diff/review 结果等）与报错/用法保持驻留。**验证**：typecheck ✓ · tui:snapshot 全绿（唯一 ✗ 场景 34 moonshot provider 解析为改动前既有）· tsx 探针 6 条（/cd·/auto·/tasks·/team·未知命令·未信任警告即时成面板 + toast，1.8s 后全收）。
 
 - **2026-09-12（第一百七十九次）**：**修复 macOS 26+/27 上原生二进制被 SIGKILL（`omni` 无输出 exit 137）**——用户升级 0.8.0 后 `omni` / `omni --help` 无任何输出。根因：bun compile 产物是 linker-signed（adhoc）Mach-O，bun 链接后又写入运行时载荷导致签名失效（`codesign` 报 `invalid signature (code or signature have been modified)`）；macOS 26+/27 运行时强校验直接 SIGKILL，CI（macOS 15）与旧系统不校验故未暴露。修：新增 `scripts/sign-macos.mjs`（编译后 `codesign --force --sign -`，非 macOS 静默跳过），挂入 `npm run compile` 末尾——CI 五平台矩阵、`scripts/publish-npm.sh`、本地编译三路同享；用户本机已安装产物重签名后同步修复（`omni v0.8.0` 可运行）。**验证**：`npm run compile` → `codesign -v` ✓ · `release/omni --version` → `omni v0.8.0` ✓ · 重签名前后对照（原产物 exit 137 / 重签名后 exit 0）。
 

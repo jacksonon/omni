@@ -471,6 +471,8 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
   const cmd = findCommand(name);
   if (!cmd) {
     pushCmdLine(ctx.state, { kind: 'warn', text: `未知命令 /${name}（/settings help 查看可用命令）` });
+    // 纯提示（单行、无事发生）：短暂停留后自动收起，无需 Esc
+    scheduleCmdPanelAutoClose(ctx.state, ctx.session);
     return;
   }
   // 所有命令的输出统一进**独立面板**（不进对话流，用户要求 command 不影响对话流）：
@@ -501,6 +503,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
           kind: 'warn',
           text: '当前目录未受信任——权限锁定为只读（read），无法提升。信任目录：首次进入时批准信任，或在已信任目录运行。',
         });
+        // 纯提示（单行、无菜单）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       openPermissionMenu(ctx.state);
@@ -557,6 +561,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
     name: 'new',
     description: '新建会话并回到初始状态（旧会话保留，可 /session找回）',
     descriptionEn: 'Start a new session (old one kept, find it via /session)',
+    autoClose: true, // 纯提示（单行确认）：执行完自动收起，无需 Esc
     run: async (ctx) => {
       if (!ctx.onNewSession) {
         pushCmdLine(ctx.state, { kind: 'warn', text: '当前环境不支持新建会话' });
@@ -564,7 +569,10 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       const err = await ctx.onNewSession().catch((e) => String((e as Error)?.message ?? e));
       if (err) pushCmdLine(ctx.state, { kind: 'warn', text: err });
-      else pushCmdLine(ctx.state, { kind: 'meta', text: '已新建会话，回到初始状态（旧会话保留，可用 /session 找回）' });
+      else {
+        pushCmdLine(ctx.state, { kind: 'meta', text: '已新建会话，回到初始状态（旧会话保留，可用 /session 找回）' });
+        ctx.out.pushToast('✓ 已新建会话', 'success');
+      }
     },
   },
   {
@@ -992,6 +1000,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       if (diff.output === '（无改动）') {
         pushCmdLine(ctx.state, { kind: 'warn', text: '工作区没有改动可审查（git diff 为空）' });
+        // 纯提示（单行、 definitive 答案）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       pushCmdLine(ctx.state, { kind: 'meta', text: `typecheck：${check.output === '（无输出）' ? '通过（无输出）' : check.output.split('\n').slice(0, 3).join(' · ')}` });
@@ -1248,10 +1258,14 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       if (parsed.kind === 'clear') {
         applyContextLimitChoice(ctx.state, ctx.cfg, ctx.runOpts, model, 'clear');
+        // 纯提示（1~2 行确认）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       if (parsed.kind === 'set') {
         applyContextLimitChoice(ctx.state, ctx.cfg, ctx.runOpts, model, parsed.tokens);
+        // 纯提示（1~2 行确认）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
     },
@@ -1309,6 +1323,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
       }
       if (d.output === '（无改动）') {
         pushCmdLine(ctx.state, { kind: 'meta', text: '工作区没有未提交的改动' });
+        // 纯提示（单行、definitive 答案）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       if (stat) {
@@ -1520,17 +1536,20 @@ export const TUI_COMMANDS: TuiCommand[] = [
     description: '切换工作目录：/cd [路径]（无参显示当前；~ 展开）',
     descriptionEn: 'Change working directory: /cd [path] (no arg = show current)',
     group: 'system',
+    autoClose: true, // 纯提示（单行确认）：执行完自动收起，无需 Esc
     run: (ctx) => {
       const resolved = resolveCdArg((ctx.args ?? '').trim(), process.cwd());
       if (resolved.kind === 'error') {
         pushCmdLine(ctx.state, { kind: 'warn', text: resolved.error });
       } else if (resolved.kind === 'show') {
         pushCmdLine(ctx.state, { kind: 'meta', text: `当前工作目录：${resolved.dir}` });
+        ctx.out.pushToast(`当前工作目录：${resolved.dir}`, 'info');
       } else {
         try {
           process.chdir(resolved.dir);
           ctx.state.cwd = resolved.dir;
           pushCmdLine(ctx.state, { kind: 'meta', text: `工作目录已切换：${resolved.dir}` });
+          ctx.out.pushToast('✓ 工作目录已切换', 'success');
         } catch (err) {
           pushCmdLine(ctx.state, { kind: 'warn', text: `切换失败：${err instanceof Error ? err.message : String(err)}` });
         }
@@ -1552,7 +1571,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
         const loaded = await loadSession(target.file);
         const next = !(loaded?.meta.pinned ?? false);
         await updateSessionMeta(target.file, { pinned: next });
-        pushCmdLine(ctx.state, { kind: 'meta', text: `${next ? '已置顶' : '已取消置顶'}会话 ${loaded?.meta.id ?? ''}` });
+        const msg = `${next ? '已置顶' : '已取消置顶'}会话 ${loaded?.meta.id ?? ''}`;
+        pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+        ctx.out.pushToast(`✓ ${msg}`, 'success');
+        // 纯提示（单行确认；歧义候选列表需阅读则驻留）：成功时短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
       }
       ctx.state.schedulePaint?.();
     },
@@ -1570,7 +1593,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
       } else {
         const loaded = await loadSession(target.file);
         await updateSessionMeta(target.file, { archived: true });
-        pushCmdLine(ctx.state, { kind: 'meta', text: `已归档会话 ${loaded?.meta.id ?? ''}（/unarchive 取消归档）` });
+        const msg = `已归档会话 ${loaded?.meta.id ?? ''}（/unarchive 取消归档）`;
+        pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+        ctx.out.pushToast(`✓ ${msg}`, 'success');
+        // 纯提示（单行确认；歧义候选列表需阅读则驻留）：成功时短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
       }
       ctx.state.schedulePaint?.();
     },
@@ -1588,7 +1615,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
       } else {
         const loaded = await loadSession(target.file);
         await updateSessionMeta(target.file, { archived: false });
-        pushCmdLine(ctx.state, { kind: 'meta', text: `已取消归档会话 ${loaded?.meta.id ?? ''}` });
+        const msg = `已取消归档会话 ${loaded?.meta.id ?? ''}`;
+        pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+        ctx.out.pushToast(`✓ ${msg}`, 'success');
+        // 纯提示（单行确认；歧义候选列表需阅读则驻留）：成功时短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
       }
       ctx.state.schedulePaint?.();
     },
@@ -1598,6 +1629,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
     description: 'AI 自动审批开关：/auto [on|off]（需要审批的操作先经模型审阅，不改变权限/沙箱边界）',
     descriptionEn: 'AI auto-approval toggle: /auto [on|off]',
     group: 'system',
+    autoClose: true, // 纯提示（2 行确认）：执行完自动收起，无需 Esc
     run: (ctx) => {
       const cfg = ctx.runOpts?.cfg;
       const arg = (ctx.args ?? '').trim().toLowerCase();
@@ -1605,7 +1637,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
       if (cfg) cfg.autoReview = next;
       const res = persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
       pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
-      pushCmdLine(ctx.state, { kind: 'meta', text: `AI 自动审批：${next ? '已开启（审阅失败自动回退人工审批）' : '已关闭'}` });
+      const msg = `AI 自动审批：${next ? '已开启（审阅失败自动回退人工审批）' : '已关闭'}`;
+      pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+      ctx.out.pushToast(`✓ ${msg}`, 'success');
       ctx.state.schedulePaint?.();
     },
   },
@@ -1614,6 +1648,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
     description: 'Vim 键位开关（输入框）：/vim [on|off]（Esc 进 normal / i 回 insert）',
     descriptionEn: 'Vim keybindings toggle: /vim [on|off]',
     group: 'system',
+    autoClose: true, // 纯提示（2 行确认）：执行完自动收起，无需 Esc
     run: (ctx) => {
       const cfg = ctx.runOpts?.cfg;
       const arg = (ctx.args ?? '').trim().toLowerCase();
@@ -1624,7 +1659,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
       if (!next) ctx.state.vimInsert = true;
       const res = persistGlobalBoolToConfig('vimMode', next, 'Vim 键位开关');
       pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
-      pushCmdLine(ctx.state, { kind: 'meta', text: `Vim 键位：${next ? '已开启（Esc 进 normal 模式；再次 /vim off 关闭）' : '已关闭'}` });
+      const msg = `Vim 键位：${next ? '已开启（Esc 进 normal 模式；再次 /vim off 关闭）' : '已关闭'}`;
+      pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+      ctx.out.pushToast(`✓ ${msg}`, 'success');
       ctx.state.schedulePaint?.();
     },
   },
@@ -1646,7 +1683,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
           pushCmdLine(ctx.state, { kind: 'warn', text: `未找到运行中的子代理 seq=${seq}（可能已结束）` });
         } else {
           stop();
-          pushCmdLine(ctx.state, { kind: 'meta', text: `已请求停止子代理 seq=${seq}` });
+          const msg = `已请求停止子代理 seq=${seq}`;
+          pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+          ctx.out.pushToast(`✓ ${msg}`, 'success');
+          // 纯提示（单行确认）：短暂停留后自动收起，无需 Esc
+          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         }
         ctx.state.schedulePaint?.();
         return;
@@ -1655,6 +1696,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
       const bg = ctx.state.backgroundRuns;
       if (front.length === 0 && bg.length === 0) {
         pushCmdLine(ctx.state, { kind: 'meta', text: '当前没有运行中的子代理。delegate 传 background:true 可后台执行。' });
+        // 纯通告（单行、无事发生）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       pushCmdLine(ctx.state, { kind: 'meta', text: `运行中任务（${front.length + bg.filter((b) => b.status === 'running').length}）：` });
@@ -1717,6 +1760,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
           const pr = persistPluginListToGlobal(names);
           setEnabledPlugins(names);
           pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+          ctx.out.pushToast(`✓ ${r.message}`, 'success');
+          // 纯提示（动作已完成）：短暂停留后自动收起，无需 Esc（失败时驻留供阅读）
+          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
           ctx.state.schedulePaint?.();
         }
         return;
@@ -1732,6 +1778,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
           const pr = persistPluginListToGlobal(names);
           setEnabledPlugins(names);
           pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+          ctx.out.pushToast(`✓ ${r.message}`, 'success');
+          // 纯提示（动作已完成）：短暂停留后自动收起，无需 Esc（失败时驻留供阅读）
+          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         }
         return;
       }
@@ -1748,6 +1797,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
         const pr = persistPluginListToGlobal(next);
         setEnabledPlugins(next);
         pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+        ctx.out.pushToast(`✓ ${pr.message}`, 'success');
+        // 纯提示（单行确认）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
       pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令：plugin ${sub}（list/install/remove/enable/disable）` });
@@ -1762,6 +1814,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
       const board = ctx.runOpts?.team;
       if (!board || board.tasks.length === 0) {
         pushCmdLine(ctx.state, { kind: 'meta', text: '任务看板为空（多代理协作时由主代理建任务；/orchestrate <任务> 走动态工作流）。' });
+        // 纯通告（单行、无事发生）：短暂停留后自动收起，无需 Esc（有任务时驻留供阅读）
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
       } else {
         const done = board.tasks.filter((x) => x.status === 'completed').length;
         pushCmdLine(ctx.state, { kind: 'meta', text: `任务看板（${done}/${board.tasks.length} 完成）：` });
