@@ -1150,6 +1150,11 @@ export async function runTuiInteractive(
         });
       }
       out.onTurnEnd();
+      // 任务清单完成自动移除（数据侧）：与 output.onTurnEnd 的面板撤下同条件——
+      // state 与 runOpts 正常共享同一数组（已随之清空），这里兜底引用分叉的情况
+      if (runOpts.todoList && runOpts.todoList.length > 0 && runOpts.todoList.every((t) => t.status === 'completed')) {
+        runOpts.todoList.length = 0;
+      }
       input.focus();
     }
   } finally {

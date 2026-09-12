@@ -1231,12 +1231,20 @@ async function main(): Promise<void> {
     console.log(frame15);
     process.exit(1);
   }
-  // 待发送区必须**紧贴灰色块正上方**（底部固定块钉底；位置确定与内容长度无关）
+  // 待发送区必须**紧贴灰色块正上方**（底部固定块钉底；位置确定与内容长度无关）；
+  // queue 为顶部呼吸位归属（无 ask/delegate/todo）时块首多 1 面板空行（首条消息行上方）
   const lines15 = frame15.split('\n');
   const firstRowIdx15 = lines15.findIndex((l) => l.includes('1 打断 ·'));
   const greyTop15 = lines15.findIndex((l) => l.includes('╮'));
   if (firstRowIdx15 < 0 || greyTop15 < 0 || firstRowIdx15 + 4 !== greyTop15) {
     console.error(`✗ 场景 15 待发送区未钉在灰色块正上方（firstRow=${firstRowIdx15} grey=${greyTop15}，应 firstRow+4==grey）`);
+    console.log(frame15);
+    process.exit(1);
+  }
+  // 顶部呼吸位：首条消息行上一行是面板空行（同底色 + 竖线贯通、无消息文字）
+  const pad15q = lines15[firstRowIdx15 - 1] ?? '';
+  if (!pad15q.includes('▍') || /[0-9] (打断|排队) ·/.test(pad15q)) {
+    console.error('✗ 场景 15 待发送区顶部应有 1 行呼吸位（竖线贯通的面板空行）');
     console.log(frame15);
     process.exit(1);
   }
@@ -1296,12 +1304,20 @@ async function main(): Promise<void> {
     console.log(frame15t);
     process.exit(1);
   }
-  // 顺序：todo 在待发送区上方（todoRows 预算同步——todo 出现后待发送行下移）
+  // 顺序：todo 在待发送区上方（todoRows 预算同步——todo 出现后待发送行下移）；
+  // todo 为顶部呼吸位归属（无 ask/delegate）时块首多 1 面板空行（首条任务行上方）
   const lines15t = frame15t.split('\n');
   const todoIdx15 = lines15t.findIndex((l) => l.includes('✓ 修复编译错误'));
   const queueIdx15 = lines15t.findIndex((l) => l.includes('1 打断 ·'));
   if (todoIdx15 < 0 || queueIdx15 < 0 || queueIdx15 - todoIdx15 !== 3) {
     console.error(`✗ 场景 15 todo 应紧贴待发送区上方（todo=${todoIdx15} queue=${queueIdx15}，应差 3 行）`);
+    console.log(frame15t);
+    process.exit(1);
+  }
+  // 顶部呼吸位：首条任务行上一行是面板空行（同底色 + 竖线贯通、无任务文字）
+  const pad15 = lines15t[todoIdx15 - 1] ?? '';
+  if (!pad15.includes('▍') || /[✓▸·]/.test(pad15.replace('▍', ''))) {
+    console.error('✗ 场景 15 todo 顶部应有 1 行呼吸位（竖线贯通的面板空行）');
     console.log(frame15t);
     process.exit(1);
   }

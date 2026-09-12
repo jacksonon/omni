@@ -70,6 +70,7 @@ import { editPending } from './pending.js';
 import { inlineMathToText } from './markdown.js';
 import { visualWidth } from './width.js';
 import {
+  abovePadCarrier,
   cmdPanelRows,
   computeRows,
   delegatePanelRows,
@@ -89,6 +90,7 @@ import {
 
 // 行构建与命中判定（纯函数层）对 render 的调用方保持原有导出面（快照测试等）
 export {
+  abovePadCarrier,
   buildBody,
   computeRows,
   hitTestApproval,
@@ -834,11 +836,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // + 超出时「还有 N 条」1 行。由 computeRows / footerTop（联想浮层）共用——预算同步收缩，
   // 灰色块永远完整可见。
   const pendingCount = state.pending.length;
+  const padCarrier = opts?.withInput ? abovePadCarrier(state) : null;
   const pendingVisibleMsgs = Math.min(4, pendingCount);
-  const pendingRows = pendingCount > 0 ? pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) : 0;
-  // 任务清单小视图（待发送区上方）行数预算：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）。
+  const pendingRows = pendingCount > 0 ? pendingVisibleMsgs + (pendingCount > 4 ? 1 : 0) + (padCarrier === 'queue' ? 1 : 0) : 0;
+  // 任务清单小视图（待发送区上方）行数预算：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）+
+  // 呼吸位归属时 1 行顶部空行。
   const todoCount = state.todoList.length;
-  const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) : 0;
+  const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) + (padCarrier === 'todo' ? 1 : 0) : 0;
   // 运行中 delegate 面板（输入区上方、ask 之下）：折叠 1 行/条，展开加明细（delegatePanelRows 纯函数，
   // 与 computeRows/hero 预算同源——delegateBox 实际渲染行数 = 该值，见下方 delegateBox 渲染段）。
   const delegateRows = opts?.withInput ? delegatePanelRows(state) : 0;
@@ -1189,6 +1193,17 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       };
       // command 面板同款左侧深灰竖线 ▍（同联想/命令面板 barChunk：bg 与面板同色）
       const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
+      // 顶部呼吸位（本面板为归属时）：1 空行（竖线贯通、面板底色），与对话内容不断档
+      if (padCarrier === 'queue') {
+        const padCell = tree.queueCells[idx++]!;
+        padCell.visible = true;
+        try {
+          padCell.content = new StyledText([barChunk, padChunk(1)]);
+          paintPanelCell(padCell, theme);
+        } catch (e) {
+          logCrash('pending-pad', e);
+        }
+      }
       for (let i = 0; i < pendingVisibleMsgs; i++) {
         const m = state.pending[i]!;
         const t = m.text.replace(/\s+/g, ' ').trim();
@@ -1251,6 +1266,17 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const n = Math.max(0, panelW - used);
       return { __isChunk: true as const, text: ' '.repeat(n), bg: parseColor(theme.footerBg), attributes: 0 };
     };
+    // 顶部呼吸位（本面板为归属时）：1 空行（竖线贯通、面板底色），与对话内容不断档
+    if (padCarrier === 'delegate') {
+      const padCell = tree.delegateCells[idx++]!;
+      padCell.visible = true;
+      try {
+        padCell.content = new StyledText([barChunk, dgPad(1)]);
+        paintPanelCell(padCell, theme);
+      } catch (e) {
+        logCrash('delegate-pad', e);
+      }
+    }
     for (let ri = 0; ri < state.delegateRuns.length; ri++) {
       const run = state.delegateRuns[ri]!;
       const cell = tree.delegateCells[idx++]!;
@@ -1352,7 +1378,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     //（run 未停止/未请求停止时）。
     if (state.delegateRuns.length > 0 && opts?.withInput) {
       const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset;
-      let y = wrapperTop - todoRows - delegateRows;
+      // delegate 为呼吸位归属时首行为顶部空行（不可点），各运行行整体下移 1
+      let y = wrapperTop - todoRows - delegateRows + (padCarrier === 'delegate' ? 1 : 0);
       for (let ri = 0; ri < state.delegateRuns.length; ri++) {
         const run = state.delegateRuns[ri]!;
         tree.delegateRects.set(y, { run: ri, kind: 'toggle' });
@@ -1385,6 +1412,17 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     let idx = 0;
     if (todoCount > 0) {
       const barChunk = { __isChunk: true as const, text: ACCENT_BAR, fg: parseColor(theme.suggestBorder), bg: parseColor(theme.footerBg), attributes: 0 };
+      // 顶部呼吸位（本面板为归属时）：1 空行（竖线贯通、面板底色），与对话内容不断档
+      if (padCarrier === 'todo') {
+        const padCell = tree.todoCells[idx++]!;
+        padCell.visible = true;
+        try {
+          padCell.content = new StyledText([barChunk, todoPad(1)]);
+          paintPanelCell(padCell, theme);
+        } catch (e) {
+          logCrash('todo-pad', e);
+        }
+      }
       for (let i = 0; i < Math.min(4, todoCount); i++) {
         const item = state.todoList[i]!;
         const done = item.status === 'completed';
@@ -1394,11 +1432,13 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         const cell = tree.todoCells[idx++]!;
         cell.visible = true;
         try {
-          // 行 = 竖线 ▍ + 1 空格 + 状态标记（同 queue 面板风格，竖线连续贯通）
+          // 行 = 竖线 ▍ + 1 空格 + 状态标记（同 queue 面板风格，竖线连续贯通）；
+          // 完成态对号走绿色加粗（深/亮主题经 diffAdd 映射），进行中走 accent 蓝加粗
+          const markFg = done ? theme.diffAdd : active ? theme.accentBlue : theme.footerDim;
           const mid = ` ${mark} `;
           cell.content = new StyledText([
             barChunk,
-            { __isChunk: true as const, text: mid, fg: parseColor(active ? theme.accentBlue : theme.footerDim), attributes: active ? TextAttributes.BOLD : 0 },
+            { __isChunk: true as const, text: mid, fg: parseColor(markFg), attributes: TextAttributes.BOLD },
             { __isChunk: true as const, text, fg: parseColor(active ? theme.footerText : theme.footerDim), attributes: 0 },
             todoPad(1 + visualWidth(mid) + visualWidth(text)),
           ]);
@@ -1451,8 +1491,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       | { kind: 'item'; itemIdx: number };
     let builtRows: SugRow[] = [];
     if (visible && picker) {
-      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows) - todo(delegateRows)；hero 居中模式再减 heroOffset
-      const footerTop = (height ?? 24) - 7 - pendingRows - delegateRows - state.inputLines - heroOffset;
+      // 灰色块顶部（0-based 屏幕行）= 视口 - 根底内边距(1) - 灰色块(inputLines+4，含圆角边框) - 待发送区(pendingRows) - 任务清单(todoRows) - delegate(delegateRows)；hero 居中模式再减 heroOffset
+      const footerTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset;
       // 紧凑下拉：内部行（含提示行）≤ 8（小视口按剩余空间收缩）——面板不铺满整个内容区，
       // 而是悬停在输入框上方的一小片下拉（用户反馈菜单铺满全屏不像“输入框上方的菜单”）
       const interiorBudget = Math.max(3, Math.min(8, footerTop - 3));
@@ -1793,9 +1833,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   // 每条消息一行（无标题行）：消息 i 在 y = wrapperTop + i。
   if (pendingCount > 0 && opts?.withInput) {
     tree.pendingRects.clear();
-    // hero 居中模式下底部块随根居中上移 heroOffset，命中区同步换算
+    // hero 居中模式下底部块随根居中上移 heroOffset，命中区同步换算；
+    // queue 为呼吸位归属时首行为顶部空行（不可点），消息行整体下移 1
     const wrapperTop = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - state.inputLines - heroOffset;
-    for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(wrapperTop + i, i);
+    const msgTop = wrapperTop + (padCarrier === 'queue' ? 1 : 0);
+    for (let i = 0; i < pendingVisibleMsgs; i++) tree.pendingRects.set(msgTop + i, i);
   }
   // ask_user 提问面板（输入区上方）：**扁平面板 + 独立自定义输入**——? 问题（单选/多选，
   // cyan 加粗同命令面板标题）+ 每行 `[x] A) 选项` + 自定义行（面板**自己独立的输入缓冲**

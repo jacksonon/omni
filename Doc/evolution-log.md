@@ -1,6 +1,10 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十一次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十三次）。
+
+- **2026-09-12（第二百四十三次）**：**输入区上方附属视图显示优化（呼吸位 + todo 对号）**——用户嫌 todo 视图上方无边距、对号不好看。修：①顶部呼吸位：`src/tui/rows.ts` 新增 `abovePadCarrier`（ask 自带留白居最上时不加；否则最上方那块 delegate/todo/queue 面板多渲染 1 面板底色空行、竖线贯通），`delegatePanelRows`/`computeRows`/`repaintTree` 三处预算同步 +1，点击命中区（`pendingRects`/`delegateRects`）同步下移，联想浮层 `footerTop` 补上漏减的 `todoRows`；②todo 对号：完成态 `✓` 走绿色加粗（`theme.diffAdd`）、进行中 `▸` 保持 accent 蓝加粗（字形不变）。**验证**：typecheck ✓ · tui:snapshot 34 绿（场景 15 加呼吸位断言；唯一 ✗ 场景 34 moonshot 为改动前既有）。
+
+- **2026-09-12（第二百四十二次）**：**任务清单完成自动移除（修“plan 执行完不消失”）**——用户问输入区上方 plan 执行完为什么不消失。确认：那是 `todo_write` 的会话级常驻小视图（`state.todoList`，只在 `/new` 清；`delegate` 面板才跑完即撤）。修：`src/tui/output.ts onTurnEnd` 全 `completed` 即清空面板 + `src/tui/interactive.ts` 同条件清 `runOpts.todoList`（兜底引用分叉；未完成保留跨轮）。**验证**：typecheck ✓ · tsx 探针（全完成清零/未完成保留）✓ · tui:snapshot 全绿（唯一 ✗ 场景 34 moonshot 为改动前既有）。
 
 - **2026-09-12（第二百四十一次）**：**纯提示类命令面板自动收起（修“确认窗口需手动 Esc 才消失”）**——排查确认：需手动消除的只有三类，审批卡片（`y/Enter` 批准、`n/Esc` 拒绝，`src/tui/output.ts:752`）/提问面板（`Enter` 提交/`Esc` 取消，`output.ts:782`）/选择菜单（`Enter`/数字确认/`Esc` 取消，`commands.ts:1987`）是安全与操作闸门，保持不动；用户所指是纯提示（动作已完成、只需告知）。修：`src/tui/commands.ts` —— `/new`·`/cd`·`/auto`·`/vim` 加 `autoClose: true`（执行完面板 1.5s 自动收，沿用 `/undo`·`/init` 既有模式）+ 成功 toast 镜像（沿用 `/mcp add/remove` 模式）；`/pin`·`/archive`·`/unarchive`·`/tasks stop`·`/plugin 装卸启停`成功时面板 + toast + 定时收（歧义候选/失败驻留供阅读）；`/tasks`·`/team` 空态·`/diff`·`/review` 无改动·`/context` 覆盖/清除·未信任警告·未知顶层命令仅面板定时收（无 toast）；长内容（status/agents/diff/review 结果等）与报错/用法保持驻留。**验证**：typecheck ✓ · tui:snapshot 全绿（唯一 ✗ 场景 34 moonshot provider 解析为改动前既有）· tsx 探针 6 条（/cd·/auto·/tasks·/team·未知命令·未信任警告即时成面板 + toast，1.8s 后全收）。
 

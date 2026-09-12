@@ -882,11 +882,25 @@ export function buildBody(state: TuiState, width: number): Row[] {
 }
 
 /**
+ * 输入区上方附属面板的顶部呼吸位归属：ask 自带顶部留白且居最上（有 ask 时其它面板
+ * 不需要）；ask 隐藏时由最上方那块可见面板多渲染 1 空行（面板底色内，与对话内容
+ * 不断档、面板之间仍连续）。返回携带呼吸位的面板，无面板时 null。
+ */
+export function abovePadCarrier(state: TuiState): 'delegate' | 'todo' | 'queue' | null {
+  if (state.ask) return null;
+  if (state.delegateRuns.length > 0) return 'delegate';
+  if (state.todoList.length > 0) return 'todo';
+  if (state.pending.length > 0) return 'queue';
+  return null;
+}
+
+/**
  * 运行中 delegate 面板的总行数预算（computeRows / repaintTree / hero 布局共用）：
  * 每条运行中 delegate 占：
  *   · 折叠态 = 标题 1 行；
  *   · 展开态 = 标题 1 + 明细行（最多 10 条，超出省略提示 1）+ 底部状态/停止行 1。
  * 明细展开上限与渲染保持一致（见 render.ts delegateBox 渲染段）。
+ * delegate 为呼吸位归属时 +1（顶部空行，见 abovePadCarrier）。
  */
 export function delegatePanelRows(state: TuiState): number {
   let rows = 0;
@@ -899,6 +913,7 @@ export function delegatePanelRows(state: TuiState): number {
       rows += 1; // ⏹ 停止 / 已停止 / 状态行
     }
   }
+  if (rows > 0 && abovePadCarrier(state) === 'delegate') rows += 1;
   return rows;
 }
 
@@ -931,13 +946,17 @@ export function computeRows(
   // 命令联想列表是**独立浮层**（absolute 定位，见 repaintTree）——不占内容流，
   // 内容区预算不再减它的行数（对话不因联想出现而跳动）
   // 待发送消息区（输入框上方小视图）：每条一行「N queued · 文本」（最多 4 条）+
-  // 超出时「还有 N 条」1 行（空列表 0 行）；预算同步收缩（灰色块永远完整可见）。
+  // 超出时「还有 N 条」1 行（空列表 0 行）；为呼吸位归属时 +1 顶部空行；预算同步收缩（灰色块永远完整可见）。
   const pendingCount = state.pending.length;
+  const carrier = opts?.withInput ? abovePadCarrier(state) : null;
   const pendingRows =
-    opts?.withInput && pendingCount > 0 ? Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) : 0;
-  // 任务清单小视图（待发送区上方）：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）。
+    opts?.withInput && pendingCount > 0
+      ? Math.min(4, pendingCount) + (pendingCount > 4 ? 1 : 0) + (carrier === 'queue' ? 1 : 0)
+      : 0;
+  // 任务清单小视图（待发送区上方）：最多 4 条 + 超出时「还有 N 项」1 行（空清单 0 行）+
+  // 呼吸位归属时 +1 顶部空行。
   const todoCount = opts?.withInput ? state.todoList.length : 0;
-  const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) : 0;
+  const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) + (carrier === 'todo' ? 1 : 0) : 0;
   // ask_user 提问面板（输入区上方）：留白 1 + ? 问题行 1 + 每选项 1 行 + 自定义行 1 +
   // 确认行 1 + 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
   const askRows = opts?.withInput && state.ask ? state.ask.options.length + 5 : 0;

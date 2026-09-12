@@ -830,6 +830,11 @@ export class TuiOutput implements Output {
     // 回合结束兜底：清空 delegate 面板残留（正常路径 onToolResult 已逐个移除；
     // 取消/异常中断时可能有未收尾 run——delegate 子代理继续在后台跑，面板行不再显示）
     this.state.delegateRuns.length = 0;
+    // 任务清单完成自动移除：全部 completed → 输入区上方小视图撤下（执行完不残留；
+    // 未完成（有 pending/in_progress）则保留跨轮继续显示）
+    if (this.state.todoList.length > 0 && this.state.todoList.every((t) => t.status === 'completed')) {
+      this.state.todoList.length = 0;
+    }
     // 当次 token 使用统计（用户要求「每一次发送消息、返回消息结束后，增加当次 token
     // 使用统计。输入多少、输出、缓存」）：默认收起显示汇总，点击展开看每次 LLM 请求的
     // 明细（输入/输出/缓存，一行一条，加起来 = 汇总）。/tokens 关闭时不插入（数据
