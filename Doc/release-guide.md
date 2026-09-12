@@ -12,6 +12,7 @@
 
 打包注意：
 - 原生二进制输出到 `release/`（已 gitignore），**不进 npm 包**（平台相关）；
+- **macOS 产物编译后自动 ad-hoc 重新签名**（`scripts/sign-macos.mjs`，`npm run compile` 末尾执行）：bun compile 产物是 linker-signed 后被 bun 改写字节，签名失效——macOS 26+/27 运行时强校验直接 SIGKILL（exit 137，表现为 `omni` 无输出），重新签名即修复（v0.8.1 起）；
 - npm 包只发布 `dist/`（`files` 字段），体积约 150K；
 - 全局安装测试：`npm install -g ./omni-0.1.0.tgz --prefix <前缀>`。
 

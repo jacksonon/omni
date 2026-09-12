@@ -81,7 +81,7 @@
     "bundle:tui": "bun build ./src/tui-entry.ts --target=bun --outdir=packages/omni-tui/dist --banner '#!/usr/bin/env bun' --external '@opentui/core-*'",
     "pack:tui": "bash scripts/pack-tui.sh",
     "pack:tui:compile": "bash scripts/pack-tui.sh --compile",
-    "compile": "bun build --compile ./src/tui-entry.ts --outfile=release/omni",
+    "compile": "bun build --compile ./src/tui-entry.ts --outfile=release/omni && node scripts/sign-macos.mjs",
     "tui:snapshot": "bun run ./scripts/tui-snapshot.ts",
     "mock": "node scripts/mock-server.mjs",
     "eval": "tsx scripts/eval/run-eval.ts",

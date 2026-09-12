@@ -47,7 +47,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 | 产物 | 命令 | 说明 |
 |---|---|---|
 | `dist/omni.cjs`（~730K） | `npm run bundle` | **单文件 JS 包**（内联 openai SDK），需 Node ≥18；npm 安装即用此文件 |
-| `release/omni`（~57M） | `npm run compile` | **原生二进制**（bun compile，含运行时，零依赖、无需 Node），平台相关（arm64/x64），适合直接分发 |
+| `release/omni`（~57M） | `npm run compile` | **原生二进制**（bun compile，含运行时，零依赖、无需 Node），平台相关（arm64/x64），适合直接分发；macOS 自动 ad-hoc 重新签名（`scripts/sign-macos.mjs`） |
 | `omni-<版本>.tgz` | `npm pack` | **npm 安装包**（自动 prepack 构建），`npm install -g omni-0.1.0.tgz` 全局安装后可直接用 `omni` 命令 |
 
 打包注意：
