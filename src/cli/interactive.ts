@@ -46,11 +46,15 @@ import { findSessionCandidates, listSessions, loadSession, createSession, remove
 import { resolveCdArg } from '../agent/workspace.js';
 import {
   autoGitCommit,
+  buildRewindPreview,
+  checkpointDiffStats,
   checkpointSummaryLine,
   createCheckpoint,
+  executeRewind,
   loadCheckpoint,
   loadCheckpoints,
-  restoreCheckpoint,
+  parseRewindArgs,
+  rewindModeLabel,
 } from '../agent/rewind.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
@@ -844,33 +848,70 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/rewind' || cmd.startsWith('/rewind ')) {
-      // /rewind：会话检查点——无参列出全部检查点；<N> 恢复到第 N 个检查点的文件状态
-      //（只回滚文件，不动对话历史；恢复后注入 system 提示告知模型）。检查点在每轮
-      // 用户消息提交时自动创建并存盘——会话恢复后仍可用。
+      // /rewind：会话检查点三模式——无参列出；<N> 预览；<N> --code|--chat|--both [--yes] 执行。
+      // code = 只回滚文件（默认，兼容旧行为）；chat = 只截断对话；both = 双向。
       const arg = cmd.slice('/rewind'.length).trim();
       const cps = await loadCheckpoints(runOpts.sessionPath);
       if (!arg) {
         if (cps.length === 0) {
           console.log(dim('暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）'));
         } else {
-          console.log(dim(`会话检查点（${cps.length} 个，/rewind <序号> 回滚工作区文件到该时刻）：`));
-          for (const c of cps) console.log(dim(`· ${checkpointSummaryLine(c)}`));
+          console.log(dim(`会话检查点（${cps.length} 个，/rewind <序号> 预览，/rewind <序号> --code|--chat|--both [--yes] 执行）：`));
+          for (const c of cps) {
+            const st = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+            const delta = st.add === 0 && st.rem === 0 ? '· 与当前一致' : `· Δ +${st.add} −${st.rem} 行`;
+            console.log(dim(`· ${checkpointSummaryLine(c)} ${delta}${typeof c.msgCount === 'number' ? '' : '（旧检查点，仅 --code）'}`));
+          }
         }
         safePrompt();
         continue;
       }
-      const n = Number(arg);
-      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+      const parsed = parseRewindArgs(arg);
+      if (!parsed.ok) {
+        console.log(red(parsed.error?.startsWith('未知参数') ? parsed.error : `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`));
+        safePrompt();
+        continue;
+      }
+      if (!cps.some((c) => c.index === parsed.index)) {
         console.log(red(`/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`));
         safePrompt();
         continue;
       }
-      const target = await loadCheckpoint(runOpts.sessionPath, n);
+      const target = await loadCheckpoint(runOpts.sessionPath, parsed.index);
       if (!target) continue;
-      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-      console.log(green(`已回滚到检查点 #${n}（${results.length} 个文件处理）：`));
-      for (const r of results) console.log(dim(`· ${r}`));
-      messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+      if ((parsed.mode === 'chat' || parsed.mode === 'both') && typeof target.msgCount !== 'number') {
+        console.log(red(`检查点 #${parsed.index} 无对话快照（旧版打点），仅支持 --code 回滚文件`));
+        safePrompt();
+        continue;
+      }
+      // 预览（恢复前 diff 面板）：文件 Δ + 对话截断数
+      const diff = await checkpointDiffStats(target).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+      const curPersist = persistableMessages(messages).length;
+      for (const l of buildRewindPreview(target, diff, curPersist, parsed.mode)) console.log(dim(l));
+      if (!parsed.yes) {
+        // 非 --yes：readline 确认（管道/非 TTY 自动取消，防误触）
+        if (!process.stdin.isTTY) {
+          console.log(dim(`非交互环境已取消（加 --yes 执行：/rewind ${parsed.index} --${parsed.mode} --yes）`));
+          safePrompt();
+          continue;
+        }
+        const ans = (await rl.question(dim(`确认回滚到 #${parsed.index}（${rewindModeLabel(parsed.mode)}）？[y/N] `))).trim().toLowerCase();
+        if (ans !== 'y' && ans !== 'yes') {
+          console.log(dim('已取消'));
+          safePrompt();
+          continue;
+        }
+      }
+      const { fileResults, dropped } = await executeRewind(runOpts.sessionPath, messages, target, parsed.mode);
+      if (parsed.mode === 'code' || parsed.mode === 'both') {
+        console.log(green(`已回滚到检查点 #${parsed.index}（${fileResults.length} 个文件处理）：`));
+        for (const r of fileResults) console.log(dim(`· ${r}`));
+      }
+      if (parsed.mode === 'chat' || parsed.mode === 'both') {
+        console.log(green(`对话已截断到检查点 #${parsed.index}（丢弃 ${dropped} 条）`));
+        savedCount = persistableMessages(messages).length;
+      }
+      messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${parsed.index}（${rewindModeLabel(parsed.mode)}；用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
       safePrompt();
       continue;
     }
@@ -1316,8 +1357,8 @@ export async function runInteractive(
     out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
     runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
     // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
-    // 恢复会话后仍可 /rewind）；失败静默不打扰对话
-    await createCheckpoint(runOpts.sessionPath, userText).catch(() => null);
+    // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
+    await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
     // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
     // recorder 传下去——压缩成功时记 compact 轨迹事件）
     await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);

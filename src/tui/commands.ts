@@ -22,12 +22,16 @@ import type { TuiKey, TuiSession } from './render.js';
 import type { PermissionTier } from '../safety/policy.js';
 import { applyUndo, type UndoStack } from '../tools/undo.js';
 import {
+  buildRewindPreview,
   checkpointDiffStats,
   checkpointSummaryLine,
   createCheckpoint,
+  executeRewind,
   loadCheckpoint,
   loadCheckpoints,
-  restoreCheckpoint,
+  parseRewindArgs,
+  rewindModeLabel,
+  type RewindMode,
 } from '../agent/rewind.js';
 import { truncateToWidth } from '../output/format.js';
 import {
@@ -1340,30 +1344,50 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'rewind',
-    description: '会话检查点：回滚工作区到任意历史回合（/rewind 面板选择 · /rewind <N> 直接恢复；文件回滚，对话保留）',
-    descriptionEn: 'Session checkpoints: roll back workspace files to any past turn (/rewind panel · /rewind <N> direct restore)',
+    description: '会话检查点三模式：/rewind 面板选择 · /rewind <N> 预览 · /rewind <N> --code|--chat|--both 执行',
+    descriptionEn: 'Session checkpoints: /rewind panel · /rewind <N> preview · /rewind <N> --code|--chat|--both',
     run: async (ctx) => {
-      // /rewind：会话检查点（P0）——每轮用户消息提交时自动快照工作区修改文件
-      // （.omni/checkpoints/<会话id>/，持久化——恢复会话后仍可用）。无参打开选择面板
-      // （含与当前工作区的差异统计 = 可视化 P1）；<N> 直接恢复（只回滚文件，对话历史
-      // 保留，恢复后注入 system 提示告知模型）。
+      // /rewind 三模式（P0）：无参开检查点面板；<N> 显示恢复前预览；<N> --mode 直接执行。
       const arg = (ctx.args ?? '').trim();
       if (!arg) {
         await openRewindMenu(ctx.state, ctx.sessionPath);
         return;
       }
       const cps = await loadCheckpoints(ctx.sessionPath);
-      const n = Number(arg);
-      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+      const parsed = parseRewindArgs(arg);
+      if (!parsed.ok) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: parsed.error?.startsWith('未知参数') ? parsed.error : `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）` });
+        return;
+      }
+      if (!cps.some((c) => c.index === parsed.index)) {
         pushCmdLine(ctx.state, { kind: 'warn', text: `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）` });
         return;
       }
-      const target = await loadCheckpoint(ctx.sessionPath, n);
+      const target = await loadCheckpoint(ctx.sessionPath, parsed.index);
       if (!target) return;
-      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-      pushCmdLine(ctx.state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` });
-      for (const r of results) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${r}` });
-      ctx.messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+      if ((parsed.mode === 'chat' || parsed.mode === 'both') && typeof target.msgCount !== 'number') {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `检查点 #${parsed.index} 无对话快照（旧版打点），仅支持 --code 回滚文件` });
+        return;
+      }
+      // 带 --yes 或明确 --mode：直接执行；否则只做预览（恢复前 diff 面板），引导用户选模式
+      const hasModeFlag = /\s(--code|--chat|--both|code|chat|both|conversation)\b/i.test(` ${arg} `);
+      if (!parsed.yes && !hasModeFlag) {
+        const { persistableMessages } = await import('../agent/session.js');
+        const diff = await checkpointDiffStats(target).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+        for (const l of buildRewindPreview(target, diff, persistableMessages(ctx.messages).length, parsed.mode)) {
+          pushCmdLine(ctx.state, { kind: 'meta', text: l });
+        }
+        pushCmdLine(ctx.state, { kind: 'meta', text: `执行：/rewind ${parsed.index} --code|--chat|--both（或面板选择模式）` });
+        // 同步打开模式菜单供鼠标/键盘选择
+        ctx.state.rewindPending = parsed.index;
+        openRewindModeMenu(ctx.state, parsed.index);
+        return;
+      }
+      const { fileResults, dropped } = await executeRewind(ctx.sessionPath, ctx.messages, target, parsed.mode).catch(() => ({ fileResults: ['恢复失败'] as string[], dropped: 0 }));
+      pushCmdLine(ctx.state, { kind: 'meta', text: `已回滚到检查点 #${parsed.index}（${rewindModeLabel(parsed.mode)}）：` });
+      if (parsed.mode === 'code' || parsed.mode === 'both') for (const r of fileResults) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${r}` });
+      if (parsed.mode === 'chat' || parsed.mode === 'both') pushCmdLine(ctx.state, { kind: 'meta', text: `· 对话截断 ${dropped} 条` });
+      ctx.messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${parsed.index}（${rewindModeLabel(parsed.mode)}；用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
       scheduleCmdPanelAutoClose(ctx.state, ctx.session);
     },
   },
@@ -2146,8 +2170,8 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
 }
 
 /**
- * 检查点选择面板：列出全部检查点（含与当前工作区的差异统计），选中后 confirmMenu
- * 只记录意图（state.rewindPick = 序号），interactive 每轮异步回滚（与 /session 同模式）。
+ * 检查点选择面板：列出全部检查点（含与当前工作区的差异统计），选中后开模式菜单
+ * （state.rewindPending = 序号，openRewindModeMenu 接管），interactive 每轮异步回滚。
  * 异步：先加载检查点 + 逐个算差异再开面板（仿 openSessionMenu）。
  */
 export async function openRewindMenu(state: TuiState, sessionPath?: string | null): Promise<void> {
@@ -2163,8 +2187,9 @@ export async function openRewindMenu(state: TuiState, sessionPath?: string | nul
   for (const c of cps) {
     const stats = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
     const delta = stats.add === 0 && stats.rem === 0 ? '· 与当前一致' : `· Δ +${stats.add} −${stats.rem} 行`;
+    const oldMark = typeof c.msgCount === 'number' ? '' : '（旧，仅代码）';
     options.push({
-      label: truncateToWidth(`${checkpointSummaryLine(c)} ${delta}`, 60),
+      label: truncateToWidth(`${checkpointSummaryLine(c)} ${delta}${oldMark}`, 60),
       value: String(c.index),
     });
   }
@@ -2172,6 +2197,26 @@ export async function openRewindMenu(state: TuiState, sessionPath?: string | nul
     id: 'rewind',
     title: t(state.language, 'menu.rewind.title'),
     options,
+    selectedIndex: 0,
+    currentValue: '',
+    scrollTop: 0,
+  };
+}
+
+/**
+ * 恢复模式菜单：检查点选中后第二步（三模式 + 预览确认）。
+ * 纯 state 操作：确认经 confirmMenu 写 rewindPick + rewindMode，interactive 异步执行。
+ */
+export function openRewindModeMenu(state: TuiState, index: number): void {
+  state.rewindPending = index;
+  state.menu = {
+    id: 'rewind-mode',
+    title: `检查点 #${index} → 选择恢复模式`,
+    options: [
+      { label: '仅代码（回滚文件，对话保留）', value: 'code' },
+      { label: '仅对话（截断对话，文件不动）', value: 'chat' },
+      { label: '代码+对话（双向回滚）', value: 'both' },
+    ],
     selectedIndex: 0,
     currentValue: '',
     scrollTop: 0,
@@ -2537,12 +2582,22 @@ export function confirmMenu(state: TuiState): void {
     state.sessionPick = opt.value;
     pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.session', { label }) }, '/session');
   } else if (menu.id === 'rewind') {
-    // 回滚检查点：confirmMenu 是纯 state 操作拿不到回调——这里只记录意图
-    // （state.rewindPick = 检查点序号），interactive 每轮异步回滚工作区文件（见 interactive.ts）。
+    // 检查点面板：只记录待选序号并打开模式菜单（第二步选 code/chat/both），
+    // 模式确认后才真正回滚（见 rewind-mode 分支 + interactive 消费）。
     const n = Number(opt.value);
     if (Number.isInteger(n)) {
-      state.rewindPick = n;
-      pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.rewind', { index: n }) }, '/rewind');
+      openRewindModeMenu(state, n);
+      pushCmdLine(state, { kind: 'meta', text: `已选择检查点 #${n}，请选择恢复模式` }, '/rewind');
+      return;
+    }
+  } else if (menu.id === 'rewind-mode') {
+    // 模式菜单：记录回滚意图（序号 + 模式），interactive 每轮异步执行三模式回滚。
+    const mode = opt.value === 'chat' || opt.value === 'both' ? opt.value : 'code';
+    if (state.rewindPending != null) {
+      state.rewindPick = state.rewindPending;
+      state.rewindMode = mode;
+      state.rewindPending = null;
+      pushCmdLine(state, { kind: 'meta', text: tf(lang, 'confirm.rewind', { index: state.rewindPick }) }, '/rewind');
     }
   } else if (menu.id === 'mcp') {
     // MCP 面板：服务器只记录意图（state.mcpPick），interactive 每轮输出详情；

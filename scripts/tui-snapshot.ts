@@ -4469,11 +4469,16 @@ async function main(): Promise<void> {
   }
   s37b.menu = { id: 'rewind', title: '检查点', options: [{ label: '#2 · x', value: '2' }, { label: '#1 · y', value: '1' }], selectedIndex: 0, currentValue: '', scrollTop: 0 };
   const { handleMenuKey: hmk37b } = cmd37b;
-  if (!hmk37b({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s37b) || s37b.menu !== null || s37b.rewindPick !== 2) {
-    console.error(`✗ 场景 37b Enter 确认未记录意图（rewindPick 应=2）: rewindPick=${(s37b as { rewindPick?: unknown }).rewindPick}`);
+  // 三模式：检查点面板 Enter → 打开模式菜单（rewindPending=2），模式菜单 Enter → 记录回滚意图
+  if (!hmk37b({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s37b) || s37b.menu?.id !== 'rewind-mode' || s37b.rewindPending !== 2) {
+    console.error(`✗ 场景 37b 检查点确认未打开模式菜单: menu=${s37b.menu?.id} rewindPending=${(s37b as { rewindPending?: unknown }).rewindPending}`);
     process.exit(1);
   }
-  console.log('✓ 场景 37b 通过：/rewind 检查点面板（空警告 + 确认意图）');
+  if (!hmk37b({ name: 'return', sequence: '', preventDefault: () => {}, stopPropagation: () => {} }, s37b) || s37b.menu !== null || s37b.rewindPick !== 2 || (s37b as { rewindMode?: unknown }).rewindMode !== 'code') {
+    console.error(`✗ 场景 37b 模式确认未记录意图（rewindPick 应=2/mode=code）: rewindPick=${(s37b as { rewindPick?: unknown }).rewindPick}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 37b 通过：/rewind 检查点面板（空警告 + 两步确认意图）');
 
   // 场景 38：执行型命令面板自动收起（无需按 Esc）——autoClose 标记 + scheduleCmdPanelAutoClose 定时收起
   console.log('=== 场景 38：执行型命令面板自动收起 ===');

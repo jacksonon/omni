@@ -80,13 +80,16 @@ import {
 } from '../agent/init.js';
 import { applyUndo, UndoStack, withUndoSnapshot } from '../tools/undo.js';
 import {
+  buildRewindPreview,
   checkpointDiffStats,
   checkpointSummaryLine,
   createCheckpoint,
+  executeRewind,
   loadCheckpoint,
   loadCheckpoints,
+  parseRewindArgs,
   removeCheckpoints,
-  restoreCheckpoint,
+  rewindModeLabel,
 } from '../agent/rewind.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, createMcpHandlers } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
@@ -621,9 +624,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     s.messages.push({ role: 'user', content: buildUserContent(prompt, atts) });
     if (!o.quiet) output.onUserMessage(prompt); // 排队跨会话消息不在当前对话流回显
-    // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘）；
-    // 失败静默不打扰对话
-    await createCheckpoint(s.file ?? undefined, prompt).catch(() => null);
+    // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
+    // 附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
+    await createCheckpoint(s.file ?? undefined, prompt, process.cwd(), persistableMessages(s.messages).length).catch(() => null);
 
     // 后台运行：事件流经 broadcast 推给客户端，REST 路由立即返回 202
     void (async () => {
@@ -1047,8 +1050,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/rewind' || cmd.startsWith('/rewind ')) {
-      // /rewind：会话检查点——无参列出全部；<N> 恢复到第 N 个检查点的文件状态
-      //（只回滚文件，对话保留）。检查点每轮用户消息提交时自动创建并存盘。
+      // /rewind 三模式：无参列出；<N> 预览；<N> --code|--chat|--both [--yes] 执行
       const arg = cmd.slice('/rewind'.length).trim();
       const sessionFile = s?.file ?? undefined;
       const cps = await loadCheckpoints(sessionFile);
@@ -1057,21 +1059,51 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           add('暂无检查点——对话轮次会自动打点（每轮用户消息提交时快照工作区修改文件）');
           return { lines };
         }
-        add(`会话检查点（${cps.length} 个，/rewind <序号> 回滚工作区文件到该时刻）：`);
-        for (const c of cps) add(`· ${checkpointSummaryLine(c)}`);
+        add(`会话检查点（${cps.length} 个，/rewind <序号> 预览，/rewind <序号> --code|--chat|--both [--yes] 执行）：`);
+        for (const c of cps) {
+          const st = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+          const delta = st.add === 0 && st.rem === 0 ? '· 与当前一致' : `· Δ +${st.add} −${st.rem} 行`;
+          add(`· ${checkpointSummaryLine(c)} ${delta}${typeof c.msgCount === 'number' ? '' : '（旧，仅 --code）'}`);
+        }
         return { lines };
       }
-      const n = Number(arg);
-      if (!Number.isInteger(n) || !cps.some((c) => c.index === n)) {
+      const parsed = parseRewindArgs(arg);
+      if (!parsed.ok) {
+        add(parsed.error?.startsWith('未知参数') ? parsed.error : `/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`);
+        return { lines };
+      }
+      if (!cps.some((c) => c.index === parsed.index)) {
         add(`/rewind <序号>：序号须为已有检查点（${cps.map((c) => c.index).join('、') || '无'}）`);
         return { lines };
       }
-      const target = await loadCheckpoint(sessionFile, n);
+      const target = await loadCheckpoint(sessionFile, parsed.index);
       if (!target) return { lines };
-      const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-      add(`已回滚到检查点 #${n}（${results.length} 个文件处理）：`);
-      for (const r of results) add(`· ${r}`);
-      if (s) s.messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+      if ((parsed.mode === 'chat' || parsed.mode === 'both') && typeof target.msgCount !== 'number') {
+        add(`检查点 #${parsed.index} 无对话快照（旧版打点），仅支持 --code 回滚文件`);
+        return { lines };
+      }
+      const diff = await checkpointDiffStats(target).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+      const curPersist = s ? persistableMessages(s.messages).length : 0;
+      for (const l of buildRewindPreview(target, diff, curPersist, parsed.mode)) add(l);
+      if (!parsed.yes) {
+        add(`执行：/rewind ${parsed.index} --${parsed.mode} --yes（对话截断不可恢复，请确认）`);
+        return { lines };
+      }
+      const { fileResults, dropped } = await executeRewind(sessionFile, s ? s.messages : [], target, parsed.mode).catch(() => ({ fileResults: ['恢复失败'] as string[], dropped: 0 }));
+      if (s && (parsed.mode === 'chat' || parsed.mode === 'both')) {
+        // 会话文件已在 executeRewind 内截断；同步内存 persisted 指针防重复追加
+        s.persisted = persistableMessages(s.messages).length;
+      }
+      if (parsed.mode === 'code' || parsed.mode === 'both') {
+        add(`已回滚到检查点 #${parsed.index}（${rewindModeLabel(parsed.mode)}，${fileResults.length} 个文件处理）：`);
+        for (const r of fileResults) add(`· ${r}`);
+      }
+      if (parsed.mode === 'chat' || parsed.mode === 'both') add(`对话已截断到检查点 #${parsed.index}（丢弃 ${dropped} 条）`);
+      if (s) {
+        s.messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${parsed.index}（${rewindModeLabel(parsed.mode)}）。请勿再基于回滚前的文件内容操作。` });
+        if (s.file) await appendSessionMessages(s.file, s.messages.slice(-1)).catch(() => {});
+        s.persisted = persistableMessages(s.messages).length;
+      }
       return { lines };
     }
 
@@ -2475,7 +2507,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const out = [];
         for (const c of cps) {
           const diff = await checkpointDiffStats(c).catch(() => ({ add: 0, rem: 0, files: [] }));
-          out.push({ index: c.index, time: c.time, userMessage: c.userMessage, files: c.files.length, diff });
+          out.push({ index: c.index, time: c.time, userMessage: c.userMessage, files: c.files.length, diff, msgCount: c.msgCount ?? null });
         }
         json(res, 200, out);
         return;
@@ -2484,6 +2516,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (rwMatch && req.method === 'POST') {
         const body = await readBody(req);
         const n = Number(body.index);
+        const mode = body.mode === 'chat' || body.mode === 'both' ? body.mode : 'code';
+        const previewOnly = body.preview === true;
         const s0 = await ensureSession(sid!);
         const cps = await loadCheckpoints(s0.file ?? undefined);
         const target = cps.find((c) => c.index === n);
@@ -2491,10 +2525,24 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           json(res, 400, { error: `检查点 #${body.index} 不存在` });
           return;
         }
-        const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-        s0.messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}。请勿再基于回滚前的文件内容操作。` });
-        for (const l of listeners) l('meta.add', { sessionId: sid!, text: `已回滚到检查点 #${n}（${results.length} 个文件处理）` });
-        json(res, 200, { ok: true, results });
+        if ((mode === 'chat' || mode === 'both') && typeof target.msgCount !== 'number') {
+          json(res, 400, { error: `检查点 #${n} 无对话快照（旧版打点），仅支持 code 模式` });
+          return;
+        }
+        const diff = await checkpointDiffStats(target).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+        const curPersist = persistableMessages(s0.messages).length;
+        const preview = buildRewindPreview(target, diff, curPersist, mode);
+        if (previewOnly) {
+          json(res, 200, { ok: true, preview, diff, msgCount: target.msgCount ?? null, curPersist });
+          return;
+        }
+        const { fileResults, dropped } = await executeRewind(s0.file ?? undefined, s0.messages, target, mode).catch(() => ({ fileResults: ['恢复失败'] as string[], dropped: 0 }));
+        if (mode === 'chat' || mode === 'both') s0.persisted = persistableMessages(s0.messages).length;
+        s0.messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${n}（${rewindModeLabel(mode)}）。请勿再基于回滚前的文件内容操作。` });
+        if (s0.file) await appendSessionMessages(s0.file, s0.messages.slice(-1)).catch(() => {});
+        s0.persisted = persistableMessages(s0.messages).length;
+        for (const l of listeners) l('meta.add', { sessionId: sid!, text: `已回滚到检查点 #${n}（${rewindModeLabel(mode)}，${fileResults.length} 个文件处理${mode === 'code' ? '' : `，对话截断 ${dropped} 条`}）` });
+        json(res, 200, { ok: true, results: fileResults, dropped, mode, preview });
         return;
       }
       const fkMatch = sid ? p.match(new RegExp(`^/api/sessions/${sid}/fork$`)) : null;

@@ -4,12 +4,17 @@
  * 与 /undo 的区别 = **按用户回合打点、可回滚到任意历史时刻、快照持久化**——
  * 每轮用户消息提交后（runAgent 前）把工作区「已跟踪且已修改」文件的当前内容
  * 快照进 `.omni/checkpoints/<会话id>/<序号>.json`；/rewind 列出检查点、选择恢复
- * （文件回滚，对话历史保留——模型经注入的 system 提示知晓回滚事实）。
+ * （三模式：code-only 只回滚文件 / conversation-only 只回滚对话 / both 双向回滚）。
  *
  * 设计取舍：**纯文件方案**（不引 shadow git / 依赖 git 仓库）——快照即数据，
  * 恢复 = 逆序写回；无 git 目录也能用；排除清单（node_modules/dist/.env/.omni 等）
  * 防止快照爆炸；单文件超 CHECKPOINT_FILE_MAX_BYTES 跳过（与 UndoStack 同策略）。
  * 快照存盘 → 会话恢复（--continue / /resume）后从磁盘重读，仍可 /rewind（关键特性）。
+ *
+ * P0 三模式（第一百×××次补齐）：
+ *   · 检查点额外记录 `msgCount`（打点时刻可落盘消息数）——对话回滚截断到该长度；
+ *   · 恢复前 diff 预览（文件 Δ + 对话截断条数）+ 模式确认；
+ *   · 滚动上限：单会话最多 CHECKPOINT_MAX_COUNT 个 + 超 CHECKPOINT_MAX_AGE_MS 自动过期。
  */
 import { mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -22,6 +27,15 @@ const execAsync = promisify(exec);
 
 /** 单文件快照字节上限：超过则跳过该文件（防快照被大文件撑爆；与 UndoStack.SNAPSHOT_MAX_BYTES 同量级） */
 export const CHECKPOINT_FILE_MAX_BYTES = 1024 * 1024;
+
+/** 滚动上限：单会话最多保留检查点数（对标 Claude Code 100 个） */
+export const CHECKPOINT_MAX_COUNT = 100;
+
+/** 滚动上限：检查点保留时长（对标 Claude Code 30 天，毫秒） */
+export const CHECKPOINT_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
+
+/** /rewind 恢复模式：code = 只回滚文件（默认，兼容旧行为）/ chat = 只回滚对话 / both = 双向回滚 */
+export type RewindMode = 'code' | 'chat' | 'both';
 
 /** 检查点目录名（项目 cwd 下 .omni/checkpoints/，已被 .gitignore 的 .omni/ 覆盖） */
 export const CHECKPOINTS_DIRNAME = '.omni/checkpoints';
@@ -44,7 +58,7 @@ export interface CheckpointFile {
 
 /** 一个检查点 = 一次用户回合提交时的工作区快照 */
 export interface Checkpoint {
-  /** 检查点 id = 会话内序号（1-based，文件名即 <N>.json） */
+  /** 检查点 id = 会话内序号（1-based，文件名即 <N>.json；裁剪后可不连续） */
   index: number;
   /** 快照时间戳（epoch ms） */
   time: number;
@@ -52,6 +66,11 @@ export interface Checkpoint {
   userMessage: string;
   /** 快照文件列表 */
   files: CheckpointFile[];
+  /**
+   * 打点时刻可落盘消息数（persistableMessages 长度，含触发本轮的用户消息）。
+   * 对话回滚（chat/both）时把会话截断到该长度；缺省（旧检查点）= 未知，只能 code 模式。
+   */
+  msgCount?: number;
 }
 
 /** 判断路径是否应排除（路径任一段命中排除清单；.env 按文件名精确匹配） */
@@ -98,13 +117,16 @@ export function checkpointsDir(sessionPath: string | undefined, cwd = process.cw
 }
 
 /**
- * 创建检查点：快照当前工作区修改文件 → 写 `<dir>/<N>.json`（N = 已有数量 + 1）。
- * 返回检查点（失败/无会话文件时仍返回内存态检查点——不打扰对话，仅不持久化）。
+ * 创建检查点：快照当前工作区修改文件 → 写 `<dir>/<N>.json`（N = 已有最大序号 + 1，
+ * 裁剪后序号可不连续，避免复用冲突）。msgCount = 打点时刻可落盘消息数（对话回滚用，
+ * 调用方传 persistableMessages(messages).length；不传则为旧式检查点，仅支持 code 模式）。
+ * 写盘后执行滚动裁剪（超 100 个 / 超 30 天删除最旧）。返回检查点。
  */
 export async function createCheckpoint(
   sessionPath: string | undefined,
   userMessage: string,
-  cwd = process.cwd()
+  cwd = process.cwd(),
+  msgCount?: number
 ): Promise<Checkpoint> {
   const files: CheckpointFile[] = [];
   const tracked = await modifiedTrackedFiles(cwd);
@@ -122,18 +144,225 @@ export async function createCheckpoint(
   let index = 1;
   try {
     const existing = existsSync(dir) ? (await readdir(dir)).filter((f) => f.endsWith('.json')) : [];
-    index = existing.length + 1;
+    const nums = existing.map((f) => Number(f.slice(0, -5))).filter((n) => Number.isInteger(n));
+    index = nums.length > 0 ? Math.max(...nums) + 1 : 1;
   } catch {
     // 列目录失败 → 从 1 开始（极端情况：覆盖写也不丢对话）
   }
-  const cp: Checkpoint = { index, time: Date.now(), userMessage: userMessage.slice(0, 200), files };
+  const cp: Checkpoint = {
+    index,
+    time: Date.now(),
+    userMessage: userMessage.slice(0, 200),
+    files,
+    ...(typeof msgCount === 'number' ? { msgCount } : {}),
+  };
   try {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, `${index}.json`), JSON.stringify(cp), 'utf8');
   } catch {
     // 落盘失败静默（不打扰对话；内存态仍可用于本次 /rewind）
   }
+  // 滚动裁剪（失败静默，不打扰对话）
+  await pruneCheckpoints(sessionPath, cwd).catch(() => null);
   return cp;
+}
+
+/**
+ * 滚动裁剪：删除超 30 天的过期检查点 + 超 100 个时删除最旧（按 time 升序）。
+ * 返回删除的序号列表（供调试/测试；失败抛异常由调用方吞掉）。
+ */
+export async function pruneCheckpoints(
+  sessionPath: string | undefined,
+  cwd = process.cwd(),
+  now = Date.now()
+): Promise<number[]> {
+  const dir = checkpointsDir(sessionPath, cwd);
+  if (!existsSync(dir)) return [];
+  const names = (await readdir(dir)).filter((f) => f.endsWith('.json'));
+  if (names.length === 0) return [];
+  const items: { file: string; index: number; time: number }[] = [];
+  for (const f of names) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(dir, f), 'utf8')) as Checkpoint;
+      if (parsed && typeof parsed.index === 'number' && typeof parsed.time === 'number') {
+        items.push({ file: f, index: parsed.index, time: parsed.time });
+      }
+    } catch {
+      // 损坏文件直接删除（占位不占数）
+      try { await unlink(path.join(dir, f)); } catch { /* 忽略 */ }
+    }
+  }
+  const removed: number[] = [];
+  // 1) 超期（30 天）
+  const expired = items.filter((i) => now - i.time > CHECKPOINT_MAX_AGE_MS);
+  for (const e of expired) {
+    try {
+      await unlink(path.join(dir, e.file));
+      removed.push(e.index);
+    } catch { /* 忽略 */ }
+  }
+  let kept = items.filter((i) => !removed.includes(i.index)).sort((a, b) => a.time - b.time || a.index - b.index);
+  // 2) 超数（100 个）：删最旧
+  while (kept.length > CHECKPOINT_MAX_COUNT) {
+    const oldest = kept.shift()!;
+    try {
+      await unlink(path.join(dir, oldest.file));
+      removed.push(oldest.index);
+    } catch { /* 忽略 */ }
+  }
+  return removed;
+}
+
+/** /rewind 参数解析结果 */
+export interface ParsedRewindArgs {
+  ok: boolean;
+  /** 检查点序号（ok 时有效） */
+  index: number;
+  /** 恢复模式（缺省 code，兼容旧行为） */
+  mode: RewindMode;
+  /** --yes/-y 跳过确认（非交互/脚本用） */
+  yes: boolean;
+  error?: string;
+}
+
+/**
+ * 解析 /rewind 参数：`<N> [--code|--chat|--both] [--yes]`。
+ * 兼容写法：--code-only / --conversation / --conversation-only / chat / both / code 裸词。
+ */
+export function parseRewindArgs(raw: string): ParsedRewindArgs {
+  const toks = raw.trim().split(/\s+/).filter(Boolean);
+  if (toks.length === 0) return { ok: false, index: NaN, mode: 'code', yes: false, error: 'empty' };
+  const n = Number(toks[0]);
+  if (!Number.isInteger(n)) return { ok: false, index: NaN, mode: 'code', yes: false, error: 'bad-index' };
+  let mode: RewindMode = 'code';
+  let yes = false;
+  for (const t of toks.slice(1)) {
+    const v = t.toLowerCase();
+    if (v === '--yes' || v === '-y' || v === '--confirm=false' || v === '-f') { yes = true; continue; }
+    if (v === '--code' || v === '--code-only' || v === 'code' || v === 'code-only') { mode = 'code'; continue; }
+    if (v === '--chat' || v === '--conversation' || v === '--conversation-only' || v === '--chat-only' ||
+        v === 'chat' || v === 'conversation' || v === 'conversation-only') { mode = 'chat'; continue; }
+    if (v === '--both' || v === 'both' || v === '--all') { mode = 'both'; continue; }
+    return { ok: false, index: n, mode, yes, error: `未知参数 ${t}（用法：/rewind <序号> [--code|--chat|--both] [--yes]）` };
+  }
+  return { ok: true, index: n, mode, yes };
+}
+
+/** 恢复模式人类可读名（三端统一文案） */
+export function rewindModeLabel(mode: RewindMode): string {
+  return mode === 'code' ? '仅代码' : mode === 'chat' ? '仅对话' : '代码+对话';
+}
+
+/**
+ * 把内存消息截断到前 keepCount 条可落盘消息（保留全部脚手架 system + 截断后补救）。
+ * 安全边界：若截断点落在 assistant tool_calls 之后（其 tool 结果被丢弃），回退丢掉该
+ * assistant（避免悬空 tool_calls 下轮发给 API 报错）。返回丢弃的可落盘条数。
+ */
+export function truncateMessagesToCount(
+  messages: { role: string; tool_calls?: unknown; content?: unknown }[],
+  keepCount: number
+): { dropped: number } {
+  let seen = 0;
+  let cut = messages.length;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i] as unknown as Record<string, unknown>;
+    const c = m['content'];
+    const persistable = typeof c !== 'string' ? true : !isScaffoldContent(c as string);
+    if (!persistable) continue;
+    seen++;
+    if (seen > keepCount) { cut = i; break; }
+  }
+  if (cut >= messages.length) return { dropped: 0 };
+  // 安全回退：截断点紧随 tool_calls assistant → 把该 assistant 也丢掉
+  const prev = messages[cut - 1] as unknown as Record<string, unknown> | undefined;
+  let safeCut = cut;
+  if (prev && prev['role'] === 'assistant' && (prev as { tool_calls?: unknown }).tool_calls) {
+    safeCut = cut - 1;
+  }
+  const droppedPersistable = countPersistable(messages.slice(safeCut));
+  messages.length = safeCut;
+  return { dropped: droppedPersistable };
+}
+
+/** 脚手架前缀判断（与 session.ts SKIP_PREFIXES 同源，避免循环导入） */
+function isScaffoldContent(c: string): boolean {
+  return c.startsWith('[项目记忆') || c.startsWith('[全局记忆') || c.startsWith('[已按任务预载') ||
+    c.startsWith('[已发现技能') || c.startsWith('[项目结构地图');
+}
+
+function countPersistable(msgs: { content?: unknown }[]): number {
+  let n = 0;
+  for (const m of msgs) {
+    const c = (m as Record<string, unknown>)['content'] ?? (m as { content?: unknown }).content;
+    if (typeof c !== 'string' || !isScaffoldContent(c)) n++;
+  }
+  return n;
+}
+
+/**
+ * 构建恢复前预览行（文件 Δ + 对话截断数，三端复用同一文案）。
+ * diff = checkpointDiffStats 结果；curPersist = 当前可落盘消息数。
+ */
+export function buildRewindPreview(
+  cp: Checkpoint,
+  diff: { add: number; rem: number; files: string[] },
+  curPersist: number,
+  mode: RewindMode
+): string[] {
+  const lines: string[] = [];
+  lines.push(`检查点 #${cp.index} · ${cp.userMessage.replace(/\s+/g, ' ').slice(0, 60) || '（无文本）'} · ${new Date(cp.time).toLocaleString()}`);
+  lines.push(`模式：${rewindModeLabel(mode)}（/rewind ${cp.index} --${mode === 'code' ? 'code' : mode} --yes 直接执行）`);
+  if (mode === 'code' || mode === 'both') {
+    if (diff.add === 0 && diff.rem === 0) lines.push(`文件：与当前一致（${cp.files.length} 个快照文件，无需回滚）`);
+    else {
+      lines.push(`文件：将回滚 ${cp.files.length} 个文件（与当前差 Δ +${diff.add} −${diff.rem} 行）：`);
+      for (const f of diff.files.slice(0, 10)) lines.push(`· ${f}`);
+      if (diff.files.length > 10) lines.push(`… 还有 ${diff.files.length - 10} 个文件`);
+    }
+  } else {
+    lines.push(`文件：保持不动（仅对话模式）`);
+  }
+  if (mode === 'chat' || mode === 'both') {
+    if (typeof cp.msgCount !== 'number') {
+      lines.push(`对话：该检查点无对话快照（旧版打点），仅支持 --code；用 --code 回滚文件`);
+    } else {
+      const drop = Math.max(0, curPersist - cp.msgCount);
+      lines.push(drop > 0 ? `对话：将截断 ${drop} 条（${curPersist} → ${cp.msgCount}），截断后不可恢复` : `对话：已在该位置（无需截断）`);
+    }
+  } else {
+    lines.push(`对话：保持不动（仅代码模式）`);
+  }
+  return lines;
+}
+
+/**
+ * 执行回滚（三端共用）：
+ *   code → 只写回文件；chat → 只截断对话（含会话文件）；both → 双向。
+ * messages 原地截断；会话文件截断经 truncateSessionFile 落盘（失败不抛，由调用方提示）。
+ * 返回 { fileResults, dropped }。
+ */
+export async function executeRewind(
+  sessionPath: string | undefined,
+  messages: { role: string; content?: unknown; tool_calls?: unknown }[],
+  target: Checkpoint,
+  mode: RewindMode
+): Promise<{ fileResults: string[]; dropped: number }> {
+  let fileResults: string[] = [];
+  if (mode === 'code' || mode === 'both') {
+    fileResults = await restoreCheckpoint(target);
+  }
+  let dropped = 0;
+  if (mode === 'chat' || mode === 'both') {
+    if (typeof target.msgCount === 'number') {
+      const r = truncateMessagesToCount(messages as never[], target.msgCount);
+      dropped = r.dropped;
+      if (sessionPath) {
+        const { truncateSessionFile } = await import('./session.js');
+        await truncateSessionFile(sessionPath, target.msgCount).catch(() => null);
+      }
+    }
+  }
+  return { fileResults, dropped };
 }
 
 /** 读取某会话的全部检查点（按序号升序）；目录缺失/损坏行跳过 */

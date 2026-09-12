@@ -18,7 +18,7 @@
 
 | 待办项 | 内容 | 详见 |
 |---|---|---|
-| **/rewind 三模式**（P0-1） | 恢复选项 code-only / conversation-only / both 三选；基础版（纯文件快照，工作区文件回滚）已落地 | 二·D.1 P0-1 · 三·第五节 |
+| ✅ **/rewind 三模式**（P0-1，已落地） | code-only / conversation-only / both + 恢复前预览确认 + 100 个/30 天滚动上限 | 二·D.1 P0-1 · 三·第五节 |
 | **Terminal-Bench / SWE-bench 接入**（P2） | 社区基准套件（重投入，容器化环境，OpenHands Docker 沙箱参考） | 三·第十一节 |
 | **agent teams 完整版**（P2） | 共享任务列表 + SendMessage 互发消息 + 并发预算治理 + 树形协调可视化；轻量版（web `/send` 排队为后台任务）已落地 | 二·D.3 · 三·第六节 |
 | **云端远程任务执行**（P2） | 需托管面与容器编排，慎重评估投入产出 | 二·D.3 |
@@ -148,12 +148,16 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 
 #### D.1 P0 —— 定义项
 
-- [ ] **P0-1 会话检查点 `/rewind`（三模式）**（对标 Claude Code /rewind + Roo shadow-git 遗产）：
+- [x] **P0-1 会话检查点 `/rewind`（三模式）**（对标 Claude Code /rewind + Roo shadow-git 遗产）：
       **基础版已落地**（第一百六十四次：每轮用户消息提交后把工作区「已跟踪且已修改」文件快照进
       `.omni/checkpoints/<会话id>/<N>.json` 纯文件方案——不依赖 shadow git，无 git 目录也可用；
       `/rewind` 无参列出 / `<N>` 回滚工作区文件，对话历史保留；CLI/TUI/Web 三端。详见第三部分第五节）。
-      **未完成**：恢复选项 **code-only / conversation-only / both** 三选（当前仅工作区文件回滚 +
-      对话历史保留，无 conversation-only / both）；恢复前 diff 预览面板确认；滚动上限（100 个 / 30 天）。
+      **三模式已落地**（第二百四十四次）：恢复选项 **code-only / conversation-only / both** 三选
+      （检查点新增 `msgCount` 对话快照位；`--code` 只回滚文件 / `--chat` 只截断对话（含会话文件
+      `truncateSessionFile`）/ `--both` 双向；旧检查点无 `msgCount` 仅支持 `--code`）；
+      恢复前 diff 预览（文件 Δ + 对话截断条数，`buildRewindPreview` 三端同文案；CLI 非 `--yes` 时
+      readline 确认，TUI 检查点面板→模式菜单两步确认，Web 面板模式切换 + `uiConfirm` 确认）；
+      滚动上限（单会话 100 个 + 30 天过期，`pruneCheckpoints` 写盘后自动裁剪，序号按最大 +1 防复用冲突）。
 - [x] **P0-2 Web/Electron 多会话并发运行**（已落地：per-session runOpts 原型链克隆 + 独立 undo/events/abort + 全局并发上限 + 后台收件箱 + 前端徽标/按钮全对齐）：per-session runOpts 克隆 + 独立 Safety 闸门 /
       UndoStack / events / abortSignal；全局并发上限与会话级排队治理；
       这是 client/server 架构的成人礼（opencode 教科书级参照）。
@@ -172,7 +176,7 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
       运行防写冲突，结束后可选合并/保留/清理（对标 Droid `--worktree`、Amp/Cursor 并行模式）。
 
 **验收线**：以上 6 项全部落地 + 探针回归全绿 + eval:mock 100% + 新增场景快照全绿
-（截至合并时点：6 项中仅 P0-1 三模式未完成）。
+（P0-1 三模式已于第二百四十四次落地，6 项齐活）。
 
 #### D.2 P1 —— 竞争力增强
 
@@ -431,13 +435,14 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 
 ## 五、恢复与撤销（✅ 基线：/undo /redo 快照栈、**/rewind 会话检查点**、/permission 分级、/diff --stat/--full /review、write_file diff 预览与确认审批）
 
-- [x] **P0 会话检查点 /rewind**（第一百六十四次，Claude Code / Cursor checkpoints 同款）：
+- [x] **P0 会话检查点 /rewind**（第一百六十四次，Claude Code / Cursor checkpoints 同款；
+      三模式见第二百四十四次）：
       每轮用户消息提交后把工作区「已跟踪且已修改」文件快照进 `.omni/checkpoints/<会话id>/<N>.json`
       （纯文件方案——不依赖 shadow git，无 git 目录也可用；排除 node_modules/dist/.env 等，
-      单文件 1MB 上限）；`/rewind` 无参列出（用户消息摘要 + 时间 + 文件数）、`/rewind <N>` 回滚
-      工作区文件到该回合状态（对话历史保留，注入 system 提示告知模型）；快照持久化——
-      **会话恢复后仍可 /rewind**。CLI/TUI/Web 三端。
-      > ⚠️ **待办**：恢复选项三模式（code-only / conversation-only / both）尚未落地，见第二部分 D.1 P0-1。
+      单文件 1MB 上限）；`/rewind` 无参列出（用户消息摘要 + 时间 + 文件数）、`/rewind <N>` 预览、
+      `/rewind <N> --code|--chat|--both [--yes]` 执行（三模式：仅代码/仅对话/双向，对话截断经
+      `truncateSessionFile` 落盘同步，旧检查点无 `msgCount` 仅支持 `--code`）；快照持久化——
+      **会话恢复后仍可 /rewind**；滚动上限 100 个/30 天（`pruneCheckpoints` 自动裁剪）。CLI/TUI/Web 三端。
 - [x] **P1 检查点可视化**（第一百六十四次）：TUI/Web `/rewind` 列表每条附与当前工作区的
       差异统计（Δ +A −B 行，checkpointDiffStats 行级 LCS），一致时显示「与当前一致」。
 - [x] **P2 diff 确认审批**（第一百六十四次）：write_file 需要审批的场景（safe 危险档/ask 全询问）

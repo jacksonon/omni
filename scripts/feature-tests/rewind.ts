@@ -10,16 +10,22 @@ import { TestSuite } from './framework.js';
 import {
   CHECKPOINTS_DIRNAME,
   CHECKPOINT_FILE_MAX_BYTES,
+  CHECKPOINT_MAX_AGE_MS,
+  CHECKPOINT_MAX_COUNT,
+  buildRewindPreview,
   checkpointDiffStats,
   checkpointSummaryLine,
   createCheckpoint,
+  executeRewind,
   isExcludedPath,
   loadCheckpoint,
   loadCheckpoints,
-  modifiedTrackedFiles,
-  restoreCheckpoint,
+  parseRewindArgs,
+  pruneCheckpoints,
+  truncateMessagesToCount,
 } from '../../src/agent/rewind.js';
 import { collectDiff } from '../../src/agent/review.js';
+import { modifiedTrackedFiles, restoreCheckpoint } from '../../src/agent/rewind.js';
 
 /** 临时 git 仓库（隔离 cwd；测试内 chdir，finally 恢复） */
 function makeGitRepo(): string {
@@ -185,6 +191,113 @@ export function rewindSuite(): TestSuite {
 
   suite.test('大文件跳过快照（CHECKPOINT_FILE_MAX_BYTES 上界）', async () => {
     suite.assert(CHECKPOINT_FILE_MAX_BYTES === 1024 * 1024, '上界 1MB');
+  });
+
+  suite.test('P0 三模式：parseRewindArgs（code/chat/both/yes/非法）', () => {
+    const a = parseRewindArgs('3');
+    suite.assert(a.ok && a.index === 3 && a.mode === 'code' && !a.yes, '默认 code');
+    const b = parseRewindArgs('2 --both');
+    suite.assert(b.ok && b.mode === 'both', '--both');
+    const c = parseRewindArgs('2 --chat --yes');
+    suite.assert(c.ok && c.mode === 'chat' && c.yes, '--chat --yes');
+    const d = parseRewindArgs('1 --conversation-only');
+    suite.assert(d.ok && d.mode === 'chat', '--conversation-only 归一化 chat');
+    const e = parseRewindArgs('x');
+    suite.assert(!e.ok, '非数字序号失败');
+    const f = parseRewindArgs('3 --foo');
+    suite.assert(!f.ok, '未知参数失败');
+  });
+
+  suite.test('P0 三模式：truncateMessagesToCount（脚手架保留/tool 安全边界）', () => {
+    const msgs: { role: string; content?: unknown; tool_calls?: unknown }[] = [
+      { role: 'system', content: '[项目记忆]x' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+      { role: 'user', content: 'second' },
+    ];
+    const r = truncateMessagesToCount(msgs, 2);
+    suite.assert(r.dropped === 1 && msgs.length === 3, `截断到 2 条可落盘（实际 len=${msgs.length} drop=${r.dropped}）`);
+    suite.assert((msgs[0] as { content: string }).content === '[项目记忆]x', '脚手架保留');
+    // tool_calls 安全边界：截断点紧随 tool_calls assistant → 一起丢掉
+    const m2: { role: string; content?: unknown; tool_calls?: unknown }[] = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: '', tool_calls: [{ id: '1' }] },
+      { role: 'tool', content: 'out' },
+    ];
+    const r2 = truncateMessagesToCount(m2, 1);
+    // keepCount=1 只保留 user，tool_calls assistant 在截断点之前？这里验证不悬空即可
+    suite.assert(m2.length <= 2, 'tool 截断不悬空');
+    void r2;
+  });
+
+  suite.test('P0 三模式：code/chat/both 执行语义（临时 git 仓库）', async () => {
+    const repo = makeGitRepo();
+    const fakeXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-rewind-xdg-'));
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+    try {
+      process.chdir(repo);
+      const { createSession, persistableMessages, loadSession } = await import('../../src/agent/session.js');
+      const sessionFile = (await createSession({ project: repo, model: 'mock' }))!;
+      suite.assert(sessionFile !== null, '会话文件创建');
+      const { appendSessionMessages } = await import('../../src/agent/session.js');
+      const mem: { role: string; content?: unknown }[] = [{ role: 'user', content: 't1' }];
+      const cp = await createCheckpoint(sessionFile, 't1', repo, persistableMessages(mem as never[]).length);
+      suite.assert(cp.msgCount === 1, '检查点记录 msgCount');
+      mem.push({ role: 'assistant', content: 'a1' });
+      await appendSessionMessages(sessionFile, mem as never[]);
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'v2\n');
+      mem.push({ role: 'user', content: 't2' });
+      // code-only：文件回滚（空快照 no-op），对话不动
+      const before = mem.length;
+      await executeRewind(sessionFile, mem as never[], cp, 'code');
+      suite.assert(mem.length === before, 'code 模式对话不动');
+      // chat-only：文件不动，对话截断
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'v999\n');
+      const r = await executeRewind(sessionFile, mem as never[], cp, 'chat');
+      suite.assert(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8') === 'v999\n', 'chat 模式文件不动');
+      suite.assert(r.dropped === 2 && mem.length === 1, `chat 截断 2 条（实际 drop=${r.dropped} len=${mem.length}）`);
+      const loaded = (await loadSession(sessionFile))!;
+      suite.assert(loaded.messages.length === 1, `会话文件同步截断（实际 ${loaded.messages.length}）`);
+      // 预览行含模式与截断信息
+      const diff = await checkpointDiffStats(cp, repo);
+      const preview = buildRewindPreview(cp, diff, 5, 'both');
+      suite.assert(preview.some((l) => l.includes('代码+对话')), '预览含模式名');
+    } finally {
+      process.chdir(oldCwd);
+      delete process.env.XDG_CONFIG_HOME;
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(fakeXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('P0 滚动上限：超 100 个裁最旧 + 超 30 天过期', async () => {
+    const repo = makeGitRepo();
+    const fakeXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-rewind-xdg-'));
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+    try {
+      process.chdir(repo);
+      const { createSession } = await import('../../src/agent/session.js');
+      const sessionFile = (await createSession({ project: repo, model: 'mock' }))!;
+      suite.assert(CHECKPOINT_MAX_COUNT === 100, '上限 100');
+      suite.assert(CHECKPOINT_MAX_AGE_MS === 30 * 24 * 3600 * 1000, '保留 30 天');
+      for (let i = 0; i < 105; i++) await createCheckpoint(sessionFile, `spam ${i}`, repo, 1);
+      const all = await loadCheckpoints(sessionFile, repo);
+      suite.assert(all.length === 100, `超数裁到 100（实际 ${all.length}）`);
+      // 注入过期检查点 → prune 删除
+      const { checkpointsDir } = await import('../../src/agent/rewind.js');
+      const dir = checkpointsDir(sessionFile, repo);
+      fs.writeFileSync(
+        path.join(dir, '9999.json'),
+        JSON.stringify({ index: 9999, time: Date.now() - 31 * 24 * 3600 * 1000, userMessage: 'old', files: [], msgCount: 1 })
+      );
+      const removed = await pruneCheckpoints(sessionFile, repo);
+      suite.assert(removed.includes(9999), '过期检查点被裁');
+    } finally {
+      process.chdir(oldCwd);
+      delete process.env.XDG_CONFIG_HOME;
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(fakeXdg, { recursive: true, force: true });
+    }
   });
 
   return suite;

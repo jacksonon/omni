@@ -559,10 +559,14 @@ export interface TuiState {
   contextLimitSave: string | null;
   /**
    * /rewind 面板确认的检查点序号（TUI 面板选择后只记录意图，interactive 每轮
-   * 异步回滚工作区文件——confirmMenu 是纯 state 操作拿不到回调，与 /session 同模式）。
-   * 非 null 时 interactive 在处理完回滚后置 null。
+   * 异步回滚——confirmMenu 是纯 state 操作拿不到回调，与 /session 同模式）。
+   * 非 null 时 interactive 在处理完回滚后置 null。模式见 rewindMode（默认 code）。
    */
   rewindPick: number | null;
+  /** /rewind 待选模式（检查点面板选中后开模式菜单；模式菜单确认后与 rewindPick 一起消费） */
+  rewindPending: number | null;
+  /** /rewind 恢复模式（code/chat/both；直接键入 /rewind <N> --both 时由命令层写入） */
+  rewindMode: string | null;
   /**
    * /mcp 面板确认项（srv:<name> 查看详情 / __reconnect__ 重连全部；interactive 每轮消费）。
    * 非 null 时 interactive 在处理完后置 null。
@@ -744,6 +748,8 @@ export function createTuiState(): TuiState {
     sessionPick: null,
     contextLimitSave: null,
     rewindPick: null,
+    rewindPending: null,
+    rewindMode: null,
     mcpPick: null,
     skillPick: null,
     doctorPending: false,

@@ -448,7 +448,7 @@ const I18N_ZH = {
   'shortcut.noMatch': '没有匹配「{q}」的快捷键——试试功能名、分组或键位（如 ⌘K）',
   // 模态框
   'modal.rewindTitle': '会话检查点（/rewind）',
-  'modal.rewindSub': '每轮对话自动快照工作区修改文件；回滚文件到该回合状态（对话保留）。列表附与当前工作区的差异。',
+  'modal.rewindSub': '每轮对话自动快照；三模式回滚：仅代码 / 仅对话 / 代码+对话。列表附与当前工作区的差异。',
   'settings.language': '界面语言',
   'settings.languageDesc': '设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。',
   'modal.dirTitle': '选择工作目录',
@@ -491,9 +491,13 @@ const I18N_ZH = {
   'rewind.diff': '与当前差 Δ{n} 行（+{add} −{rem}）',
   'rewind.same': '与当前一致',
   'rewind.files': '{n} 个文件',
+  'rewind.modeCode': '仅代码',
+  'rewind.modeChat': '仅对话',
+  'rewind.modeBoth': '代码+对话',
+  'rewind.oldNote': '（旧检查点，仅代码）',
   'rewind.rollback': '回滚到此处',
-  'rewind.confirm': '回滚工作区文件到检查点 #{index}？（对话历史保留）',
-  'rewind.done': '已回滚到检查点 #{index}（{n} 个文件处理）',
+  'rewind.confirm': '回滚到检查点 #{index}（{mode}）？对话截断不可恢复。',
+  'rewind.done': '已回滚到检查点 #{index}（{mode}，{n} 个文件处理）',
   'rewind.failed': '回滚失败：{msg}',
   // delegate / 工具卡（动态状态）
   'subagent.label': '子代理',
@@ -835,7 +839,7 @@ const I18N_EN = {
   'settings.tools': 'Available tools',
   'settings.toolsCount': '{n} tools',
   'modal.rewindTitle': 'Session checkpoints (/rewind)',
-  'modal.rewindSub': 'The workspace is snapshotted after every turn; roll files back to that turn\'s state (conversation is kept). The list also shows diffs against the current workspace.',
+  'modal.rewindSub': 'Snapshotted every turn; three restore modes: code-only / conversation-only / both. The list also shows diffs against the current workspace.',
   'settings.language': 'Interface language',
   'settings.languageDesc': 'Switch in Settings → General → Language (中文 / English); takes effect immediately after saving.',
   'modal.dirTitle': 'Choose workspace',
@@ -940,9 +944,13 @@ const I18N_EN = {
   'rewind.diff': 'Δ{n} lines different from current (+{add} −{rem})',
   'rewind.same': 'same as current',
   'rewind.files': '{n} files',
+  'rewind.modeCode': 'Code only',
+  'rewind.modeChat': 'Chat only',
+  'rewind.modeBoth': 'Code+chat',
+  'rewind.oldNote': '(legacy, code only)',
   'rewind.rollback': 'Roll back to here',
-  'rewind.confirm': 'Roll workspace files back to checkpoint #{index}? (chat history is kept)',
-  'rewind.done': 'Rolled back to checkpoint #{index} ({n} files processed)',
+  'rewind.confirm': 'Roll back to checkpoint #{index} ({mode})? Truncated chat cannot be recovered.',
+  'rewind.done': 'Rolled back to checkpoint #{index} ({mode}, {n} files processed)',
   'rewind.failed': 'Rollback failed: {msg}',
   // delegate / tool card (dynamic states)
   'subagent.label': 'Subagent',
@@ -2290,7 +2298,12 @@ function openForkDialog(s) {
   }).catch(() => {});
 }
 
-/** /rewind 面板：列出检查点（附与当前工作区差异），一键回滚 */
+/** /rewind 面板：列出检查点（附与当前工作区差异），三模式回滚 */
+function rewindModeLabelWeb(m) {
+  if (m === 'chat') return t('rewind.modeChat');
+  if (m === 'both') return t('rewind.modeBoth');
+  return t('rewind.modeCode');
+}
 async function openRewindModal(sessionId) {
   $('#rewind-modal').classList.remove('hidden');
   const list = $('#rewind-list');
@@ -2302,10 +2315,27 @@ async function openRewindModal(sessionId) {
       list.appendChild(el('div', 'dir-empty', t('rewind.empty')));
       return;
     }
+    // 模式选择（三模式，默认仅代码兼容旧行为）
+    const modeRow = el('div', 'rewind-modes');
+    const modes = [['code', t('rewind.modeCode')], ['chat', t('rewind.modeChat')], ['both', t('rewind.modeBoth')]];
+    let curMode = state.rewindMode || 'code';
+    const modeBtns = {};
+    modes.forEach(([v, label]) => {
+      const b = el('button', 'seg-btn' + (v === curMode ? ' active' : ''), label);
+      b.type = 'button';
+      b.addEventListener('click', () => {
+        curMode = v;
+        state.rewindMode = v;
+        Object.entries(modeBtns).forEach(([k, btn]) => btn.classList.toggle('active', k === v));
+      });
+      modeBtns[v] = b;
+      modeRow.appendChild(b);
+    });
+    list.appendChild(modeRow);
     [...cps].reverse().forEach((c) => {
       const row = el('div', 'rewind-row');
       const main = el('div', 'rewind-main');
-      main.appendChild(el('div', 'rewind-msg', `#${c.index} · ${c.userMessage || t('rewind.noText')}`));
+      main.appendChild(el('div', 'rewind-msg', `#${c.index} · ${c.userMessage || t('rewind.noText')}${c.msgCount == null ? ' ' + t('rewind.oldNote') : ''}`));
       const d = c.diff || { add: 0, rem: 0 };
       const diffTxt = d.add + d.rem > 0 ? t('rewind.diff', { n: d.add + d.rem, add: d.add, rem: d.rem }) : t('rewind.same');
       main.appendChild(el('div', 'rewind-meta', `${new Date(c.time).toLocaleString()} · ${t('rewind.files', { n: c.files })} · ${diffTxt}`));
@@ -2313,15 +2343,16 @@ async function openRewindModal(sessionId) {
       const btn = el('button', 'primary', t('rewind.rollback'));
       btn.type = 'button';
       btn.addEventListener('click', async () => {
-        if (!(await uiConfirm(t('rewind.confirm', { index: c.index })))) return;
+        if (!(await uiConfirm(t('rewind.confirm', { index: c.index, mode: rewindModeLabelWeb(curMode) })))) return;
         try {
-          await api(`/api/sessions/${sessionId}/rewind`, {
+          const r = await api(`/api/sessions/${sessionId}/rewind`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ index: c.index }),
+            body: JSON.stringify({ index: c.index, mode: curMode }),
           });
           $('#rewind-modal').classList.add('hidden');
-          notify(t('rewind.done', { index: c.index, n: c.files }), 'success');
+          const cnt = Array.isArray(r.results) ? r.results.length : c.files;
+          notify(t('rewind.done', { index: c.index, mode: rewindModeLabelWeb(curMode), n: cnt }), 'success');
         } catch (err) { notify(t('rewind.failed', { msg: err.message }), 'error'); }
       });
       row.appendChild(btn);
@@ -3919,7 +3950,7 @@ const SLASH_COMMANDS = [
   { name: '/compact', desc: '手动压缩上下文为摘要' },
   { name: '/review', desc: '代码审查（typecheck + git diff）' },
   { name: '/diff', desc: '查看未提交改动（--stat 只看统计 · --full 不截断）' },
-  { name: '/rewind', desc: '检查点面板（无参数打开面板，/rewind <N> 直接回滚）' },
+  { name: '/rewind', desc: '检查点三模式（无参数开面板，/rewind <N> 预览，/rewind <N> --code|--chat|--both）' },
   { name: '/trace', desc: '查看运行轨迹账本' },
   { name: '/agents', desc: '查看子代理配置与定义' },
   { name: '/orchestrate', desc: '并行编排（fan-out delegate → 汇总 → 审查）' },
@@ -4268,19 +4299,29 @@ async function runSlashCommand(cmd) {
       return;
     }
   }
-  // /rewind 无参数 → 打开检查点面板；带参数 → 直接调 REST 回滚（与面板同接口）
+  // /rewind 无参数 → 打开检查点面板；带参数 → 直接调 REST 回滚（与面板同接口，三模式）
   if (base === '/rewind') {
     if (!state.session) { notify(t('session.new'), 'info'); return; }
     if (!arg) { closeCmdPanel(); openRewindModal(state.session); return; }
-    const n = Number(arg.split(/\s+/)[0]);
-    if (!Number.isInteger(n)) { notify('用法：/rewind <序号>（无参数打开检查点面板）', 'error'); return; }
+    const toks = arg.split(/\s+/).filter(Boolean);
+    const n = Number(toks[0]);
+    if (!Number.isInteger(n)) { notify('用法：/rewind <序号> [--code|--chat|--both]（无参数打开检查点面板）', 'error'); return; }
+    let mode = 'code';
+    for (const tk of toks.slice(1)) {
+      const v = tk.toLowerCase();
+      if (v === '--chat' || v === '--conversation' || v === 'chat' || v === 'both' || v === '--both') mode = v.includes('both') || v === 'both' ? 'both' : 'chat';
+      else if (v === '--code' || v === 'code') mode = 'code';
+      else if (v === '--yes' || v === '-y') continue;
+      else { notify(`未知参数 ${tk}（用法：/rewind <序号> [--code|--chat|--both]）`, 'error'); return; }
+    }
+    if (!(await uiConfirm(t('rewind.confirm', { index: n, mode: rewindModeLabelWeb(mode) })))) return;
     try {
       const r = await api(`/api/sessions/${state.session}/rewind`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ index: n }),
+        body: JSON.stringify({ index: n, mode }),
       });
       const cnt = Array.isArray(r.results) ? r.results.length : '';
-      notify(cnt === '' ? `已回滚到检查点 #${n}` : t('rewind.done', { index: n, n: cnt }), 'success');
+      notify(cnt === '' ? `已回滚到检查点 #${n}` : t('rewind.done', { index: n, mode: rewindModeLabelWeb(mode), n: cnt }), 'success');
     } catch (e) { notify(t('rewind.failed', { msg: e.message }), 'error'); }
     return;
   }

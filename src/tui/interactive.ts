@@ -21,7 +21,7 @@ import { prepareContext } from '../agent/context.js';
 import { runAgent } from '../agent/loop.js';
 import { maybeWriteGlobalMemory, maybeWriteProjectMemory } from '../agent/memory.js';
 import { appendSessionMessages, createSession, finalizeSession, findSessionById, loadSession, persistableMessages, removeEmptySession, sessionIdFromPath } from '../agent/session.js';
-import { autoGitCommit, createCheckpoint, loadCheckpoint, restoreCheckpoint } from '../agent/rewind.js';
+import { autoGitCommit, buildRewindPreview, checkpointDiffStats, createCheckpoint, executeRewind, loadCheckpoint, parseRewindArgs, rewindModeLabel } from '../agent/rewind.js';
 import { generateSessionTitle } from '../agent/title.js';
 import type { RunOptions } from '../agent/types.js';
 import { EventRecorder } from '../agent/events.js';
@@ -251,19 +251,34 @@ export async function runTuiInteractive(
       }
       await session.paint();
     }
-    // /rewind 面板确认：回滚到所选检查点的文件状态（只改工作区文件，对话保留；
-    // 处理完清空意图）
+    // /rewind 面板确认：三模式回滚（code/chat/both；恢复前预览已在面板展示，
+    // 这里执行并输出结果；处理完清空意图）
     if (state.rewindPick != null) {
       const n = state.rewindPick;
+      const mode = (state.rewindMode === 'chat' || state.rewindMode === 'both' ? state.rewindMode : 'code') as import('../agent/rewind.js').RewindMode;
       state.rewindPick = null;
+      state.rewindMode = null;
+      state.rewindPending = null;
       const target = await loadCheckpoint(runOpts.sessionPath, n);
       if (!target) {
         pushCmdLine(state, { kind: 'warn', text: `/rewind <序号>：检查点 #${n} 不存在（/rewind 查看列表）` }, '/rewind');
+      } else if ((mode === 'chat' || mode === 'both') && typeof target.msgCount !== 'number') {
+        pushCmdLine(state, { kind: 'warn', text: `检查点 #${n} 无对话快照（旧版打点），仅支持仅代码模式` }, '/rewind');
       } else {
-        const results = await restoreCheckpoint(target).catch(() => ['恢复失败']);
-        pushCmdLine(state, { kind: 'meta', text: `已回滚到检查点 #${n}（${results.length} 个文件处理）：` }, '/rewind');
-        for (const r of results) pushCmdLine(state, { kind: 'meta', text: `· ${r}` }, '/rewind');
-        messages.push({ role: 'system', content: `[已执行 /rewind] 工作区已回滚到检查点 #${n}（用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
+        const diff = await checkpointDiffStats(target).catch(() => ({ add: 0, rem: 0, files: [] as string[] }));
+        const { persistableMessages } = await import('../agent/session.js');
+        for (const l of buildRewindPreview(target, diff, persistableMessages(messages).length, mode)) {
+          pushCmdLine(state, { kind: 'meta', text: l }, '/rewind');
+        }
+        const { fileResults, dropped } = await executeRewind(runOpts.sessionPath, messages, target, mode).catch(() => ({ fileResults: ['恢复失败'] as string[], dropped: 0 }));
+        if (mode === 'code' || mode === 'both') {
+          pushCmdLine(state, { kind: 'meta', text: `已回滚到检查点 #${n}（${rewindModeLabel(mode)}，${fileResults.length} 个文件处理）：` }, '/rewind');
+          for (const r of fileResults) pushCmdLine(state, { kind: 'meta', text: `· ${r}` }, '/rewind');
+        }
+        if (mode === 'chat' || mode === 'both') {
+          pushCmdLine(state, { kind: 'meta', text: `对话已截断到检查点 #${n}（丢弃 ${dropped} 条）` }, '/rewind');
+        }
+        messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${n}（${rewindModeLabel(mode)}；用户消息「${target.userMessage.slice(0, 80)}」提交时的状态）。请勿再基于回滚前的文件内容操作。` });
       }
       await session.paint();
     }
@@ -1010,8 +1025,8 @@ export async function runTuiInteractive(
       out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
       runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
       // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
-      // 恢复会话后仍可 /rewind）；失败静默不打扰对话
-      await createCheckpoint(runOpts.sessionPath, userText).catch(() => null);
+      // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
+      await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
       // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context；
       // recorder 传下去——压缩成功时记 compact 轨迹事件）
       await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);

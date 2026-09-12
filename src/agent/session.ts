@@ -126,6 +126,45 @@ export async function appendSessionMessages(
   }
 }
 
+/**
+ * 截断会话文件到前 keepCount 条可落盘消息（/rewind chat/both 对话回滚用）。
+ * 只重写 `{"t":"m"}` 行（保留 meta 首行 + ev/wfile 等辅助行）；keepCount 越界时 clamp。
+ * 返回截断后保留的 m 行数；失败返回 null（调用方静默处理）。
+ */
+export async function truncateSessionFile(file: string, keepCount: number): Promise<number | null> {
+  try {
+    if (!existsSync(file)) return null;
+    const raw = await readFile(file, 'utf8');
+    const nl = raw.indexOf('\n');
+    if (nl < 0) return null;
+    const first = raw.slice(0, nl);
+    let metaOk = false;
+    try {
+      const parsed = JSON.parse(first);
+      metaOk = parsed && parsed.t === 'meta';
+    } catch { metaOk = false; }
+    if (!metaOk) return null;
+    const keep = Math.max(0, Math.floor(keepCount));
+    const out: string[] = [first];
+    let seen = 0;
+    for (const line of raw.slice(nl + 1).split('\n')) {
+      if (!line.trim()) continue;
+      let parsed: any;
+      try { parsed = JSON.parse(line); } catch { out.push(line); continue; }
+      if (parsed && parsed.t === 'm') {
+        if (seen < keep) { out.push(line); seen++; }
+        // 超出部分丢弃（含其 tool 配对——打点位置恒为 user 边界，安全）
+      } else {
+        out.push(line); // ev/wfile 等辅助行保留
+      }
+    }
+    await writeFile(file, out.join('\n') + '\n', 'utf8');
+    return seen;
+  } catch {
+    return null;
+  }
+}
+
 /** 会话结束：刷新 meta 的 updated 时间戳（重写首行，其余行不动） */
 export async function finalizeSession(file: string): Promise<void> {
   try {

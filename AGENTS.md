@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成，仅剩进阶项：SWE-bench 评测、/rewind 三模式（code/conversation/both）、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
+当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -174,7 +174,7 @@ src/
                         #   （localStorage 持久化 omni.mcAutoFetched_<provider> 标记，之后需手动点「获取/刷新模型列表」）
                         #   输入区斜杠命令直达原生 UI（非纯面板）：/model·/variants 无参开模型面板（有参走后端但渲染为通知+面板重绘）/
                         #   /permission 无参开权限 pop（有参后端切换+通知）/ /plan 直切开关+通知 / /settings 开设置面板（支持面板名直达）/
-                        #   /rewind 开检查点面板（<N> 直接 REST 回滚）/ /fork 开分叉对话框（<N> 直接 REST 分叉）/ /export 直接下载 /
+                        #   /rewind 开检查点面板（三模式切换，<N> --code|--chat|--both REST 回滚）/ /fork 开分叉对话框（<N> 直接 REST 分叉）/ /export 直接下载 /
                         #   /rename 走 REST（广播 title）/ /session·/resume 开切换面板（有参本地匹配直达）/ /clear 走后端但只通知不清面板；
                         #   纯文本命令（/status /context /diff /review 等）保留 cmd-panel；后端 /rename 广播 title、/fork 广播 session.created、
                         #   /settings 兜底提示面板位置（前端拦截为主）
@@ -361,7 +361,7 @@ for step in 1..maxSteps:
 | `/auto` 命令 | **AI 自动审批开关**（2026-09）：`/auto [on|off]`（持久化；Web 设置 → 通用勾选）；`omni exec --approve-for-me` 等价 |
 | `/vim` 命令 | **TUI Vim 键位开关**（2026-09）：`/vim [on|off]`（Esc normal / i insert；h/j/k/l/w/b/e/0/$/x/dd/cc/dw/yy/p/o/O） |
 | `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
-| `/rewind` 命令 | **会话检查点**：TUI 无参打开选择面板（含差异统计，确认经 `rewindPick` 意图异步回滚）/ `/rewind <N>` 直接恢复（只回滚工作区文件，对话保留 + system 提示）；Web 端命令直达检查点面板 |
+| `/rewind` 命令 | **会话检查点三模式**：TUI 无参开检查点面板→模式菜单两步确认（`rewindPick`+`rewindMode` 意图异步回滚）/ `/rewind <N>` 预览 / `/rewind <N> --code\|--chat\|--both [--yes]` 执行（仅代码/仅对话/双向；旧检查点无对话快照仅 `--code`）；Web 面板模式切换 + `/rewind <N> --mode` |
 | `/trace` 命令 | **轨迹文本账本**（console/web `/trace`，TUI 右侧面板已删除）：每轮请求/工具/消息事件序列折叠投影（`agent/trace.ts` foldTrace + buildTraceTextLines，数据源 = 事件记录器内存全量事件） |
 | `/doctor` 命令 | **环境诊断**：Node/Bun 版本、API Key、端点连通性（5s 超时 fetch）、配置/MCP/权限/模型 |
 | `mcp_*` | **MCP 外部工具**：经 stdio（本地子进程）或 streamable HTTP（远端端点）调用外部服务器（可选，`mcpServers`）；同名 server 资源/提示词辅助工具（`<server>_read_resource` / `<server>_get_prompt`）随声明自动注册；server instructions 注入系统提示；per-tool 审批模式（`defaultToolsApprovalMode`）过安全闸门 |
@@ -381,7 +381,7 @@ for step in 1..maxSteps:
 
 - [x] **MVP → 完整能力（已完成）**：Agent 循环 + 工具 + mock e2e → 安全护栏（权限分级/审批/审计/工作区信任/OS 沙箱 2.0）→ 上下文管理（截断/摘要压缩/预载）→ 评估体系 → CLI/TUI → MCP（双传输/Resources/Prompts/OAuth/通知流）→ 子代理与编排 → 记忆系统（嵌套 AGENTS.md/渐进披露/TTL/结构化）→ 会话持久化/检查点/撤销 → 技能系统 → Web/Electron 多前端 → Headless 与 CI（协议冻结 + omni-action）→ **1.0**（providers 模型层/Web 多会话并发/子代理 worktree 隔离/Hooks 扩展/压缩 2.0/LSP 反馈/预设/规格/遥测/eval 成本报告/发布工程）
 - [x] **2026-09 市场对齐批次（第一百七十八次）**：动态工作流 / Mission 编排（task_board + send_message + 并发预算 + `/team`）· 插件系统（plugin.json + `omni plugin` + 运行时加载）· 后台子代理 + `/tasks` + Web 远程令牌 · MCP elicitation/sampling + 2026-07-28 分页发现 + DCR/CIMD · AI 自动审批（autoReview）· 会话 pin/archive/`/cd`/Vim/LSP/密钥脱敏 · 修复 MCP 子进程阻止退出（stdio unref）
-- [ ] 进阶：SWE-bench 评测、/rewind 三模式（code/conversation/both）、Windows 原生沙箱（AppContainer 需原生模块）
+- [ ] 进阶：SWE-bench 评测、Windows 原生沙箱（AppContainer 需原生模块）
 ## 文档地图
 
 | 文档 | 内容 |
