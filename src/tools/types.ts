@@ -26,6 +26,16 @@ export interface ToolContext {
    * 缺省 undefined = 非 loop 链路直驱（/orchestrate 等），事件按 id 归集。
    */
   toolSeq?: number;
+  /**
+   * 子代理实例 id（Team SendMessage 的 from 标识，2026-09 DYN）：主循环缺省
+   * undefined（视为 'main'）；runSubagent 执行工具时传自己的 id。
+   */
+  agentId?: string;
+  /**
+   * 会话文件路径（多会话运行隔离标识）：Web 并发时空闲容量的后台子代理结果
+   * 只注入所属会话；缺省 undefined = 无会话归属（单任务/同归属）。
+   */
+  sessionPath?: string;
 }
 
 export interface Tool {

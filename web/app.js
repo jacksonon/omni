@@ -37,6 +37,7 @@ const state = {
   turnGenMs: 0,         // 本轮纯生成耗时累计（turn-footer 当次速率用；对标 TUI turnGenMs）
   sessionFilter: '',
   expandedGroups: new Set(), // 工作区分组展开记忆（'!项目' 前缀 = 强制收起的当前工作区组）
+  showArchived: false, // 侧栏是否显示归档会话（默认隐藏；底部「已归档 (N)」切换）
   runningSessions: new Set(), // 运行中的会话 id 集合（唯一真相源）
   _localRunning: new Set(), // 本地刚启动的会话（doSend 设置，status 覆盖前保持；run.end 清除）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
@@ -199,6 +200,28 @@ const I18N_ZH = {
   'settings.mcpSub': '外部工具服务器（本地命令 / 远端 HTTP）。增删写入全局配置并即时生效；未连接的服务器可重连。',
   'settings.skills': '技能',
   'settings.skillsSub': '模型按需加载的技能（SKILL.md）。新建写入项目 .agents/skills，刷新后即时发现；网络检索安装仍走 /skill find|add。',
+  'settings.plugins': '插件',
+  'settings.pluginsSub': '插件 = plugin.json 清单（skills/agents/hooks/mcpServers）。安装即启用；hooks/MCP 会执行命令，请只安装可信来源。',
+  'settings.autoReview': 'AI 自动审批',
+  'settings.autoReviewDesc': '需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），失败回退人工审批；不改变权限与沙箱边界。',
+  'settings.autoReviewShort': '自动审阅',
+  'plugin.refresh': '刷新',
+  'plugin.empty': '未安装插件（下方输入本地路径或 git URL 安装）',
+  'plugin.installTitle': '安装插件',
+  'plugin.installDesc': '本地路径或 git URL；安装到 ~/.config/omni/plugins 并写入全局配置 plugins。',
+  'plugin.install': '安装',
+  'plugin.enabled': '已启用',
+  'plugin.disabled': '已停用',
+  'plugin.enable': '启用',
+  'plugin.disable': '停用',
+  'plugin.remove': '删除',
+  'plugin.count': '{n} 个插件',
+  'plugin.installConfirm': '安装并启用「{src}」？hooks/MCP 会执行命令，请确认来源可信。',
+  'plugin.removeConfirm': '删除插件「{name}」？（目录 + 启用清单）',
+  'plugin.installed': '插件「{name}」已安装并启用',
+  'plugin.removed': '插件「{name}」已删除',
+  'plugin.hooks': 'hooks：{list}',
+  'plugin.mcp': 'MCP：{list}',
   'mcp.reconnect': '重连',
   'mcp.empty': '还没有 MCP 服务器——下方添加，或输入区 /mcp add',
   'mcp.addTitle': '添加服务器',
@@ -446,6 +469,11 @@ const I18N_ZH = {
   'session.fork': '分叉新会话（/fork）',
   'session.export': '导出 Markdown（/export）',
   'session.rewind': '会话检查点（/rewind）',
+  'session.pin': '置顶',
+  'session.unpin': '取消置顶',
+  'session.archive': '归档',
+  'session.unarchive': '取消归档',
+  'session.archived': '已归档',
   'session.delete': '删除会话',
   'session.deleteConfirm': '删除该会话？此操作不可恢复。',
   'session.deleteNamedConfirm': '删除会话「{name}」？此操作不可恢复。',
@@ -622,6 +650,28 @@ const I18N_EN = {
   'settings.mcpSub': 'External tool servers (local commands / remote HTTP). Changes are saved to the global config and take effect immediately; reconnect servers that failed.',
   'settings.skills': 'Skills',
   'settings.skillsSub': 'Skills the model loads on demand (SKILL.md). New skills go to the project .agents/skills and are discovered after refresh; use /skill find|add for registry installs.',
+  'settings.plugins': 'Plugins',
+  'settings.pluginsSub': 'A plugin is a plugin.json bundle (skills/agents/hooks/mcpServers). Installing enables it; hooks/MCP run commands, so only install trusted sources.',
+  'settings.autoReview': 'AI auto-approval',
+  'settings.autoReviewDesc': 'Requests that need approval are first reviewed by the model (approve/deny); review failures fall back to manual approval. Permission and sandbox boundaries are unchanged.',
+  'settings.autoReviewShort': 'Auto review',
+  'plugin.refresh': 'Refresh',
+  'plugin.empty': 'No plugins installed (install from a local path or git URL below)',
+  'plugin.installTitle': 'Install plugin',
+  'plugin.installDesc': 'Local path or git URL; installs to ~/.config/omni/plugins and adds it to the global plugins list.',
+  'plugin.install': 'Install',
+  'plugin.enabled': 'Enabled',
+  'plugin.disabled': 'Disabled',
+  'plugin.enable': 'Enable',
+  'plugin.disable': 'Disable',
+  'plugin.remove': 'Remove',
+  'plugin.count': '{n} plugins',
+  'plugin.installConfirm': 'Install and enable "{src}"? Hooks/MCP run commands — make sure the source is trusted.',
+  'plugin.removeConfirm': 'Remove plugin "{name}"? (folder + enabled list)',
+  'plugin.installed': 'Plugin "{name}" installed and enabled',
+  'plugin.removed': 'Plugin "{name}" removed',
+  'plugin.hooks': 'hooks: {list}',
+  'plugin.mcp': 'MCP: {list}',
   'mcp.reconnect': 'Reconnect',
   'mcp.empty': 'No MCP servers yet — add one below or via /mcp add',
   'mcp.addTitle': 'Add server',
@@ -868,6 +918,11 @@ const I18N_EN = {
   'session.fork': 'Fork new session (/fork)',
   'session.export': 'Export as Markdown (/export)',
   'session.rewind': 'Session checkpoints (/rewind)',
+  'session.pin': 'Pin',
+  'session.unpin': 'Unpin',
+  'session.archive': 'Archive',
+  'session.unarchive': 'Unarchive',
+  'session.archived': 'Archived',
   'session.delete': 'Delete session',
   'session.deleteConfirm': 'Delete this session? This cannot be undone.',
   'session.deleteNamedConfirm': 'Delete session "{name}"? This cannot be undone.',
@@ -2045,9 +2100,12 @@ function renderSessionList() {
   const list = $('#session-list');
   list.innerHTML = '';
   const filter = state.sessionFilter.trim().toLowerCase();
-  const all = filter ? state.sessions.filter((s) => (s.title || s.id).toLowerCase().includes(filter)) : state.sessions;
-  $('#session-count').textContent = String(state.sessions.length);
-  if (!all.length) {
+  const matched = filter ? state.sessions.filter((s) => (s.title || s.id).toLowerCase().includes(filter)) : state.sessions;
+  const archivedCount = state.sessions.filter((s) => s.archived).length;
+  // 归档会话默认隐藏（底部「已归档 (N)」切换显示）
+  const all = matched.filter((s) => state.showArchived || !s.archived);
+  $('#session-count').textContent = String(state.sessions.length - archivedCount);
+  if (!all.length && !archivedCount) {
     list.appendChild(el('div', 'empty', t('empty.sessions')));
     return;
   }
@@ -2067,7 +2125,12 @@ function renderSessionList() {
   });
 
   for (const project of projects) {
-    const items = groups.get(project).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    const items = groups.get(project).sort((a, b) => {
+      const ap = a.pinned ? 1 : 0;
+      const bp = b.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return (b.updated || 0) - (a.updated || 0);
+    });
     const isCwd = project === cwd;
     const expanded = state.expandedGroups.has(project) || (isCwd && !state.expandedGroups.has(`!${project}`));
     // 组头：sticky 吸顶（iOS insetGrouped 风格），独立于组容器
@@ -2114,6 +2177,7 @@ function renderSessionList() {
     const body = el('div', 'ws-section-body');
     for (const s of items) {
       const item = el('div', 'session-item' + (s.id === state.session ? ' active' : ''));
+      if (s.archived) item.classList.add('archived');
       // 运行中：不加绿点——左侧竖条改为彩色呼吸（.running::before；当前会话仍以背景高亮区分）
       if (state.runningSessions.has(s.id) || state._localRunning.has(s.id)) item.classList.add('running');
       const d = new Date(s.updated || s.created);
@@ -2121,7 +2185,7 @@ function renderSessionList() {
         ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ` ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
         : `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       const copy = el('div', 'session-copy');
-      copy.appendChild(el('div', 'stitle', s.title || t('session.new')));
+      copy.appendChild(el('div', 'stitle', `${s.pinned ? '★ ' : ''}${s.title || t('session.new')}`));
       const meta = el('div', 'smeta');
       meta.appendChild(el('span', '', t('session.msgCount', { n: s.messages || 0 })));
       meta.appendChild(el('span', '', ts));
@@ -2145,6 +2209,13 @@ function renderSessionList() {
       body.appendChild(item);
     }
     list.appendChild(body);
+  }
+  // 底部：归档切换（默认隐藏归档会话）
+  if (archivedCount > 0) {
+    const foot = el('button', 'archived-toggle', `${state.showArchived ? '▾' : '▸'} ${t('session.archived')} (${archivedCount})`);
+    foot.type = 'button';
+    foot.addEventListener('click', () => { state.showArchived = !state.showArchived; renderSessionList(); });
+    list.appendChild(foot);
   }
 }
 
@@ -2385,7 +2456,36 @@ function showSessionActions(e, s) {
     rw.addEventListener('click', () => { closeSessionActions(); openRewindModal(s.id); });
     menu.append(forkB, exp, rw);
   }
-  menu.append(ren, del);
+  const pin = el('button', 'ctx-item', s.pinned ? t('session.unpin') : t('session.pin'));
+  pin.type = 'button';
+  pin.addEventListener('click', () => {
+    closeSessionActions();
+    api(`/api/sessions/${s.id}/pin`, { method: 'POST' })
+      .then((r) => {
+        s.pinned = !!r.pinned;
+        const live = state.sessions.find((x) => x.id === s.id);
+        if (live) live.pinned = !!r.pinned;
+        renderSessionList();
+        notify(s.pinned ? t('session.pin') : t('session.unpin'), 'success');
+      })
+      .catch((err) => notify(err.message, 'error'));
+  });
+  const arc = el('button', 'ctx-item', s.archived ? t('session.unarchive') : t('session.archive'));
+  arc.type = 'button';
+  arc.addEventListener('click', () => {
+    closeSessionActions();
+    const action = s.archived ? 'unarchive' : 'archive';
+    api(`/api/sessions/${s.id}/${action}`, { method: 'POST' })
+      .then((r) => {
+        s.archived = !!r.archived;
+        const live = state.sessions.find((x) => x.id === s.id);
+        if (live) live.archived = !!r.archived;
+        renderSessionList();
+        notify(r.archived ? t('session.archive') : t('session.unarchive'), 'success');
+      })
+      .catch((err) => notify(err.message, 'error'));
+  });
+  menu.append(pin, arc, ren, del);
   document.body.appendChild(menu);
   // 定位到点击点附近并钳制在视口内
   const rect = menu.getBoundingClientRect();
@@ -2934,6 +3034,8 @@ function refreshStatus() {
     $('#plan-mode').checked = state.planMode;
     const sp = $('#set-plan');
     if (sp) sp.checked = state.planMode;
+    const sar = $('#set-auto-review');
+    if (sar) sar.checked = !!s.autoReview;
     const sc = $('#set-concurrency');
     if (sc) sc.value = String(s.concurrency || 3);
     updateConcurrencySlider(s.concurrency || 3); // 并发滑条填充/刻度/读数同步
@@ -3191,7 +3293,7 @@ function connectSSE() {
   [
     'status', 'session.created', 'user.message', 'thinking.start', 'thinking.chunk',
     'thinking.end', 'tool.start', 'tool.result', 'tool.output', 'answer.chunk', 'answer.end',
-    'stream.progress', 'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'hook.output',
+    'stream.progress', 'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'subagent.background', 'hook.output', 'auto.review',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
     'workspace.changed', 'session.deleted',
@@ -3695,6 +3797,22 @@ bus.on('hook.output', (ev) => {
   metaLine(ev.sessionId || state.session, [`${ev.event || 'hook'}: ${ev.lines[0]}`]);
 });
 
+// auto.review：AI 自动审批结果（2026-09 补课）
+bus.on('auto.review', (ev) => {
+  if (ev.sessionId && ev.sessionId !== state.session) return;
+  const mark = ev.approve ? '✓ 自动批准' : '✗ 自动拒绝';
+  metaLine(ev.sessionId || state.session, [`auto-review ${mark} ${ev.tool || ''}${ev.reason ? ` · ${ev.reason}` : ''}`]);
+});
+
+// subagent.background：后台子代理完成（2026-09 FLT；结果已注入对话）
+bus.on('subagent.background', (ev) => {
+  if (ev.sessionId && ev.sessionId !== state.session) return;
+  const ok = ev.status === 'ok';
+  const line = `${ok ? '✓' : '✗'} 后台子代理「${ev.name}」${ok ? '完成' : '失败'} · ${((ev.durationMs || 0) / 1000).toFixed(1)}s（结果已注入对话）`;
+  metaLine(ev.sessionId || state.session, [line]);
+  notify(line, ok ? 'success' : 'error');
+});
+
 bus.on('error', (ev) => {
   if (ev.sessionId !== state.session) return;
   metaLine(ev.sessionId, [`✗ ${ev.model ? `[${ev.model}] ` : ''}${ev.message}`]);
@@ -4017,6 +4135,7 @@ function openSettingsPane(arg) {
     apikey: 'apikey', api: 'apikey', model: 'apikey', '模型': 'apikey', '模型配置': 'apikey',
     mcp: 'mcp',
     skills: 'skills', skill: 'skills', '技能': 'skills',
+    plugins: 'plugins', plugin: 'plugins', '插件': 'plugins',
     shortcuts: 'shortcuts', shortcut: 'shortcuts', '快捷键': 'shortcuts',
     about: 'about', '关于': 'about',
   };
@@ -4025,6 +4144,7 @@ function openSettingsPane(arg) {
   activateSettingsPane(target);
   if (target === 'mcp') loadMcpPane();
   else if (target === 'skills') loadSkillPane();
+  else if (target === 'plugins') loadPluginPane();
 }
 /** 设置面板直达某 pane（导航与内容同步切换） */
 function activateSettingsPane(pane) {
@@ -5648,9 +5768,10 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
     document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n === item));
     const pane = item.dataset.pane;
     document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
-    // MCP/技能页懒加载（打开即刷新，其它页不受影响）
+    // MCP/技能/插件页懒加载（打开即刷新，其它页不受影响）
     if (pane === 'mcp') loadMcpPane();
     else if (pane === 'skills') loadSkillPane();
+    else if (pane === 'plugins') loadPluginPane();
   });
 });
 
@@ -5900,6 +6021,82 @@ async function loadSkillPane() {
   } catch (e) { notify(e.message, 'error'); }
 }
 $('#btn-skill-refresh').addEventListener('click', () => loadSkillPane());
+
+/* ---------------- 设置 · 插件页（2026-09 PLG：列表 + 安装/启停/删除） ---------------- */
+let pluginList = [];
+async function loadPluginPane() {
+  const list = $('#plugin-list');
+  if (!list) return;
+  try {
+    const d = await api('/api/plugins');
+    pluginList = Array.isArray(d.plugins) ? d.plugins : [];
+    list.innerHTML = '';
+    pluginList.forEach((p) => {
+      const r = el('div', 'setting-row');
+      const info = el('div', 'setting-info');
+      const h = el('h4', null, `${p.name}${p.version ? `@${p.version}` : ''}`);
+      const badges = el('span', 'skill-badges');
+      badges.appendChild(el('span', `mc-badge ${p.enabled ? 'std' : 'off'}`, p.enabled ? t('plugin.enabled') : t('plugin.disabled')));
+      h.appendChild(badges);
+      info.appendChild(h);
+      if (p.description) info.appendChild(el('p', null, p.description));
+      if (p.hooks && p.hooks.length) info.appendChild(el('p', 'plugin-meta', t('plugin.hooks', { list: p.hooks.join('、') })));
+      if (p.mcpServers && p.mcpServers.length) info.appendChild(el('p', 'plugin-meta', t('plugin.mcp', { list: p.mcpServers.join('、') })));
+      r.appendChild(info);
+      const actions = el('div', 'about-value');
+      const toggle = el('button', 'secondary-button', p.enabled ? t('plugin.disable') : t('plugin.enable'));
+      toggle.type = 'button';
+      toggle.addEventListener('click', async () => {
+        try {
+          await api('/api/plugins', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: p.enabled ? 'disable' : 'enable', name: p.name }),
+          });
+          notify(t('notify.saved'), 'success');
+          await loadPluginPane();
+        } catch (e) { notify(e.message, 'error'); }
+      });
+      actions.appendChild(toggle);
+      const del = el('button', 'secondary-button danger', t('plugin.remove'));
+      del.type = 'button';
+      del.addEventListener('click', async () => {
+        if (!(await uiConfirm(t('plugin.removeConfirm', { name: p.name })))) return;
+        try {
+          await api('/api/plugins', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'remove', name: p.name }),
+          });
+          notify(t('plugin.removed', { name: p.name }), 'success');
+          await loadPluginPane();
+        } catch (e) { notify(e.message, 'error'); }
+      });
+      actions.appendChild(del);
+      r.appendChild(actions);
+      list.appendChild(r);
+    });
+    const c = $('#plugin-count');
+    if (c) c.textContent = t('plugin.count', { n: pluginList.length });
+    const empty = $('#plugin-empty');
+    if (empty) empty.classList.toggle('hidden', pluginList.length > 0);
+    list.classList.toggle('hidden', pluginList.length === 0);
+  } catch (e) { notify(e.message, 'error'); }
+}
+$('#btn-plugin-refresh').addEventListener('click', () => loadPluginPane());
+$('#btn-plugin-install').addEventListener('click', async () => {
+  const input = $('#plugin-src');
+  const src = (input?.value || '').trim();
+  if (!src) return;
+  if (!(await uiConfirm(t('plugin.installConfirm', { src })))) return;
+  try {
+    const r = await api('/api/plugins', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'install', source: src }),
+    });
+    notify(r.message || t('plugin.installed', { name: r.name || src }), 'success');
+    if (input) input.value = '';
+    await loadPluginPane();
+  } catch (e) { notify(e.message, 'error'); }
+});
 /* 技能 registry 检索安装（npx skills find/add；结果行直装） */
 $('#btn-skill-find').addEventListener('click', async () => {
   const q = $('#skill-find-q').value.trim();
@@ -5978,6 +6175,11 @@ $('#btn-skill-create-confirm').addEventListener('click', async () => {
 });
 $('#set-plan').addEventListener('change', (e) => {
   applySettings({ planMode: e.target.checked }).catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
+});
+$('#set-auto-review').addEventListener('change', (e) => {
+  applySettings({ autoReview: e.target.checked })
+    .then(() => notify(e.target.checked ? t('settings.autoReview') : t('settings.autoReviewShort'), 'success'))
+    .catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
 
 /* 设置 · 通用并发滑条（复用输入区 slider 结构：1..16 档，拖动跟手、松手吸附落盘） */

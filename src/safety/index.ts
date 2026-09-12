@@ -46,6 +46,14 @@ export interface SafetyOptions {
    * 先问 hook——返回 decision approve/deny 可短路人工审批（规则化自动放行/拒绝）。
    */
   hooks?: import('../hooks/index.js').HookRunner;
+  /**
+   * AI 自动审批（2026-09 补课，对标 Codex --approve-for-me）：在 hook 之后、人工审批
+   * 之前做一次模型审阅。返回 null = 审阅失败 → 回退人工审批（绝不静默拒绝）。
+   * 审阅不改变权限/沙箱边界，只决定是否打扰用户。
+   */
+  autoReview?: (
+    req: ApprovalRequest
+  ) => Promise<{ approve: boolean; reason: string } | null>;
 }
 
 export class Safety {
@@ -95,6 +103,18 @@ export class Safety {
       if (pr.decision === 'deny') {
         this.record(tool.name, summary, `deny:${pr.reason ?? 'PermissionRequest hook'}`);
         return { allow: false, reason: pr.reason ?? '已拒绝（PermissionRequest hook）' };
+      }
+    }
+    // AI 自动审批（2026-09 补课）：hook 之后、人工 UI 之前。null = 审阅不可用 → 人工
+    if (this.opts.autoReview) {
+      const verdict = await this.opts.autoReview({ tool: tool.name, summary, reason });
+      if (verdict) {
+        if (verdict.approve) {
+          this.record(tool.name, summary, `approved:auto${verdict.reason ? `:${verdict.reason}` : ''}`);
+          return { allow: true };
+        }
+        this.record(tool.name, summary, `denied:auto${verdict.reason ? `:${verdict.reason}` : ''}`);
+        return { allow: false, reason: `自动审阅拒绝：${verdict.reason || '判定为高风险操作'}` };
       }
     }
     // 需要审批：交给 Output 层的回调（console readline / TUI 审批卡片）

@@ -50,7 +50,9 @@ export type WebEventName =
   | 'toolsLap'
   | 'usage'
   | 'subagent'
+  | 'subagent.background' // 后台子代理完成（{ sessionId, id, name, status, durationMs, resultPreview }）
   | 'hook.output'
+  | 'auto.review' // AI 自动审批结果（{ sessionId, tool, summary, approve, reason }）
   | 'error'
   | 'run.end'
   | 'meta.add'

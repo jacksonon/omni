@@ -56,15 +56,18 @@ import {
   loadSession,
   sessionIdFromPath,
   updateSessionTitle,
+  updateSessionMeta,
+  resolveSessionTarget,
   isPersistable as isPersistableSafe,
   type SessionInfo,
 } from '../agent/session.js';
+import { resolveCdArg } from '../agent/workspace.js';
 import { forkSession, sendSessionMessage } from '../agent/session-fork.js';
 import { applyProjectMemoryPending } from '../agent/memory.js';
 import type { McpServerConfig, McpServerHandle } from '../tools/mcp.js';
 import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
-import { parseModelAddArgs, parseMcpAddArgs, persistContextLimitToConfig, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
+import { parseModelAddArgs, parseMcpAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
@@ -1513,11 +1516,288 @@ export const TUI_COMMANDS: TuiCommand[] = [
     },
   },
   {
+    name: 'cd',
+    description: '切换工作目录：/cd [路径]（无参显示当前；~ 展开）',
+    descriptionEn: 'Change working directory: /cd [path] (no arg = show current)',
+    group: 'system',
+    run: (ctx) => {
+      const resolved = resolveCdArg((ctx.args ?? '').trim(), process.cwd());
+      if (resolved.kind === 'error') {
+        pushCmdLine(ctx.state, { kind: 'warn', text: resolved.error });
+      } else if (resolved.kind === 'show') {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `当前工作目录：${resolved.dir}` });
+      } else {
+        try {
+          process.chdir(resolved.dir);
+          ctx.state.cwd = resolved.dir;
+          pushCmdLine(ctx.state, { kind: 'meta', text: `工作目录已切换：${resolved.dir}` });
+        } catch (err) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `切换失败：${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'pin',
+    description: '置顶/取消置顶会话（无参 = 当前会话）：/pin [会话id]',
+    descriptionEn: 'Pin/unpin a session (no arg = current)',
+    group: 'session',
+    run: async (ctx) => {
+      const target = await resolveSessionTarget((ctx.args ?? '').trim(), ctx.sessionPath);
+      if (!target.ok) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: target.error });
+        for (const c of target.candidates ?? []) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${c.id} — ${c.title || '（无标题）'}` });
+      } else {
+        const loaded = await loadSession(target.file);
+        const next = !(loaded?.meta.pinned ?? false);
+        await updateSessionMeta(target.file, { pinned: next });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `${next ? '已置顶' : '已取消置顶'}会话 ${loaded?.meta.id ?? ''}` });
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'archive',
+    description: '归档会话（默认从列表隐藏，/session archived 查看）：/archive [会话id]',
+    descriptionEn: 'Archive a session (hidden from lists): /archive [id]',
+    group: 'session',
+    run: async (ctx) => {
+      const target = await resolveSessionTarget((ctx.args ?? '').trim(), ctx.sessionPath);
+      if (!target.ok) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: target.error });
+        for (const c of target.candidates ?? []) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${c.id} — ${c.title || '（无标题）'}` });
+      } else {
+        const loaded = await loadSession(target.file);
+        await updateSessionMeta(target.file, { archived: true });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已归档会话 ${loaded?.meta.id ?? ''}（/unarchive 取消归档）` });
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'unarchive',
+    description: '取消归档会话：/unarchive [会话id]',
+    descriptionEn: 'Unarchive a session: /unarchive [id]',
+    group: 'session',
+    run: async (ctx) => {
+      const target = await resolveSessionTarget((ctx.args ?? '').trim(), ctx.sessionPath);
+      if (!target.ok) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: target.error });
+        for (const c of target.candidates ?? []) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${c.id} — ${c.title || '（无标题）'}` });
+      } else {
+        const loaded = await loadSession(target.file);
+        await updateSessionMeta(target.file, { archived: false });
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已取消归档会话 ${loaded?.meta.id ?? ''}` });
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'auto',
+    description: 'AI 自动审批开关：/auto [on|off]（需要审批的操作先经模型审阅，不改变权限/沙箱边界）',
+    descriptionEn: 'AI auto-approval toggle: /auto [on|off]',
+    group: 'system',
+    run: (ctx) => {
+      const cfg = ctx.runOpts?.cfg;
+      const arg = (ctx.args ?? '').trim().toLowerCase();
+      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.autoReview === true);
+      if (cfg) cfg.autoReview = next;
+      const res = persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
+      pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `AI 自动审批：${next ? '已开启（审阅失败自动回退人工审批）' : '已关闭'}` });
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'vim',
+    description: 'Vim 键位开关（输入框）：/vim [on|off]（Esc 进 normal / i 回 insert）',
+    descriptionEn: 'Vim keybindings toggle: /vim [on|off]',
+    group: 'system',
+    run: (ctx) => {
+      const cfg = ctx.runOpts?.cfg;
+      const arg = (ctx.args ?? '').trim().toLowerCase();
+      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.vimMode === true);
+      if (cfg) cfg.vimMode = next;
+      ctx.state.vimMode = next;
+      ctx.state.vimPending = '';
+      if (!next) ctx.state.vimInsert = true;
+      const res = persistGlobalBoolToConfig('vimMode', next, 'Vim 键位开关');
+      pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
+      pushCmdLine(ctx.state, { kind: 'meta', text: `Vim 键位：${next ? '已开启（Esc 进 normal 模式；再次 /vim off 关闭）' : '已关闭'}` });
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'tasks',
+    description: '运行中任务：前台/后台子代理状态与停止（/tasks stop <seq>）',
+    descriptionEn: 'Running tasks: foreground/background subagents + stop (/tasks stop <seq>)',
+    group: 'agent',
+    run: (ctx) => {
+      const arg = (ctx.args ?? '').trim();
+      if (arg === 'stop' || arg.startsWith('stop ')) {
+        const seq = Number(arg.slice(4).trim());
+        if (!Number.isInteger(seq) || seq <= 0) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/tasks stop <seq>（seq 见 /tasks 列表）' });
+          return;
+        }
+        const stop = ctx.runOpts?.subagentStops?.get(seq);
+        if (!stop) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `未找到运行中的子代理 seq=${seq}（可能已结束）` });
+        } else {
+          stop();
+          pushCmdLine(ctx.state, { kind: 'meta', text: `已请求停止子代理 seq=${seq}` });
+        }
+        ctx.state.schedulePaint?.();
+        return;
+      }
+      const front = ctx.state.delegateRuns.filter((r) => !r.ended && !r.stopped);
+      const bg = ctx.state.backgroundRuns;
+      if (front.length === 0 && bg.length === 0) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: '当前没有运行中的子代理。delegate 传 background:true 可后台执行。' });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: `运行中任务（${front.length + bg.filter((b) => b.status === 'running').length}）：` });
+      for (const r of front) {
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `· [前台] ${r.name} · ${r.status}${r.seq != null ? ` · /tasks stop ${r.seq}` : ''}`,
+        });
+      }
+      for (const b of bg) {
+        const elapsed = ((b.durationMs ?? Date.now() - b.startedAt) / 1000).toFixed(1);
+        const mark = b.status === 'running' ? '⠋' : b.status === 'ok' ? '✓' : '✗';
+        pushCmdLine(ctx.state, {
+          kind: 'meta',
+          text: `· [后台] ${mark} ${b.name} · ${b.status} · ${elapsed}s${b.seq != null && b.status === 'running' ? ` · /tasks stop ${b.seq}` : ''}`,
+        });
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
+    name: 'plugin',
+    description: '插件管理：/plugin [list] · install <路径|git URL> --yes · remove <名> --yes · enable|disable <名>',
+    descriptionEn: 'Plugins: /plugin [list] · install <path|git URL> --yes · remove/enable/disable <name>',
+    group: 'system',
+    run: async (ctx) => {
+      const args = (ctx.args ?? '').trim();
+      const [sub = '', ...rest] = args ? args.split(/\s+/) : [];
+      const { listInstalledPlugins, enabledPluginNames, describePlugin, installPlugin, removePlugin, setEnabledPlugins } = await import('../agent/plugins.js');
+      const { persistPluginListToGlobal } = await import('../config/write.js');
+      const flagYes = rest.includes('--yes');
+      const flagForce = rest.includes('--force');
+      const positional = rest.filter((a) => !a.startsWith('--'));
+      if (!sub || sub === 'list' || sub === 'ls') {
+        const installed = listInstalledPlugins();
+        if (installed.length === 0) {
+          pushCmdLine(ctx.state, { kind: 'meta', text: '没有已安装插件。安装：/plugin install <路径|git URL> --yes（或 omni plugin install …）' });
+          return;
+        }
+        const enabled = new Set(enabledPluginNames());
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已安装 ${installed.length} 个插件（★ = 已启用）：` });
+        for (const p of installed) pushCmdLine(ctx.state, { kind: 'meta', text: `${enabled.has(p.manifest.name) ? '★' : '·'} ${describePlugin(p)}` });
+        return;
+      }
+      if (sub === 'install') {
+        const src = positional[0] ?? '';
+        if (!src) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/plugin install <本地路径|git URL> [--force] --yes' });
+          return;
+        }
+        if (!flagYes) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `将安装「${src}」并启用（hooks/MCP 会执行命令，请确认来源可信）。确认请加 --yes 重试。` });
+          return;
+        }
+        const r = installPlugin(src, { force: flagForce });
+        pushCmdLine(ctx.state, { kind: r.ok ? 'meta' : 'warn', text: r.message });
+        if (r.ok && r.name) {
+          const names = enabledPluginNames();
+          if (!names.includes(r.name)) names.push(r.name);
+          const pr = persistPluginListToGlobal(names);
+          setEnabledPlugins(names);
+          pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+          ctx.state.schedulePaint?.();
+        }
+        return;
+      }
+      if (sub === 'remove' || sub === 'rm') {
+        const name = positional[0] ?? '';
+        if (!name) { pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/plugin remove <名称> --yes' }); return; }
+        if (!flagYes) { pushCmdLine(ctx.state, { kind: 'warn', text: `将删除插件「${name}」。确认请加 --yes 重试。` }); return; }
+        const r = removePlugin(name);
+        pushCmdLine(ctx.state, { kind: r.ok ? 'meta' : 'warn', text: r.message });
+        if (r.ok) {
+          const names = enabledPluginNames().filter((n) => n !== name);
+          const pr = persistPluginListToGlobal(names);
+          setEnabledPlugins(names);
+          pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+        }
+        return;
+      }
+      if (sub === 'enable' || sub === 'disable') {
+        const name = positional[0] ?? '';
+        if (!name) { pushCmdLine(ctx.state, { kind: 'warn', text: `用法：/plugin ${sub} <名称>` }); return; }
+        const installed = listInstalledPlugins();
+        if (!installed.some((p) => p.manifest.name === name)) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: `插件未安装：${name}（/plugin list 查看）` });
+          return;
+        }
+        const names = enabledPluginNames();
+        const next = sub === 'enable' ? [...new Set([...names, name])] : names.filter((n) => n !== name);
+        const pr = persistPluginListToGlobal(next);
+        setEnabledPlugins(next);
+        pushCmdLine(ctx.state, { kind: 'meta', text: pr.message });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'warn', text: `未知子命令：plugin ${sub}（list/install/remove/enable/disable）` });
+    },
+  },
+  {
+    name: 'team',
+    description: 'Team 任务看板：共享任务列表 + 未投递消息 + 子代理树（/orchestrate 动态工作流）',
+    descriptionEn: 'Team task board: shared tasks + pending messages + subagent tree',
+    group: 'agent',
+    run: (ctx) => {
+      const board = ctx.runOpts?.team;
+      if (!board || board.tasks.length === 0) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: '任务看板为空（多代理协作时由主代理建任务；/orchestrate <任务> 走动态工作流）。' });
+      } else {
+        const done = board.tasks.filter((x) => x.status === 'completed').length;
+        pushCmdLine(ctx.state, { kind: 'meta', text: `任务看板（${done}/${board.tasks.length} 完成）：` });
+        for (const line of board.summaryLines()) pushCmdLine(ctx.state, { kind: 'meta', text: `· ${line}` });
+      }
+      const pending = board?.pendingCount('main') ?? 0;
+      if (pending > 0) pushCmdLine(ctx.state, { kind: 'meta', text: `未投递消息：${pending} 条（主循环下一步注入）` });
+      const runs = ctx.state.delegateRuns.filter((r) => !r.ended && !r.stopped);
+      if (runs.length > 0) {
+        pushCmdLine(ctx.state, { kind: 'meta', text: `子代理树（${runs.length} 运行中）：` });
+        for (const r of runs) pushCmdLine(ctx.state, { kind: 'meta', text: `  └ ${r.name} · ${r.status}` });
+      }
+      ctx.state.schedulePaint?.();
+    },
+  },
+  {
     name: 'session',
     description: '会话管理：列出/继续当前目录的历史会话（/session all 全部 · /session <id> 直接继续）',
     descriptionEn: 'Session manager: list/continue sessions in cwd (/session all · <id>)',
     run: async (ctx) => {
       const arg = (ctx.args ?? '').trim();
+      // /session archived：查看已归档会话（/unarchive <id> 取消归档）
+      if (arg === 'archived') {
+        const currentId = ctx.sessionPath ? sessionIdFromPath(ctx.sessionPath) : '';
+        const all = (await listSessions(undefined, { includeArchived: true })).filter((s) => s.archived && s.id !== currentId);
+        if (all.length === 0) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '没有已归档的会话（/archive 归档）' });
+          return;
+        }
+        pushCmdLine(ctx.state, { kind: 'meta', text: `已归档 ${all.length} 个会话（/unarchive <id> 取消归档）：` });
+        for (const s of all.slice(0, 15)) {
+          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息 · ${s.model}）` });
+        }
+        if (all.length > 15) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${all.length - 15} 个` });
+        return;
+      }
       // /session <id>：加载历史会话并继续（支持 id 前缀匹配；ctx.onResume 由 interactive 组装：
       // 替换 messages + 会话文件 + 重置落盘计数 + 把历史回放进对话流）
       if (arg && arg !== 'all' && arg !== 'list') {
@@ -1543,9 +1823,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
         scheduleCmdPanelAutoClose(ctx.state, ctx.session);
         return;
       }
-      // /session all|list：列出全部历史会话（跨目录）
+      // /session all|list：列出全部历史会话（跨目录；默认隐藏归档）
       if (arg === 'all' || arg === 'list') {
-        const all = await listSessions();
+        const all = (await listSessions(undefined, { includeArchived: false }));
         if (all.length === 0) {
           pushCmdLine(ctx.state, {
             kind: 'warn',
@@ -1558,7 +1838,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
           text: `已保存 ${all.length} 个会话（/session <id> 继续；当前目录的会话用 /session 面板选择）：`,
         });
         for (const s of all.slice(0, 15)) {
-          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息 · ${s.model}）` });
+          pushCmdLine(ctx.state, { kind: 'meta', text: `· ${s.pinned ? '★ ' : ''}${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息 · ${s.model}）` });
         }
         if (all.length > 15) pushCmdLine(ctx.state, { kind: 'meta', text: `… 还有 ${all.length - 15} 个` });
         return;
@@ -1775,7 +2055,7 @@ export function openPermissionMenu(state: TuiState): void {
  * （state.sessionPick），interactive 每轮异步加载并恢复（与 /model 同模式）。
  */
 export async function openSessionMenu(state: TuiState, sessionPath?: string | null): Promise<void> {
-  const list = await listSessions(process.cwd());
+  const list = await listSessions(process.cwd(), { includeArchived: false });
   if (list.length === 0) {
     pushCmdLine(state, {
       kind: 'warn',
@@ -1801,7 +2081,7 @@ export async function openSessionMenu(state: TuiState, sessionPath?: string | nu
       // 对选择会话信息量低，且模型名超长会撑破面板（用户反馈「模型过长超出显示范围」；
       // cardContentLine 另有兜底截断）。标题按显示列截断（CJK 全角 2 列）+ 省略号；
       // 无标题回退 id 前 16 字符。
-      label: truncateToWidth(s.title || s.id.slice(0, 16), 24),
+      label: `${s.pinned ? '★ ' : ''}${truncateToWidth(s.title || s.id.slice(0, 16), 24)}`,
       right: `${s.messages} 条`,
       value: s.id,
     })),

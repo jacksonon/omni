@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HOOK_EVENTS, type HookDefinition, type HooksConfig } from '../hooks/index.js';
+import { setSecretRedaction } from '../agent/redact.js';
 import type { PermissionTier } from '../safety/index.js';
 import type { SandboxMode } from '../safety/sandbox.js';
 import type { McpServerConfig } from '../tools/mcp.js';
@@ -270,6 +271,33 @@ export interface OmniConfig {
    * reasoning_content 已内置识别；其余字段名在此可配扩展，对标 opencode）。
    */
   compatibility?: { reasoningField?: string };
+  /**
+   * 密钥脱敏（2026-09 补课，对标 Codex secrets redaction）：会话 JSONL、write-diff
+   * sidecar 与历史回放时把密钥形状文本替换为 [REDACTED]。默认开启。
+   */
+  redactSecrets?: boolean;
+  /**
+   * 插件清单（2026-09 PLG）：启用的插件名——每个插件位于
+   * `~/.config/omni/plugins/<名>/plugin.json`，加载时把其 skills/agents/hooks/
+   * mcpServers 合并进配置（只增不改）。空/缺省 = 不启用任何插件。
+   */
+  plugins?: string[];
+  /**
+   * AI 自动审批（2026-09 补课，对标 Codex --approve-for-me）：需要审批的操作先经
+   * 一次轻量模型审阅（approve 放行 / deny 回传模型），审阅失败回退人工审批。
+   * **不改变权限档位与沙箱边界**。默认关闭。
+   */
+  autoReview?: boolean;
+  /**
+   * TUI Vim 键位（2026-09 补课）：输入框 Vim 模式（Esc 进 normal / i 回 insert）。
+   * 默认关闭，不影响非 Vim 用户。
+   */
+  vimMode?: boolean;
+  /**
+   * 子代理并发上限（2026-09 DYN）：同一时刻最多并行运行的 delegate 子代理数
+   * （前台 + 后台统一计数；默认 4；超限排队等待而非失败）。
+   */
+  maxConcurrentSubagents?: number;
   /** 生效的配置来源（按优先级排列，用于 banner 展示与调试） */
   sources: string[];
 }
@@ -366,6 +394,9 @@ const DEFAULTS = {
   webConcurrency: 3,
   diagnoseAfterEdit: false,
   contextCompressRatio: 0.7,
+  // 2026-09 补课/PLG/DYN 默认值
+  redactSecrets: true,
+  maxConcurrentSubagents: 4,
 };
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -642,6 +673,22 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.contextLimit === 'number' && Number.isFinite(data.contextLimit) && data.contextLimit > 0) {
     cfg.contextLimit = Math.floor(data.contextLimit);
   }
+  // 2026-09 补课/PLG/DYN：密钥脱敏 / 自动审批 / Vim 键位 / 子代理并发 / 插件清单
+  if (typeof data.redactSecrets === 'boolean') cfg.redactSecrets = data.redactSecrets;
+  if (typeof data.autoReview === 'boolean') cfg.autoReview = data.autoReview;
+  if (typeof data.vimMode === 'boolean') cfg.vimMode = data.vimMode;
+  if (typeof data.maxConcurrentSubagents === 'number' && Number.isFinite(data.maxConcurrentSubagents)) {
+    cfg.maxConcurrentSubagents = Math.max(1, Math.min(16, Math.floor(data.maxConcurrentSubagents)));
+  }
+  if (Array.isArray(data.plugins)) {
+    cfg.plugins = [
+      ...new Set(
+        (data.plugins as unknown[])
+          .filter((x): x is string => typeof x === 'string' && !!x.trim())
+          .map((x) => x.trim())
+      ),
+    ];
+  }
   if (data.telemetry && typeof data.telemetry === 'object' && !Array.isArray(data.telemetry)) {
     const t = data.telemetry as Record<string, unknown>;
     cfg.telemetry = {
@@ -867,6 +914,9 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
     }
     if (Object.keys(models).length > 0) cfg.models = models;
   }
+
+  // 密钥脱敏开关（2026-09 补课）：默认开；显式 false 关闭
+  setSecretRedaction(cfg.redactSecrets !== false);
 
   return cfg;
 }

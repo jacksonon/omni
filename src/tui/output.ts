@@ -572,6 +572,24 @@ export class TuiOutput implements Output {
     this.schedulePaint();
   }
 
+  /** AI 自动审批结果（2026-09 补课）：对话流 meta 行提示 */
+  onAutoReview(req: ApprovalRequest, verdict: { approve: boolean; reason: string }): void {
+    const mark = verdict.approve ? '✓ 自动批准' : '✗ 自动拒绝';
+    pushLine(this.state, { kind: 'meta', text: `auto-review ${mark} ${req.tool}${verdict.reason ? ` · ${verdict.reason}` : ''}` });
+    this.schedulePaint();
+  }
+
+  /** 后台子代理完成（2026-09 FLT）：meta 行 + 右上角 toast（结果已注入上下文） */
+  onBackgroundSubagentDone(r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number }): void {
+    const ok = r.status === 'ok';
+    pushLine(this.state, {
+      kind: ok ? 'meta' : 'warn',
+      text: `${ok ? '✓' : '✗'} 后台子代理「${r.name}」${ok ? '完成' : '失败'} · ${(r.durationMs / 1000).toFixed(1)}s（结果已注入对话）`,
+    });
+    pushToast(this.state, `${ok ? '✓' : '✗'} 后台子代理「${r.name}」${ok ? '完成' : '失败'}`, ok ? 'success' : 'error');
+    this.schedulePaint();
+  }
+
   /**
    * 子代理进度事件（1.0 可视化扩展）：delegate 子代理生命周期 + 执行明细。
    *
@@ -581,8 +599,25 @@ export class TuiOutput implements Output {
    * end/stopped 到达时面板行保留（等待 onToolResult 收尾→移除+流内结果卡）。
    */
   onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {
+    // 后台子代理台账（2026-09 FLT）：独立于 delegate 面板（后台委托的工具卡片
+    // 立即以「已启动」收尾移除；这里按 id 记录生命周期供 /tasks 展示）
+    if (ev.background) {
+      if (ev.type === 'start') {
+        this.state.backgroundRuns.push({ id: ev.id, name: ev.name, status: 'running', startedAt: Date.now(), seq: ev.seq ?? null });
+        if (this.state.backgroundRuns.length > 20) this.state.backgroundRuns.splice(0, this.state.backgroundRuns.length - 20);
+      } else if (ev.type === 'end' || ev.type === 'stopped') {
+        const r = this.state.backgroundRuns.find((x) => x.id === ev.id);
+        if (r) {
+          r.status = ev.type === 'end' && ev.status === 'ok' ? 'ok' : 'err';
+          r.durationMs = ev.durationMs;
+        }
+      }
+    }
     const run = this.findDelegateRun(ev);
-    if (!run) return;
+    if (!run) {
+      this.schedulePaint();
+      return;
+    }
     const lang = this.state.language;
     if (ev.type === 'start') {
       run.name = ev.name;

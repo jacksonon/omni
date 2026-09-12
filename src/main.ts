@@ -28,11 +28,16 @@ import { runInteractive } from './cli/interactive.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
-import { HookRunner } from './hooks/index.js';
+import { HookRunner, type HooksConfig } from './hooks/index.js';
+import { setEnabledPlugins, pluginHooks, pluginMcpServers } from './agent/plugins.js';
+import { TeamBoard } from './agent/team.js';
+import { createTaskBoardTool, createSendMessageTool } from './tools/team-tools.js';
 import { formatToolCall } from './output/format.js';
 import type { Output } from './output/types.js';
 import type { PermissionTier } from './safety/policy.js';
+import { SubagentSemaphore } from './agent/semaphore.js';
 import { Safety, type ApprovalRequest } from './safety/index.js';
+import { createAutoReviewer } from './safety/auto-review.js';
 import { isTrustedWorkspace, addTrustedWorkspace } from './safety/trust.js';
 import { wrapSandboxCommand, touchesSandboxPolicy, type SandboxMode, type SandboxOptions } from './safety/sandbox.js';
 import type { Tool } from './tools/types.js';
@@ -42,7 +47,7 @@ import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
 import { discoverSubagents } from './agent/subagent-defs.js';
 import { tools } from './tools/index.js';
-import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage } from './tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, createMcpHandlers } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { countDiffLines } from './output/format.js';
 import { readFileSync } from 'node:fs';
@@ -216,17 +221,38 @@ export async function attachRuntime(
   // ask_user 提问回调（Output 层实现 UI——console readline / TUI 选项面板）；
   // 未实现/非交互 → undefined（工具返回「无法询问」，模型自行决定）
   const askUser = output.askUser ? output.askUser.bind(output) : undefined;
+  // 插件系统（2026-09 PLG）：启用清单来自配置；未信任目录整体忽略插件
+  //（插件 hooks/MCP 会执行命令——信任边界与全局 hooks 一致处理）
+  setEnabledPlugins(trusted ? cfg.plugins : []);
   // Hooks 生命周期自动化（对标 Claude Code）：配置了 hooks 才创建（未配置 = no-op）。
   // **未信任目录跳过 hooks**（项目 omni.json 可注入 PreToolUse hook 执行任意 shell——
   // 这是仓库注入恶意配置的主要载体；全局 hooks 也被跳过，提示用户先信任目录）。
   // hook 输出经 Output.onHookOutput 回显（TUI 对话流 / console dim 行）；超时/失败降级放行
   if (trusted) {
+    // 插件 hooks 先合并（用户配置在同 matcher 上优先——后层覆盖）
+    const mergedHooks: HooksConfig = { ...pluginHooks() };
+    for (const [event, defs] of Object.entries(cfg.hooks ?? {})) {
+      if (!Array.isArray(defs)) continue;
+      const key = event as keyof HooksConfig;
+      mergedHooks[key] = [...(mergedHooks[key] ?? []), ...defs] as never;
+    }
     ctx.runOpts.hooks = new HookRunner({
-      hooks: cfg.hooks,
+      hooks: mergedHooks,
       cwd: process.cwd(),
       onOutput: (event, lines) => output.onHookOutput?.(event, lines),
     });
   }
+  // AI 自动审批（2026-09 补课）：config autoReview 或 exec --approve-for-me（cfg 已在 runExec 覆盖）。
+  // 审阅器共享给主循环（loop 自建 Safety）与子代理（delegate 的共用闸门）。
+  // 审阅器始终创建（构造极轻），运行时开关由 cfg.autoReview 实时判断——/auto on|off 即时生效。
+  const autoReviewer = createAutoReviewer({
+    client,
+    model: cfg.model,
+    describeContext: () => ({ cwd: process.cwd(), tier: effectiveTier, sandbox: cfg.sandbox }),
+    onVerdict: (req, verdict) => output.onAutoReview?.(req, verdict),
+  });
+  const autoReviewGate = (req: ApprovalRequest) => (cfg.autoReview ? autoReviewer(req) : Promise.resolve(null));
+  ctx.runOpts.autoReview = autoReviewGate;
   const gate = new Safety({
     tier: effectiveTier,
     audit: cfg.auditLog,
@@ -234,6 +260,8 @@ export async function attachRuntime(
     summarize: formatToolCall,
     dangerousPatterns: cfg.dangerousPatterns,
     hooks: ctx.runOpts.hooks, // PermissionRequest hook（1.0 P1-1）
+    // AI 自动审批（2026-09 补课）：模型审阅放行/拒绝，失败回退人工审批
+    ...(autoReviewGate ? { autoReview: autoReviewGate } : {}),
     // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批卡片
     //（数据源 = UndoStack 执行前快照——与 write_file 卡片 diff 同源；快照在工具执行前
     // 打，这里 gate 先于 execute 读「最近一次同路径快照」即为当前盘上内容）
@@ -422,6 +450,10 @@ export async function attachRuntime(
   toolchain.push(createWebSearchTool(cfg.webSearchApiKey));
   // diagnose 诊断工具（P1）：运行 typecheck/lint 返回诊断摘要
   toolchain.push(createDiagnoseTool(process.cwd()));
+  // Team 协作（2026-09 DYN）：共享任务看板 + SendMessage（主代理/子代理共用）
+  ctx.runOpts.team = new TeamBoard();
+  toolchain.push(createTaskBoardTool(ctx.runOpts));
+  toolchain.push(createSendMessageTool(ctx.runOpts));
   // 思考级别（/variants）与子代理配置（/agents 展示）：透传给交互命令。
   // 初始值取**默认模型端点**（首位 = cfg.model 展开）：per-model reasoningEffort 与
   // 端点展开时已查表推导的档位选项随模型带出——cfg.reasoningEffortOptions 默认 []
@@ -436,14 +468,24 @@ export async function attachRuntime(
   if (cfg.architect) ctx.runOpts.architectModel = cfg.architect;
   if (cfg.editor) ctx.runOpts.editorModel = cfg.editor;
   ctx.runOpts.maxSubagentDepth = cfg.maxSubagentDepth;
+  // 2026-09 FLT/DYN：子代理并发预算（前后台共享信号量）+ 后台结果队列/回调
+  ctx.runOpts.subagentSemaphore = new SubagentSemaphore(
+    Math.max(1, Math.min(16, cfg.maxConcurrentSubagents ?? 4))
+  );
+  ctx.runOpts.backgroundResults = ctx.runOpts.backgroundResults ?? [];
+  ctx.runOpts.onBackgroundResult = (r) => output.onBackgroundSubagentDone?.(r);
   // 未信任目录：跳过项目级子代理定义（.agents/subagents/*.md 可能被仓库植入
   // 恶意模型/权限配置）；delegate 工具本身也不注册（子代理是项目级概念）。
   ctx.runOpts.subagents = trusted ? await discoverSubagents() : [];
   // 基础工具链（静态 + delegate，不含 MCP）：/mcp 重连时以此为基底重建 tools
   ctx.runOpts.baseTools = toolchain;
-  ctx.runOpts.mcpServers = cfg.mcpServers;
-  // 发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）
-  const mcpHandles = await discoverMcpServers(cfg.mcpServers);
+  // MCP 服务器：插件声明 + 用户配置（同名用户配置优先），2026-09 PLG
+  const mergedMcpServers = { ...pluginMcpServers(), ...(cfg.mcpServers ?? {}) };
+  ctx.runOpts.mcpServers = mergedMcpServers;
+  // 发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）；
+  // 反向请求处理器（elicitation→askUser；sampling→当前模型）声明 2026-07-28 能力
+  const mcpHandlers = createMcpHandlers({ client, model: cfg.model, askUser });
+  const mcpHandles = await discoverMcpServers(mergedMcpServers, mcpHandlers);
   // 组装 MCP 工具链（server 工具 + Resources/Prompts 辅助工具）
   const mcpTools = buildMcpTools(mcpHandles);
   toolchain.push(...mcpTools);
@@ -573,6 +615,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
   if (taskArgs[0] === 'web') {
     await runWeb(taskArgs.slice(1), overrides);
+    return;
+  }
+  // omni plugin：插件安装/卸载/启用清单管理（2026-09 PLG）
+  if (taskArgs[0] === 'plugin') {
+    const { runPluginCommand } = await import('./cli/plugin.js');
+    process.exitCode = await runPluginCommand(taskArgs.slice(1));
     return;
   }
   // omni preset：能力一键预设（1.0 P1-6）——omni preset browser 装浏览器自动化双雄 MCP

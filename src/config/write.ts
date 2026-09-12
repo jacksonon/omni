@@ -672,6 +672,70 @@ function globalConfigFile(): string {
 }
 
 /**
+ * 通用全局布尔开关持久化（2026-09 补课：/auto、/vim）：写全局配置的指定字段
+ * （JSONC 拒绝自动改；失败给出可手动添加的提示）。返回结构复用 PersistModelResult。
+ */export function persistGlobalBoolToConfig(
+  field: 'autoReview' | 'vimMode' | 'redactSecrets',
+  value: boolean,
+  label: string
+): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动添加 "${field}": ${value}` };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常，未自动修改——请手动添加 "${field}": ${value}` };
+  }
+  obj[field] = value;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return { ok: true, file, message: `已保存${label} → ${file}` };
+}
+
+/**
+ * 插件启用清单持久化（2026-09 PLG）：把 plugins 数组写入全局配置。
+ * JSONC 拒绝自动改（提示手动）；数组去重、上限 64。
+ */
+export function persistPluginListToGlobal(names: string[]): PersistModelResult {
+  const file = globalConfigFile();
+  const list = [...new Set(names.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim()))].slice(0, 64);
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return { ok: false, file: null, message: `「${file}」带注释（JSONC），未自动修改——请手动添加 "plugins": ${JSON.stringify(list)}` };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: `全局配置格式异常，未自动修改——请手动添加 "plugins": ${JSON.stringify(list)}` };
+  }
+  obj.plugins = list;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return { ok: true, file, message: `已保存插件清单（${list.length} 个）→ ${file}` };
+}
+
+/**
  * 把 MCP server 写入**全局**配置的 mcpServers 字段（1.0 P1-6 预设用——预设是
  * 机器级能力，不进项目配置）。JSONC 文件拒绝自动改（提示手动）；同名覆盖。
  */

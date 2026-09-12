@@ -31,8 +31,18 @@ interface OAuthMetadata {
   authorization_endpoint?: string;
   token_endpoint?: string;
   device_authorization_endpoint?: string;
+  /** RFC 7591 动态客户端注册端点（2026-09 补课；有则登录时自动注册 client_id） */
+  registration_endpoint?: string;
+  /** CIMD（Client ID Metadata Document）支持标记（client_id 为 HTTPS 元数据文档 URL） */
+  client_id_metadata_document_supported?: boolean;
   code_challenge_methods_supported?: string[];
   scopes_supported?: string[];
+}
+
+/** OAuth 客户端选项：clientId 传 HTTPS URL 即 CIMD 模式；缺省尝试 DCR → 回退 'omni' */
+export interface OAuthClientOptions {
+  clientId?: string;
+  clientName?: string;
 }
 
 function oauthFilePath(): string {
@@ -114,11 +124,53 @@ const pkce = () => {
 };
 
 /**
+ * 解析 OAuth client_id（2026-09 补课）：
+ *  1. 显式 clientId（HTTPS URL = CIMD 元数据文档；普通字符串 = 预注册 client_id）；
+ *  2. 服务器声明 registration_endpoint → RFC 7591 动态注册（PKCE public client）；
+ *  3. 回退旧行为 'omni'。
+ */
+export async function resolveOAuthClientId(
+  meta: OAuthMetadata,
+  redirectUri: string,
+  opts?: OAuthClientOptions
+): Promise<{ clientId: string; clientSecret?: string }> {
+  if (opts?.clientId) return { clientId: opts.clientId };
+  if (meta.registration_endpoint) {
+    try {
+      const resp = await fetch(meta.registration_endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          client_name: opts?.clientName ?? 'omni',
+          redirect_uris: [redirectUri],
+          grant_types: ['authorization_code', 'refresh_token'],
+          response_types: ['code'],
+          token_endpoint_auth_method: 'none',
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as Record<string, unknown>;
+        if (typeof data.client_id === 'string' && data.client_id) {
+          return {
+            clientId: data.client_id,
+            ...(typeof data.client_secret === 'string' && data.client_secret ? { clientSecret: data.client_secret } : {}),
+          };
+        }
+      }
+    } catch {
+      // 注册失败 → 回退预注册 'omni'
+    }
+  }
+  return { clientId: 'omni' };
+}
+
+/**
  * 执行 OAuth 授权码 + PKCE 流程：
  * 打开浏览器 → 用户授权 → 本地回调接收 code → 换 token → 持久化返回。
  * 返回新 token；流程失败（取消/无端点）返回 null。
  */
-export async function oauthLogin(baseUrl: string, scope = 'mcp'): Promise<McpOAuthToken | null> {
+export async function oauthLogin(baseUrl: string, scope = 'mcp', opts?: OAuthClientOptions): Promise<McpOAuthToken | null> {
   const meta = await discoverOAuthMetadata(baseUrl);
   if (!meta?.authorization_endpoint || !meta.token_endpoint) {
     throw new Error(`服务器 ${baseUrl} 未提供 OAuth 元数据（authorization_endpoint / token_endpoint 缺失）`);
@@ -127,10 +179,12 @@ export async function oauthLogin(baseUrl: string, scope = 'mcp'): Promise<McpOAu
   const code = randomBytes(8).toString('hex');
   const redirectPort = 47_000 + Math.floor(Math.random() * 1000);
   const redirectUri = `http://127.0.0.1:${redirectPort}/callback`;
+  // client_id：显式（CIMD URL）→ DCR 动态注册 → 'omni' 回退
+  const { clientId, clientSecret } = await resolveOAuthClientId(meta, redirectUri, opts);
 
   const authUrl = new URL(meta.authorization_endpoint);
   authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('client_id', 'omni');
+  authUrl.searchParams.set('client_id', clientId);
   authUrl.searchParams.set('redirect_uri', redirectUri);
   authUrl.searchParams.set('code_challenge', challenge);
   authUrl.searchParams.set('code_challenge_method', 'S256');
@@ -173,16 +227,18 @@ export async function oauthLogin(baseUrl: string, scope = 'mcp'): Promise<McpOAu
   if (!authCode) throw new Error('OAuth 授权被拒绝（无 code）');
 
   // 换 token
+  const tokenBody: Record<string, string> = {
+    grant_type: 'authorization_code',
+    code: authCode,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: verifier,
+  };
+  if (clientSecret) tokenBody.client_secret = clientSecret;
   const tokenResp = await fetch(meta.token_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: authCode,
-      redirect_uri: redirectUri,
-      client_id: 'omni',
-      code_verifier: verifier,
-    }),
+    body: new URLSearchParams(tokenBody),
   });
   if (!tokenResp.ok) {
     throw new Error(`OAuth token 交换失败：HTTP ${tokenResp.status}`);

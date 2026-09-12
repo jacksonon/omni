@@ -47,6 +47,7 @@ import {
   sessionIdFromPath,
   sessionsDir,
   updateSessionTitle,
+  updateSessionMeta,
 } from '../agent/session.js';
 import { forkSession } from '../agent/session-fork.js';
 import { applyProjectMemoryPending } from '../agent/memory.js';
@@ -87,7 +88,7 @@ import {
   removeCheckpoints,
   restoreCheckpoint,
 } from '../agent/rewind.js';
-import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
+import { closeMcpClients, discoverMcpServers, buildMcpTools, createMcpHandlers } from '../tools/mcp.js';
 import type { RunContext } from '../main.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
@@ -216,6 +217,10 @@ export const routingOutput = {
     const sid = currentOutput?.sessionId ?? null;
     for (const l of listeners) l('subagent', { sessionId: sid, ev });
   },
+  onAutoReview: (req: ApprovalRequest, verdict: { approve: boolean; reason: string }) =>
+    currentOutput?.onAutoReview?.(req, verdict),
+  onBackgroundSubagentDone: (r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number }) =>
+    currentOutput?.onBackgroundSubagentDone?.(r),
 };
 
 /* ---------------- 会话存储与运行管理（1.0 P0-2 多会话并发）---------------- */
@@ -395,6 +400,8 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     runningSession: [...runs.keys()][0] ?? null,
     runningSessions: [...runs.keys()],
     concurrency: runOpts.cfg?.webConcurrency ?? 3,
+    // AI 自动审批开关（2026-09 补课）：设置面板勾选初始态
+    autoReview: runOpts.cfg?.autoReview === true,
     tools: runOpts.tools?.map((t) => t.name) ?? [],
     // 已知工作区列表（设置面板一键切换用）
     workspaces: runOpts.cfg?.webWorkspaces ?? [],
@@ -408,6 +415,8 @@ export interface WebServiceOptions {
   host?: string;
   port?: number;
   overrides?: ConfigOverrides;
+  /** 远程接入令牌（--token / OMNI_WEB_TOKEN）；非回环地址必填 */
+  token?: string;
 }
 
 export async function startWebService(opts: WebServiceOptions): Promise<http.Server> {
@@ -417,6 +426,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   const overrides = opts.overrides ?? {};
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 3080;
+  // 远程接入（2026-09 FLT）：非回环监听必须有令牌（fail-closed，防未授权访问 Agent）
+  const token = opts.token?.trim() ?? '';
+  const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  if (!loopback && !token) {
+    throw new Error('非回环监听地址必须设置访问令牌：omni web --host <地址> --token <令牌>（或环境变量 OMNI_WEB_TOKEN）');
+  }
 
   /**
    * 会话级运行时（1.0 P0-2 多会话并发）：以共享 runOpts 为原型做 **Object.create
@@ -446,9 +461,22 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     return ro;
   }
 
+  /**
+   * MCP 发现（含 elicitation/sampling 反向请求处理器，2026-07-28）：
+   * /mcp add|remove|reconnect 与 registry 安装路径共用；sampling 用当前模型运行时。
+   */
+  const discoverMcpWithHandlers = (servers?: Record<string, McpServerConfig>) =>
+    discoverMcpServers(
+      servers,
+      createMcpHandlers({
+        client: runOpts.modelRuntime?.client ?? ctx.client,
+        model: runOpts.modelRuntime?.model ?? ctx.cfg.model,
+        askUser: runOpts.askUser,
+      })
+    );
+
   /** 容量判定：全局并发上限（cfg.webConcurrency，默认 3）+ 每会话 1 个 */
-  function capacityError(sessionId: string): string | null {
-    if (runs.has(sessionId)) return '当前会话正在运行，可点击「取消」';
+  function capacityError(sessionId: string): string | null {    if (runs.has(sessionId)) return '当前会话正在运行，可点击「取消」';
     const max = Math.max(1, cfg.webConcurrency ?? 3);
     if (runs.size >= max) return `已达并发上限（${max} 个会话同时运行）——等待任一完成后再试`;
     return null;
@@ -575,6 +603,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     };
 
     const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, runOpts.modelRuntime?.model);
+    ro.onBackgroundResult = (r) => output.onBackgroundSubagentDone?.(r);
     currentOutput = output;
 
     // 广播运行状态（客户端据此按会话显示取消按钮 / 其它会话可继续发送）
@@ -793,6 +822,80 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/plan') {
       runOpts.planMode = !runOpts.planMode;
       add(runOpts.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。');
+      return { lines };
+    }
+
+    if (cmd === '/team' || cmd.startsWith('/team ')) {
+      // Team 任务看板（2026-09 DYN）：共享任务列表 + 未投递消息 + 后台子代理
+      const board = runOpts.team;
+      if (!board || board.tasks.length === 0) {
+        add('任务看板为空（多代理协作时主代理会建任务；/orchestrate <任务> 走动态工作流）。');
+      } else {
+        const done = board.tasks.filter((x) => x.status === 'completed').length;
+        add(`任务看板（${done}/${board.tasks.length} 完成）：`);
+        for (const line of board.summaryLines()) add(line);
+      }
+      const pending = board?.pendingCount('main') ?? 0;
+      if (pending > 0) add(`未投递消息：${pending} 条（主循环下一步注入）`);
+      return { lines };
+    }
+
+    if (cmd === '/tasks' || cmd.startsWith('/tasks ')) {
+      // 运行中任务（2026-09 FLT）：前台子代理看 runs 状态，后台在队列/运行中提示
+      const running = [...runs.keys()];
+      if (running.length === 0) add('当前没有运行中的会话/子代理。');
+      else add(`运行中会话：${running.join('、')}（子代理过程见对话流 delegate 面板）`);
+      return { lines };
+    }
+
+    if (cmd === '/pin' || cmd.startsWith('/pin ')) {
+      // 置顶/取消置顶（2026-09）：当前会话（Web 侧栏置顶排序）
+      if (!s) { add('当前没有会话上下文——请先选择一个会话。'); return { lines }; }
+      const loaded = s.file ? await loadSession(s.file).catch(() => null) : null;
+      const next = !(loaded?.meta.pinned ?? false);
+      if (s.file) await updateSessionMeta(s.file, { pinned: next });
+      add(`${next ? '已置顶' : '已取消置顶'}会话 ${s.id}`);
+      return { lines };
+    }
+    if (cmd === '/archive' || cmd === '/unarchive') {
+      if (!s) { add('当前没有会话上下文——请先选择一个会话。'); return { lines }; }
+      const archived = cmd === '/archive';
+      if (s.file) await updateSessionMeta(s.file, { archived });
+      add(archived ? `已归档会话 ${s.id}（侧栏「已归档」组中可见）` : `已取消归档会话 ${s.id}`);
+      return { lines };
+    }
+    if (cmd === '/cd' || cmd.startsWith('/cd ')) {
+      add('Web 端请用「设置 → 通用 → 工作区」或侧栏工作区分组切换目录（等价于 /cd）。');
+      return { lines };
+    }
+    if (cmd === '/auto' || cmd.startsWith('/auto ')) {
+      const arg = cmd.slice('/auto'.length).trim().toLowerCase();
+      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg.autoReview === true);
+      cfg.autoReview = next;
+      if (runOpts.cfg) runOpts.cfg.autoReview = next;
+      const { persistGlobalBoolToConfig } = await import('../config/write.js');
+      persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
+      add(`AI 自动审批：${next ? '已开启（需要审批的操作先经模型审阅，失败回退人工）' : '已关闭'}`);
+      return { lines };
+    }
+    if (cmd === '/plugin' || cmd.startsWith('/plugin ')) {
+      const arg = cmd.slice('/plugin'.length).trim();
+      const { listInstalledPlugins, enabledPluginNames, describePlugin } = await import('../agent/plugins.js');
+      if (!arg || arg === 'list') {
+        const installed = listInstalledPlugins();
+        if (installed.length === 0) add('没有已安装插件（Web 请在「设置 → 插件」页安装/管理）。');
+        else {
+          const enabled = new Set(enabledPluginNames());
+          add(`已安装 ${installed.length} 个插件（★ = 已启用；管理请到「设置 → 插件」页）：`);
+          for (const p of installed) add(`${enabled.has(p.manifest.name) ? '★' : '·'} ${describePlugin(p)}`);
+        }
+      } else {
+        add('Web 端请在「设置 → 插件」页执行安装/启停/删除；CLI 可用 omni plugin …。');
+      }
+      return { lines };
+    }
+    if (cmd === '/vim' || cmd.startsWith('/vim ')) {
+      add('Vim 键位仅 TUI 输入框生效（/vim on|off 持久化，TUI 重启生效）。');
       return { lines };
     }
 
@@ -1028,7 +1131,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const pr = persistMcpServerToConfig(parsed.name, parsed.cfg, cfg);
         runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [parsed.name]: parsed.cfg };
         closeMcpClients();
-        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
         runOpts.mcpHandles = newHandles;
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes();
@@ -1044,7 +1147,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const pr = removeMcpServerFromConfig(serverName, cfg);
         delete runOpts.mcpServers?.[serverName];
         closeMcpClients();
-        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
         runOpts.mcpHandles = newHandles;
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes();
@@ -1061,7 +1164,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         add(`正在打开浏览器完成 OAuth 授权…（60s 内未完成将取消）`);
         const { oauthLogin } = await import('../tools/mcp-oauth.js');
         try {
-          const token = await oauthLogin(new URL(srv.url).origin);
+          const token = await oauthLogin(new URL(srv.url).origin, 'mcp', {
+            ...(srv.clientId ? { clientId: srv.clientId } : {}),
+            clientName: `omni (${serverName})`,
+          });
           add(token ? `已登录「${serverName}」（token 已保存，之后请求自动携带）` : '登录未完成（取消或超时）');
         } catch (err) {
           add(`登录失败：${err instanceof Error ? err.message : err}`);
@@ -1094,7 +1200,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (names.length === 0) { add('未配置 MCP 服务器（/mcp add 添加）'); return { lines }; }
         add('正在重连 MCP…');
         closeMcpClients();
-        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
         runOpts.mcpHandles = newHandles;
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes(); // 工具链变化 → 会话级克隆重建
@@ -1550,10 +1656,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   }
 
   async function listWebSessions(): Promise<
-    Array<{ id: string; title: string; messages: number; created: number; updated: number; project?: string }>
+    Array<{ id: string; title: string; messages: number; created: number; updated: number; project?: string; pinned?: boolean; archived?: boolean }>
   > {
-    // 返回**全部**会话（含 project 字段）——侧栏按工作区分组展示（组=工作区、
-    // 组内元素=会话），由前端分组渲染；不再按 cwd 过滤。
+    // 返回**全部**会话（含 project 字段与 pinned/archived 标记）——侧栏按工作区分组展示，
+    // 置顶由前端排序（置顶分组），归档默认折叠；不按 cwd 过滤。
     // 自动标题生成失败的会话（网关不支持辅助请求等）用首条用户消息缩略兜底，
     // 避免列表里全是「新会话」无法分辨。
     const persisted = await listSessions();
@@ -1576,6 +1682,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         created: s.created,
         updated: live ? live.updated : s.updated,
         project: s.project,
+        ...(s.pinned ? { pinned: true } : {}),
+        ...(s.archived ? { archived: true } : {}),
       });
     }
     // 内存中尚未落盘会话（防御性兜底——创建即落盘，正常不会出现）
@@ -1584,7 +1692,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         out.push({ id: s.id, title: s.title, messages: s.messages.length, created: s.created, updated: s.updated, project: process.cwd() });
       }
     }
-    return out.sort((a, b) => b.updated - a.updated);
+    return out.sort((a, b) => {
+      const ap = a.pinned ? 1 : 0;
+      const bp = b.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return b.updated - a.updated;
+    });
   }
 
   /** 按需取会话（内存没有时从磁盘加载——服务重启后历史会话只在磁盘上） */
@@ -1625,6 +1738,30 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const p = url.pathname;
     const parts = p.split('/').filter(Boolean);
+
+    // 远程接入令牌（2026-09 FLT）：/api 需 Bearer / ?token= / Cookie（页面带 ?token= 时写 Cookie）
+    if (token) {
+      const qToken = url.searchParams.get('token') ?? '';
+      if (qToken === token) {
+        res.setHeader('Set-Cookie', `omni_web_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`);
+      }
+      if (p.startsWith('/api')) {
+        const auth = req.headers.authorization ?? '';
+        const cookieRaw = /(?:^|;\s*)omni_web_token=([^;]*)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
+        const cookieToken = (() => {
+          try {
+            return decodeURIComponent(cookieRaw);
+          } catch {
+            return cookieRaw;
+          }
+        })();
+        const provided = auth.startsWith('Bearer ') ? auth.slice(7) : qToken || cookieToken;
+        if (provided !== token) {
+          json(res, 401, { error: '未授权：需要 Authorization: Bearer <令牌> 或 ?token=<令牌>' });
+          return;
+        }
+      }
+    }
 
     try {
       // ---------- SSE ----------
@@ -1772,6 +1909,25 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (p === sessionPath('cancel') && req.method === 'POST') {
           runs.get(sid)?.controller.abort();
           json(res, 200, { ok: true });
+          return;
+        }
+        // 会话置顶/归档（2026-09 补课）：pin 切换，archive/unarchive 设置
+        if ((p === sessionPath('pin') || p === sessionPath('archive') || p === sessionPath('unarchive')) && req.method === 'POST') {
+          const file = await findSessionById(sid);
+          if (!file) {
+            json(res, 404, { error: `会话不存在：${sid}` });
+            return;
+          }
+          if (p.endsWith('/pin')) {
+            const loaded = await loadSession(file).catch(() => null);
+            const next = !(loaded?.meta.pinned ?? false);
+            await updateSessionMeta(file, { pinned: next });
+            json(res, 200, { ok: true, pinned: next });
+          } else {
+            const archived = p.endsWith('/archive');
+            await updateSessionMeta(file, { archived });
+            json(res, 200, { ok: true, archived });
+          }
           return;
         }
         // 子代理独立停止：body = { seq }（工具配对序号）→ 只停那一张 delegate 卡片
@@ -1962,6 +2118,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           if (runOpts.cfg) runOpts.cfg.webConcurrency = val;
           cfg.webConcurrency = val;
           persistWebConcurrencyToConfig(val, cfg);
+        }
+        // AI 自动审批开关（2026-09 补课）：运行时 + 持久化（审阅器实时读 cfg.autoReview）
+        if (typeof body.autoReview === 'boolean') {
+          if (runOpts.cfg) runOpts.cfg.autoReview = body.autoReview;
+          cfg.autoReview = body.autoReview;
+          const { persistGlobalBoolToConfig } = await import('../config/write.js');
+          persistGlobalBoolToConfig('autoReview', body.autoReview, '自动审批开关');
         }
         // 设置面板「状态栏」tab：哪些统计段显示在输入区下方（勾选开关 → statusline 数组）
         if (Array.isArray(body.statusline)) {
@@ -2393,7 +2556,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         try {
           if (action === 'reconnect') {
             closeMcpClients();
-            const handles = await discoverMcpServers(runOpts.mcpServers);
+            const handles = await discoverMcpWithHandlers(runOpts.mcpServers);
             runOpts.mcpHandles = handles;
             runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
             invalidateSessionRuntimes();
@@ -2432,7 +2595,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             const pr = persistMcpServerToConfig(name2, cfgNew, cfg);
             runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [name2]: cfgNew };
             closeMcpClients();
-            const handles = await discoverMcpServers(runOpts.mcpServers);
+            const handles = await discoverMcpWithHandlers(runOpts.mcpServers);
             runOpts.mcpHandles = handles;
             runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
             invalidateSessionRuntimes();
@@ -2446,7 +2609,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             const pr = removeMcpServerFromConfig(name2, cfg);
             delete runOpts.mcpServers?.[name2];
             closeMcpClients();
-            const handles = await discoverMcpServers(runOpts.mcpServers);
+            const handles = await discoverMcpWithHandlers(runOpts.mcpServers);
             runOpts.mcpHandles = handles;
             runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
             invalidateSessionRuntimes();
@@ -2467,7 +2630,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             const pr = persistMcpServerToConfig(name2, ir.config, cfg);
             runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [name2]: ir.config };
             closeMcpClients();
-            const handles = await discoverMcpServers(runOpts.mcpServers);
+            const handles = await discoverMcpWithHandlers(runOpts.mcpServers);
             runOpts.mcpHandles = handles;
             runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
             invalidateSessionRuntimes();
@@ -2479,7 +2642,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             const srv = runOpts.mcpServers?.[name2];
             if (!srv?.url) throw new Error('该服务器不是 HTTP 端点或不存在');
             const { oauthLogin } = await import('../tools/mcp-oauth.js');
-            const token = await oauthLogin(new URL(srv.url).origin);
+            const token = await oauthLogin(new URL(srv.url).origin, 'mcp', {
+              ...(srv.clientId ? { clientId: srv.clientId } : {}),
+            });
             json(res, 200, { ok: !!token, message: token ? 'OAuth 登录成功（token 已持久化）' : '登录未完成' });
             return;
           }
@@ -2618,6 +2783,79 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           return;
         }
         json(res, 200, { ok: true, message: '安装完成（已装入 .agents/skills 等目录，刷新后可见）' });
+        return;
+      }
+
+      // 插件（设置 → 插件页，2026-09 PLG）：GET 列表 / POST install|remove|enable|disable
+      if (p === '/api/plugins' && req.method === 'GET') {
+        const { listInstalledPlugins, enabledPluginNames, describePlugin } = await import('../agent/plugins.js');
+        const enabled = new Set(enabledPluginNames());
+        json(res, 200, {
+          plugins: listInstalledPlugins().map((x) => ({
+            name: x.manifest.name,
+            version: x.manifest.version ?? '',
+            description: x.manifest.description ?? '',
+            summary: describePlugin(x),
+            enabled: enabled.has(x.manifest.name),
+            hooks: Object.keys(x.manifest.hooks ?? {}),
+            mcpServers: Object.keys(x.manifest.mcpServers ?? {}),
+          })),
+        });
+        return;
+      }
+      if (p === '/api/plugins' && req.method === 'POST') {
+        const body = await readBody(req);
+        const action = String(body.action ?? '');
+        const { listInstalledPlugins, enabledPluginNames, installPlugin, removePlugin, setEnabledPlugins } = await import('../agent/plugins.js');
+        const { persistPluginListToGlobal } = await import('../config/write.js');
+        const refreshMcp = async (): Promise<void> => {
+          const { pluginMcpServers } = await import('../agent/plugins.js');
+          closeMcpClients();
+          runOpts.mcpServers = { ...pluginMcpServers(), ...(cfg.mcpServers ?? {}) };
+          const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
+          runOpts.mcpHandles = newHandles;
+          runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+          invalidateSessionRuntimes();
+        };
+        if (action === 'install') {
+          const source = typeof body.source === 'string' ? body.source.trim() : '';
+          if (!source) { json(res, 400, { error: '缺少安装源（本地路径或 git URL）' }); return; }
+          const r = installPlugin(source, { force: body.force === true });
+          if (!r.ok) { json(res, 400, { error: r.message }); return; }
+          const names = enabledPluginNames();
+          if (r.name && !names.includes(r.name)) names.push(r.name);
+          const pr = persistPluginListToGlobal(names);
+          setEnabledPlugins(names);
+          await refreshMcp();
+          json(res, 200, { ok: true, name: r.name, message: `${r.message}${pr.ok ? ' · 已启用' : ` · ${pr.message}`}` });
+          return;
+        }
+        if (action === 'remove') {
+          const name = String(body.name ?? '');
+          const r = removePlugin(name);
+          if (!r.ok) { json(res, 400, { error: r.message }); return; }
+          const names = enabledPluginNames().filter((n) => n !== name);
+          const pr = persistPluginListToGlobal(names);
+          setEnabledPlugins(names);
+          await refreshMcp();
+          json(res, 200, { ok: true, message: `${r.message}${pr.ok ? ' · 已从启用清单移除' : ` · ${pr.message}`}` });
+          return;
+        }
+        if (action === 'enable' || action === 'disable') {
+          const name = String(body.name ?? '');
+          if (!listInstalledPlugins().some((x) => x.manifest.name === name)) {
+            json(res, 400, { error: `插件未安装：${name}` });
+            return;
+          }
+          const names = enabledPluginNames();
+          const next = action === 'enable' ? [...new Set([...names, name])] : names.filter((n) => n !== name);
+          const pr = persistPluginListToGlobal(next);
+          setEnabledPlugins(next);
+          await refreshMcp();
+          json(res, pr.ok ? 200 : 400, pr.ok ? { ok: true, message: `已${action === 'enable' ? '启用' : '停用'}「${name}」` } : { error: pr.message });
+          return;
+        }
+        json(res, 400, { error: `未知 action：${action}` });
         return;
       }
 

@@ -4,7 +4,7 @@
  */
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { parseModelAddArgs, persistContextLimitToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
+import { parseModelAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
@@ -42,7 +42,8 @@ import {
   fullStatusReport,
   memoryFilesFromMessages,
 } from '../agent/report.js';
-import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, sessionIdFromPath, updateSessionTitle } from '../agent/session.js';
+import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, sessionIdFromPath, updateSessionTitle, updateSessionMeta, resolveSessionTarget } from '../agent/session.js';
+import { resolveCdArg } from '../agent/workspace.js';
 import {
   autoGitCommit,
   checkpointSummaryLine,
@@ -1042,20 +1043,136 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
+    if (cmd === '/cd' || cmd.startsWith('/cd ')) {
+      // /cd [路径]：运行中切换工作目录（无参显示当前；~ 展开；相对路径基于当前 cwd）
+      const arg = cmd.slice('/cd'.length).trim();
+      const resolved = resolveCdArg(arg, process.cwd());
+      if (resolved.kind === 'error') {
+        console.log(red(resolved.error));
+      } else if (resolved.kind === 'show') {
+        console.log(dim(`当前工作目录：${resolved.dir}`));
+      } else {
+        try {
+          process.chdir(resolved.dir);
+          console.log(green(`工作目录已切换：${resolved.dir}`));
+        } catch (err) {
+          console.log(red(`切换失败：${err instanceof Error ? err.message : String(err)}`));
+        }
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/pin' || cmd.startsWith('/pin ')) {
+      // /pin [会话id]：置顶/取消置顶（无参 = 当前会话）
+      const target = await resolveSessionTarget(cmd.slice('/pin'.length).trim(), runOpts.sessionPath);
+      if (!target.ok) {
+        console.log(red(target.error));
+        for (const c of target.candidates ?? []) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}`));
+      } else {
+        const loaded = await loadSession(target.file);
+        const next = !(loaded?.meta.pinned ?? false);
+        await updateSessionMeta(target.file, { pinned: next });
+        console.log(green(`${next ? '已置顶' : '已取消置顶'}会话 ${loaded?.meta.id ?? target.file}`));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/archive' || cmd.startsWith('/archive ')) {
+      // /archive [会话id]：归档（默认从会话列表隐藏；/session archived 查看）
+      const target = await resolveSessionTarget(cmd.slice('/archive'.length).trim(), runOpts.sessionPath);
+      if (!target.ok) {
+        console.log(red(target.error));
+        for (const c of target.candidates ?? []) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}`));
+      } else {
+        const loaded = await loadSession(target.file);
+        await updateSessionMeta(target.file, { archived: true });
+        console.log(green(`已归档会话 ${loaded?.meta.id ?? target.file}（/unarchive 取消归档）`));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/unarchive' || cmd.startsWith('/unarchive ')) {
+      // /unarchive [会话id]：取消归档
+      const target = await resolveSessionTarget(cmd.slice('/unarchive'.length).trim(), runOpts.sessionPath);
+      if (!target.ok) {
+        console.log(red(target.error));
+        for (const c of target.candidates ?? []) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}`));
+      } else {
+        const loaded = await loadSession(target.file);
+        await updateSessionMeta(target.file, { archived: false });
+        console.log(green(`已取消归档会话 ${loaded?.meta.id ?? target.file}`));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/auto' || cmd.startsWith('/auto ')) {
+      // /auto [on|off]：AI 自动审批开关（需要审批的操作先经模型审阅；审阅失败回退人工）
+      const cfg = runOpts.cfg;
+      const arg = cmd.slice('/auto'.length).trim().toLowerCase();
+      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.autoReview === true);
+      if (cfg) cfg.autoReview = next;
+      const res = persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
+      console.log(dim(res.message));
+      console.log(dim(`AI 自动审批：${next ? '已开启（审阅不改变权限/沙箱边界）' : '已关闭（恢复人工审批）'}`));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/vim' || cmd.startsWith('/vim ')) {
+      // /vim [on|off]：Vim 键位开关（TUI 输入框；CLI 仅持久化配置供 TUI 使用）
+      const cfg = runOpts.cfg;
+      const arg = cmd.slice('/vim'.length).trim().toLowerCase();
+      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.vimMode === true);
+      if (cfg) cfg.vimMode = next;
+      const res = persistGlobalBoolToConfig('vimMode', next, 'Vim 键位开关');
+      console.log(dim(res.message));
+      console.log(dim(`Vim 键位：${next ? '已开启（TUI 输入框 Esc 进 normal / i 回 insert）' : '已关闭'}`));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/team' || cmd.startsWith('/team ')) {
+      // Team 任务看板（2026-09 DYN）：共享任务列表 + 未投递消息
+      const board = runOpts.team;
+      if (!board || board.tasks.length === 0) {
+        console.log(dim('任务看板为空（多代理协作时由主代理建任务；/orchestrate <任务> 走动态工作流）'));
+      } else {
+        const done = board.tasks.filter((x) => x.status === 'completed').length;
+        console.log(dim(`任务看板（${done}/${board.tasks.length} 完成）：`));
+        for (const line of board.summaryLines()) console.log(dim(`· ${line}`));
+      }
+      const pending = board?.pendingCount('main') ?? 0;
+      if (pending > 0) console.log(dim(`未投递消息：${pending} 条（主循环下一步注入）`));
+      safePrompt();
+      continue;
+    }
     if (cmd === '/session' || cmd.startsWith('/session ')) {
       // /session：会话管理——无参列出当前目录（同目录）的历史会话；
       // /session all|list 列出全部；/session <id> 加载历史会话并继续（支持 id 前缀匹配）
       const arg = cmd.slice('/session'.length).trim();
       const isAll = arg === 'all' || arg === 'list';
-      if (!arg || isAll) {
-        // 历史会话列表排除当前正在进行的会话（它的历史就是当前对话，继续它无意义）
+      if (arg === 'archived') {
+        // /session archived：查看已归档会话（/unarchive <id> 取消归档）
         const currentId = runOpts.sessionPath ? sessionIdFromPath(runOpts.sessionPath) : '';
-        const list = (await listSessions(isAll ? undefined : process.cwd())).filter((s) => s.id !== currentId);
+        const list = (await listSessions(undefined, { includeArchived: true }))
+          .filter((s) => s.archived && s.id !== currentId);
+        if (list.length === 0) {
+          console.log(dim('没有已归档的会话（/archive 归档）'));
+        } else {
+          console.log(dim(`已归档 ${list.length} 个会话（/unarchive <id> 取消归档）：`));
+          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
+        }
+        safePrompt();
+        continue;
+      }
+      if (!arg || isAll) {
+        // 历史会话列表排除当前正在进行的会话（它的历史就是当前对话，继续它无意义）；
+        // 默认隐藏归档会话（/session archived 查看）
+        const currentId = runOpts.sessionPath ? sessionIdFromPath(runOpts.sessionPath) : '';
+        const list = (await listSessions(isAll ? undefined : process.cwd(), { includeArchived: false })).filter((s) => s.id !== currentId);
         if (list.length === 0) {
           console.log(dim(isAll ? '没有已保存的会话（交互模式退出时自动落盘；/session 查看当前目录）' : '当前目录没有历史会话（交互模式退出时自动落盘；/session all 查看全部）'));
         } else {
           console.log(dim(isAll ? `已保存 ${list.length} 个会话（/session <id> 继续）：` : `当前目录 ${list.length} 个历史会话（/session <id> 继续 · /session all 查看全部）：`));
-          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
+          for (const s of list.slice(0, 15)) console.log(dim(`· ${s.pinned ? '★ ' : ''}${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
           if (list.length > 15) console.log(dim(`… 还有 ${list.length - 15} 个`));
         }
         safePrompt();

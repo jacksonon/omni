@@ -35,6 +35,11 @@ export interface McpServerConfig {
   url?: string;
   /** streamable HTTP 自定义请求头（如 Authorization: Bearer xxx） */
   headers?: Record<string, string>;
+  /**
+   * OAuth client_id（2026-09 补课）：HTTPS URL = CIMD 元数据文档；普通字符串 =
+   * 预注册 client_id；缺省则登录时尝试 RFC 7591 动态注册，失败回退 'omni'。
+   */
+  clientId?: string;
   /** 工具白名单：只暴露这些工具（缺省 = 全部） */
   enabledTools?: string[];
   /** 工具黑名单：排除这些工具 */
@@ -76,9 +81,14 @@ interface McpTransport {
   request(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   notify(method: string, params: Record<string, unknown>): void;
   close(): void;
+  /** 服务器→客户端请求处理（elicitation/create、sampling/createMessage 等）；undefined = 回 -32601 */
+  setRequestHandler?(handler: (method: string, params: Record<string, unknown>) => Promise<unknown>): void;
+  /** 服务器通知回调（stdio 与 HTTP 通知流统一入口） */
+  setNotifyHandler?(handler: (method: string, params: Record<string, unknown>) => void): void;
 }
 
-const PROTOCOL_VERSION = '2024-11-05';
+/** 协议版本（2026-07-28：elicitation/sampling 反向请求、分页发现、非阻塞启动等） */
+const PROTOCOL_VERSION = '2026-07-28';
 const REQUEST_TIMEOUT = 30_000;
 /** 启动握手（initialize）预算：发现阶段不能拖垮整个进程启动（Electron 壳 30s 就判超时） */
 const CONNECT_TIMEOUT = 15_000;
@@ -102,6 +112,12 @@ class StdioTransport implements McpTransport {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    // 子进程与 stdio 管道不阻止主进程退出（否则配置了 MCP 时 CLI/单任务跑完挂住不退出）；
+    // 进程退出钩子（closeMcpClients）负责 kill 子进程。
+    child.unref();
+    (child.stdin as unknown as { unref?: () => void }).unref?.();
+    (child.stdout as unknown as { unref?: () => void }).unref?.();
+    (child.stderr as unknown as { unref?: () => void }).unref?.();
     child.on('error', (err) => {
       // 不能只吞掉：否则 initialize 等在途请求会干等 REQUEST_TIMEOUT（拖垮整个启动）
       this.spawnError = err;
@@ -117,18 +133,58 @@ class StdioTransport implements McpTransport {
   }
 
   private onMessage(line: string): void {
-    let msg: { id?: number; error?: { message?: string }; result?: unknown };
+    let msg: { id?: number; method?: string; params?: Record<string, unknown>; error?: { message?: string }; result?: unknown };
     try {
       msg = JSON.parse(line);
     } catch {
       return;
     }
-    if (msg.id == null) return; // 服务器主动通知：忽略
+    // 服务器→客户端请求（id + method）：elicitation/sampling 等，处理后回写响应
+    if (msg.id != null && msg.method) {
+      void this.handleServerRequest(msg.id, msg.method, msg.params ?? {});
+      return;
+    }
+    if (msg.id == null) {
+      // 服务器主动通知
+      try {
+        this.notifyHandler?.(msg.method ?? '', msg.params ?? {});
+      } catch {
+        // 通知回调异常不影响读取
+      }
+      return;
+    }
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
     if (msg.error) p.reject(new Error(msg.error.message ?? 'MCP 请求错误'));
     else p.resolve(msg.result);
+  }
+
+  private requestHandler: ((method: string, params: Record<string, unknown>) => Promise<unknown>) | null = null;
+  private notifyHandler: ((method: string, params: Record<string, unknown>) => void) | null = null;
+
+  setRequestHandler(handler: (method: string, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.requestHandler = handler;
+  }
+
+  setNotifyHandler(handler: (method: string, params: Record<string, unknown>) => void): void {
+    this.notifyHandler = handler;
+  }
+
+  /** 处理服务器反向请求并写回 JSON-RPC 响应（stdin 可写时） */
+  private async handleServerRequest(id: number, method: string, params: Record<string, unknown>): Promise<void> {
+    let response: Record<string, unknown>;
+    if (!this.requestHandler) {
+      response = { jsonrpc: '2.0', id, error: { code: -32601, message: `不支持的服务端请求：${method}` } };
+    } else {
+      try {
+        response = { jsonrpc: '2.0', id, result: await this.requestHandler(method, params) };
+      } catch (err) {
+        response = { jsonrpc: '2.0', id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+    if (this.closed || !this.child?.stdin.writable) return;
+    this.child.stdin.write(JSON.stringify(response) + '\n');
   }
 
   request(method: string, params: Record<string, unknown>, timeoutMs: number = REQUEST_TIMEOUT): Promise<unknown> {
@@ -175,8 +231,11 @@ class StdioTransport implements McpTransport {
 
 // ── streamable HTTP 传输（2025-03-26 协议）──────────────────
 
-/** 解析 SSE 响应体：逐帧取 `data:` 行的 JSON */
-async function readSse(resp: Response): Promise<unknown[]> {
+/** 解析 SSE 响应体：逐帧取 `data:` 行的 JSON；服务器反向请求（id+method）经回调分流 */
+async function readSse(
+  resp: Response,
+  onServerRequest?: (msg: { id: number; method: string; params: Record<string, unknown> }) => void
+): Promise<unknown[]> {
   const reader = resp.body?.getReader();
   if (!reader) return [];
   const out: unknown[] = [];
@@ -195,7 +254,12 @@ async function readSse(resp: Response): Promise<unknown[]> {
           const raw = line.slice(5).trim();
           if (!raw) continue;
           try {
-            out.push(JSON.parse(raw));
+            const parsed = JSON.parse(raw) as { id?: number; method?: string; params?: Record<string, unknown> };
+            if (parsed && typeof parsed.method === 'string' && parsed.id != null) {
+              onServerRequest?.({ id: parsed.id, method: parsed.method, params: parsed.params ?? {} });
+              continue;
+            }
+            out.push(parsed);
           } catch {
             // 忽略非法帧
           }
@@ -262,7 +326,7 @@ class HttpTransport implements McpTransport {
     if (!resp.ok) throw new Error(`MCP HTTP ${resp.status}`);
     const contentType = resp.headers.get('content-type') ?? '';
     if (contentType.includes('text/event-stream')) {
-      const msgs = await readSse(resp);
+      const msgs = await readSse(resp, (req) => void this.handleServerRequest(req.id, req.method, req.params));
       const m = msgs.find((x): x is { id?: number; result?: unknown; error?: { message?: string } } =>
         typeof x === 'object' && x !== null && (x as { id?: number }).id === id
       );
@@ -306,9 +370,39 @@ class HttpTransport implements McpTransport {
   }
 
   private notifyCallback: ((method: string, params: Record<string, unknown>) => void) | null = null;
+  private requestHandler: ((method: string, params: Record<string, unknown>) => Promise<unknown>) | null = null;
   private notifying = false;
   /** 通知流重连代数（close 后自增使旧循环退出） */
   private notifyGen = 0;
+
+  setNotifyHandler(handler: (method: string, params: Record<string, unknown>) => void): void {
+    this.notifyCallback = handler;
+  }
+
+  setRequestHandler(handler: (method: string, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.requestHandler = handler;
+  }
+
+  /** 服务器反向请求（elicitation/sampling）：处理并经 POST 写回响应（streamable HTTP 语义） */
+  private async handleServerRequest(id: number, method: string, params: Record<string, unknown>): Promise<void> {
+    let response: Record<string, unknown>;
+    if (!this.requestHandler) {
+      response = { jsonrpc: '2.0', id, error: { code: -32601, message: `不支持的服务端请求：${method}` } };
+    } else {
+      try {
+        response = { jsonrpc: '2.0', id, result: await this.requestHandler(method, params) };
+      } catch (err) {
+        response = { jsonrpc: '2.0', id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+    const url = this.cfg.url;
+    if (!url || this.closed) return;
+    await fetch(url, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(response),
+    }).catch(() => {});
+  }
 
   private async notificationLoop(): Promise<void> {
     const gen = ++this.notifyGen;
@@ -343,7 +437,12 @@ class HttpTransport implements McpTransport {
             for (const line of frame.split('\n')) {
               if (!line.startsWith('data:')) continue;
               try {
-                const msg = JSON.parse(line.slice(5).trim()) as { method?: string; params?: unknown };
+                const msg = JSON.parse(line.slice(5).trim()) as { id?: number; method?: string; params?: unknown };
+                if (msg.method && msg.id != null) {
+                  // 服务器反向请求（elicitation/sampling）：处理并回写
+                  void this.handleServerRequest(msg.id, msg.method, (msg.params ?? {}) as Record<string, unknown>);
+                  continue;
+                }
                 if (msg.method) {
                   method = msg.method;
                   params = msg.params ?? {};
@@ -374,7 +473,10 @@ class HttpTransport implements McpTransport {
   /** OAuth 登录（/mcp login <name> 调用）：成功后更新 token */
   async login(): Promise<boolean> {
     if (!this.cfg.url) return false;
-    const tok = await oauthLogin(this.cfg.url);
+    const tok = await oauthLogin(this.cfg.url, 'mcp', {
+      ...(this.cfg.clientId ? { clientId: this.cfg.clientId } : {}),
+      clientName: `omni (${this.serverNameHint()})`,
+    });
     if (tok) {
       this.token = tok;
       return true;
@@ -393,6 +495,8 @@ class HttpTransport implements McpTransport {
 export class McpClient {
   private transport: McpTransport | null = null;
   private initResult: InitResult | null = null;
+  private requestHandler: ((method: string, params: Record<string, unknown>) => Promise<unknown>) | null = null;
+  private notifyHandler: ((method: string, params: Record<string, unknown>) => void) | null = null;
 
   constructor(
     private cfg: McpServerConfig,
@@ -403,25 +507,51 @@ export class McpClient {
     return !this.cfg.command && !!this.cfg.url;
   }
 
+  /** 注册服务器→客户端请求处理器（elicitation/sampling）；须在 start() 前调用以声明能力 */
+  setRequestHandler(handler: (method: string, params: Record<string, unknown>) => Promise<unknown>): void {
+    this.requestHandler = handler;
+    this.transport?.setRequestHandler?.(handler);
+  }
+
+  /** 注册服务器通知处理器（stdio 通知与 HTTP GET 流统一入口） */
+  setNotifyHandler(handler: (method: string, params: Record<string, unknown>) => void): void {
+    this.notifyHandler = handler;
+    this.transport?.setNotifyHandler?.(handler);
+  }
+
   /** 启动连接 + initialize 握手（CONNECT_TIMEOUT 预算——发现阶段不能拖垮进程启动） */
   async start(): Promise<void> {
     const transport = this.cfg.command
       ? new StdioTransport(this.cfg)
       : new HttpTransport(this.cfg);
     this.transport = transport;
+    if (this.requestHandler) transport.setRequestHandler?.(this.requestHandler);
+    if (this.notifyHandler) transport.setNotifyHandler?.(this.notifyHandler);
     await transport.start();
     const res = (await transport.request('initialize', {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: { resources: {}, prompts: {} },
+      capabilities: {
+        resources: {},
+        prompts: {},
+        // 反向请求能力（2026-07-28）：注册了处理器才声明 elicitation/sampling
+        ...(this.requestHandler ? { elicitation: {}, sampling: {} } : {}),
+      },
       clientInfo: { name: 'omni', version: '0.1.0' },
     }, CONNECT_TIMEOUT)) as InitResult | undefined;
     this.initResult = res ?? null;
     transport.notify('notifications/initialized', {});
     // HTTP 服务器通知流（第八节 P2）：GET SSE 长连接接收服务器主动推送
-    // （resources 变更 / tools 列表变化等）；当前仅 debug 日志呈现——消费动作
-    // （如自动刷新工具列表）待后续按需接入。405 安静放弃（协议允许）。
+    // （resources 变更 / tools 列表变化等）；405 安静放弃（协议允许）。
     if (transport instanceof HttpTransport) {
       transport.subscribeNotifications((method, params) => {
+        if (this.notifyHandler) {
+          try {
+            this.notifyHandler(method, params);
+          } catch {
+            /* 通知回调异常不影响订阅 */
+          }
+          return;
+        }
         if (process.env.OMNI_DEBUG) {
           console.error(`[MCP:${this.serverName}] 通知 ${method} ${JSON.stringify(params).slice(0, 200)}`);
         }
@@ -455,10 +585,18 @@ export class McpClient {
     return this.transport.request(method, params);
   }
 
-  /** 工具列表（应用 enabledTools/disabledTools 白黑名单） */
+  /** 工具列表（分页发现 + enabledTools/disabledTools 白黑名单） */
   async listTools(): Promise<McpToolDef[]> {
-    const res = (await this.request('tools/list', {})) as { tools?: McpToolDef[] } | undefined;
-    const all = res?.tools ?? [];
+    const all: McpToolDef[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = (await this.request('tools/list', cursor ? { cursor } : {})) as
+        | { tools?: McpToolDef[]; nextCursor?: string }
+        | undefined;
+      all.push(...(res?.tools ?? []));
+      cursor = typeof res?.nextCursor === 'string' && res.nextCursor ? res.nextCursor : undefined;
+      if (all.length > 2000) break; // 防御：异常服务器无限分页
+    } while (cursor);
     const enabled = this.cfg.enabledTools;
     const disabled = this.cfg.disabledTools;
     return all.filter((t) => {
@@ -468,11 +606,20 @@ export class McpClient {
     });
   }
 
-  /** 资源列表 */
+  /** 资源列表（分页发现） */
   async listResources(): Promise<McpResource[]> {
     try {
-      const res = (await this.request('resources/list', {})) as { resources?: McpResource[] } | undefined;
-      return res?.resources ?? [];
+      const all: McpResource[] = [];
+      let cursor: string | undefined;
+      do {
+        const res = (await this.request('resources/list', cursor ? { cursor } : {})) as
+          | { resources?: McpResource[]; nextCursor?: string }
+          | undefined;
+        all.push(...(res?.resources ?? []));
+        cursor = typeof res?.nextCursor === 'string' && res.nextCursor ? res.nextCursor : undefined;
+        if (all.length > 2000) break;
+      } while (cursor);
+      return all;
     } catch (err) {
       // 服务器不支持/失败 → 空（不阻塞发现流程）
       if (process.env.OMNI_DEBUG) console.error(`[MCP:${this.serverName}] resources/list: ${err instanceof Error ? err.message : err}`);
@@ -499,11 +646,20 @@ export class McpClient {
     return { uri: first.uri ?? uri, mimeType: first.mimeType, text };
   }
 
-  /** 提示词模板列表 */
+  /** 提示词模板列表（分页发现） */
   async listPrompts(): Promise<McpPromptDef[]> {
     try {
-      const res = (await this.request('prompts/list', {})) as { prompts?: McpPromptDef[] } | undefined;
-      return res?.prompts ?? [];
+      const all: McpPromptDef[] = [];
+      let cursor: string | undefined;
+      do {
+        const res = (await this.request('prompts/list', cursor ? { cursor } : {})) as
+          | { prompts?: McpPromptDef[]; nextCursor?: string }
+          | undefined;
+        all.push(...(res?.prompts ?? []));
+        cursor = typeof res?.nextCursor === 'string' && res.nextCursor ? res.nextCursor : undefined;
+        if (all.length > 2000) break;
+      } while (cursor);
+      return all;
     } catch (err) {
       if (process.env.OMNI_DEBUG) console.error(`[MCP:${this.serverName}] prompts/list: ${err instanceof Error ? err.message : err}`);
       return [];
@@ -576,12 +732,27 @@ export function mcpToolName(serverName: string, toolName: string): string {
 }
 
 /**
+ * 服务器反向请求处理器（2026-07-28，MCP elicitation/sampling）：
+ * 由入口 attachRuntime 注入（复用 UI 提问/审批与当前模型）。
+ */
+export interface McpServerRequestHandlers {
+  /** elicitation/create：向用户提问（返回 { action, content? }） */
+  elicit?: (serverName: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** sampling/createMessage：用当前模型完成一次采样（返回 CreateMessageResult） */
+  sample?: (serverName: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** 服务器通知（resources 变更等；可选，用于日志/刷新） */
+  onNotify?: (serverName: string, method: string, params: Record<string, unknown>) => void;
+}
+
+/**
  * 从配置发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）：
  * 逐 server 握手 → instructions/capabilities → tools|resources|prompts 列表 →
  * 包装成 Tool（名称加 server 前缀，审批模式烘焙）。失败只警告并跳过（fail-open）。
+ * handlers：服务器反向请求（elicitation/sampling）处理器，须在 start() 前注册以声明能力。
  */
 export async function discoverMcpServers(
-  servers?: Record<string, McpServerConfig>
+  servers?: Record<string, McpServerConfig>,
+  handlers?: McpServerRequestHandlers
 ): Promise<McpServerHandle[]> {
   const entries = Object.entries(servers ?? {});
   if (entries.length === 0) return [];
@@ -590,6 +761,14 @@ export async function discoverMcpServers(
   const settled = await Promise.all(entries.map(async ([name, cfg]): Promise<McpServerHandle | null> => {
     try {
       const client = new McpClient(cfg, name);
+      if (handlers?.elicit || handlers?.sample || handlers?.onNotify) {
+        client.setRequestHandler(async (method, params) => {
+          if (method === 'elicitation/create' && handlers.elicit) return handlers.elicit(name, params);
+          if (method === 'sampling/createMessage' && handlers.sample) return handlers.sample(name, params);
+          throw new Error(`不支持的服务端请求：${method}`);
+        });
+        if (handlers.onNotify) client.setNotifyHandler((method, params) => handlers.onNotify!(name, method, params));
+      }
       await client.start();
       const defs = await client.listTools();
       const tools: Tool[] = defs.map((def) => {
@@ -644,6 +823,65 @@ export async function discoverMcpTools(
 ): Promise<Tool[]> {
   const handles = await discoverMcpServers(servers);
   return buildMcpTools(handles);
+}
+
+/**
+ * 组装服务器反向请求处理器（2026-07-28 elicitation/sampling）：
+ *  - elicitation/create → ask_user UI 逐字段提问（enum 给选项、其余自定义输入）；
+ *    用户取消 → {action:'cancel'}；无 UI（非交互）→ {action:'decline'}（不阻塞服务器）。
+ *  - sampling/createMessage → 用当前模型完成一次无工具补全（maxTokens 封顶 2048）。
+ * attachRuntime 与 Web /mcp 重连共用一份实现。
+ */
+export function createMcpHandlers(opts: {
+  client: { chat: { completions: { create: (p: any, o?: any) => Promise<any> } } };
+  model: string;
+  askUser?: import('./ask.js').AskUserFn;
+}): McpServerRequestHandlers {
+  return {
+    elicit: async (serverName, params) => {
+      const message = typeof params.message === 'string' ? params.message : 'MCP 服务器请求输入';
+      const schema = (params.requestedSchema ?? {}) as {
+        properties?: Record<string, { type?: string; title?: string; description?: string; enum?: unknown[] }>;
+      };
+      const props = schema.properties ?? {};
+      const names = Object.keys(props);
+      if (!opts.askUser) return { action: 'decline' };
+      if (names.length === 0) {
+        const r = await opts.askUser(`[MCP:${serverName}] ${message}`, ['接受', '拒绝'], false);
+        if (!r) return { action: 'cancel' };
+        return r.choice === '拒绝' ? { action: 'decline' } : { action: 'accept', content: {} };
+      }
+      const content: Record<string, unknown> = {};
+      for (const name of names) {
+        const prop = props[name] ?? {};
+        const options = Array.isArray(prop.enum) ? prop.enum.map((v) => String(v)) : [];
+        const q = `[MCP:${serverName}] ${message}\n字段：${prop.title ?? name}${prop.description ? `（${prop.description}）` : ''}`;
+        const r = await opts.askUser(q, options, false);
+        if (!r) return { action: 'cancel' };
+        content[name] = options.length > 0 ? r.choice : (r.choices[0] ?? '');
+      }
+      return { action: 'accept', content };
+    },
+    sample: async (_serverName, params) => {
+      const rawMsgs = Array.isArray(params.messages) ? (params.messages as Record<string, unknown>[]) : [];
+      const msgs: { role: 'user' | 'assistant'; content: string }[] = [];
+      for (const m of rawMsgs) {
+        const c = m.content;
+        const text = typeof c === 'string' ? c : c && typeof c === 'object' && (c as { type?: string }).type === 'text' ? String((c as { text?: unknown }).text ?? '') : '';
+        if (!text) continue;
+        msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: text });
+      }
+      if (msgs.length === 0) throw new Error('sampling 请求没有可用文本消息');
+      const maxTokens = typeof params.maxTokens === 'number' ? Math.max(1, Math.min(2048, Math.floor(params.maxTokens))) : 512;
+      const resp = await opts.client.chat.completions.create(
+        { model: opts.model, messages: msgs, max_tokens: maxTokens, stream: false },
+        { signal: AbortSignal.timeout(60_000) }
+      );
+      const text = typeof resp?.choices?.[0]?.message?.content === 'string' ? resp.choices[0].message.content : '';
+      const stopReason = resp?.choices?.[0]?.finish_reason === 'length' ? 'maxTokens' : 'endTurn';
+      return { model: opts.model, role: 'assistant', content: { type: 'text', text }, stopReason };
+    },
+  };
 }
 
 /**

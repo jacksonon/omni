@@ -172,6 +172,9 @@ export async function discoverSubagents(cwd = process.cwd()): Promise<SubagentDe
     path.join(os.homedir(), '.claude', 'agents'),
   ];
   for (const g of globals) await collectFrom(g, byName);
+  // 插件子代理目录（2026-09 PLG）：plugin.json 声明的 agents 目录（机器级）
+  const { pluginAgentDirs } = await import('./plugins.js');
+  for (const d of pluginAgentDirs()) await collectFrom(d, byName);
   return [...byName.values()];
 }
 

@@ -376,6 +376,8 @@ export async function runAgent(
     summarize: formatToolCall,
     dangerousPatterns: opts.cfg?.dangerousPatterns,
     hooks: opts.hooks, // PermissionRequest hook（1.0 P1-1）
+    // AI 自动审批（2026-09 补课）：模型审阅放行/拒绝，失败回退人工
+    ...(opts.autoReview ? { autoReview: opts.autoReview } : {}),
     writeDiffSummary: (tool, args) => {
       if (tool !== 'write_file') return null;
       const snap = opts.undoStack?.latestFor(String(args.path ?? ''));
@@ -405,7 +407,49 @@ export async function runAgent(
   }
   const sessionNote = opts.sessionHookNote ?? '';
 
+  /**
+   * 后台子代理结果注入（2026-09 FLT）：delegate background=true 完成的结果写队列，
+   * 主循环每步请求前 / 回合结束前 drain 成 user 消息（模型可见并据此继续工作）。
+   * 每回合结束仍未到达的结果留到下一轮（下次 drain）。
+   */
+  const drainBackgroundResults = (): number => {
+    const q = opts.backgroundResults;
+    if (!q || q.length === 0) return 0;
+    // 多会话（Web 并发）：只取本会话的结果；其它会话的记录留在队列等其所属 run drain
+    const mine: typeof q = [];
+    const rest: typeof q = [];
+    for (const r of q) {
+      if ((r.sessionPath ?? '') === (opts.sessionPath ?? '')) mine.push(r);
+      else rest.push(r);
+    }
+    if (mine.length === 0) return 0;
+    q.splice(0, q.length, ...rest.slice(-100)); // 防御：其它会话积压上限 100
+    for (const r of mine) {
+      const label = r.status === 'ok' ? '完成' : '失败';
+      const body = r.result.length > 4000 ? r.result.slice(0, 4000) + '\n…（已截断）' : r.result;
+      messages.push({
+        role: 'user',
+        content: `[后台子代理${label}：${r.name}（${r.id}）· ${(r.durationMs / 1000).toFixed(1)}s]\n${body}`,
+      });
+    }
+    return mine.length;
+  };
+
+  /** Team 消息注入（2026-09 DYN）：发给 main 的 send_message 在下一步请求前兑现 */
+  const drainTeamMessages = (): number => {
+    const board = opts.team;
+    if (!board) return 0;
+    const inbox = board.takeMessages('main');
+    for (const m of inbox) {
+      messages.push({ role: 'user', content: `[team 消息 from ${m.from}] ${m.text}` });
+    }
+    return inbox.length;
+  };
+
   for (let step = 0; step < maxSteps; step++) {
+    // 后台子代理完成结果 / team 消息：请求前注入（本轮内完成的可在同轮被模型消费）
+    drainBackgroundResults();
+    drainTeamMessages();
     // 系统提示词：每轮请求前构造带 system 消息的副本（不能 push 进 messages——
     // 该数组被原地追加 assistant/tool 消息用于跨轮上下文，直接 push 会每轮重复累积）。
     // buildSystemPrompt 每轮调用 → persona 里的 model/cwd/权限档位始终是最新值
@@ -784,6 +828,8 @@ export async function runAgent(
 
     // 没有工具调用 → 模型给出了最终回答，循环结束（先过 Stop hook）
     if (toolCalls.size === 0) {
+      // 后台子代理/team 消息恰好在本回合收尾前到达 → 注入并让模型继续消费
+      if (drainBackgroundResults() > 0 || drainTeamMessages() > 0) continue;
       // Hooks：Stop——agent 准备结束时 hook 返回 block（reason）可要求继续修；
       // stop_hook_active=true 后 hook 的 block 被忽略（只允许续一次，防 hook 无限循环）
       if (opts.hooks?.has('Stop')) {
@@ -861,6 +907,7 @@ export async function runAgent(
                 const toolCtx: import('../tools/types.js').ToolContext = {
                   cwd: process.cwd(),
                   toolSeq: seq,
+                  ...(opts.sessionPath ? { sessionPath: opts.sessionPath } : {}),
                   ...(tool.name === 'run_command' && output.onCommandOutput
                     ? {
                         onCommandOutput: (line: string, isErr: boolean) =>

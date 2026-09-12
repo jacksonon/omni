@@ -97,6 +97,10 @@ export interface SubagentOptions {
    * 发 stopped 进度事件并以明确文案结束（不再幽灵跑完）。
    */
   signal?: AbortSignal;
+  /** AI 自动审批（2026-09 补课）：定义子代理建专用 Safety 时透传审阅器 */
+  autoReview?: (req: ApprovalRequest) => Promise<{ approve: boolean; reason: string } | null>;
+  /** Team 协作看板（2026-09 DYN）：SendMessage 收件箱（发给本子代理 id 的消息） */
+  team?: import('./team.js').TeamBoard;
 }
 
 /** 事件回调统一收口（start/step/end/think/toolStart/toolEnd；onEvent 缺省 no-op） */
@@ -143,6 +147,7 @@ export async function runSubagent(
           audit: opts.auditLog ?? false,
           requestApproval: opts.requestApproval ?? (() => false),
           summarize: opts.summarize,
+          ...(opts.autoReview ? { autoReview: opts.autoReview } : {}),
         })
       : opts.gate;
   // 所有返回路径统一收尾：SubagentStop（结论回传）+ end 进度事件 + 最终回答。
@@ -165,6 +170,13 @@ export async function runSubagent(
 
   for (let step = 0; step < maxSteps; step++) {
     if (isStopped(opts)) return finish('', step); // 停止请求在步间到达 → 立即退出
+    // Team 消息注入（2026-09 DYN）：发给本子代理的 send_message 在下一步前兑现
+    const inbox = opts.team?.takeMessages(opts.id ?? '');
+    if (inbox && inbox.length > 0) {
+      for (const m of inbox) {
+        messages.push({ role: 'user', content: `[team 消息 from ${m.from}] ${m.text}` });
+      }
+    }
     emit(opts, { type: 'step', step, maxSteps }); // 思考/请求中（无工具名）
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     try {
@@ -273,7 +285,7 @@ export async function runSubagent(
           try {
             // 工具执行本身不可中途取消（execute 无 signal）；与主循环同策略——
             // 停止时由外层放弃等待，工具副作用继续（结果丢弃）
-            result = await tool.execute(args, { cwd: opts.cwd });
+            result = await tool.execute(args, { cwd: opts.cwd, agentId: opts.id });
           } catch (err: any) {
             result = `执行失败：${err?.message ?? err}`;
           }

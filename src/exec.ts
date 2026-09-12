@@ -53,6 +53,8 @@ export interface ExecParseResult {
   model?: string;
   /** --quiet/-q：静默 stderr 进度（只留 stdout 结果） */
   quiet?: boolean;
+  /** --approve-for-me：AI 自动审批（模型审阅需要审批的操作；失败回退拒绝） */
+  approveForMe?: boolean;
 }
 
 /** 解析 exec 子命令参数（exec 专属 flag；--model/--config 已被 parseArgs 收进 overrides） */
@@ -65,6 +67,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   let outputSchema: Record<string, unknown> | undefined;
   let model: string | undefined;
   let quiet = false;
+  let approveForMe = false;
   const positionals: string[] = [];
 
   // 子命令形态：`omni exec resume <id> [prompt]`
@@ -126,11 +129,15 @@ export function parseExecArgs(args: string[]): ExecParseResult {
       case '-q':
         quiet = true;
         break;
+      case '--approve-for-me':
+        approveForMe = true;
+        break;
       case '--help':
       case '-h':
         throw new Error(
-          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--resume <id>]\n' +
-            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。'
+          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [--resume <id>]\n' +
+            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。\n' +
+            '  --approve-for-me：需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），不改变沙箱与权限边界。'
         );
       case '--':
         positionals.push(...args.slice(i + 1));
@@ -147,7 +154,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
     promptRaw = '[继续上次任务]';
   }
   if (!promptRaw) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
-  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet };
+  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe };
 }
 
 /* ─────────────────────────────── Exec 输出（stdout 干净） ─────────────────────────────── */
@@ -541,6 +548,8 @@ export async function runExec(args: string[], overrides: ConfigOverrides): Promi
   }
   const ctx = prepareRun(overrides);
   const { cfg } = ctx;
+  // --approve-for-me：启用 AI 自动审批（attachRuntime 读取 cfg.autoReview 构建审阅器）
+  if (opts.approveForMe) cfg.autoReview = true;
   const output = new ExecOutput(opts.quiet === true, cfg.showThinking !== false);
   await attachRuntime(ctx, output);
   applyExecOpts(ctx.runOpts, opts);

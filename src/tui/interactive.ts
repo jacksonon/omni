@@ -36,6 +36,7 @@ function findProviderForModel(endpoints: ModelEndpoint[], model: string): string
   return endpoints.find((endpoint) => endpoint.name === model)?.provider;
 }
 import { insertMention } from './mention.js';
+import { applyVimNormal, type VimRuntime } from './vim.js';
 import { enqueuePending, handlePendingKey, selectLastPending } from './pending.js';
 import { t, tf } from './i18n.js';
 import type { TuiOutput } from './output.js';
@@ -108,6 +109,10 @@ export async function runTuiInteractive(
 ): Promise<void> {
   const input = session.input;
   if (!input) return;
+  // Vim 键位（config vimMode / `/vim on`）：normal 启动（Esc 态），i/a… 进 insert
+  state.vimMode = runOpts.cfg?.vimMode === true;
+  state.vimInsert = !state.vimMode;
+  state.vimPending = '';
   // 运行中打断（steer，Cmd/Ctrl+Enter）消息槽：运行中提交 steer 时写入本槽并 abort
   // 当前流；loop 在流中断（AbortError）后经 takeInterrupt 取走、push 进 messages
   // （作为当前轮的新 user 消息）并在**同一轮内继续**——模型直接回答打断消息，
@@ -566,6 +571,46 @@ export async function runTuiInteractive(
     // 待发送选择）已各自消费自己的 Esc——能走到这里说明无任何浮层。
     // 审批卡片打开时 ESC 由 startTui 的审批 handler 先消费（拒绝审批并置位
     // approvalKeyJustConsumed），这里跳过取消运行（拒绝审批 ≠ 取消对话）。
+    // Vim 键位（2026-09 补课）：normal 模式消费移动/编辑键；insert 模式 Esc 回 normal。
+    // 浮层（菜单/命令面板/提问/联想）打开时不介入，避免抢按键。
+    if (state.vimMode && !state.menu && !state.cmdPanel && !state.ask && !state.mention && !state.cmdSuggest) {
+      const escKey = key.name === 'escape' || key.name === 'esc';
+      if (escKey && !state.vimInsert) {
+        state.vimPending = '';
+        key.preventDefault();
+        paintNow();
+        return;
+      }
+      if (escKey && state.vimInsert && !state.running) {
+        state.vimInsert = false;
+        key.preventDefault();
+        paintNow();
+        return;
+      }
+      if (!state.vimInsert && !key.ctrl && !key.meta && !key.super && !key.option) {
+        const rawName = key.name ?? '';
+        const kn = rawName.length === 1 && key.shift ? rawName.toUpperCase() : rawName;
+        const rt: VimRuntime = { pending: state.vimPending, register: state.vimRegister };
+        const edit = applyVimNormal(input.plainText, input.cursorOffset, kn, rt);
+        if (edit) {
+          key.preventDefault();
+          state.vimPending = edit.pending;
+          state.vimRegister = edit.register;
+          if (edit.text !== input.plainText) input.replaceText(edit.text);
+          try {
+            input.cursorOffset = edit.cursor;
+          } catch {
+            input.cursorOffset = Math.max(0, Math.min(edit.cursor, input.plainText.length));
+          }
+          if (edit.insert) {
+            state.vimInsert = true;
+            state.vimPending = '';
+          }
+          paintDeferred();
+          return;
+        }
+      }
+    }
     if ((key.name === 'escape' || key.name === 'esc') && state.running) {
       if (state.approvalKeyJustConsumed) {
         state.approvalKeyJustConsumed = false; // 该 ESC 已用于拒绝审批

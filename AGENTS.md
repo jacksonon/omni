@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成，仅剩进阶项：SWE-bench 评测、/rewind 三模式（code/conversation/both）、agent teams 完整版（见 `Doc/roadmap.md`）。
+当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成，仅剩进阶项：SWE-bench 评测、/rewind 三模式（code/conversation/both）、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -32,6 +32,7 @@ npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 npm run dev -- exec "<任务>" --output-format json   # Headless：stdout 只出结果、进度走 stderr（可 | jq / 管道分支）
 npm run dev -- mcp-server # Headless：作为 MCP server（omni_exec / omni_reply 工具）
 npm run dev -- preset browser # 能力一键预设：浏览器自动化双雄 MCP 写入全局配置
+npm run dev -- plugin list    # 插件管理：install/list/enable/disable/remove（plugin.json 打包技能/子代理/hooks/MCP）
 npm run models:snapshot   # 模型能力快照重建（models.dev → src/config/model-context-snapshot.ts）
 npm run dev -- "spec <特性>" # /spec 规格三件套（requirements-EARS/design/tasks 落盘 .omni/specs/）
 npx tsx scripts/eval/run-headless-eval.ts # headless 结构化评测（含 token/成本/空转/失败类别报告）
@@ -90,6 +91,11 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "globalAgentsFile": true,               // 全局记忆 ~/.config/omni/AGENTS.md：跨项目用户偏好，排在项目记忆之前（级联；默认 true）
   "autoMemory": true,                     // 交互模式退出时把新偏好自动追加进全局记忆（默认 true；单次任务不触发）
   "summarizeAt": 40,                      // 长对话摘要压缩阈值（消息数；0 = 关闭）
+  "redactSecrets": true,                  // 密钥脱敏（2026-09）：会话 JSONL / 回放时把 sk-*/Bearer/AWS 等替换为 [REDACTED]（默认开）
+  "autoReview": false,                    // AI 自动审批（2026-09，对标 Codex --approve-for-me）：需要审批的操作先经模型审阅，失败回退人工；不改变权限/沙箱边界
+  "vimMode": false,                       // TUI 输入框 Vim 键位（2026-09）：Esc normal / i insert；/vim 运行时切换
+  "maxConcurrentSubagents": 4,           // delegate 子代理并发上限（2026-09，前后台共享信号量，超限排队）
+  "plugins": ["my-plugin"],              // 启用的插件（2026-09）：~/.config/omni/plugins/<名>/plugin.json，加载 skills/agents/hooks/mcpServers
   // 手动覆盖上下文窗口（单位 token，如 512000 = 512K；缺省跟随模型自动；/context 256|400|512|750|1000|默认 调整并持久化）
   // "contextLimit": 512000,
   "preloadFiles": true,                   // 预载任务文本中出现的相关文件（默认 true）
@@ -185,6 +191,7 @@ src/
                         #   命令面板富文本（openCmdPanel format：/diff 走 diff 着色视图，/review·/agents 走 markdown）
                         #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
   cli/
+    plugin.ts           # omni plugin CLI：install/list/enable/disable/remove（2026-09）
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
@@ -201,7 +208,12 @@ src/
     undo.ts             # **/undo 文件撤销**：UndoStack（write_file 执行前快照原内容/新建标记，1MB 上限）+ applyUndo（恢复/删除）+ withUndoSnapshot 包装器（主循环与子代理共用）
     subagent-defs.ts    # **子代理定义**：.agents/subagents/*.md frontmatter 解析（name/description/model/permission/tools/skills/maxSteps）+ 发现/按名加载
     subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸；per-agent 模型/权限/工具白名单/技能预载 + 嵌套 depth 上限）
-    orchestrate.ts      # **编排**：/orchestrate 固定 pipeline（fan-out 并行 delegate → 汇总 → 对抗审查）+ /goal 目标机制（自动推导验收标准 → 循环执行直至达标，判定反馈驱动下一轮）
+    semaphore.ts        # 子代理并发信号量（2026-09）：前后台 delegate 共享，超限排队
+    orchestrate.ts      # **编排**：/orchestrate 动态工作流（模型产出结构化计划 → 依赖分层并行执行，2026-09；--pipeline/计划失败回退固定 fan-out pipeline）+ /goal 目标机制（自动推导验收标准 → 循环执行直至达标）
+    team.ts             # **Team 协作（2026-09）**：共享任务看板 TeamBoard + SendMessage 队列 + 动态工作流计划解析（parseWorkflowPlan/planBatches）
+    redact.ts           # **密钥脱敏（2026-09）**：redactText/redactDeep（sk-*/Bearer/AWS/GitHub/私钥/env 字段），会话落盘与事件回放共用
+    plugins.ts          # **插件系统（2026-09）**：plugin.json 清单解析/安装（本地目录+git clone）/卸载/启用清单；pluginSkillDirs/pluginAgentDirs/pluginHooks/pluginMcpServers 供运行时加载
+    workspace.ts        # /cd 工作目录解析（空参显示/相对与 ~ 展开/目录校验）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
     events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/compact 事件 + console/web /trace 账本源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
@@ -212,7 +224,8 @@ src/
     policy.ts           # 权限分级（full/safe/ask/read）+ 危险命令检测（内置 + 扩展正则）+ per-tool 审批模式
     audit.ts            # 审计日志落盘（~/.config/omni/audit.log）
     trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删；未信任 = 只读 + 跳过项目级配置
-    sandbox.ts          # **OS 级沙箱**：read-only / workspace-write（macOS sandbox-exec / Linux bwrap 包裹 run_command）
+    sandbox.ts          # **OS 级沙箱**：read-only / workspace-write（macOS sandbox-exec / Linux bwrap 包裹 run_command）；Windows（2026-09）显式不支持（AppContainer 需原生模块）+ fail-closed 语义
+    auto-review.ts      # **AI 自动审批（2026-09）**：createAutoReviewer（模型审阅 approve/deny，失败回退人工）+ parseAutoReviewVerdict
   hooks/
     index.ts            # **Hooks 生命周期自动化**（对标 Claude Code）：HookRunner（JSON 协议——stdin 喂入事件上下文、stdout 返回决策）+ 5 事件（UserPromptSubmit 改写 prompt / PreToolUse 硬拦截+改写参数 / PostToolUse 输出回传上下文 / Stop 要求继续修 / Notification 通知）+ matcher 通配 + 超时/失败降级放行
   tools/
@@ -231,6 +244,8 @@ src/
   web-fetch.ts        # WebFetch 内置工具：URL 抓取 → htmlToText 转纯文本 → 截断（域名白名单 webFetchDomains 可配）
   web-search.ts       # WebSearch 内置工具：关键词 → 搜索结果（title/url/snippet），Brave Search API（webSearchApiKey / env BRAVE_API_KEY）
   diagnose.ts         # 诊断反馈工具（LSP 轻量版）：detectCheckCommand 探测 typecheck→lint→test + 运行返回诊断摘要
+  lsp.ts              # **LSP 导航工具（2026-09）**：definition/hover/references/documentSymbol（手写最小 LSP 客户端；typescript-language-server / pyright-langserver 按需启动）
+  team-tools.ts       # **Team 工具（2026-09）**：task_board（共享看板 add/update/claim/list）+ send_message（异步消息）
     delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
     mcp.ts              # MCP 客户端：stdio/streamable-HTTP 双传输 + JSON-RPC + 运行时发现注册（tools/resources/prompts/instructions、工具白黑名单、审批模式烘焙、OAuth 登录）
     mcp-oauth.ts        # MCP OAuth 登录：RFC 8414 discovery + 授权码 PKCE + token 持久化
@@ -299,7 +314,7 @@ for step in 1..maxSteps:
 - **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 51 场景，与 CLI 共用同一渲染路径。
 ### 工具列表（src/tools/）
 
-静态注册表 6 个基础工具；`ask_user`（向用户提问）、`delegate`（子代理）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
+静态注册表 8 个基础工具（含 `lsp`）；`ask_user`（向用户提问）、`delegate`（子代理）、`task_board` / `send_message`（Team 协作）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
 
 | 工具 | 作用 |
 |---|---|
@@ -309,13 +324,16 @@ for step in 1..maxSteps:
 | `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
 | `run_command` | 执行 shell 命令（带超时 + 输出截断；危险命令拦截在安全护栏闸门）
 | `skill` | **技能**：按 name 加载已安装技能（SKILL.md）的完整指令内容（对标 opencode；只读，不修改文件） |
+| `lsp` | **LSP 导航**（2026-09 静态注册）：definition/hover/references/documentSymbol，按需启动 typescript-language-server / pyright-langserver；未安装返回提示（可改用 search_code） |
+| `task_board` | **Team 共享任务看板**（运行时注入）：主代理与所有子代理共用，add/update/claim/list；动态工作流用它汇报进度 |
+| `send_message` | **Team 消息**（运行时注入）：向 main 或其它子代理异步发消息，收方在下一步注入上下文（协作/请求决策） |
 | `web_search` | **Web 搜索**（运行时注入，Brave Search API）：关键词 → 搜索结果列表（标题/URL/摘要）；key 配 `webSearchApiKey` 或环境变量 `BRAVE_API_KEY`，结果可再交 `web_fetch` 抓取 |
 | `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方**扁平面板**（无边框/无底色，紧贴输入区；A-D 勾选 / **独立自定义输入**——打字进面板缓冲不进主输入框 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
 | `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）。**过程可视化（1.0）**：运行中的 delegate 在**输入区上方面板**（command 样式——TUI delegateBox / Web #delegate-panel）逐条显示，进度事件带工具配对 seq 精确归集（并行/嵌套不互相覆盖）；点击就地展开查看思考（think）与工具调用明细（toolStart/toolEnd）；展开内 **⏹ 停止**（per-subagent AbortController——断流/步间退出，不再幽灵跑完）；完成后面板行移除、对话流留结果摘要卡（点击展开全过程，**thought 式扁平**对齐 thought/Web 透明卡：收起单行 `+ Subagent:` / 展开缩进明细，步数耗时来自 end 事件快照） |
 | `/skill` 命令 | **技能管理**（TUI 面板选择查看 / CLI 交互）：`/skill` 打开选择面板（含标签：全局/仅手动/子代理，选中加载完整内容）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性）· `/skill create <名> [描述]` 新建（`.agents/skills`，与 Web 共用 `createSkill`）· `/skill delete <名>` 删除（仅删 discover 到的目录） |
 | `/compact` 命令 | **手动压缩上下文**：把旧消息合并为摘要（复用 summarizeContext，保留最近 8 条原文）
 | `/agents` 命令 | **查看子代理配置**：delegate 启用状态 / 模型 / 步骤上限 / 子代理可用工具 + 已发现子代理定义（`.agents/subagents/*.md`，只读）
-| `/orchestrate` 命令 | **编排**：fan-out 并行 delegate（默认 3 worker）→ 汇总 → 对抗审查 → 最终报告（`/orchestrate <任务>`）
+| `/orchestrate` 命令 | **编排（2026-09 动态工作流）**：缺省先由模型产出结构化工作流计划（步骤 + 依赖 + 可选 agent），引擎按依赖分层并行执行（共享 task_board + send_message）→ 汇总 → 对抗审查；计划解析失败或 `--pipeline` / `--agents` 时回退固定 fan-out pipeline（`/orchestrate <任务>`）
 | `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
 | `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
 | `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，优先级 = 配置 reasoningEffortOptions（omni.json，显式空数组=明确关闭）> models.dev 快照查表（effort 子集/仅开关 none·auto）> 默认档位（low/medium/high/xhigh/max + none/auto）；none/auto 不随请求下发参数 |
@@ -332,8 +350,16 @@ for step in 1..maxSteps:
 | `/new` 命令 | **新建会话并回到初始状态**（与 `/clear` 的区别：新会话文件 + 统计/撤销栈/hook note 全重置，回到 hero；旧会话文件保留，可 `/session` 找回）——TUI（`onNewSession` 回调组装）/ CLI（内联）/ Web（前端原生：草稿态，与「新会话」按钮一致） |
 | `/fork` 命令 | **会话 fork**：从当前会话历史某点分叉独立新会话（原会话不丢）——`/fork` 无参列出可保留消息序号摘要，`/fork <N>` 保留前 N 条并自动切换（复用 onResume 链路；Web 端文件级 fork 侧栏可见） |
 | `/send` 命令 | **跨会话消息**：`/send <会话id> <消息>` 向指定会话发消息取结果——串行执行（保存当前上下文 → 载入目标会话 → 跑一轮 → 落盘 → 恢复），结果以 `[跨会话响应]` system 消息注入当前上下文（TUI/CLI 支持；Web 提示全局单运行限制） |
-| `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
+| `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；`/session archived` 查看归档；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
 | `/memory-apply` 命令 | **应用待提交的项目记忆片段**：`.omni/memory-pending.md` → 项目根 AGENTS.md（退出时自动提取项目持久事实生成待确认片段；确认后应用并清片段） |
+| `/team` 命令 | **Team 任务看板**（2026-09）：共享任务列表 + 未投递消息 + 运行中子代理树（TUI 面板 / CLI / Web `/team`） |
+| `/tasks` 命令 | **运行中任务**（2026-09）：前台/后台子代理状态 + `/tasks stop <seq>` 停止（Web 端 `/tasks` 返回运行中会话） |
+| `/cd` 命令 | **切换工作目录**（2026-09，对标 Codex /cd）：`/cd [路径]`（无参显示当前，`~` 展开）；TUI 同时更新 `state.cwd` |
+| `/pin` 命令 | **置顶会话**（2026-09）：`/pin [id]` 切换置顶（无参 = 当前），列表置顶优先 |
+| `/archive` / `/unarchive` 命令 | **归档会话**（2026-09）：默认从列表隐藏，`/session archived` 查看；Web 侧栏底部「已归档 (N)」切换 + ⋯ 菜单 |
+| `/plugin` 命令 | **插件管理**（2026-09）：`/plugin list` · `install <路径|git URL> --yes [--force]` · `remove <名> --yes` · `enable|disable <名>`；CLI `omni plugin …` 同源；Web 设置 → 插件页 |
+| `/auto` 命令 | **AI 自动审批开关**（2026-09）：`/auto [on|off]`（持久化；Web 设置 → 通用勾选）；`omni exec --approve-for-me` 等价 |
+| `/vim` 命令 | **TUI Vim 键位开关**（2026-09）：`/vim [on|off]`（Esc normal / i insert；h/j/k/l/w/b/e/0/$/x/dd/cc/dw/yy/p/o/O） |
 | `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
 | `/rewind` 命令 | **会话检查点**：TUI 无参打开选择面板（含差异统计，确认经 `rewindPick` 意图异步回滚）/ `/rewind <N>` 直接恢复（只回滚工作区文件，对话保留 + system 提示）；Web 端命令直达检查点面板 |
 | `/trace` 命令 | **轨迹文本账本**（console/web `/trace`，TUI 右侧面板已删除）：每轮请求/工具/消息事件序列折叠投影（`agent/trace.ts` foldTrace + buildTraceTextLines，数据源 = 事件记录器内存全量事件） |
@@ -354,7 +380,8 @@ for step in 1..maxSteps:
 > 全部历史条目见 `Doc/roadmap.md`；可做事项 backlog 与 1.0 规划（调研/差距矩阵/发布工程）见合并后的 `Doc/TODO.md`。
 
 - [x] **MVP → 完整能力（已完成）**：Agent 循环 + 工具 + mock e2e → 安全护栏（权限分级/审批/审计/工作区信任/OS 沙箱 2.0）→ 上下文管理（截断/摘要压缩/预载）→ 评估体系 → CLI/TUI → MCP（双传输/Resources/Prompts/OAuth/通知流）→ 子代理与编排 → 记忆系统（嵌套 AGENTS.md/渐进披露/TTL/结构化）→ 会话持久化/检查点/撤销 → 技能系统 → Web/Electron 多前端 → Headless 与 CI（协议冻结 + omni-action）→ **1.0**（providers 模型层/Web 多会话并发/子代理 worktree 隔离/Hooks 扩展/压缩 2.0/LSP 反馈/预设/规格/遥测/eval 成本报告/发布工程）
-- [ ] 进阶：SWE-bench 评测、/rewind 三模式（code/conversation/both）、agent teams 完整版
+- [x] **2026-09 市场对齐批次（第一百七十八次）**：动态工作流 / Mission 编排（task_board + send_message + 并发预算 + `/team`）· 插件系统（plugin.json + `omni plugin` + 运行时加载）· 后台子代理 + `/tasks` + Web 远程令牌 · MCP elicitation/sampling + 2026-07-28 分页发现 + DCR/CIMD · AI 自动审批（autoReview）· 会话 pin/archive/`/cd`/Vim/LSP/密钥脱敏 · 修复 MCP 子进程阻止退出（stdio unref）
+- [ ] 进阶：SWE-bench 评测、/rewind 三模式（code/conversation/both）、Windows 原生沙箱（AppContainer 需原生模块）
 ## 文档地图
 
 | 文档 | 内容 |

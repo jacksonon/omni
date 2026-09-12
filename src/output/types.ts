@@ -136,6 +136,25 @@ export interface Output {
    */
   onHookOutput?(event: HookEventName, lines: string[]): void;
   /**
+   * AI 自动审批结果回显（2026-09 补课）：模型审阅器批准/拒绝一次需要审批的操作。
+   * TUI/Web 显示信息行；console dim 行。可选：缺省 = 静默（decision 仍生效并记录审计）。
+   */
+  onAutoReview?(
+    req: import('../safety/index.js').ApprovalRequest,
+    verdict: { approve: boolean; reason: string }
+  ): void;
+  /**
+   * 后台子代理完成（2026-09 FLT）：TUI/Web 展示元信息行（结果已注入对话上下文）。
+   * 可选：缺省 = 静默。
+   */
+  onBackgroundSubagentDone?(r: {
+    id: string;
+    name: string;
+    status: 'ok' | 'err';
+    result: string;
+    durationMs: number;
+  }): void;
+  /**
    * 子代理进度事件（第六节 P1 可视化）：delegate 委托的 start/step/end。
    * TUI 用它更新 delegate 卡片 live 状态（summary = 子代理名/步数，结果到达前
    * 可见进度）；console 打印 dim 进度行。可选：缺省 = 静默（子代理过程不可见）。

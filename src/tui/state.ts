@@ -581,6 +581,26 @@ export interface TuiState {
   doctorPending: boolean;
   /** 输入框当前文本（repaintTree 同步，buildBody/联想共用） */
   inputText: string;
+  /** Vim 键位模式（config vimMode / `/vim on`）：normal 模式下 h/j/k/l 等由交互层消费 */
+  vimMode: boolean;
+  /** Vim 当前是否处于插入模式（true = 正常输入；false = normal） */
+  vimInsert: boolean;
+  /** Vim 多键前缀（d/c/y/g） */
+  vimPending: string;
+  /** Vim 行寄存器（yy/p） */
+  vimRegister: string;
+  /**
+   * 后台子代理运行台账（2026-09 FLT）：onSubagentEvent 带 background 标记时维护，
+   * `/tasks` 面板展示（运行中/完成/失败 + 耗时），结果由主循环注入对话。
+   */
+  backgroundRuns: Array<{
+    id: string;
+    name: string;
+    status: 'running' | 'ok' | 'err';
+    startedAt: number;
+    durationMs?: number;
+    seq?: number | null;
+  }>;
   /**
    * 用户按 Esc 关闭联想时的输入框文本（非 null = 保持隐藏）。
    * 文本一旦变化（继续输入/删除）→ 联想恢复；同文本重绘不复活列表。
@@ -728,6 +748,11 @@ export function createTuiState(): TuiState {
     skillPick: null,
     doctorPending: false,
     inputText: '',
+    vimMode: false,
+    vimInsert: true,
+    vimPending: '',
+    vimRegister: '',
+    backgroundRuns: [],
     cmdSuggestDismissedText: null,
     approval: null,
     approvalKeyJustConsumed: false,

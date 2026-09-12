@@ -242,10 +242,30 @@ export function wrapSandboxCommand(mode: SandboxMode, cwd: string, command: stri
       };
     }
   }
+  if (process.platform === 'win32') {
+    // Windows 沙箱（2026-09 补课）：AppContainer/受限令牌包装需要原生模块，
+    // Node 层无法可靠实现（runas 无法捕获 stdout，会破坏工具结果）；显式声明不支持，
+    // 由 main.ts 按 sandboxFailClosed 决定拒绝执行（fail-closed）或降级放行。
+    return {
+      command,
+      protected: false,
+      note:
+        'Windows 沙箱不可用（AppContainer 需原生模块，当前未实现）——已降级为直接执行。' +
+        '可设置 sandboxFailClosed=true 拒绝执行，或在 WSL 内运行 omni 获得 bwrap 保护。',
+    };
+  }
   return {
     command,
     protected: false,
     note: `沙箱不可用（${process.platform} 需 sandbox-exec / bwrap / firejail），已降级为直接执行`,
+  };
+}
+
+/** Windows 沙箱支持状态（供 /status、/doctor 与测试使用；见 wrapSandboxCommand 注释） */
+export function windowsSandboxStatus(): { supported: boolean; reason: string } {
+  return {
+    supported: false,
+    reason: 'AppContainer/受限令牌包装需要原生模块（当前未实现）；建议在 WSL 内运行或设置 sandboxFailClosed=true 拒绝裸奔',
   };
 }
 

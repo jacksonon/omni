@@ -195,6 +195,31 @@ export interface RunOptions {
    * attachRuntime 注入；delegate 工具按深度决定是否给子代理再挂 delegate。
    */
   maxSubagentDepth?: number;
+  /**
+   * AI 自动审批（2026-09 补课）：需要人工审批的操作先经模型审阅；返回 null = 审阅
+   * 失败回退人工。由 attachRuntime 按 config autoReview / exec --approve-for-me 注入，
+   * 主循环与子代理共用同一审阅器。
+   */
+  autoReview?: (
+    req: import('../safety/index.js').ApprovalRequest
+  ) => Promise<{ approve: boolean; reason: string } | null>;
+  /**
+   * 子代理并发信号量（2026-09 DYN）：主循环/所有 delegate 共享；超过上限排队。
+   * attachRuntime 按 config maxConcurrentSubagents 创建一次并注入。
+   */
+  subagentSemaphore?: import('./semaphore.js').SubagentSemaphore;
+  /**
+   * 后台子代理完成队列（2026-09 FLT）：delegate background=true 完成后写入；
+   * 主循环在每步请求前/回合结束前 drain 成消息注入上下文。
+   */
+  backgroundResults?: Array<{ id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number; sessionPath?: string }>;
+  /** 后台子代理完成回调（UI 展示：TUI/Web 元信息行 + toast） */
+  onBackgroundResult?: (r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number; sessionPath?: string }) => void;
+  /**
+   * Team 协作看板（2026-09 DYN）：共享任务列表 + SendMessage 消息队列。
+   * 主循环、delegate 子代理与 task_board/send_message 工具共用同一实例。
+   */
+  team?: import('./team.js').TeamBoard;
 }
 
 /**
@@ -249,6 +274,8 @@ export interface SubagentEvent {
   /** toolEnd 事件：工具执行成功/失败 + 输出预览行（截断） */
   toolOk?: boolean;
   outputPreview?: string[];
+  /** 后台执行（2026-09 FLT）：delegate background=true 的子代理，事件带此标记 */
+  background?: boolean;
 }
 
 /** 思考块展示（仅 TTY）。思考内容实时显示后保留在屏幕上，不再折叠。 */

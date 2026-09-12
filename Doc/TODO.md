@@ -25,6 +25,22 @@
 | **移动审批流**（P2） | Web PWA 化 + approval push 通知 | 二·D.3 |
 | **语音输入/听写**（P2） | 通知流才是刚需，语音属边缘 | 二·D.3 |
 
+### 2026-09 市场对齐补充待办（详见第二部分 I 节）
+
+| 待办项 | 内容 | 优先级 |
+|---|---|---|
+| ✅ **DYN 动态工作流 / Mission 编排** | 动态工作流计划（模型出计划、引擎按依赖执行）+ 共享任务列表 + SendMessage + 并发预算 + `/team` 可视化 | P1 |
+| ✅ **PLG 插件包格式** | plugin.json 统一打包 skills/subagents/hooks/MCP + 安装/移除/列举生命周期 + 三端命令 | P1 |
+| ✅ **FLT 舰队视图 / 后台子代理** | TUI `/tasks` 运行中任务面板 + delegate 后台执行 + Web 远程接入令牌 | P1 |
+| ✅ **MCP elicitation / sampling / 2026-07-28** | 服务器反向请求（用户提问/模型采样）+ 协议版本 + 分页发现 + DCR/CIMD | P1 |
+| ✅ **AI 自动审批** | `autoReview` 模型审阅层（对标 Codex --approve-for-me），不改变沙箱边界 | P1 |
+| ✅ **会话 pin / archive** | SessionMeta 增加 pinned/archived，列表置顶/归档分组 + 三端命令 | P2 |
+| ✅ **会话内 /cd** | 运行中切换工作目录（TUI/CLI） | P2 |
+| ✅ **TUI Vim 键位** | 输入框 Vim 模式（normal/insert + 基础 motions + 可配置） | P2 |
+| ✅ **LSP 导航深化** | LSP 客户端（definition/hover/references/documentSymbol，按需启动） | P2 |
+| ✅ **会话内容脱敏** | 持久化/回放时 redact 密钥（sk-/Bearer/AWS 等模式） | P2 |
+| ◐ **Windows 沙箱** | AppContainer 等价物（需原生模块；当前为文档 + fail-closed 语义 + 单测桩，待 Windows CI 验证） | P2 |
+
 ---
 
 ## 第二部分 1.0 调研与规划（原 TODO-1.0.md）
@@ -245,6 +261,75 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 - 研究：arXiv 2607.22585（harness-model pair 评测方法论）、arXiv 2601.11868（agent 综述）、
   SWE-EVO、METR 时间节省研究
 - 本仓库配套原始报告：`research-terminal-agents-2026.md`
+
+### I. 2026-09 市场对齐差距补充（第二轮调研）
+
+> 调研时间：2026-09-11 · 方法：websearch 官方 changelog/release notes（Claude Code 2.1.267、
+> Codex CLI 0.151.0、opencode 1.18.29、Copilot CLI 1.0.83、Factory Droid CLI/Desktop、
+> Goose（AAIF）、Crush 0.91）。
+> **结论：硬能力无掉队**（1.0 定义项全部落地）；剩余差距集中在三块「生态位」与一批低成本补课项。
+> 以下为差异清单与实现要求（本批全部实现，状态随落地勾选）。
+
+#### I.1 值得做的差距
+
+- [x] **DYN 动态工作流 / Mission 级编排**（对标 Claude Code Dynamic workflows、Factory Droid Missions）：
+      市场现状——Claude 支持模型自主生成动态工作流（`/workflows` 面板展示每个子代理的工具级
+      进度与子任务列表，嵌套子代理 3 层）；Droid Missions 支持里程碑分解 + worker/validator
+      双模型分工 + Mission Control 面板 + `droid exec --mission` 无头执行；Copilot `/fleet`
+      多子代理并行。omni 现状——`/orchestrate` 是固定 pipeline（fan-out → 汇总 → 对抗审查），
+      agent teams 完整版（共享任务列表 / SendMessage / 并发预算 / 树形可视化）未做。
+      **实现要求**：① 共享任务列表（任务增删改查 + 认领/状态投影，子代理共享同一看板）；
+      ② SendMessage（子代理 ↔ 主代理互发消息，运行中投递、结束后注入）；
+      ③ 并发预算治理（delegate 并发上限配置 + 排队，超限不空转）；
+      ④ 树形协调可视化（`/team` 命令 + TUI/Web 面板：任务看板 + 子代理树 + 状态）；
+      ⑤ 动态工作流（`/orchestrate <任务>` 先由模型产出结构化工作流计划再执行，保留固定
+      pipeline 作为回退；不引入 JS 脚本执行）。
+- [x] **PLG 插件包格式与安装生命周期**（对标 Claude Code plugins、Codex Agent Plugins、
+      Copilot /plugin 仪表盘）：市场现状——插件包统一打包 skills/hooks/MCP/commands 并经市场
+      分发。omni 现状——能力分散（`npx skills`、MCP registry、`omni preset`、`.agents/subagents`、
+      hooks 配置），无统一 manifest 与安装/更新/禁用生命周期。
+      **实现要求**：① 定义 `plugin.json` 清单（name/version/description/author/skills/agents/
+      hooks/mcpServers/commands）；② `omni plugin install <本地路径|git URL|npm 包>` → 复制/克隆到
+      `~/.config/omni/plugins/<name>` 并写入全局配置；③ `list/remove/update` + config
+      `plugins: []` 启用清单；④ 运行时加载：技能发现、子代理定义、hooks 合并、MCP servers 合并；
+      ⑤ 三端命令 `/plugin ...`（TUI 面板 / CLI / Web 设置页）+ `omni plugin` CLI 子命令；
+      ⑥ 只增不改、安装前展示清单（安全）。
+- [x] **FLT 舰队视图 / 后台子代理 / 远程接入**（对标 Codex `codex agents` 仪表盘 + `codex queue`、
+      Claude Agent View + Remote Control、opencode background subagents）：市场现状——统一面板
+      管理所有运行任务（搜索/启动/打开/重命名/停止）、向本地或远程会话发消息、子代理后台执行。
+      omni 现状——Web 已有多会话并发 + 侧栏；TUI 只有 `/session` 恢复面板；delegate 同步阻塞；
+      无远程接入鉴权。**实现要求**：① delegate `background` 参数（立即返回、完成注入结果、
+      可查询/停止）；② TUI `/tasks` 或 `/fleet` 面板（运行中会话/子代理/后台任务 + 停止操作）；
+      ③ Web 运行中会话状态接口（若缺）；④ `omni web` 远程接入令牌（`--token`/OMNI_WEB_TOKEN，
+      非回环地址必需）+ 跨会话消息端点复用（`codex queue` 等价）；⑤ 文档说明远程接入方式。
+
+#### I.2 低成本补课小项
+
+- [x] **MCP elicitation / sampling / 2026-07-28**：服务器反向请求 —— `elicitation/create`
+      （接 TUI/console/Web 提问面板，对标 ask_user）与 `sampling/createMessage`（复用当前模型
+      完成采样）；协议版本升级到 2026-07-28（分页发现/long-running 相关字段按需）；CIMD OAuth
+      （Client ID Metadata Document）支持。Apps（UI 资源）本期先做资源读取透传，不做终端渲染。
+- [x] **AI 自动审批**：config `autoReview`（+ `omni exec --approve-for-me` / TUI/Web 开关）——
+      需要人工审批的操作先经一次轻量模型审阅（输入：工具名/参数/工作目录/权限档位/沙箱档位），
+      返回 approve/deny + 理由；approve 按原档位放行、deny 回传模型；**不扩大沙箱/权限边界**，
+      审阅失败回退人工审批。
+- [x] **会话 pin / archive**：SessionMeta 增加 `pinned`/`archived` 字段；`/pin [id]`、`/archive
+      [id]`、`/session archived`（列出归档 + 取消归档）；列表置顶 pin、归档默认隐藏；TUI/CLI/Web
+      三端同步（Web 侧栏分组）。
+- [x] **会话内 /cd**：`/cd [路径|-]` 运行中切换工作目录（无参显示当前）；复用 ToolContext.cwd
+      贯穿全部工具与相对路径解析；TUI/CLI 支持，Web 仍走工作区切换。
+- [x] **TUI Vim 键位**：输入框 Vim 模式（`/settings` 或 config `vimMode` 开关）——Esc 进
+      normal、i/a/A/I 进 insert、h/j/k/l/w/b/e/0/$ 移动、x/dd/cc/dw/yy/p 基础编辑、
+      u 撤销输入；状态栏/输入框光标区分 normal/insert；不影响非 Vim 用户。
+- [x] **LSP 导航深化**：轻量 LSP 客户端（按需启动，探测 typescript-language-server /
+      pyright / gopls 等）——`lsp` 工具支持 definition / hover / references / documentSymbol，
+      窄上下文返回；无服务器时回退 search_code。
+- [x] **会话内容脱敏**：持久化（JSONL `msg`/`wfile` 等行）与回放时对密钥形状文本做 redact
+      （sk-*/Bearer/AKIA/私钥块/常见 token 字段），config `redactSecrets`（默认开）；展示层不
+      破坏正常代码。
+- [ ] **Windows 沙箱（AppContainer）**（实现受限：Node 层无原生模块，现状为文档 + fail-closed 语义 + 单测桩）：Win 平台受限令牌/AppContainer 包裹 run_command，
+      不可用时按 `sandboxFailClosed` 语义处理；本机（macOS）无法真机验证，先做实现 +
+      文档 + 单测桩，待 Windows CI 验证。
 
 ---
 

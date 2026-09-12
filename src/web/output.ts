@@ -225,6 +225,22 @@ export class WebOutput implements Output {
     this.announce('hook.output', { event, lines: lines.slice(0, 5) });
   }
 
+  /** AI 自动审批结果（2026-09 补课）：广播信息行 */
+  onAutoReview?(req: ApprovalRequest, verdict: { approve: boolean; reason: string }): void {
+    this.announce('auto.review', { tool: req.tool, summary: req.summary, approve: verdict.approve, reason: verdict.reason });
+  }
+
+  /** 后台子代理完成（2026-09 FLT）：广播（前端 meta 行；结果已由主循环注入上下文） */
+  onBackgroundSubagentDone?(r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number }): void {
+    this.announce('subagent.background', {
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      durationMs: r.durationMs,
+      resultPreview: r.result.slice(0, 300),
+    });
+  }
+
   onSubagentEvent?(ev: SubagentEvent): void {
     this.announce('subagent', { ev });
   }

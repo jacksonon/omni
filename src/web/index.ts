@@ -18,6 +18,8 @@ export interface WebArgs {
   host: string;
   open: boolean;
   help: boolean;
+  /** 远程接入令牌（--token / OMNI_WEB_TOKEN）：非回环地址必填，API 需 Bearer/查询参数 */
+  token?: string;
 }
 
 /** 解析 `omni web` 子命令参数 */
@@ -43,6 +45,9 @@ export function parseWebArgs(args: string[]): WebArgs {
       case '--host':
         out.host = val() || '127.0.0.1';
         break;
+      case '--token':
+        out.token = val() || undefined;
+        break;
       case '--no-open':
         out.open = false;
         break;
@@ -51,6 +56,7 @@ export function parseWebArgs(args: string[]): WebArgs {
         break;
     }
   }
+  if (!out.token && process.env.OMNI_WEB_TOKEN) out.token = process.env.OMNI_WEB_TOKEN.trim() || undefined;
   return out;
 }
 
@@ -60,7 +66,10 @@ export function printWebHelp(): void {
 
 Web 服务参数：
   -p, --port <端口>   服务端口（默认 3080）
-      --host <地址>   监听地址（默认 127.0.0.1）
+      --host <地址>   监听地址（默认 127.0.0.1；非回环地址必须配 --token）
+      --token <令牌>  远程接入令牌（或环境变量 OMNI_WEB_TOKEN）：
+                      访问 http://host:port/?token=<令牌> 一次即可（写入 Cookie），
+                      API 请求带 Authorization: Bearer <令牌> 或 ?token=；未授权返回 401
       --no-open       不自动打开浏览器
 
 说明：
@@ -127,11 +136,14 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
     console.log(`     Ollama / LM Studio 等本地服务无需 Key，可直接使用。`);
   }
 
-  const server = await startWebService({ ctx, host: parsed.host, port: parsed.port, overrides });
-  const url = `http://${parsed.host}:${parsed.port}`;
+  const server = await startWebService({ ctx, host: parsed.host, port: parsed.port, overrides, token: parsed.token });
+  const url = `http://${parsed.host}:${parsed.port}${parsed.token ? `/?token=${encodeURIComponent(parsed.token)}` : ''}`;
   console.log(`omni v${(await import('../version.js')).VERSION}`);
   console.log('');
-  console.log(`  ◉ omni web 已启动：${url}`);
+  console.log(`  ◉ omni web 已启动：http://${parsed.host}:${parsed.port}`);
+  if (parsed.token) {
+    console.log(`    接入令牌：已启用（浏览器打开 http://${parsed.host}:${parsed.port}/?token=<token> 完成授权）`);
+  }
   console.log(`    工作目录：${process.cwd()}`);
   console.log(`    模型：${ctx.runOpts.modelRuntime?.model ?? ctx.cfg.model} · 权限：${ctx.runOpts.permission ?? 'safe'}`);
   console.log('');

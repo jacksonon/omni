@@ -21,6 +21,7 @@
  */
 import { appendFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { redactDeep } from './redact.js';
 
 /** 轮结束原因（对标 dsh 的 completed/aborted/blocked/error/max-tokens，按 omni 语义精简） */
 export type TrajTurnReason = 'completed' | 'aborted' | 'error' | 'max-steps';
@@ -117,7 +118,8 @@ export class EventRecorder {
   }
 
   private push(e: PushEvent): void {
-    const ev = { ...e, s: ++this.seq, time: Date.now() } as TrajEvent;
+    // 密钥脱敏：事件文本（用户消息/工具输出/回答预览）落盘与 headless 输出前统一处理
+    const ev = redactDeep({ ...e, s: ++this.seq, time: Date.now() }) as TrajEvent;
     this.events.push(ev);
     // headless stream-json：每个事件实时输出（不落盘也触发——单任务模式无会话文件）
     this.onEvent?.(ev);

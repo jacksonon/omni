@@ -1689,12 +1689,18 @@ async function main(): Promise<void> {
   const t19 = await createTestRenderer({ width: 64, height: 20 });
   const tree19 = mountTree(t19.renderer, s19, { withInput: true });
   await t19.renderOnce();
-  // a) 输入 '/' → 联想列出全部命令（items 全量 32 条不再截断；紧凑窗口 = 6 行 + ↓ 提示行）
+  // a) 输入 '/' → 联想列出全部命令（items 全量不截断；紧凑窗口 = 6 行 + ↓ 提示行）
   tree19.input?.setText('/');
   repaintTree(t19.renderer, tree19, s19, { withInput: true });
   await t19.renderOnce();
-  if (!s19.cmdSuggest || s19.cmdSuggest.items.length !== 32 || s19.cmdSuggest.top !== 0 || s19.cmdSuggest.window !== 6) {
-    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应 32、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
+  if (
+    !s19.cmdSuggest ||
+    s19.cmdSuggest.items.length < 32 ||
+    s19.cmdSuggest.top !== 0 ||
+    s19.cmdSuggest.window !== 6 ||
+    !['new', 'cd', 'auto', 'vim', 'pin', 'archive', 'unarchive', 'tasks', 'team', 'plugin'].every((c) => s19.cmdSuggest!.items.includes(c))
+  ) {
+    console.error(`✗ 场景 19 输入 / 未列出全部命令（items 应含 2026-09 新增命令、窗口应 6）: ${JSON.stringify(s19.cmdSuggest)}`);
     process.exit(1);
   }
   // b0) /new 在联想列表中（新建会话）
@@ -1769,10 +1775,11 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 26 个」提示行
+  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 N 个」提示行
   //（无分组头——用户要求移除 section 组标题）
-  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export', '↓ 还有 26 个'];
+  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
+  if (!/↓ 还有 \d+ 个/.test(frame19)) missing19.push('↓ 还有 N 个');
   if (missing19.length) {
     console.error(`✗ 场景 19 联想列表渲染缺: ${missing19.join(', ')}`);
     process.exit(1);
@@ -1856,7 +1863,7 @@ async function main(): Promise<void> {
     console.error('✗ 场景 19 滚动前置失败（无联想列表）');
     process.exit(1);
   }
-  s19s.cmdSuggest.selected = 21; // 模拟交互层 ↑/↓ 循环后选中窗口外条目（智能体组 orchestrate）
+  s19s.cmdSuggest.selected = Math.max(0, s19s.cmdSuggest.items.indexOf('orchestrate')); // 智能体组 orchestrate（注册表新增命令后下标变化，动态定位）
   s19s.cmdSuggest.top = 0;
   repaintTree(t19s.renderer, tree19s, s19s, { withInput: true });
   await t19s.renderOnce();

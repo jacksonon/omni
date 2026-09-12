@@ -821,7 +821,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.input.textColor = theme.inputText;
     tree.input.placeholderColor = theme.placeholder;
     // placeholder 文本随语言即时刷新（切语言立刻生效，不等重启——mount 时初始值在 mountTree）
-    tree.input.placeholder = t(state.language, 'input.placeholder');
+    tree.input.placeholder = state.vimMode && !state.vimInsert
+      ? t(state.language, 'input.normalMode')
+      : t(state.language, 'input.placeholder');
     tree.input.backgroundColor = theme.inputBg;
   }
   if (tree.footerModel) tree.footerModel.fg = parseColor(theme.footerText);

@@ -276,6 +276,20 @@ export class ConsoleOutput implements Output {
     for (const l of lines) console.log(dim(`hook[${event}] ${l}`));
   }
 
+  /** AI 自动审批结果（2026-09 补课）：dim 提示行（批准/拒绝 + 理由） */
+  onAutoReview(req: ApprovalRequest, verdict: { approve: boolean; reason: string }): void {
+    if (!this.opts.stream) return;
+    const mark = verdict.approve ? '✓ 自动批准' : '✗ 自动拒绝';
+    console.log(dim(`auto-review ${mark} ${req.tool}${verdict.reason ? ` · ${verdict.reason}` : ''}`));
+  }
+
+  /** 后台子代理完成（2026-09 FLT）：dim 提示行（结果已注入上下文） */
+  onBackgroundSubagentDone(r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number }): void {
+    if (!this.opts.stream) return;
+    const ok = r.status === 'ok';
+    console.log(dim(`${ok ? '✓' : '✗'} 后台子代理「${r.name}」${ok ? '完成' : '失败'} · ${(r.durationMs / 1000).toFixed(1)}s（结果已注入对话）`));
+  }
+
   /** 子代理进度事件（第六节 P1 可视化）：dim 行打印到 stderr（不污染 stdout 结果/管道）。
    *  think/toolStart/toolEnd 明细只在 TUI/Web 卡片展开展示；console 无展开 UI，跳过。 */
   onSubagentEvent(ev: import('../agent/types.js').SubagentEvent): void {

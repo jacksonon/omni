@@ -243,6 +243,33 @@
       "description": "上下文压缩触发占比（默认 0.7）",
       "default": 0.7
     },
+    "redactSecrets": {
+      "type": "boolean",
+      "description": "会话 JSONL 与历史回放时对密钥形状文本脱敏（默认开启）",
+      "default": true
+    },
+    "autoReview": {
+      "type": "boolean",
+      "description": "AI 自动审批：需要审批的操作先经模型审阅，失败回退人工（默认关闭；不改变权限/沙箱边界）",
+      "default": false
+    },
+    "vimMode": {
+      "type": "boolean",
+      "description": "TUI 输入框 Vim 键位（Esc normal / i insert；默认关闭）",
+      "default": false
+    },
+    "maxConcurrentSubagents": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "description": "delegate 子代理并发上限（前台+后台共享，超限排队；默认 4）",
+      "default": 4
+    },
+    "plugins": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "启用的插件名列表（插件位于 ~/.config/omni/plugins/<名>/plugin.json；打包 skills/子代理/hooks/MCP）"
+    },
     "contextLimit": {
       "type": "number",
       "minimum": 1,
@@ -329,6 +356,10 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "clientId": {
+            "type": "string",
+            "description": "OAuth client_id（HTTPS URL = CIMD 元数据文档；缺省尝试 RFC 7591 动态注册）"
           },
           "enabledTools": {
             "type": "array",

@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { redactDeep, redactText } from './redact.js';
 
 /** 不落盘的上下文脚手架前缀（恢复时 prepareContext 会按最新文件重新注入） */
 const SKIP_PREFIXES = ['[项目记忆', '[全局记忆', '[已按任务预载', '[已发现技能', '[项目结构地图'];
@@ -31,6 +32,25 @@ export interface SessionMeta {
   updated: number;
   /** 会话标题（/rename 设置；恢复时还原为终端窗口标题） */
   title?: string;
+  /** 置顶（/pin；列表排序优先，对标 Claude/Codex/Copilot 会话 pin） */
+  pinned?: boolean;
+  /** 归档（/archive；默认从列表隐藏，可 /session archived 查看并取消归档） */
+  archived?: boolean;
+}
+
+/** 从 meta 行解析出 SessionMeta（统一字段收口：新增字段只改这一处） */
+export function parseSessionMeta(parsed: any): SessionMeta | null {
+  if (!parsed || parsed.t !== 'meta' || typeof parsed.id !== 'string') return null;
+  return {
+    id: parsed.id,
+    project: parsed.project,
+    model: parsed.model,
+    created: parsed.created,
+    updated: parsed.updated,
+    ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
+    ...(parsed.pinned === true ? { pinned: true } : {}),
+    ...(parsed.archived === true ? { archived: true } : {}),
+  };
 }
 
 /** 列表项 = meta + 文件路径 + 消息数 */
@@ -96,7 +116,7 @@ export async function appendSessionMessages(
 ): Promise<boolean> {
   try {
     const lines = persistableMessages(msgs)
-      .map((m) => JSON.stringify({ t: 'm', m }))
+      .map((m) => JSON.stringify({ t: 'm', m: redactDeep(m) }))
       .join('\n');
     if (!lines) return false;
     await appendFile(file, lines.endsWith('\n') ? lines : lines + '\n', 'utf8');
@@ -117,16 +137,7 @@ export async function finalizeSession(file: string): Promise<void> {
     let meta: SessionMeta | null = null;
     try {
       const parsed = JSON.parse(first);
-      if (parsed && parsed.t === 'meta') {
-        meta = {
-          id: parsed.id,
-          project: parsed.project,
-          model: parsed.model,
-          created: parsed.created,
-          updated: parsed.updated,
-          ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
-        };
-      }
+      meta = parseSessionMeta(parsed);
     } catch {
       return; // 首行损坏 → 不重写
     }
@@ -138,21 +149,37 @@ export async function finalizeSession(file: string): Promise<void> {
   }
 }
 
-/** 更新会话标题（重写 meta 首行，保留其余字段与消息；/rename 命令用） */
-export async function updateSessionTitle(file: string, title: string): Promise<void> {
+/**
+ * 更新会话 meta 字段（重写首行，保留其余字段与消息）。
+ * /rename（title）/ /pin（pinned）/ /archive（archived）共用。
+ */
+export async function updateSessionMeta(
+  file: string,
+  patch: Partial<Pick<SessionMeta, 'title' | 'pinned' | 'archived'>>
+): Promise<boolean> {
   try {
-    if (!existsSync(file)) return;
+    if (!existsSync(file)) return false;
     const raw = await readFile(file, 'utf8');
     const nl = raw.indexOf('\n');
-    if (nl < 0) return;
+    if (nl < 0) return false;
     const first = raw.slice(0, nl);
     const parsed = JSON.parse(first);
-    if (!parsed || parsed.t !== 'meta') return;
-    parsed.title = title;
+    if (!parsed || parsed.t !== 'meta') return false;
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue;
+      if (v === false) delete parsed[k];
+      else parsed[k] = v;
+    }
     await writeFile(file, JSON.stringify(parsed) + '\n' + raw.slice(nl + 1), 'utf8');
+    return true;
   } catch {
-    // 静默失败
+    return false;
   }
+}
+
+/** 更新会话标题（/rename 命令用；updateSessionMeta 的薄封装） */
+export async function updateSessionTitle(file: string, title: string): Promise<void> {
+  await updateSessionMeta(file, { title });
 }
 
 /** 读取会话文件：返回 meta + 消息（不包含脚手架注入消息）；损坏/不存在返回 null */
@@ -173,16 +200,9 @@ export async function loadSession(
         continue; // 损坏行跳过
       }
       if (parsed.t === 'meta') {
-        meta = {
-          id: parsed.id,
-          project: parsed.project,
-          model: parsed.model,
-          created: parsed.created,
-          updated: parsed.updated,
-          ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
-        };
+        meta = parseSessionMeta(parsed);
       } else if (parsed.t === 'm' && parsed.m && typeof parsed.m === 'object') {
-        const m = parsed.m as ChatCompletionMessageParam;
+        const m = redactDeep(parsed.m) as ChatCompletionMessageParam;
         if (isPersistable(m)) messages.push(m);
       }
     }
@@ -193,8 +213,12 @@ export async function loadSession(
   }
 }
 
-/** 列出全部会话（按 updated 倒序：最近的在最前）；空目录/失败返回 [] */
-export async function listSessions(project?: string): Promise<SessionInfo[]> {
+/** 列出全部会话；默认包含归档（调用方按需过滤，内部分查找不丢归档会话）。
+ *  排序：置顶优先，其次 updated 倒序（pin 语义对标 Claude/Codex/Copilot）。 */
+export async function listSessions(
+  project?: string,
+  opts: { includeArchived?: boolean } = {}
+): Promise<SessionInfo[]> {
   try {
     const dir = sessionsDir();
     if (!existsSync(dir)) return [];
@@ -204,13 +228,19 @@ export async function listSessions(project?: string): Promise<SessionInfo[]> {
       const loaded = await loadSession(path.join(dir, f));
       if (!loaded) continue;
       if (project && path.resolve(loaded.meta.project) !== path.resolve(project)) continue;
+      if (opts.includeArchived === false && loaded.meta.archived) continue;
       out.push({
         ...loaded.meta,
         path: path.join(dir, f),
         messages: loaded.messages.length,
       });
     }
-    return out.sort((a, b) => b.updated - a.updated);
+    return out.sort((a, b) => {
+      const ap = a.pinned ? 1 : 0;
+      const bp = b.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return b.updated - a.updated;
+    });
   } catch {
     return [];
   }
@@ -260,7 +290,7 @@ export async function appendWriteDiff(file: string, rec: WriteDiffRecord): Promi
   try {
     if (!rec.callId) return false;
     if (typeof rec.original === 'string' && rec.original.length > WRITE_DIFF_MAX_CHARS) return false;
-    await appendFile(file, JSON.stringify({ t: 'wfile', ...rec }) + '\n', 'utf8');
+    await appendFile(file, JSON.stringify({ t: 'wfile', ...rec, ...(typeof rec.original === 'string' ? { original: redactText(rec.original) } : {}) }) + '\n', 'utf8');
     return true;
   } catch {
     return false;
@@ -295,9 +325,9 @@ export async function loadWriteDiffs(file: string): Promise<Record<string, { pat
   return out;
 }
 
-/** 最近一个会话（当前项目；无则 null） */
+/** 最近一个会话（当前项目、未归档；无则 null） */
 export async function latestSession(project: string): Promise<SessionInfo | null> {
-  const list = await listSessions(project);
+  const list = await listSessions(project, { includeArchived: false });
   return list[0] ?? null;
 }
 
@@ -323,10 +353,31 @@ export async function findSessionCandidates(id: string): Promise<SessionInfo[]> 
   return list.filter((s) => s.id.startsWith(id)).sort((a, b) => b.updated - a.updated);
 }
 
+/**
+ * 解析会话目标（/pin /archive /unarchive 共用）：无参 → 当前会话；
+ * 有参 → 精确/前缀匹配（排除当前会话，多个命中回传候选）。
+ */
+export async function resolveSessionTarget(
+  arg: string | undefined,
+  currentFile?: string | null
+): Promise<{ ok: true; file: string } | { ok: false; error: string; candidates?: SessionInfo[] }> {
+  const raw = (arg ?? '').trim();
+  if (!raw) {
+    if (!currentFile || !existsSync(currentFile)) return { ok: false, error: '当前没有可操作的会话' };
+    return { ok: true, file: currentFile };
+  }
+  if (currentFile && raw === sessionIdFromPath(currentFile)) return { ok: true, file: currentFile };
+  const cands = await findSessionCandidates(raw);
+  if (cands.length === 0) return { ok: false, error: `会话「${raw}」不存在` };
+  if (cands.length > 1) return { ok: false, error: `「${raw}」匹配 ${cands.length} 个会话`, candidates: cands };
+  return { ok: true, file: cands[0].path };
+}
+
 /** 把会话信息格式化成可读行（-l/--list-sessions 展示） */
 export function formatSessionInfo(s: SessionInfo): string {
   const d = new Date(s.updated);
   const pad = (n: number): string => String(n).padStart(2, '0');
   const time = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return `${time}  ${s.messages} 条消息  ${s.project}  [${s.id}]`;
+  const marks = `${s.pinned ? '★ ' : ''}${s.archived ? '[已归档] ' : ''}`;
+  return `${marks}${time}  ${s.messages} 条消息  ${s.project}  [${s.id}]`;
 }

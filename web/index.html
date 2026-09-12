@@ -149,6 +149,7 @@
         <button class="settings-nav-item" type="button" data-pane="apikey"><svg><use href="#i-key"/></svg><span data-i18n="settings.apikey">模型配置</span></button>
         <button class="settings-nav-item" type="button" data-pane="mcp"><svg><use href="#i-cloud"/></svg><span data-i18n="settings.mcp">MCP 服务</span></button>
         <button class="settings-nav-item" type="button" data-pane="skills"><svg><use href="#i-spark"/></svg><span data-i18n="settings.skills">技能</span></button>
+        <button class="settings-nav-item" type="button" data-pane="plugins"><svg><use href="#i-spark"/></svg><span data-i18n="settings.plugins">插件</span></button>
         <button class="settings-nav-item" type="button" data-pane="shortcuts"><svg><use href="#i-keyboard"/></svg><span data-i18n="settings.shortcuts">快捷键</span></button>
         <button class="settings-nav-item" type="button" data-pane="about"><svg><use href="#i-info"/></svg><span data-i18n="settings.about">关于</span></button>
       </nav>
@@ -164,6 +165,10 @@
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.plan">计划模式</h4><p data-i18n="settings.planDesc">只调研并输出实施计划，不直接修改文件。</p></div>
               <label class="plan-toggle" data-i18n-title="shortcut.planModeDesc" title="只读调研模式开关"><input type="checkbox" id="set-plan" aria-label="计划模式"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4 data-i18n="settings.autoReview">AI 自动审批</h4><p data-i18n="settings.autoReviewDesc">需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），失败回退人工审批；不改变权限与沙箱边界。</p></div>
+              <label class="plan-toggle" title="AI 自动审批"><input type="checkbox" id="set-auto-review" aria-label="AI 自动审批"><svg><use href="#i-target"/></svg><span data-i18n="settings.autoReviewShort">自动审阅</span></label>
             </div>
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.lang">语言</h4><p data-i18n="settings.langDesc">界面显示语言，保存后立即生效。</p></div>
@@ -286,6 +291,20 @@
               <div class="setting-info"><h4 data-i18n="skill.findTitle">从 Registry 检索安装</h4></div>
               <div class="mcp-add-row"><input type="text" id="skill-find-q" class="cfg-text" placeholder="关键词" data-i18n-placeholder="skill.findPh" autocomplete="off" spellcheck="false"><button id="btn-skill-find" class="primary-button" type="button" data-i18n="skill.find">检索</button></div>
               <div id="skill-find-results"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" data-pane="plugins">
+          <h3 class="settings-pane-title" data-i18n="settings.plugins">插件</h3>
+          <p class="settings-pane-sub" data-i18n="settings.pluginsSub">插件 = plugin.json 清单（skills/agents/hooks/mcpServers）。安装即启用；hooks/MCP 会执行命令，请只安装可信来源。</p>
+          <div class="mcp-head"><span id="plugin-count" class="mc-models-count"></span><span style="flex:1"></span><button id="btn-plugin-refresh" class="secondary-button" type="button" data-i18n="plugin.refresh">刷新</button></div>
+          <div id="plugin-empty" class="mc-empty hidden" data-i18n="plugin.empty">未安装插件（下方输入本地路径或 git URL 安装）</div>
+          <div id="plugin-list" class="settings-group"></div>
+          <div class="settings-group">
+            <div class="setting-row col">
+              <div class="setting-info"><h4 data-i18n="plugin.installTitle">安装插件</h4><p data-i18n="plugin.installDesc">本地路径或 git URL；安装到 ~/.config/omni/plugins 并写入全局配置 plugins。</p></div>
+              <div class="mcp-add-row"><input type="text" id="plugin-src" class="cfg-text" placeholder="本地路径或 git URL" autocomplete="off" spellcheck="false"><button id="btn-plugin-install" class="primary-button" type="button" data-i18n="plugin.install">安装</button></div>
             </div>
           </div>
         </section>

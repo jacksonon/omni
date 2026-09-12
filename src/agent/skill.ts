@@ -177,6 +177,9 @@ export async function discoverSkills(cwd = process.cwd()): Promise<SkillInfo[]> 
     path.join(os.homedir(), '.agents', 'skills'),
   ];
   for (const g of globals) await collectFrom(g, true, byName);
+  // 插件技能目录（2026-09 PLG）：plugin.json 声明的 skills 目录（机器级，最后收集）
+  const { pluginSkillDirs } = await import('./plugins.js');
+  for (const d of pluginSkillDirs()) await collectFrom(d, true, byName);
   return [...byName.values()];
 }
 

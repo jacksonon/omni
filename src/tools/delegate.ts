@@ -25,6 +25,7 @@
  *（递归深度受 maxSubagentDepth 控制，不是无限）。
  */
 import { runSubagent, nextSubagentId } from '../agent/subagent.js';
+import { SubagentSemaphore } from '../agent/semaphore.js';
 import type { SubagentDef } from '../agent/subagent-defs.js';
 import type { ModelRuntime } from '../client.js';
 import type { HookRunner } from '../hooks/index.js';
@@ -125,6 +126,12 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
           type: 'boolean',
           description: '可选：worktree 完成后是否清理（默认 false 保留——便于检查/合并 diff）。',
         },
+        background: {
+          type: 'boolean',
+          description:
+            '可选：后台执行（默认 false = 等待结果）。true 时立即返回，子代理在后台继续跑，' +
+            '完成后结果自动注入当前对话（/tasks 查看进度与停止）。适合耗时长的独立任务。',
+        },
       },
       required: ['task'],
     },
@@ -193,9 +200,11 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
         def?.model ??
         (runOpts && runOpts.planMode ? runOpts.architectModel : runOpts?.editorModel) ??
         current;
+      // 后台执行（2026-09 FLT）：立即返回、完成注入结果（delegate background=true）
+      const background = args.background === true;
       // 进度事件汇聚（UI 可视化 + /trace 账本）：UI 回调 + 事件记录器
       const onEvent = (ev: SubagentEvent): void => {
-        opts.onEvent?.(ev);
+        opts.onEvent?.(background ? { ...ev, background: true } : ev);
         // /trace 账本：子代理生命周期事件也进轨迹记录器（subagent/start·step·end）；
         // think/toolStart/toolEnd 是 UI 明细（展开详情），不进 /trace 账本（过程在卡片内）
         if (runOpts?.events) {
@@ -205,76 +214,122 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
           else if (ev.type === 'end') e.subagentEnd(ev.id, ev.depth, ev.status === 'ok', ev.summary ?? '', ev.steps ?? 0, ev.durationMs ?? 0);
         }
       };
-      // 子代理可用工具：剔除 delegate 后按深度注入新的 delegate（嵌套）——
-      // parentId = 本实例 id：嵌套子代理的事件用它关联父级；
-      // parentSeq = 本实例 seq：子代理再委托时沿用（嵌套事件归集到根卡片）
-      const subTools = buildSubTools(opts, depth, id, toolSeq);
-      // 定义子代理配置：工具白名单（缺省 = 全部）/ 步数上限 / 技能预载 / 权限
-      const whitelist = def?.tools ? new Set(def.tools) : null;
-      const tools = whitelist ? subTools.filter((t) => whitelist.has(t.name)) : subTools;
-      const maxSteps = def?.maxSteps ?? opts.maxSteps;
-      // 技能预载：把定义里 skills 字段列的 SKILL.md 全文注入子代理提示词
-      //（异步加载；失败静默——技能缺失不阻塞委托）
-      let skillsText = '';
-      if (def?.skills && def.skills.length > 0) {
-        const { loadSkillContent } = await import('../agent/skill.js');
-        const parts: string[] = [];
-        for (const s of def.skills) {
-          const c = await loadSkillContent(s).catch(() => null);
-          if (c) parts.push(`### ${s}\n${c}`);
-        }
-        if (parts.length > 0) skillsText = parts.join('\n\n');
-      }
-      // per-subagent 取消控制器已在上方注册（toolSeq 决议 + subCtrl）
-      try {
-        const answer = await runSubagent(opts.modelRuntime.client, routed, task, {
-          tools,
-          gate: opts.gate,
-          maxSteps,
-          hooks: opts.hooks,
-          permission: def?.permission,
-          auditLog: opts.auditLog,
-          requestApproval: opts.requestApproval,
-          summarize: opts.summarize,
-          skills: skillsText,
-          name: def?.name ?? 'delegate',
-          onEvent,
-          id,
-          parentId,
-          depth,
-          cwd: wtPath ?? undefined,
-          seq: toolSeq ?? null,
-          signal: subCtrl.signal,
-        });
-        // worktree 收尾：改动统计 + 保留/清理 + 合并提示
-        if (wtPath) {
-          const { execSync } = await import('node:child_process');
-          let stat = '';
-          try {
-            const st = execSync(`git -C ${JSON.stringify(wtPath)} status --porcelain`, { encoding: 'utf8', timeout: 10_000 });
-            const files = st.split('\n').filter((l) => l.trim());
-            stat = `${files.length} 个文件改动`;
-          } catch {
-            stat = '（无法读取工作树状态）';
+      // 执行体（前台直接 await；后台 fire-and-forget）：
+      // 子代理可用工具按深度重建（嵌套）、技能预载、worktree 收尾都在这里。
+      const startedAt = Date.now();
+      const runOnce = async (): Promise<string> => {
+        // 子代理可用工具：剔除 delegate 后按深度注入新的 delegate（嵌套）——
+        // parentId = 本实例 id：嵌套子代理的事件用它关联父级；
+        // parentSeq = 本实例 seq：子代理再委托时沿用（嵌套事件归集到根卡片）
+        const subTools = buildSubTools(opts, depth, id, toolSeq);
+        // 定义子代理配置：工具白名单（缺省 = 全部）/ 步数上限 / 技能预载 / 权限
+        const whitelist = def?.tools ? new Set(def.tools) : null;
+        const tools = whitelist ? subTools.filter((t) => whitelist.has(t.name)) : subTools;
+        const maxSteps = def?.maxSteps ?? opts.maxSteps;
+        // 技能预载：把定义里 skills 字段列的 SKILL.md 全文注入子代理提示词
+        //（异步加载；失败静默——技能缺失不阻塞委托）
+        let skillsText = '';
+        if (def?.skills && def.skills.length > 0) {
+          const { loadSkillContent } = await import('../agent/skill.js');
+          const parts: string[] = [];
+          for (const s of def.skills) {
+            const c = await loadSkillContent(s).catch(() => null);
+            if (c) parts.push(`### ${s}\n${c}`);
           }
-          const doCleanup = args.cleanup === true;
-          if (doCleanup) {
+          if (parts.length > 0) skillsText = parts.join('\n\n');
+        }
+        // per-subagent 取消控制器已在上方注册（toolSeq 决议 + subCtrl）
+        try {
+          const answer = await runSubagent(opts.modelRuntime.client, routed, task, {
+            tools,
+            gate: opts.gate,
+            maxSteps,
+            hooks: opts.hooks,
+            permission: def?.permission,
+            auditLog: opts.auditLog,
+            requestApproval: opts.requestApproval,
+            summarize: opts.summarize,
+            skills: skillsText,
+            name: def?.name ?? 'delegate',
+            onEvent,
+            id,
+            parentId,
+            depth,
+            cwd: wtPath ?? undefined,
+            seq: toolSeq ?? null,
+            signal: subCtrl.signal,
+            ...(opts.runOpts?.autoReview ? { autoReview: opts.runOpts.autoReview } : {}),
+            ...(opts.runOpts?.team ? { team: opts.runOpts.team } : {}),
+          });
+          // worktree 收尾：改动统计 + 保留/清理 + 合并提示
+          if (wtPath) {
+            const { execSync } = await import('node:child_process');
+            let stat = '';
             try {
-              execSync(`git worktree remove --force ${JSON.stringify(wtPath)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
-              wtNote = `（worktree 已清理；分支 ${wtBranch} 保留，可 git diff main..${wtBranch} 查看改动）`;
+              const st = execSync(`git -C ${JSON.stringify(wtPath)} status --porcelain`, { encoding: 'utf8', timeout: 10_000 });
+              const files = st.split('\n').filter((l) => l.trim());
+              stat = `${files.length} 个文件改动`;
             } catch {
-              wtNote = `（清理失败——worktree 保留在 ${wtPath}）`;
+              stat = '（无法读取工作树状态）';
             }
-          } else {
-            wtNote = `（worktree 保留：${wtPath} · ${stat} · 分支 ${wtBranch}。合并：git -C "${wtPath}" diff > patch 后 git apply，或 git merge ${wtBranch}）`;
+            const doCleanup = args.cleanup === true;
+            if (doCleanup) {
+              try {
+                execSync(`git worktree remove --force ${JSON.stringify(wtPath)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
+                wtNote = `（worktree 已清理；分支 ${wtBranch} 保留，可 git diff main..${wtBranch} 查看改动）`;
+              } catch {
+                wtNote = `（清理失败——worktree 保留在 ${wtPath}）`;
+              }
+            } else {
+              wtNote = `（worktree 保留：${wtPath} · ${stat} · 分支 ${wtBranch}。合并：git -C "${wtPath}" diff > patch 后 git apply，或 git merge ${wtBranch}）`;
+            }
+          }
+          return `子代理结果${def ? `（${def.name}）` : ''}${wtNote ? ` [worktree:${wtBranch}]` : ''}：\n${truncate(answer)}${wtNote ? `\n\n${wtNote}` : ''}`;
+        } finally {
+          // 子代理结束（含被停止）：注销停止句柄，防 Map 泄漏（下一轮同 seq 不复用）
+          if (registered && runOpts?.subagentStops) {
+            runOpts.subagentStops.delete(toolSeq!);
           }
         }
-        return `子代理结果${def ? `（${def.name}）` : ''}${wtNote ? ` [worktree:${wtBranch}]` : ''}：\n${truncate(answer)}${wtNote ? `\n\n${wtNote}` : ''}`;
+      };
+      // 并发预算治理（2026-09 DYN）：前台/后台共享信号量，超限排队等待而非失败
+      const limit = Math.max(1, Math.min(16, runOpts?.cfg?.maxConcurrentSubagents ?? 4));
+      const sem = runOpts
+        ? (runOpts.subagentSemaphore ??= new SubagentSemaphore(limit))
+        : new SubagentSemaphore(limit);
+      const release = await sem.acquire();
+      // 后台模式：立即返回（结果完成时写队列 + 通知 UI；主循环 drain 后注入对话）
+      if (background) {
+        const bgName = def?.name ?? 'delegate';
+        void (async () => {
+          let final: string;
+          let status: 'ok' | 'err' = 'ok';
+          try {
+            final = await runOnce();
+          } catch (err) {
+            status = 'err';
+            final = `后台子代理执行失败：${err instanceof Error ? err.message : String(err)}`;
+          } finally {
+            release();
+          }
+          const durationMs = Date.now() - startedAt;
+          const rec = {
+            id,
+            name: bgName,
+            status,
+            result: final,
+            durationMs,
+            ...(toolCtx?.sessionPath ? { sessionPath: toolCtx.sessionPath } : {}),
+          };
+          runOpts?.backgroundResults?.push(rec);
+          runOpts?.onBackgroundResult?.(rec);
+        })();
+        return `已后台启动子代理「${bgName}」（id=${id}）——它将在后台执行，完成后结果自动注入当前对话；进度与停止见 /tasks。`;
+      }
+      try {
+        return await runOnce();
       } finally {
-        // 子代理结束（含被停止）：注销停止句柄，防 Map 泄漏（下一轮同 seq 不复用）
-        if (registered && runOpts?.subagentStops) {
-          runOpts.subagentStops.delete(toolSeq!);
-        }
+        release();
       }
     },
   };

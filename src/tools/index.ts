@@ -15,6 +15,7 @@ import { listDirectoryTool } from './list-directory.js';
 import { searchCodeTool } from './search-code.js';
 import { runCommandTool } from './run-command.js';
 import { skillTool } from './skill.js';
+import { createLspTool } from './lsp.js';
 import type { Tool } from './types.js';
 
 export type { Tool } from './types.js';
@@ -29,4 +30,5 @@ export const tools: Tool[] = [
   searchCodeTool,
   runCommandTool,
   skillTool,
+  createLspTool(),
 ];

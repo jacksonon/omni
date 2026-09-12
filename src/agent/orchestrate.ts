@@ -17,6 +17,7 @@
  */
 import type OpenAI from 'openai';
 import { runSubagent, nextSubagentId } from './subagent.js';
+import { parseWorkflowPlan, planBatches, ensureTeam } from './team.js';
 import type { SubagentDef } from './subagent-defs.js';
 import type { RunOptions, SubagentEvent } from './types.js';
 import type { EventRecorder } from './events.js';
@@ -119,21 +120,23 @@ async function completeText(
   return content.trim();
 }
 
-/** 解析 /orchestrate 与 /goal 的参数（任务 + 可选 --agents a,b,c / --accept <验收标准> / --max N / --parallel N） */
+/** 解析 /orchestrate 与 /goal 的参数（任务 + 可选 --agents a,b,c / --accept <验收标准> / --max N / --parallel N / --pipeline） */
 export function parsePipelineArgs(
   raw: string
-): { task: string; agents?: string[]; accept?: string; parallel?: number; max?: number } {
+): { task: string; agents?: string[]; accept?: string; parallel?: number; max?: number; pipeline?: boolean } {
   const agentsM = raw.match(/--agents\s+([\w,-]+)/);
   // --accept = 显式验收标准（/goal；缺省由目标拆解器自动推导）
   const acceptM = raw.match(/--accept\s+(.+?)(?=\s+--|$)/);
   const parallelM = raw.match(/--parallel\s+(\d+)/);
   const maxM = raw.match(/--max\s+(\d+)/);
+  const pipeline = /(^|\s)--pipeline(\s|$)/.test(raw);
   // 任务 = 去掉已识别的 flag 段后的剩余文本（首段）
   let task = raw
     .replace(/--agents\s+[\w,-]+/, '')
     .replace(/--accept\s+.+?(?=\s+--|$)/, '')
     .replace(/--parallel\s+\d+/, '')
     .replace(/--max\s+\d+/, '')
+    .replace(/(^|\s)--pipeline(\s|$)/, ' ')
     .trim();
   // 多 flag 时去掉重复空格
   task = task.replace(/\s{2,}/g, ' ').trim();
@@ -145,8 +148,16 @@ export function parsePipelineArgs(
     accept: acceptM ? acceptM[1].trim() : undefined,
     parallel: n && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined,
     max: m && Number.isFinite(m) && m >= 1 ? Math.floor(m) : undefined,
+    ...(pipeline ? { pipeline: true } : {}),
   };
 }
+
+/** 动态工作流规划器提示词（2026-09 DYN，对标 Claude Code Dynamic workflows 的轻量版） */
+const WORKFLOW_PLANNER_SYSTEM =
+  '你是多代理工作流规划器。把用户任务拆成 2-8 个步骤：相互独立的步骤并行（dependsOn 空），' +
+  '有前后依赖的用 dependsOn 填写前序步骤序号（从 0 开始）。每步的 task 要自包含（worker 看不到原始对话），' +
+  '写清目标、交付物与验收标准。可选 agent 字段指定已定义子代理名。' +
+  '仅输出 JSON：{"steps":[{"title":"短标题","task":"完整任务描述","dependsOn":[0],"agent":"可选"}]}';
 
 /** 默认 worker 角度（未指定 --agents 时按角度 fan-out——覆盖执行/逆向/边界三条线） */
 const DEFAULT_ANGLES = ['正面推进：直接按任务目标完成', '逆向检查：从反例/失败模式出发审查方案', '边界探索：找遗漏场景与极端情况'];
@@ -162,7 +173,7 @@ export async function runOrchestrate(
   defs: SubagentDef[] | undefined,
   opts: { client: OpenAI; model: string; runOpts: RunOptions } & PipelineCallbacks
 ): Promise<{ combined: string; review: string }> {
-  const { task, agents } = parsePipelineArgs(raw);
+  const { task, agents, pipeline } = parsePipelineArgs(raw);
   if (!task) throw new Error('用法：/orchestrate <任务> [--agents a,b,c] [--parallel N]（缺省按 3 个角度并行）');
   const runOpts = opts.runOpts;
   // worker 模型路由（第六节 P1 architect/editor）：编排执行阶段用 editor 轻模型
@@ -191,6 +202,95 @@ export async function runOrchestrate(
     jobs = DEFAULT_ANGLES.map((angle) => ({ label: `worker-角度`, def: undefined, prompt: `${angle}。\n任务：${task}` }));
   }
   if (!gate) throw new Error('安全闸未初始化（当前环境不可用）');
+
+  /** 汇总 + 对抗审查（固定 pipeline 与动态工作流共用） */
+  const combineAndReview = async (results: string[]): Promise<{ combined: string; review: string }> => {
+    opts.log('├─ 汇总器合并…');
+    await opts.tick?.();
+    const combined = await completeText(
+      opts.client,
+      opts.model,
+      COMBINE_SYSTEM,
+      results.map((r, i) => `—— worker ${i + 1} ——\n${r}`).join('\n\n')
+    );
+    opts.log('├─ 对抗审查…');
+    await opts.tick?.();
+    const review = await completeText(opts.client, opts.model, REVIEW_SYSTEM, combined, 800);
+    opts.log('╰─ 编排完成');
+    return { combined, review };
+  };
+
+  // 动态工作流（2026-09 DYN）：除非 --pipeline 或显式 --agents，先让模型产出结构化计划，
+  // 引擎按依赖分层执行（共享任务看板 + SendMessage）；计划解析失败回退固定 pipeline。
+  if (!pipeline && (!agents || agents.length === 0)) {
+    opts.log('├─ 规划：生成动态工作流计划…');
+    await opts.tick?.();
+    const planText = await completeText(
+      opts.client,
+      runOpts.architectModel ?? opts.model,
+      WORKFLOW_PLANNER_SYSTEM,
+      task,
+      1200
+    );
+    const plan = parseWorkflowPlan(planText);
+    if (plan) {
+      opts.log(`├─ 计划：${plan.length} 步（依赖分层执行）`);
+      const defsByName = new Map((defs ?? []).map((d) => [d.name, d]));
+      const board = ensureTeam(runOpts);
+      const taskIds = plan.map((s) => board.addTask(s.title, s.task.split('\n')[0]).id);
+      const results: string[] = new Array(plan.length).fill('');
+      for (const batch of planBatches(plan)) {
+        const batchT0 = Date.now();
+        opts.log(`│  ├─ 批次（${batch.length} 并行）：${batch.map((i) => `#${i + 1} ${plan[i].title}`).join('、')}`);
+        await opts.tick?.();
+        await Promise.all(
+          batch.map(async (i) => {
+            const step = plan[i];
+            const deps = step.dependsOn ?? [];
+            const depText = deps
+              .map((d) => `—— 前置步骤 #${d + 1}（${plan[d].title}）结果 ——\n${results[d]}`)
+              .join('\n\n');
+            const def = step.agent ? defsByName.get(step.agent) : undefined;
+            if (step.agent && !def) opts.log(`│  │  ⚠ 未找到子代理定义「${step.agent}」，改用通用 worker`);
+            const id = nextSubagentId();
+            const workerName = def?.name ?? `step${i + 1}`;
+            board.updateTask(taskIds[i], { status: 'in_progress', owner: workerName });
+            const prompt =
+              `整体任务：${task}\n\n你的步骤（#${i + 1} ${step.title}）：${step.task}` +
+              (depText ? `\n\n${depText}` : '') +
+              `\n\n协作：用 task_board 更新你的任务状态（任务 id：${taskIds[i]}），遇到阻塞或需要主代理决策用 send_message 发给 main。`;
+            const whitelist = def?.tools ? new Set(def.tools) : null;
+            const tools = whitelist ? workerTools.filter((t) => whitelist.has(t.name)) : workerTools;
+            try {
+              const answer = await runSubagent(opts.client, def?.model ?? workerModel, prompt, {
+                tools,
+                gate,
+                maxSteps: def?.maxSteps ?? runOpts.maxSubagentSteps,
+                hooks,
+                permission: def?.permission,
+                name: workerName,
+                onEvent: workerEvent(runOpts.events, opts.onSubagentEvent),
+                id,
+                parentId: null,
+                depth: 0,
+                ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
+                ...(runOpts.team ? { team: runOpts.team } : {}),
+              });
+              results[i] = answer;
+              board.updateTask(taskIds[i], { status: 'completed', note: answer.slice(0, 120) });
+            } catch (err) {
+              results[i] = `（步骤失败：${err instanceof Error ? err.message : String(err)}）`;
+              board.updateTask(taskIds[i], { status: 'failed', note: '执行失败' });
+            }
+          })
+        );
+        opts.log(`│  ├─ 批次完成（${((Date.now() - batchT0) / 1000).toFixed(1)}s）`);
+      }
+      opts.log('├─ 全部步骤完成');
+      return combineAndReview(results.map((r, i) => `[#${i + 1} ${plan[i].title}]\n${r}`));
+    }
+    opts.log('├─ 计划解析失败，回退固定 pipeline');
+  }
 
   opts.log(`╭─ 编排开始：${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`);
   opts.log(`├─ fan-out：${jobs.length} 个 worker 并行（${agents ? '按定义子代理分工' : '按角度分工'}）`);
@@ -230,28 +330,14 @@ export async function runOrchestrate(
         id,
         parentId: null,
         depth: 0,
+        ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
+        ...(runOpts.team ? { team: runOpts.team } : {}),
       });
       return `[${job.label}]\n${answer}`;
     })
   );
   opts.log(`├─ worker 全部完成（${((Date.now() - started) / 1000).toFixed(1)}s）`);
-
-  // 汇总：一次轻量 LLM 请求合并各 worker 结果
-  opts.log('├─ 汇总器合并…');
-  await opts.tick?.();
-  const combined = await completeText(
-    opts.client,
-    opts.model,
-    COMBINE_SYSTEM,
-    results.map((r, i) => `—— worker ${i + 1} ——\n${r}`).join('\n\n')
-  );
-
-  // 对抗审查：审查综合结果找漏洞
-  opts.log('├─ 对抗审查…');
-  await opts.tick?.();
-  const review = await completeText(opts.client, opts.model, REVIEW_SYSTEM, combined, 800);
-  opts.log('╰─ 编排完成');
-  return { combined, review };
+  return combineAndReview(results);
 }
 
 /**
@@ -329,6 +415,7 @@ export async function runGoal(
       id,
       parentId: null,
       depth: 0,
+      ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
     });
     lastResult = answer;
     // 验收判定：LLM 检查是否达标；结果**流式**展示（判定行直接以正文出现，无需 ✗/✓ 前缀——
