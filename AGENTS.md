@@ -75,8 +75,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 ```jsonc
 {
   "model": "deepseek-chat",              // 模型名（默认 gpt-4o-mini）
-  "baseURL": "https://api.deepseek.com/v1", // OpenAI 兼容 API 地址
-  "apiKey": "sk-xxx",                    // 更推荐用环境变量 OMNI_API_KEY
+  // 端点/密钥只认下方 providers 分组（或环境变量 OMNI_BASE_URL / OMNI_API_KEY）——配置文件不再解析顶层 baseURL/apiKey/userAgent
   "maxSteps": 50,                         // Agent 最大循环步数（防死循环兜底；典型任务 15 次内完成）
   "showThinking": true,                   // 展示思考过程（默认 true；false 关闭终端显示，仍落盘 .omni/last-thinking.md）
   "permission": "safe",                  // 安全护栏权限分级：full（任意命令直通）/ safe（危险命令询问，默认）/ ask / read
@@ -234,6 +233,7 @@ src/
     util.ts             # 公共小函数：num / resolvePath / truncate / TOOL_OUTPUT_LIMIT
     read-file.ts        # read_file
     write-file.ts       # write_file
+    edit-file.ts        # edit_file（old_string → new_string 定向编辑）
     list-directory.ts   # list_directory
   search-code.ts      # search_code
   run-command.ts      # run_command（超时 + 输出截断；危险拦截兜底在 safety/policy）
@@ -265,6 +265,7 @@ src/
     theme.ts            # 主题色板与取色（system/light/dark）
     output.ts           # TuiOutput：事件 → 状态写入 → 30ms 节流重绘 + 退出前 flush
     interactive.ts      # TUI 交互模式：输入框提交等待 + 命令/审批按键 + 多轮循环
+    vim.ts              # Vim 键位（纯函数：normal/insert、移动/编辑命令解析）
   tui-entry.ts          # TUI 入口（纯 TS 无 JSX）：TTY 门控 + 回退 console
   agent/skill.ts        # **技能系统**：SKILL.md 发现（项目 .opencode/.claude/.agents/skills 向上 + 全局）+ frontmatter 解析（含扩展：disable-model-invocation/context:fork/agent/background）+ 按名加载 + 渐进披露（15 条）+ npx skills CLI 封装 + refreshSkillInjections（安装即时生效）+ createSkillTool（context:fork 子代理执行）
   tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单；运行时被 createSkillTool 替换以支持子代理执行）
@@ -273,7 +274,7 @@ scripts/build-model-context-snapshot.ts # 模型能力快照生成器（npm run 
                                          #   tsx 跑，复用 src/config/model-context-builder.ts 纯逻辑）
 scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
 scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
-scripts/tui-snapshot.ts # TUI 快照验证（47 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
+scripts/tui-snapshot.ts # TUI 快照验证（51 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
 scripts/probe-tmp/probe-drag-select.ts # 拖选复制探针（colToChar 列→字符/highlight 克隆/selectionText 单行多行/selectionMoved/down·drag·up 状态机/渲染高亮）
 scripts/probe-tmp/probe-exec.ts # Headless 探针：parseExecArgs/schema 校验单元 + runHeadless 全链路 e2e（text/json/stream-json、
                                  #   max-turns/allowed-tools/stdin 两形态/exec resume/schema 通过·不符）+ MCP server 握手
@@ -320,6 +321,7 @@ for step in 1..maxSteps:
 |---|---|
 | `read_file` | 按行号读取文件，支持 offset/limit 分段 |
 | `write_file` | 创建或整体覆盖写入文件 |
+| `edit_file` | 局部定向编辑（`old_string` → `new_string`；UI 显示统一 diff） |
 | `list_directory` | 列出目录内容 |
 | `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
 | `run_command` | 执行 shell 命令（带超时 + 输出截断；危险命令拦截在安全护栏闸门）

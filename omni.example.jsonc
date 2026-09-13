@@ -29,6 +29,15 @@
   // 是否写审计日志（默认 true；落盘 ~/.config/omni/audit.log，记录每次工具调用与审批决策）
   "auditLog": true,
 
+  // AI 自动审批（2026-09，默认 false）：需要人工审批的操作先交给模型审阅（approve 放行 /
+  // deny 回传模型自纠 / 失败回退人工）；不改变权限与沙箱边界。也可 /auto 运行时切换；
+  // omni exec --approve-for-me 等价。
+  "autoReview": false,
+
+  // 密钥脱敏（2026-09，默认 true）：会话 JSONL 落盘/恢复回放时把 sk-*、Bearer、AWS AKIA*、
+  // ghp_*、glpat*、私钥块等替换为 [REDACTED]，防止密钥随会话文件/导出外泄。
+  "redactSecrets": true,
+
   // 危险命令扩展正则（可选）：内置清单之外的命令也会在 safe 及以上档位触发审批。
   // 内置清单：rm -rf /、mkfs、dd 写盘、shutdown/reboot/halt、fork bomb、git push、
   // git reset --hard、git clean -f、chmod -R 777、curl | sh、sudo 危险操作
@@ -159,17 +168,22 @@
   //   }
   // }
 
-  // ── TUI 底部状态行（输入区域下方的对话信息）──────────────
-  // 显示哪些段、什么顺序；/settings statusline 可视化配置（空格勾选、←/→ 排序、a 对齐、Enter 保存生效并写回此字段）
-  // 合法段：speed（首token/速率）· cache（缓存命中）· tokens（输入/输出）· context（上下文=最近一次 LLM 请求的 prompt token，模型配 context 上限时显示 已用/上限）；空数组 = 不显示
-  "statusline": ["speed", "cache", "tokens", "context"],
-  // 状态行水平对齐：left / center（默认）/ right（/settings statusline 面板 a 键循环切换）
-  "statuslineAlign": "center",
+  // ── TUI 输入框 Vim 键位 ──────────────────────────────────
+  // 默认 false；开启后 Esc 进 normal 模式（placeholder 显示 -- NORMAL --）、i 回 insert；
+  // 支持 h/j/k/l/w/b/e/0/$/gg/G、i/a/I/A/o/O、x/dd/cc/dw/yy/p；/vim on|off 运行时切换并持久化。
+  "vimMode": false,
+  // 注：statusline / statuslineAlign 为旧版底部状态行配置——该行已移除，字段保留兼容、被忽略。
+  // 当前底部信息行固定为：左侧当前目录路径 + 右侧 输入/输出 · 缓存 · 上下文迷你条。
 
   // ── 子代理 ───────────────────────────────────────────────
   // delegate 工具：把独立子任务委托给子代理（隔离上下文；默认 true）
   "allowSubagents": true,
   "maxSubagentSteps": 10,      // 子代理最大循环步数
+  "maxConcurrentSubagents": 4, // 前后台子代理共享并发上限（1-16，超限排队）
+
+  // 启用的插件（2026-09）：~/.config/omni/plugins/<名>/plugin.json，打包 skills/agents/hooks/mcpServers；
+  // /plugin install|enable|disable 或 CLI `omni plugin` 管理
+  // "plugins": ["my-plugin"],
 
   // ── MCP 外部工具 ─────────────────────────────────────────
   // 可选：配置后启动时自动发现并注册 MCP 工具（名称带 server 前缀，如 demo_ping）

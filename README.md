@@ -4,7 +4,7 @@
 
 **An agent engineering project** — a terminal-based AI coding assistant.
 
-Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ delegate subagents + MCP external tools) + safety guardrails + context management + memory system/session persistence/skills, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
+Currently at **Beta (feature-complete)**: single-agent loop + 8 static tools (+ delegate subagents / team collaboration / web_search and other runtime tools + MCP external tools) + safety guardrails + context management + memory system/session persistence/skills, with zero framework dependencies (bare OpenAI SDK + main loop), plus a full-screen TUI.
 
 ## Screenshots
 
@@ -19,13 +19,13 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 ## Features
 
 - **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)
-- **8 tools (6 base + 2 injected)**: base `read_file` / `write_file` / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools); plus context tools `memory_search` / `memory_read` (progressive memory disclosure) · `todo_write` (task list) · `web_fetch` (URL→text) · `diagnose` (typecheck/lint feedback)
+- **8 static tools + runtime-injected tools**: static `read_file` / `write_file` / `edit_file` (targeted edits) / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) / `lsp` (definition/references/hover/symbol navigation) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools); plus context tools `memory_search` / `memory_read` (progressive memory disclosure) · `todo_write` (task list) · `web_fetch` / `web_search` (URL→text / web search) · `diagnose` (typecheck/lint feedback) · `ask_user` (questions) · `task_board` / `send_message` (team collaboration)
 - **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation (built-in + configurable `dangerousPatterns`) + approval UI + audit log
 - **Workspace trust**: first entry into an untrusted directory prompts for trust (TUI card / console); untrusted = read-only (`/permission` locked) + skips project-level hooks/skills/subagent defs/project memory (blocks repo-injected malicious config); trust list persisted in `~/.config/omni/trusted-workspaces.json`
 - **OS-level sandbox**: `sandbox` config (`read-only` / `workspace-write` / `danger-full-access`) wraps `run_command` with macOS `sandbox-exec` or Linux `bwrap` (deny writes/network; workspace-write allows only cwd), degrading gracefully when unavailable
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
-- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), 31 `/` commands (theme/permission/plan/thinking collapse/undo/redo/model switch/reasoning level/skills/memory generation/subagent/MCP/compact/export/status/context/resume/rename/review/diff/doctor/settings etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing)
+- **Full-screen TUI**: scrollable content area, multi-line input box for interactive multi-turn conversations, line-based Markdown rendering (tables/lists/code blocks), click-to-expand tool cards, **`@` file mention in the input box** (directory drilling, Tab/Enter/click to insert), **40+ `/` commands** (theme/permission/plan/thinking collapse/undo/redo/three-mode rewind/model switch/reasoning level/skills/memory generation/subagent/orchestration/goal loop/plugins/MCP/compact/export/status/context/session restore, pin & archive/rename/review/diff/doctor/settings/vim etc.) — both `/` command suggestions and `@` mentions are **rounded-corner overlay panels** (hovering above the input box, non-modal, you can keep typing); character-level drag-copy and top-right toast notifications
 - **Skills (Agent Skill)**: auto-discovers `SKILL.md` in `.opencode/skills`, `.claude/skills`, `.agents/skills` (project-upward + global), injects a skill manifest on the first turn (progressive disclosure: first 15 listed + "N more"), and the model loads full content on demand via the `skill` tool; frontmatter extensions (`disable-model-invocation` / `user-invocable` / `context: fork` subagent execution / `agent` / `background`); `/skill` opens a selection panel (with tags) / `find <term>` searches skills.sh online / `add` installs (immediate effect in current session) / `show <name>` / `create <name> [desc]` / `delete <name>`
 - **Memory system (AGENTS.md)**: project memory + global memory (`~/.config/omni/AGENTS.md`) loaded in cascade (auto-injected on the first turn of every session, truncated when too long), `/init` for project / `/init --global` for global / `/init <subdir>` for nested-layer one-shot generation, session-end auto-extraction of new preferences into global memory (dedup/conflict merge + TTL archive); progressive disclosure tools (`memory_search` / `memory_read`); `AGENTS.override.md`/`TEAM_GUIDE.md` fallback + 32KB total budget; project-level auto-write produces a pending snippet (`.omni/memory-pending.md`) applied via `/memory-apply`
 - **Session persistence**: interactive conversations saved as JSONL (`~/.config/omni/sessions/`), restored across processes with `--continue` / `-r <id>` / `-l` / `/resume`, session titles (terminal window title + meta on disk); `/fork` forks a new session from a point in history (original kept), `/send <session> <msg>` sends a message to another session and injects the reply into the current context
@@ -42,7 +42,8 @@ Currently at **Beta (feature-complete)**: single-agent loop + 6 base tools (+ de
 - **MCP + presets + spec (P1-5/6/7/9)**: tool `annotations.readOnlyHint` consumed (read-only pass-through) · `/mcp install <id>` registry one-click · `omni preset browser` (Playwright MCP + Chrome DevTools MCP into global config) · `/spec <feature>` spec trio (requirements-EARS / design / tasks under `.omni/specs/`, tasks synced to the session todo list) · `skill validate`
 - **Headless protocol freeze (P0-5)**: JSON Schemas under `schemas/` (`exec-result` / `stream-json` / `session-jsonl` / `mcp-server` / `hook-protocol`) + `config.schema.json` + `omni-action` GitHub Action + `Doc/Headless-Protocol.md`; exec result extended with `tokens` / `idle_turns` / `error_type` (cost-efficiency reporting, P1-10)
 - **Telemetry (P1-11)**: opt-in OTLP/HTTP JSON exporter (zero deps), prompt content redacted by default, fire-and-forget — config `telemetry`
-- **LSP feedback loop (P1-3)**: `diagnoseAfterEdit` runs a quick typecheck/lint after `write_file` and appends diagnostics so the model self-fixes
+- **LSP feedback loop (P1-3)**: `diagnoseAfterEdit` runs a quick typecheck/lint after `write_file` and appends diagnostics so the model self-fixes; plus a hand-rolled minimal LSP client exposed as the `lsp` navigation tool (definition/hover/references/documentSymbol)
+- **2026-09 market-alignment batch**: dynamic workflow orchestration + team board/messaging + background subagents (`/orchestrate` `/tasks` `/team`) · plugin system (`plugin.json` bundling skills/subagents/hooks/MCP; `/plugin` + `omni plugin`) · session pin/archive + `/cd` working-directory switch · AI auto-approval (`/auto`; boundaries unchanged) · MCP elicitation/sampling reverse requests + paginated discovery + DCR/CIMD · secret redaction (session files/replay) · TUI Vim keybindings
 - **Web mode (`omni web`)**: local backend service (REST + SSE, zero new dependencies) + browser UI — multi-session sidebar, live thinking/tool/answer streaming, approval & ask_user cards, model/permission/reasoning settings, cancel, per-turn token stats; works in both browser and the Electron desktop app
 - **Electron desktop app** (macOS / Windows / Linux): a standalone app bundling the web backend via Electron's own Node runtime (no system Node needed); built automatically by GitHub Actions on tag push (mac arm64/x64 zip, win x64 exe, linux x64 AppImage) and attached to the GitHub Release
 - **Layered config**: defaults → global config → project config → custom config → env vars → CLI args (JSONC with comments)
@@ -318,21 +319,23 @@ Runs omni as a **local backend service** (REST + SSE, zero extra dependencies) a
 omni web                     # start service + Web UI at http://127.0.0.1:3080 (opens browser)
 omni web --port 4000         # custom port
 omni web --no-open           # don't open the browser automatically
+omni web --host 0.0.0.0 --token <token>   # remote access (non-loopback requires a token)
 ```
 
 Web features (reusing the existing agent stack: props/memory, sessions, safety, tools, subagents, hooks):
 
 | Feature | Behavior |
 |---|---|
-| **sessions** | left sidebar lists persisted sessions (shared with CLI `omni -c` / `/resume` JSONL files); new session / switch / delete |
-| **live streaming** | thinking (collapsible blocks) / tool calls (amber cards with command & expandable output) / final markdown answer all stream over SSE in real time |
-| **approvals** | when a tool needs approval under the current permission tier, a card appears above the composer with **允许/拒绝** buttons — the agent pauses until you decide |
-| **ask_user** | when the agent asks a question, a card shows options (multi-selectable) with a custom-input row and a confirm button |
-| **settings** | model switching (including per-model endpoints), permission tier, reasoning effort (`/variants`), plan mode toggle — all applied live without restarting |
+| **sessions** | left sidebar lists persisted sessions (shared with CLI `omni -c` / `/resume` JSONL files); new session / switch / delete; pin / archive (⋯ menu + archived group) |
+| **multi-session concurrency** | several sessions run at once (independent runOpts/undo/abort), global cap `webConcurrency` (default 3) |
+| **live streaming** | thinking (collapsible blocks) / tool calls (cards with command & expandable output incl. write/edit diffs and the delegate panel) / final markdown answer all stream over SSE in real time |
+| **approvals / ask_user** | approval cards above the composer with **Allow/Deny** buttons; ask_user cards support multi-select options + a custom-input row |
+| **settings** | model / permission / reasoning effort (`/variants`) / plan mode / general (language·concurrency·AI auto-approval) / MCP / skills / plugins — all applied live without restarting |
+| **session actions** | per-turn fork / export / three-mode checkpoint rewind; always-visible message actions (copy / edit-and-resend / retry); long-session pagination |
 | **cancel** | stop the running turn with the cancel button (no click-through screens) |
-| **stats** | per-turn token usage and a run summary line after every turn |
+| **stats & notifications** | per-turn token usage and a run summary line after every turn; top-right notification center (auto-dismiss) |
 
-Implementation notes: one running agent at a time (safe global run lock over shared `runOpts`/gate/undo-stack); static pages are served from the `web/` directory in dev (hot reload) and embedded in the bundle for `npm i -g` / compiled builds (`npm run web:sync` regenerates `src/web/assets.ts`). `npm run probe:web` runs an offline end-to-end test of the full protocol against the mock API.
+Implementation notes: **multiple sessions run concurrently** (each has its own cloned `runOpts`, undo stack, event stream and abort signal; global cap `webConcurrency`). Remote access uses `--host 0.0.0.0 --token` (non-loopback refuses to start without a token). Static pages are served from the `web/` directory in dev (hot reload) and embedded in the bundle for `npm i -g` / compiled builds (`npm run web:sync` regenerates `src/web/assets.ts`). `npm run probe:web` runs an offline end-to-end test of the full protocol against the mock API.
 
 ### Local run & test (Web / Electron)
 
@@ -384,19 +387,20 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/plan` | plan mode: read-only tools, research only, output an implementation plan for approval |
 | `/thinking` | show/hide thinking entirely (off = no thinking blocks stream at all, reasoning still saved to disk) |
 | `/model` | switch models; `/model <name>`; `/model add <name> [--base-url] [--api-key]` (adds + persists) |
-| `/variants` | switch the model's reasoning level (low/medium/high, persisted) |
-| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics / help / model snapshot |
+| `/variants` | switch reasoning level (built-in tiers + named variants, persisted) |
+| `/settings` | settings submenu: language / theme / token stats / environment diagnostics / help / model snapshot |
 | `/undo` · `/redo` | undo the latest file edit (`/undo all` for everything) · redo the last undo |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory; never overwrites) |
 | `/skill` | skill management: list (with tags) / `find <word>` online search / `add <repo> [--global]` install (immediate in current session) / `show <name>` |
 | `/compact` | manually compress context (old messages → summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`) |
-| `/orchestrate` | orchestration: fan-out parallel delegates → merge → adversarial review → final report |
+| `/orchestrate` | orchestration (dynamic workflow): model-planned steps+dependencies → layered parallel delegates (shared board/messages) → merge → adversarial review; falls back to fan-out |
 | `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop a task until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/status` | session status summary (incl. context usage) |
 | `/session` | list current-directory history sessions and continue (`/session <id>`, prefix match; `all` = cross-directory) |
 | `/resume` · `/rename` · `/fork` · `/send` · `/memory-apply` | restore a past session · rename the session (window title + persisted meta) · fork a new session from history · send a message to another session and get the result · apply pending project memory |
+| `/new` · `/cd` · `/pin` · `/archive` | new session, back to the initial state · change working directory · pin session · archive/unarchive (`/session archived` to view) |
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace text ledger (console/web): per-turn LLM request / tool / message event log |
 | `/diff` | uncommitted changes |
@@ -404,6 +408,10 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/model fetch` | pull `GET {baseURL}/models` and list models not yet in the local table (Ollama/LM Studio/vLLM/any OpenAI-compatible gateway) |
 | `/spec <feature>` | spec trio: `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, tasks synced to the session todo list |
 | `/preset browser` | install the browser automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack |
+| `/rewind` | three-mode session checkpoints: code-only / conversation-only / both (panel two-step confirm; auto-checkpointed every turn; cap 100 / 30 days) |
+| `/plugin` | plugin management: install (local path/git URL) · list · enable/disable · remove (bundles skills/subagents/hooks/MCP) |
+| `/auto` · `/vim` | AI auto-approval toggle · TUI Vim keybindings toggle (both persisted) |
+| `/tasks` · `/team` | running foreground/background subagent ledger (`/tasks stop <seq>`) · team task board + messages + subagent tree |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` · `/exit` (alias `/quit`) | clear view · quit (autoMemory + session finalize) |
 
@@ -418,7 +426,9 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 
 Approval: console shows `⚠ 需要确认 [y/n]`; TUI shows an approval card (`y`/Enter approve, `n`/Esc
 reject, or click); piped/non-interactive auto-rejects. Every tool call is audited to
-`~/.config/omni/audit.log` (`auditLog: true`).
+`~/.config/omni/audit.log` (`auditLog: true`). `/auto` enables **AI auto-approval**: approval-gated
+operations go through model review first (approve / deny / fall back to human), without changing
+permission or sandbox boundaries.
 
 ### Memory & sessions
 
@@ -485,7 +495,7 @@ Bundling requires bun: `npm run bundle` (single-file JS), `npm run compile` (nat
 - [x] **/undo file undo**: automatic write_file snapshots + `/undo` / `/undo all` rollback for the session
 - [x] **/permission runtime permission switch**: low=read-only / medium=safe ask-on-danger (default) / high=ask everything / full=pass-through — TUI panel + CLI arg instant switching, subagents stay in sync
 - [x] **Skills (Agent Skill / SKILL.md)**: auto-discovery + manifest injection (progressive disclosure) + `skill` tool on-demand loading + frontmatter extensions (subagent execution) + `/skill` command (list / find online / add immediate-effect / show), aligned with opencode
-- [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level (reasoning_effort) · `/model` switch/add models (config `models` supports multiple endpoints; client is rebuilt on switch, subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` context usage · `/export` export to Markdown · `/config` view config · `/mcp` MCP server management (reconnect) · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` restore history · `/redo` redo undo · `/doctor` environment diagnostics
+- [x] **More interactive commands**: `/compact` manual context compression · `/agents` subagent config · `/review` code review (typecheck + git diff → LLM) · `/variants` reasoning level + named variants · `/model` switch/add models (`providers` groups support multiple endpoints; the client is rebuilt on switch and subagents stay in sync; `/model add <name> [--base-url] [--api-key]` adds at runtime and persists to the config file) · `/status` session status · `/context` adjust the context window · `/export` export to Markdown · `/mcp` MCP server management · `/diff` view changes · `/rename` rename session (meta persisted) · `/resume` / `/session` restore history · `/new` new session · `/fork` fork · `/send` cross-session message · `/pin` / `/archive` pin/archive · `/rewind` three-mode checkpoints · `/cd` change working directory · `/plugin` plugin management · `/auto` AI auto-approval · `/vim` Vim keybindings · `/tasks` / `/team` tasks & team · `/redo` redo undo · `/doctor` environment diagnostics
 - [x] **Hooks lifecycle automation**: `UserPromptSubmit` prompt rewrite / `PreToolUse` hard-block + arg rewrite / `PostToolUse` output feedback (lint) / `Stop` require-continue (once) / `Notification` + `SessionStart` context injection / `SubagentStart`·`SubagentStop` subagent hooks / `PreCompact` — JSON protocol with wildcard matchers, layered config (global+project merged), stderr capture, timeout/failure degrade to pass-through; enforcement examples (guard-env / guard-dangerous / guard-git-push) in `examples/hooks/`
 - [x] **Headless & CI integration (modeled on codex exec / claude -p)**: `omni exec "<task>"` (stdout result-only / stderr progress, `--output-format text|json|stream-json`, stdin two forms, `--max-turns`, `--allowed-tools` filtering, exit code 0/1 pipeline branching) + `--output-schema` structured validation + `exec resume <id>` session continuation + `omni mcp-server` (omni_exec / omni_reply) + CI workflow template (`examples/ci/omni-fix-ci.yml`: read-only job generates the patch → separate job opens the PR, keys never enter the patch-generating job)
 - [x] **1.0 model layer**: providers / metadata (limit·modalities·capabilities) / named variants / cross-endpoint routing / `{env:VAR}` / max_tokens / model discovery

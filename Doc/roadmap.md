@@ -43,5 +43,5 @@
 - [x] **Headless 协议冻结 + omni-action + 发布工程**（schemas/config.schema.json/action/install.sh/Homebrew/Winget，第一百六十五次）
 - [x] **Hooks 扩展 / 记忆结构化 / 压缩 2.0 / LSP 反馈 / MCP annotations+install / 预设 / 规格 / 遥测 / eval 成本报告**（第一百六十五次）
 - [x] **2026-09 市场对齐批次**（第一百七十八次）：动态工作流 / Mission 编排（task_board + send_message + 并发预算 + `/team`）、插件系统（plugin.json + `omni plugin`）、后台子代理 + `/tasks` + Web 远程令牌、MCP elicitation/sampling + 2026-07-28 分页发现 + DCR/CIMD、AI 自动审批、会话 pin/archive/`/cd`/Vim/LSP/密钥脱敏（详见 `Doc/TODO.md` 第二部分 I 节）
-- [ ] 进阶：SWE-bench 评测、/rewind 三模式（code/conversation/both）、Windows 原生沙箱（AppContainer 需原生模块）
+- [ ] 进阶：SWE-bench 评测、Windows 原生沙箱（AppContainer 需原生模块）
 

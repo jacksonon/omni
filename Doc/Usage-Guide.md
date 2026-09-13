@@ -41,8 +41,10 @@ commands → verify" loop until it gives you a final answer. It is currently at 
 
 - **Single-agent main loop**: streams LLM calls → executes tool calls in parallel → feeds results
   back, with self-correction (tool failures are returned to the model so it can fix its own mistakes);
-- **6 base tools + runtime-injected tools**: read file / write file / list directory / search code
-  (ripgrep-first) / run command / load skill, plus the `delegate` subagent and `mcp_*` external tools;
+- **8 static tools + runtime-injected tools**: read file / write file / targeted edit (`edit_file`) /
+  list directory / search code (ripgrep-first) / run command / load skill / LSP navigation
+  (definition·references·hover·symbols), plus `delegate`, `todo_write`, `web_fetch` / `web_search`,
+  `ask_user`, the team board (`task_board` / `send_message`) and `mcp_*` external tools;
 - **Safety guardrails**: permission tiers + dangerous-command confirmation + approval UI + audit log;
 - **Context management**: tool-result truncation, relevant-file preloading, automatic long-conversation
   summarization;
@@ -207,10 +209,13 @@ omni "<task>"                     # single run
 omni                              # interactive mode (auto full-screen TUI with real TTY + bun)
 omni -m glm-4-flash "<task>"       # explicit model (overrides config)
 omni -C ./my-config.json "<task>" # explicit config file (-c now means continue)
+omni --profile work "<task>"        # use a config profile (see 4.1)
+omni --lang zh                      # help-text language (English by default; --lang=zh synonym)
 omni --no-tui "<task>"             # disable full-screen TUI (fall back to console)
 omni -c "<task>"                    # resume the most recent session of the current project
 omni -s <session-id> "<task>"        # resume a specific session (-r is a synonym)
-omni -l                           # list saved sessions
+omni -l                           # list saved sessions (current directory)
+omni -l -f                        # list all sessions (cross-directory; -f/--full/--all synonyms)
 omni -h / -v                      # help / version
 ```
 
@@ -253,6 +258,7 @@ omni -h / -v                      # help / version
   "permission": "safe",                // full (pass-through) / safe (ask on dangerous, default) / ask (ask all) / read (read-only)
   "dangerousPatterns": [],             // extra dangerous-command regexes (prompt on match in the safe tier and above)
   "auditLog": true,                    // audit log (~/.config/omni/audit.log)
+  "autoReview": false,                 // AI auto-approval: approval-gated ops go through model review first (/auto; see 5.6)
   // OS-level sandbox (see 5.5): wraps run_command with sandbox-exec (macOS) / bwrap (Linux)
   "sandbox": "off",                    // off (default) / read-only / workspace-write / danger-full-access
   "sandboxNetworkAllow": [],           // sandbox network allowlist (hostnames); empty = keep network fully blocked
@@ -264,16 +270,21 @@ omni -h / -v                      # help / version
   "agentsFile": true,                  // project memory AGENTS.md: nested load on first turn (all levels from cwd up to git root/home boundary; inner layers override outer)
   "globalAgentsFile": true,            // global memory ~/.config/omni/AGENTS.md (cross-project)
   "autoMemory": true,                  // append newly expressed preferences to global memory on interactive exit
+  "contextLimit": 512000,              // manual context-window override (tokens; default from the model snapshot; /context persists it)
+  "redactSecrets": true,               // secret redaction: sk-*/Bearer/AWS etc. become [REDACTED] in session files/replay
 
   // ── Subagents & skills ──
   "allowSubagents": true,              // enable the delegate subagent tool
   "maxSubagentSteps": 10,              // subagent max loop steps
+  "maxConcurrentSubagents": 4,         // shared concurrency cap for foreground+background subagents (queue beyond; 1–16)
   "skills": true,                      // enable SKILL.md discovery and the skill tool
+  "plugins": ["my-plugin"],            // enabled plugins (~/.config/omni/plugins/<name>/plugin.json; see 14.3)
 
   // ── TUI ──
   "language": "zh",                    // TUI language: zh (default) / en (switch & persist via /settings)
-  "statusline": ["speed", "cache", "tokens", "context"], // bottom status-line segments (/settings statusline)
-  "statuslineAlign": "center",              // status-line alignment: left / center (default) / right (press a in the panel)
+  "vimMode": false,                    // Vim keybindings in the input box (Esc → normal, i → insert; toggle with /vim)
+  // statusline / statuslineAlign are legacy bottom-status-line settings: that line was removed;
+  // the fields are kept for compatibility and ignored
 
   // ── External tools ──
   "webFetchDomains": [],               // web_fetch domain allowlist (empty = all domains allowed)
@@ -377,6 +388,21 @@ Related fields:
   (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD`) with a sentinel before handing them to a
   sandboxed command, so a command cannot `echo` a key back into the model's context.
 
+### 5.6 AI auto-approval (`autoReview` / `/auto`)
+
+When enabled (config `autoReview: true`, `/auto on`, or `omni exec --approve-for-me`), operations
+that would require human approval first go through model review: approve → run, deny → the error is
+fed back to the model for self-correction, review failure → fall back to the human. It **does not
+change permission or sandbox boundaries** — it replaces "click y on every dangerous command" with
+"the model recommends a decision at the same gate". Good for unattended/bulk runs; keep it off for
+sensitive environments. `/auto` (TUI/CLI/Web settings) toggles and persists it.
+
+### 5.7 Secret redaction (`redactSecrets`)
+
+On by default: when sessions are written to JSONL or replayed on restore, recognized secret patterns
+(`sk-*`, `Bearer …`, AWS `AKIA*`, `ghp_*`, GitLab `glpat-*`, private-key blocks, env-style fields)
+are replaced with `[REDACTED]`, so keys cannot leak through session files or exports.
+
 ---
 
 ## 6. Models & Multi-endpoints
@@ -400,9 +426,11 @@ automatically; JSONC configs get a hint to add it manually). It is written as a 
 
 ### Reasoning level (`/variants`)
 
-`/variants` panel/command switches the current model's reasoning level (low/medium/high,
-levels customizable); set `reasoningEffort` in config for a default. The switch persists — the
-next startup keeps your choice.
+`/variants` panel/command switches the current model's reasoning level (built-in tiers
+low/medium/high/xhigh/max + none/auto, narrowed by the model capability snapshot; customizable);
+the panel also lists **named variants** (request overlays defined in config, e.g. presets that switch
+body/headers/reasoning level together). Set `reasoningEffort` in config for a default. The switch
+persists — the next startup keeps your choice.
 
 ---
 
@@ -419,18 +447,20 @@ next startup keeps your choice.
 | Auto-grow input | multi-line input grows 1–5 rows automatically; beyond 5 rows it scrolls internally |
 | Submit while running | ordinary messages go to the "⏳ pending (N)" list, sent when the turn ends; steer messages get priority |
 
-Inside the gray block the model line sits on the left (`Build/Plan · model name provider · reasoning level` —
-mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider group, and the level
-color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple);
-while something is running, the loading animation and `esc interrupt` hint sit **in the model line, right of
-the reasoning level** (`· ⠹ esc interrupt` — the `·` separator appears only while loading, hinting that Esc
-can interrupt the current turn; both disappear on Esc or when the turn ends); below the block is the configurable
-status/stats line
-(`/settings statusline` toggling and ordering): `first token/rate · cache hit ·
-in/out tokens · context` (context = prompt tokens of the latest LLM request — shows
-`used/limit` when the model config declares a context limit). Press **`a`** inside the
-panel to cycle the stats line **horizontal alignment** (left / center / right; Enter
-saves and persists to `statuslineAlign`).
+Inside the gray block the model line sits on the left (`Build/Plan · model name provider · reasoning level · avg tok/s` —
+mode prefix (`/plan` shows Plan, otherwise Build), model name with its provider group, reasoning level
+color-coded by intensity — low green → medium amber → high orange → xhigh red → max purple — and the
+session's average output rate). While something is running, the loading animation and `esc interrupt`
+hint sit **right of the rate** (`· ⠹ esc interrupt`); press Esc to interrupt the current turn (both
+disappear on Esc or when the turn ends).
+Below the block (one row apart) is the info line: the current working-directory path on the left, and
+`in · out · cache · context` on the right (context shows the prompt-token share of the latest request).
+
+### Vim keybindings (`/vim`)
+
+`vimMode: true` or `/vim on` in the input box: `Esc` enters normal mode (placeholder shows
+`-- NORMAL --`), `i` returns to insert; movement `h/j/k/l/w/b/e/0/$/gg/G`, insertion `i/a/I/A/o/O`,
+editing `x/dd/cc/dw/yy/p`. The toggle persists; `/vim off` disables it.
 
 ### `/` command suggestions
 
@@ -458,7 +488,15 @@ Esc to close, mouse click to insert.
   `↑ N more lines above` hint appears at the top;
 - **Markdown rendering**: bold / inline code / headings / blockquotes / tables (box-drawing
   frames) / lists / task checkboxes / strikethrough / fenced code blocks all render with syntax
-  markers hidden;
+  markers hidden; math `$...$` and LaTeX commands such as `\rightarrow` render as Unicode symbols
+  (inline/fenced code keeps the raw source);
+- **Live panels** (above the input box): pending queue, todo list (live mirror of `todo_write`,
+  auto-removed once everything completes), delegate progress (tool/step per subagent live; click to
+  expand details and ⏹ stop);
+- **Delegate result card**: after completion a summary card stays in the conversation
+  (`+ Subagent: … · N steps · duration`); click to expand the full run;
+- **Character-level drag-copy**: press and drag across content lines to select text; releasing copies
+  it and shows a "✓ copied" toast in the top-right corner;
 - **Trace ledger (console/web `/trace`)**: folded text of the per-turn LLM request / tool call /
   message event log (the TUI right sidebar panel has been removed).
 
@@ -467,18 +505,18 @@ Esc to close, mouse click to insert.
 - `/settings theme`: light / dark / follow system (defaults to auto-detecting the terminal
   background);
 - `/settings language`: 中文 / English, switches instantly and persists.
-- All TUI settings (theme / permission / model / thinking level / language / status line) **take
-  effect immediately with no confirmation popup**; the command panel is only used for query
-  outputs (/status /context /session /undo etc.).
+- All TUI settings (theme / permission / model / thinking level / language) **take effect
+  immediately with no confirmation popup**; the command panel is only used for query outputs
+  (/status /context /session /undo etc.).
 
 ---
 
 ## 8. Command Reference
 
 All commands below work in both TUI and console interactive mode (`/` prefix; command output goes to
-a separate panel and never pollutes the conversation flow). Omni ships **30+ commands** — run `/help`
-inside omni for the authoritative list; the registry in `src/tui/commands.ts` is the source of truth.
-A few are console-only (`/doctor`) and are noted inline.
+a separate panel and never pollutes the conversation flow). Omni ships **40+ commands** — use
+`/settings help` inside omni for the authoritative list; the registry in `src/tui/commands.ts` is the
+source of truth. A few are console-only (`/doctor`, `/trace`) and are noted inline.
 
 | Command | Effect |
 |---|---|
@@ -487,16 +525,20 @@ A few are console-only (`/doctor`) and are noted inline.
 | `/thinking` | fold/unfold all thinking globally |
 | `/model` | switch/add models (`/model <name>`; `/model add <name> [--base-url] [--api-key]`; `/model fetch` lists models the gateway offers that aren't registered locally) |
 | `/variants` | switch the model's reasoning level (low/medium/high) |
-| `/settings` | settings submenu: status line / language / theme / token stats / environment diagnostics / help / model snapshot (`/settings help` help · `/settings models [refresh]` snapshot refresh) |
+| `/settings` | settings submenu: language / theme / token stats / environment diagnostics / help / model snapshot (`/settings help` help · `/settings models [refresh]` snapshot refresh) |
 | `/undo` | undo the latest file edit (`/undo all` rolls back everything; write_file snapshots automatically) |
 | `/redo` | redo the last undo |
-| `/rewind` | session checkpoints: roll workspace files back to any past turn (`/rewind` panel select · `/rewind <N>` restores; auto-checkpointed every turn, survives session restore, conversation kept — files only) |
+| `/new` | start a new session and reset to the initial state (new session file + stats/undo reset to hero; the old file is kept and recoverable via `/session`) |
+| `/rewind` | session checkpoints (three modes): `/rewind` panel select → mode menu (code/chat/both) two-step confirm · `/rewind <N>` preview · `/rewind <N> --code\|--chat\|--both [--yes]` execute — files only / conversation only / both; auto-checkpointed every turn (cap 100 / 30 days); old checkpoints without a conversation snapshot only support `--code` |
+| `/cd [path]` | change the working directory (no arg shows the current one; `~` expansion, relative paths; TUI state stays in sync) |
+| `/pin [session-id]` | pin/unpin a session (no arg = current; pinned sessions sort first) |
+| `/archive [session-id]` / `/unarchive [session-id]` | archive/unarchive (hidden from the list by default; `/session archived` shows them) |
 | `/init` | scan the project and generate AGENTS.md (`/init --global` for global memory · `/init <subdir>` for a nested layer; never overwrites existing) |
 | `/memory-apply` | apply the pending project-memory snippet (`.omni/memory-pending.md`) into the project-root AGENTS.md, then clear the snippet — see 9.4 |
 | `/skill` | skill management: panel select to view / `find <word>` online search on skills.sh / `add <repo> [--skill <name>] [--global]` install (takes effect in the current session immediately) / `show <name>` view / `create <name> [desc]` create / `delete <name>` delete |
 | `/compact` | manually compress context (old messages merged into a summary, last 8 kept verbatim) |
 | `/agents` | view subagent config + discovered subagent definitions (`.agents/subagents/*.md`, per-agent model/permission/tool whitelist/skills) |
-| `/orchestrate` | orchestration: fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report |
+| `/orchestrate` | orchestration (dynamic workflow): the model drafts a step+dependency plan → layered parallel delegates (shared task_board + send_message) → merge → adversarial review; falls back to the fixed fan-out pipeline (default 3 workers) if planning fails or with `--pipeline` |
 | `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
 | `/spec <feature>` | spec trio: writes `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, and syncs the tasks into the session todo list |
@@ -511,7 +553,12 @@ A few are console-only (`/doctor`) and are noted inline.
 | `/export` | export the session as Markdown (`.omni/export-<timestamp>.md`) |
 | `/trace` | trace text ledger (console/web): folded per-turn request/tool/message event log |
 | `/diff` | view uncommitted changes (git diff + untracked files, first 60 lines; `--stat` summary only · `--full` untruncated) |
-| `/mcp` | MCP management: `/mcp` opens a selection panel (server list + reconnect all, select for details) · `resources` · `prompts` · `reconnect` after config edits · `add <name> <command\|--url>` (runtime, persisted) · `remove <name>` · `login <name>` (OAuth PKCE for HTTP servers) · `install <id>` (one-click from the registry) — see section 12 |
+| `/mcp` | MCP management: `/mcp` opens a selection panel (server list + reconnect all, select for details) · `resources` · `prompts` · `reconnect` after config edits · `add <name> <command\|--url>` (runtime, persisted) · `remove <name>` · `login <name>` (OAuth PKCE/DCR/CIMD for HTTP servers) · `install <id>` (one-click from the registry) — see section 12 |
+| `/plugin` | plugin management: `list` · `install <path\|git URL> --yes [--force]` · `remove <name> --yes` · `enable\|disable <name>` — plugins bundle skills/subagents/hooks/MCP (see 14.3) |
+| `/auto [on\|off]` | AI auto-approval toggle (persisted; same as `autoReview` / `omni exec --approve-for-me`, see 5.6) |
+| `/vim [on\|off]` | Vim keybindings in the TUI input box (persisted, see section 7) |
+| `/tasks` | running tasks: foreground/background subagent ledger + `/tasks stop <seq>` |
+| `/team` | team task board: shared task list + undelivered messages + running subagent tree |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` | clear the current session view (memory and undo stack are untouched) |
 | `/exit` (alias `/quit`) | quit (triggers autoMemory write and session finalize) |
@@ -601,10 +648,12 @@ omni -s <session-id> "<task>"   # resume a specific session (-r is a synonym)
 # After exiting the TUI (/exit or Ctrl+C) the terminal prints: Resume this session: omni -s <id>
 ```
 
-In-session commands: `/session` (history sessions of the same directory — list/continue),
-`/resume`, `/rename` (rename), `/export` (Markdown export), `/trace` (trace ledger),
-`/compact` (manual compression). Restored history is replayed into the conversation; the same file
-is appended to with no duplicate writes.
+In-session commands: `/session` (history sessions of the same directory — list/continue; `/session all`
+cross-directory, `/session archived` for archived ones), `/resume`, `/rename` (rename), `/export`
+(Markdown export), `/trace` (trace ledger), `/compact` (manual compression), `/new` (new session,
+back to the initial state), `/fork` (fork from a point in history), `/send` (cross-session message),
+`/pin` / `/archive` / `/unarchive` (pin/archive). Restored history is replayed into the conversation;
+the same file is appended to with no duplicate writes.
 
 ---
 
@@ -622,6 +671,8 @@ omni exec "Analyze this diff" --output-schema '{"type":"object","properties":{"v
 cat test-output.txt | omni exec "Fix the failures below"  # stdin injected as context
 echo "my task" | omni exec -                          # whole stdin is the task
 omni exec resume <session-id> "Continue from where it stopped"  # resume a headless session
+omni exec "Fix it" --approve-for-me                   # AI auto-approval (model reviews in unattended runs)
+omni exec "Summarize" --quiet                         # silence stderr progress too; stdout is all that remains
 omni mcp-server                                     # act as an MCP server for external harnesses
 ```
 
@@ -635,6 +686,8 @@ omni mcp-server                                     # act as an MCP server for e
 | **`--max-turns N`** | step cap (exceeding it → non-zero exit; pipeline `&&`/`\|\|` branching) |
 | **`--allowed-tools`** | comma-separated tool whitelist (pure tool filtering, same semantics as /plan read-only filtering) |
 | **`--output-schema`** | final answer must conform to a JSON Schema subset (inline JSON or file path; on mismatch → non-zero exit + error paths listed on stderr) |
+| **`--quiet` / `-q`** | silence stderr progress (thinking/tool steps); stdout keeps only the result |
+| **`--approve-for-me`** | AI auto-approval: approval-gated ops go through model review first (approve/deny); permission/sandbox boundaries unchanged |
 | **exit code** | `0` = completed · `1` = request failure / step cap reached / schema validation failed |
 | **Sessions** | every run persists a JSONL session (json output includes `session_id`); `exec resume <id>` continues it |
 
@@ -711,19 +764,21 @@ modeled on `dsh web` / `opencode serve`. The same agent stack is reachable from 
 omni web                   # start service + Web UI at http://127.0.0.1:3080 (opens browser)
 omni web --port 4000       # custom port
 omni web --no-open         # don't auto-open the browser
+omni web --host 0.0.0.0 --token <token>   # remote access (phone/another machine; non-loopback requires a token)
 ```
 
 ### What the UI provides
 
 | Feature | Description |
 |---|---|
-| **Sessions** | left sidebar lists persisted sessions (shared JSONL files with CLI `-c` / `/resume`); create / switch / delete |
-| **Live streaming** | thinking (collapsible blocks), tool calls (amber cards: command + expandable output), and the final markdown answer all stream over SSE |
-| **Approvals** | when a tool needs approval under the active permission tier, a card above the composer offers **允许/拒绝** — the agent pauses until you decide |
-| **ask_user** | when the agent asks a question, a card shows options with a custom-input row and a confirm button |
-| **Settings** | model switching (including per-model endpoints), permission tier, reasoning effort, plan-mode toggle — applied live |
+| **Sessions** | left sidebar lists persisted sessions (shared JSONL files with CLI `-c` / `/resume`); create / switch / delete; pin / archive (⋯ menu + "archived" group) |
+| **Multi-session concurrency** | several sessions run at once (independent runOpts/undo/abort), global cap `webConcurrency` (default 3) |
+| **Live streaming** | thinking (collapsible blocks), tool calls (cards: command + expandable output incl. write/edit diffs and the delegate panel), and the final markdown answer all stream over SSE |
+| **Approvals / ask_user** | approval cards above the composer (**Allow / Deny** buttons); ask_user cards support multi-select options + a custom-input row |
+| **Settings** | model / permission / reasoning effort / plan mode / general (language·concurrency·AI auto-approval) / MCP / skills / plugins / about — applied live |
+| **Session actions** | per-turn fork / export / checkpoint rewind (three modes); always-visible message actions (copy / edit-and-resend / retry); long-session pagination |
 | **Cancel** | one click cancels the running turn |
-| **Stats** | per-turn token usage plus a run summary line after each turn |
+| **Stats & notifications** | per-turn token usage + run summary; top-right notification center (copy/switch/errors, auto-dismiss) |
 
 ### Protocol (for scripted/frontend clients)
 
@@ -744,9 +799,11 @@ The backend exposes a small HTTP API — any client can drive it, not just the b
 
 Implementation notes: **multiple sessions run concurrently** — each session gets its own cloned
 `runOpts`, undo stack, event stream and abort signal, capped globally by `webConcurrency` (default 3;
-each individual session still runs only one turn at a time). The static pages are served from the
-`web/` directory in dev (hot reload) and embedded in the bundle (`npm run web:sync` regenerates
-`src/web/assets.ts`). `npm run probe:web` runs an offline full-protocol e2e against the mock API.
+each individual session still runs only one turn at a time). Remote access uses `--host 0.0.0.0 --token`
+(non-loopback refuses to start without a token; the API accepts Bearer / `?token=` / Cookie). The
+static pages are served from the `web/` directory in dev (hot reload) and embedded in the bundle
+(`npm run web:sync` regenerates `src/web/assets.ts`). `npm run probe:web` runs an offline
+full-protocol e2e against the mock API.
 
 ### Local run & test (Web / Electron)
 
@@ -852,6 +909,17 @@ Beyond tools, omni consumes two more MCP capabilities:
 
 Servers that declare `instructions` have that text **injected into the system prompt**, so a server
 can explain its own conventions to the model without being asked.
+
+List discovery (tools / resources / prompts) supports **pagination cursors** (`nextCursor`), and both
+stdio and streamable HTTP support **server→client reverse requests**:
+
+- **Elicitation** — when a server needs more information mid-execution, omni asks the user field by
+  field via `ask_user` (enum options render as a selection list) and returns `{ action, content }`;
+- **Sampling** — the server asks omni to run a completion with the current model and returns the result.
+
+The client declares both capabilities during the handshake. OAuth login supports RFC 8414 discovery +
+authorization-code PKCE, plus **DCR** (RFC 7591 dynamic registration) and **CIMD** (an HTTPS metadata
+document used as the client_id).
 
 ### 12.4 Management commands
 
@@ -1045,7 +1113,7 @@ Unit and end-to-end coverage for the hook system lives in `scripts/probe-tmp/pro
 A skill is a `SKILL.md` instruction file with frontmatter; the model loads and executes it on
 demand (modeled on opencode).
 
-### Discovery locations
+### 14.1 Discovery locations
 
 - Project: search `.opencode/skills/`, `.claude/skills/`, `.agents/skills/` above cwd — `<name>/SKILL.md`;
 - Global: `~/.config/opencode/skills/`, `~/.config/omni/skills/`, etc.
@@ -1053,7 +1121,7 @@ demand (modeled on opencode).
 The system prompt only carries the skill manifest (name + description); the model loads full text by
 name via the `skill` tool — a long manifest never bloats the context.
 
-### Management commands
+### 14.2 Management commands
 
 ```bash
 /skill                 # list discovered skills (name + description + global marker)
@@ -1061,6 +1129,25 @@ name via the `skill` tool — a long manifest never bloats the context.
 /skill add owner/repo --skill <name>   # install into .agents/skills/ (auto-discovered next session)
 /skill show <name>      # view contents
 ```
+
+### 14.3 Plugin system (plugin.json)
+
+A plugin bundles **skills + subagents + hooks + MCP** into one distributable unit:
+
+```
+~/.config/omni/plugins/<name>/plugin.json   ← { name, version, description, skills, agents, hooks, mcpServers }
+```
+
+- **Install**: `omni plugin install <local path|git URL>` (or `/plugin install … --yes` in TUI/Web;
+  add `--force` to overwrite);
+- **Enable/disable**: list names in the `plugins` config, or `/plugin enable|disable <name>`;
+  `/plugin list` shows what's installed;
+- **Loading**: the plugin's skill dirs / subagent dirs / hooks / MCP servers are merged into the
+  runtime (your own config wins on conflicts);
+- **Safety**: untrusted workspaces ignore plugins entirely; plugin paths are checked against
+  directory escape.
+
+The same source powers Web Settings → Plugins.
 
 ---
 
@@ -1102,6 +1189,12 @@ completion the collapsed card shows the result summary directly (command line + 
 steps · first line of result`), click to expand for full output; the precise nesting tree lives in
 the console/web `/trace` ledger.
 
+**Background subagents & concurrency**: `delegate` with `background: true` returns immediately and
+keeps running; its result is injected into the main loop's next step. Foreground and background
+delegates share the `maxConcurrentSubagents` cap (default 4; queued beyond it). `/tasks` lists running
+foreground/background subagents (`/tasks stop <seq>` stops one); `/team` shows the shared task board
+(the `task_board` tool) and inter-subagent messages (the `send_message` tool).
+
 ### Model routing (architect / editor)
 
 Config accepts `architect` (strong model for planning) and `editor` (cheap model for execution):
@@ -1111,7 +1204,8 @@ the current model when unset (no config = always the current model).
 ### Orchestration & loop tasks
 
 ```bash
-/orchestrate <task>   # fan-out parallel delegates (default 3 workers) → merge → adversarial review → final report
+/orchestrate <task>   # dynamic workflow: planner drafts steps+dependencies → layered parallel execution
+                      # → merge → adversarial review (fallback: fixed fan-out; shared task_board + send_message)
 /goal <goal>          # goal mechanism: derive acceptance criteria and loop until met (iteration log + verdict feedback; alias /loop)
 ```
 
@@ -1141,15 +1235,25 @@ suggesting you drop the `worktree` argument and delegate inside the workspace in
 
 ### Q1: Startup error "API key not found"?
 
-Set the `OMNI_API_KEY` env var, or write an `apiKey` field in `omni.json`; with multi-model
-endpoints, a key under `models.<model-name>.apiKey` also works.
+Set the `OMNI_API_KEY` env var; with multi-endpoint setups, put the key on the gateway group
+`providers.<group>.apiKey` (shared by all its models), or override per model entry. Note that config
+files **no longer parse** top-level `baseURL` / `apiKey` / `userAgent` — endpoints/keys live only in
+`providers`.
 
 ### Q2: Gateway WAF blocking (403/timeouts)?
 
-Many third-party gateways block the SDK's default User-Agent; set a browser UA to bypass:
+Many third-party gateways block the SDK's default User-Agent; set a browser UA on the gateway group to bypass:
 
 ```jsonc
-{ "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" }
+{
+  "providers": {
+    "my-gateway": {
+      "baseURL": "https://gateway.example.com/v1",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      "models": { "my-model": {} }
+    }
+  }
+}
 ```
 
 ### Q3: The model rejects `reasoning_effort` (error)?
@@ -1175,14 +1279,15 @@ connectivity, and config sources in one go.
 
 ### Q6: Conversation too long — slow / blowing the context?
 
-Automatic summarization is on by default (`summarizeAt: 40`); `/compact` compresses manually;
-`/context` shows current usage and advice relative to the threshold.
+Automatic summarization is on by default (message count `summarizeAt: 40`, or context-window ratio
+`contextCompressRatio`); `/compact` compresses manually; `/status` shows current usage and the
+compaction budget, `/context` sets the window tier.
 
 ### Q7: Config changes not taking effect?
 
-Check [precedence](#41-layering--precedence) for a higher layer overriding you (env vars > config
-files > CLI args); `/config` shows each layer's path and the actual source; `OMNI_DEBUG=1` shows
-the loaded result.
+Check [precedence](#41-layering--precedence) for a higher layer overriding you (CLI args > env vars >
+custom config > project config > global config); `/doctor` (or `/settings doctor` in the TUI) shows
+config sources and endpoint connectivity; `OMNI_DEBUG=1` shows what was actually loaded.
 
 ### Q8: Crash or abnormal exit?
 
@@ -1210,17 +1315,18 @@ environment, `/diff` for changes.
 Omni's tools come from four sources. The static registry is `src/tools/index.ts`; the rest are
 injected at runtime by `attachRuntime`.
 
-### 17.1 Static tools (7)
+### 17.1 Static tools (8)
 
 | Tool | Purpose |
 |---|---|
 | `read_file` | read a file by line range (`offset` / `limit`) |
 | `write_file` | create or fully overwrite a file |
-| `edit_file` | targeted edits to an existing file |
+| `edit_file` | targeted edits to an existing file (`old_string` → `new_string`, with a unified diff in the UI) |
 | `list_directory` | list directory contents |
 | `search_code` | code search (ripgrep first, built-in scan fallback) |
 | `run_command` | run a shell command (timeout + output truncation; interception lives in the safety gate) |
 | `skill` | load a skill's full SKILL.md by name (read-only; replaced at runtime to support `context: fork` subagent execution) |
+| `lsp` | LSP navigation: definition / hover / references / documentSymbol (starts typescript-language-server / pyright-langserver on demand) |
 
 ### 17.2 Context tools (always injected)
 
@@ -1229,6 +1335,7 @@ injected at runtime by `attachRuntime`.
 | `ask_user` | ask the user a question — surfaces as an option panel (TUI) or a prompt (console); the answer is fed back to the model |
 | `todo_write` | structured task list the model maintains (`pending` / `in_progress` / `completed`) |
 | `web_fetch` | fetch a URL and convert it to text (domain allowlist via `webFetchDomains`) |
+| `web_search` | keyword web search via the Brave Search API (`webSearchApiKey` / `BRAVE_API_KEY`) |
 | `diagnose` | run a quick typecheck / lint / test and return the diagnostic summary so the model can self-fix |
 
 ### 17.3 Trust- and config-gated tools
@@ -1238,6 +1345,8 @@ injected at runtime by `attachRuntime`.
 | `memory_search` | workspace is **trusted** | multi-keyword AND search over memory, ranked by hits |
 | `memory_read` | workspace is **trusted** | read a full memory file by path |
 | `delegate` | `allowSubagents: true` **and** workspace trusted | hand a subtask to an isolated subagent (see section 15) |
+| `task_board` | team orchestration is active | shared task board: add / update / claim / list |
+| `send_message` | team orchestration is active | async messages to main or other subagents |
 | `mcp_<server>_<tool>` | a server is configured in `mcpServers` | external MCP tools (see section 12) |
 
 The trust gate is deliberate: an untrusted repository must not be able to reach into (or pollute)
@@ -1289,7 +1398,22 @@ Quick wins worth trying:
 ```bash
 omni preset browser                                  # browser automation pair into global config
 omni exec "analyze this" --output-format json       # structured result incl. tokens / error_type
-omni web                                             # then: 检查点 · 分叉 · 多会话并行
+omni exec "fix it" --approve-for-me                 # AI auto-approval (unattended)
+omni web --host 0.0.0.0 --token <token>              # remote Web access
 /spec "login flow"                                   # spec trio under .omni/specs/ (TUI/CLI/Web)
 /model fetch                                         # discover gateway models
+/plugin install <git URL> --yes                      # install a plugin (skills/subagents/hooks/MCP bundle)
 ```
+
+## 2026-09 New Capabilities (market-alignment batch)
+
+| Area | What's new | Entry point |
+|---|---|---|
+| Orchestration | dynamic workflow (model-planned steps+dependencies → layered parallel execution), team board + messaging, background subagents | `/orchestrate` · `/tasks` · `/team` |
+| Plugins | `plugin.json` bundling skills/subagents/hooks/MCP; install/enable/list | `/plugin` · `omni plugin` · Web Settings |
+| Sessions | pin/archive, `/cd` working-directory switch | `/pin` · `/archive` · `/cd` · `/session archived` |
+| Approval | AI auto-approval (model reviews approval-gated ops; boundaries unchanged) | `/auto` · `autoReview` · `exec --approve-for-me` |
+| TUI | Vim keybindings, delegate panel + result cards, todo view, drag-copy + top-right toast | `/vim` · input area |
+| MCP | elicitation/sampling reverse requests, paginated discovery, DCR/CIMD OAuth | automatic |
+| Security | secret redaction (sessions/replay replace with `[REDACTED]`) | `redactSecrets` |
+| Tools | `edit_file` targeted edits (with unified diff), `lsp` code navigation | model-driven |

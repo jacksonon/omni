@@ -20,7 +20,7 @@
 |---|---|---|
 | ✅ **/rewind 三模式**（P0-1，已落地） | code-only / conversation-only / both + 恢复前预览确认 + 100 个/30 天滚动上限 | 二·D.1 P0-1 · 三·第五节 |
 | **Terminal-Bench / SWE-bench 接入**（P2） | 社区基准套件（重投入，容器化环境，OpenHands Docker 沙箱参考） | 三·第十一节 |
-| **agent teams 完整版**（P2） | 共享任务列表 + SendMessage 互发消息 + 并发预算治理 + 树形协调可视化；轻量版（web `/send` 排队为后台任务）已落地 | 二·D.3 · 三·第六节 |
+| ✅ **agent teams 完整版**（P2，已落地） | 共享任务看板（task_board）+ SendMessage 互发消息 + 并发预算治理（maxConcurrentSubagents）+ `/team` 树形协调可视化（第一百七十八次） | 二·D.3 · 三·第六节 |
 | **云端远程任务执行**（P2） | 需托管面与容器编排，慎重评估投入产出 | 二·D.3 |
 | **移动审批流**（P2） | Web PWA 化 + approval push 通知 | 二·D.3 |
 | **语音输入/听写**（P2） | 通知流才是刚需，语音属边缘 | 二·D.3 |
@@ -212,8 +212,8 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 - [x] ~~ACP server 模式~~ **已落地**（`omni acp`——stdio JSON-RPC 端点 initialize / session/new /
       session/prompt / session/cancel，会话复用 JSONL 持久化；Zed/编辑器生态可把 omni 当 agent 后端。
       第一百六十四次，见第三部分第十二节）
-- [ ] agent teams **完整版**（共享任务列表 + SendMessage 互发消息 + 并发预算治理，Claude Code
-      实验特性对标；轻量版 web `/send` 排队已落地，见第三部分第六节）
+- [x] ~~agent teams~~ **完整版已落地**（共享任务看板 task_board + SendMessage 互发消息 + 并发预算
+      `maxConcurrentSubagents` + `/team` 树形面板；动态工作流编排见 D.1 DYN 项。第一百七十八次）
 - [ ] 云端远程任务执行（需托管面与容器编排，慎重评估投入产出）
 - [ ] 移动审批流（Web PWA 化 + approval push 通知）
 - [x] ~~配置 profile 档案~~ **已落地**（config `profiles` 字段 + `--profile <名>` / OMNI_PROFILE，
@@ -465,10 +465,9 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
       `/plan` 计划模式自动用 architect（强模型）、执行阶段用 editor（轻模型）；缺省回退当前模型。
 - [x] **P2 动态工作流轻量版**（第一百三十五次）：`/orchestrate` 固定 pipeline——fan-out 并行 delegate
       （默认 3 worker）→ 汇总器 → 对抗审查（adversarial review），暂不支持模型写 JS 脚本。
-- [ ] **P2 agent teams / 多会话并行协调**（Claude Code）→ **轻量版已落地**（第一百六十四次）：
-      web 端 `/send <会话id> <消息>` 排队为后台任务（全局单运行闸门下当前任务结束后
-      串行执行，结果落盘目标会话）；完整树形协调（多会话并发 + 父子关系可视化）
-      **待做**——per-session runOpts 克隆已随 P0-2 落地（见第二部分 D.1），可在此基础上评估实现。
+- [x] **P2 agent teams / 多会话并行协调**（Claude Code）→ **已落地**：轻量版 web `/send` 排队
+      （第一百六十四次）+ 完整版共享任务看板 / SendMessage / 并发预算 / `/team` 树形面板
+      （第一百七十八次，见第二部分 I 节）。
 - [x] **P2 Watch 模式** → 见第十二节（`omni watch` 已落地）。
 - [x] **P2 /loop 循环任务 + /goal 硬性完成要求**（第一百三十五次）：`/loop` 命令循环执行任务直至
       验收标准满足（内置目标循环模块：执行 → 校验满足 → 不满足带反馈继续），含迭代日志输出。

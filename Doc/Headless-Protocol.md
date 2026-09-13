@@ -22,3 +22,17 @@
 `config.schema.json`（仓库根）是全部配置字段的 JSON Schema（含默认值与说明），
 编辑器可自动补全/校验；`omni.example.jsonc` 顶部 `$schema` 引用同一文件。
 字段级变更遵循同一冻结规则（废弃字段保留一个周期别名）。
+
+## 附加能力（additive，不进冻结面）
+
+以下 exec/CLI 能力为追加项，随时可扩展（删除/改名才受冻结规则约束）：
+
+| 能力 | 说明 |
+|---|---|
+| `omni exec --output-schema <JSON\|路径>` | 最终回答强制符合 JSON Schema 子集，不符 → 非零退出 |
+| `omni exec --allowed-tools a,b` | 纯工具白名单过滤（复用 /plan 只读过滤语义） |
+| `omni exec --max-turns N` | 步数上限，超出 → 非零退出 |
+| `omni exec --quiet` / `-q` | 静默 stderr 进度，只留 stdout 结果 |
+| `omni exec --approve-for-me` | AI 自动审批（模型审阅需审批操作，不改权限/沙箱边界） |
+| `omni exec resume <id>` / `--resume <id>` | 会话续跑（复用 session JSONL） |
+| `omni mcp-server` 握手 | stdio JSON-RPC 2024-11-05；请求串行、isError 透传退出码 |

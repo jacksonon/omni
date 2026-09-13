@@ -36,7 +36,7 @@ The agent requires **no framework**: a bare OpenAI SDK plus a main loop.
               ▼
    Agent 层   agent/loop.ts ──  context.ts（记忆/预载/压缩） ──  subagent.ts（隔离嵌套）
               │                     │
-   工具层     tools/*（静态 7 个 + 运行时注入 delegate / mcp_*）
+   工具层     tools/*（静态 8 个 + 运行时注入 ask_user / delegate / web_search / task_board 等 + mcp_*）
               │
    安全层     safety/（权限分级 · 审批 · 审计 · 工作区信任 · OS 沙箱）   hooks/（生命周期）
               │
@@ -50,7 +50,7 @@ which is why the CLI, TUI, web UI and headless mode share one agent core.
 
 ## 3. Source tree
 
-Generated from the working tree (94 `.ts` files under `src/`).
+Generated from the working tree (104 `.ts` files under `src/`).
 
 ```
 src/
@@ -73,17 +73,22 @@ src/
     memory-topics.ts # Structured memory: MEMORY.md index + topics/*.md + globs conditional injection
     session.ts       # Session persistence: JSONL on disk + list / latest / restore by id
     session-fork.ts  # /fork: branch a new session from a point in history
-    rewind.ts        # /rewind: checkpoints + rollback
+    rewind.ts        # /rewind: checkpoints + three-mode rollback (code/chat/both)
     events.ts        # EventRecorder: in-memory trace + `{"t":"ev"}` lines appended to session file
     trace.ts         # foldTrace → TraceRow projection (console/web /trace text ledger)
-    subagent.ts      # Subagent: isolated-context nested loop, shared safety gate, depth cap
+    subagent.ts      # Subagent: isolated-context nested loop (foreground/background + stop), shared safety gate, depth cap
     subagent-defs.ts # Subagent definitions: .agents/subagents/*.md frontmatter parsing
-    orchestrate.ts   # /orchestrate fan-out pipeline + /goal acceptance-criteria loop
+    semaphore.ts     # Shared concurrency semaphore for foreground+background subagents (maxConcurrentSubagents, queued beyond)
+    orchestrate.ts   # /orchestrate dynamic workflow (plan → layered parallel) + /goal acceptance-criteria loop
+    team.ts          # Team collaboration: shared task board + SendMessage queue + workflow plan parsing
     skill.ts         # Skills: SKILL.md discovery, frontmatter, progressive disclosure, npx skills CLI
+    plugins.ts       # Plugin system: plugin.json parse/install/enable list, skills/agents/hooks/MCP loading
+    redact.ts        # Secret redaction: sk-*/Bearer/AWS etc. → [REDACTED] in session files/replay
+    workspace.ts     # /cd working-directory resolution (show / relative paths / ~ expansion / validation)
     init.ts          # /init [--global] [<subdir>]: scan project → LLM generates AGENTS.md
     repomap.ts       # Repo map: symbol map injected on the first turn
     review.ts        # /review: typecheck + git diff → LLM review
-    report.ts        # Shared logic for /status /context /export /doctor /config
+    report.ts        # Shared logic for /status /context /export /doctor
     spec.ts          # /spec: requirements-EARS / design / tasks trio
     preset.ts        # `omni preset browser` capability presets
     title.ts         # Session title: generated async after the first turn
@@ -103,12 +108,15 @@ src/
     diagnose.ts      # diagnose: probe typecheck → lint → test, return diagnostic summary
     todo.ts          # todo_write: structured task list the model maintains
     web-fetch.ts     # web_fetch: URL → text (domain allowlist via webFetchDomains)
+    web-search.ts    # web_search: Brave Search API (webSearchApiKey / BRAVE_API_KEY)
     memory-tools.ts  # memory_search / memory_read — progressive memory disclosure
     skill.ts         # skill: load full SKILL.md by name
+    lsp.ts           # lsp: LSP navigation (definition/hover/references/documentSymbol, starts language servers on demand)
     ask.ts           # ask_user: ask the user a question (runtime-injected callback)
     delegate.ts      # delegate: hand a subtask to an isolated subagent (runtime-injected)
-    mcp.ts           # MCP client: stdio + streamable HTTP, runtime tool discovery
-    mcp-oauth.ts     # MCP OAuth login: RFC 8414 discovery + auth code PKCE
+    team-tools.ts    # task_board / send_message: team shared board & messages (runtime-injected)
+    mcp.ts           # MCP client: stdio + streamable HTTP, runtime tool discovery (pagination / elicit / sampling)
+    mcp-oauth.ts     # MCP OAuth login: RFC 8414 discovery + auth code PKCE (DCR / CIMD)
     undo.ts          # /undo snapshots: UndoStack + applyUndo + redo stack
 
   safety/
@@ -118,6 +126,7 @@ src/
     trust.ts         # Workspace trust: trust list, untrusted = read-only + skip project config
     sandbox.ts       # OS-level sandbox: sandbox-exec (macOS) / bwrap (Linux) wrapping run_command
     netproxy.ts      # Sandbox network allowlist filtering proxy (CONNECT by hostname, TLS untouched)
+    auto-review.ts   # AI auto-approval: createAutoReviewer (approve/deny review, falls back to human)
 
   hooks/
     index.ts         # HookRunner: JSON protocol over stdin/stdout, 12 events, wildcard matchers,
@@ -142,6 +151,7 @@ src/
     banner.ts        # Startup banner (version / model / tools / permission / config source)
     interactive.ts   # Console interactive mode: readline loop, keeps context across turns
     import-claude.ts # Import from Claude Code config
+    plugin.ts        # omni plugin CLI: install/list/enable/disable/remove
 
   tui/
     render.ts        # Render orchestration: mountTree / repaintTree / startTui
@@ -155,6 +165,7 @@ src/
     mention.ts       # `@` file-mention overlay
     shortcuts.ts     # Keyboard shortcuts help
     pending.ts       # Pending/steer message queue
+    vim.ts           # Vim keybindings (pure functions: normal/insert, motion/edit command parsing)
     theme.ts         # Theme palette (system/light/dark)
     i18n.ts          # UI strings (zh/en)
     width.ts         # Display-width helpers (CJK aware)
