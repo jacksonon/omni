@@ -18,6 +18,7 @@ import { createThinkingDisplay } from '../agent/thinking.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { bold, createSpinner, cyan, dim, green, isTTY, red, yellow, type Spinner } from '../ui.js';
+import { inlineMathToText } from '../tui/markdown.js';
 import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, editToUnifiedDiff, isExitCodeZeroLine, unifiedDiff, wrapText } from './format.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
@@ -31,6 +32,9 @@ export interface ConsoleOutputOptions {
 export class ConsoleOutput implements Output {
   readonly thinking: ThinkingDisplay;
   private spinner: Spinner | null = null;
+  /** 流式回答行缓冲（未等到 \n 的尾段暂存，防数学 span 被 chunk 切开）+ 围栏内状态 */
+  private answerBuf = '';
+  private answerInFence = false;
 
   constructor(private opts: ConsoleOutputOptions) {
     this.thinking = createThinkingDisplay(opts.showThinking);
@@ -50,11 +54,49 @@ export class ConsoleOutput implements Output {
   }
 
   onAnswer(text: string): void {
-    if (this.opts.stream) process.stdout.write(text);
+    if (!this.opts.stream) return;
+    // 流式 LaTeX→Unicode（与 TUI/Web 对齐）：按行缓冲，只转换已完整的行——
+    // chunk 可能把 `$\rightarrow$` 从中间切开，逐 chunk 直接转会漏（保持原文）。
+    // 数学 span 不含 \n，行完整即 span 完整；围栏 ``` 按行判定，围栏内代码原样。
+    this.answerBuf += text;
+    let idx: number;
+    while ((idx = this.answerBuf.indexOf('\n')) >= 0) {
+      const line = this.answerBuf.slice(0, idx);
+      this.answerBuf = this.answerBuf.slice(idx + 1);
+      this.writeAnswerLine(line);
+    }
+  }
+
+  /** 围栏行判定（与 markdown.ts 同规则：行首 ``` / ~~~） */
+  private isFenceLine(line: string): boolean {
+    return /^(```+|~~~+)\s*(\S*)/.test(line.trimStart());
+  }
+
+  private writeAnswerLine(line: string): void {
+    if (this.isFenceLine(line)) {
+      process.stdout.write(line + '\n');
+      this.answerInFence = !this.answerInFence;
+      return;
+    }
+    // 围栏内代码原样（\command 是源码）；围栏外转数学 + 裸命令（inlineMathToText 保留行内代码）
+    process.stdout.write((this.answerInFence ? line : inlineMathToText(line)) + '\n');
   }
 
   onAnswerEnd(): void {
-    if (this.opts.stream) process.stdout.write('\n');
+    if (!this.opts.stream) return;
+    if (this.answerBuf.length > 0) {
+      const line = this.answerBuf;
+      this.answerBuf = '';
+      if (this.isFenceLine(line)) {
+        process.stdout.write(line + '\n');
+        this.answerInFence = !this.answerInFence;
+      } else {
+        process.stdout.write((this.answerInFence ? line : inlineMathToText(line)) + '\n');
+      }
+    } else {
+      process.stdout.write('\n');
+    }
+    this.answerInFence = false;
   }
 
   onUsage(_usage: TokenUsage): void {

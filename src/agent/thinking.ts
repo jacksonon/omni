@@ -4,6 +4,7 @@
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { inlineMathToText } from '../tui/markdown.js';
 import { dim, isTTY } from '../ui.js';
 import type { ThinkingDisplay } from './types.js';
 
@@ -33,6 +34,46 @@ export function createThinkingDisplay(enabled: boolean): ThinkingDisplay {
   let col = 0; // 当前行内容列数（不含前缀）
   let atLineStart = false; // 行首待输出前缀（前缀延迟到字符到达，避免空行残留）
   let endedWithNewline = true; // 最后输出的字符是否为换行
+  let pending = ''; // 未等到 \n 的尾段（防数学 span 被 chunk 从中间切开；行完整再转）
+  /** 把已完整的文本按现有折行/前缀逻辑输出（调用方保证只传完整行 + 换行，尾段不出） */
+  const emitText = (text: string): void => {
+    const maxCols = Math.max(20, (process.stdout.columns ?? 80) - PREFIX_W - 2);
+    const emitPrefix = () => {
+      process.stdout.write(dim(PREFIX));
+      atLineStart = false;
+    };
+    let buf = ''; // 待输出的普通文本（避免逐字符包裹 ANSI 码）
+    const flush = () => {
+      if (!buf) return;
+      if (atLineStart) emitPrefix(); // 行首的第一段内容前补前缀
+      process.stdout.write(dim(buf));
+      buf = '';
+    };
+    for (const ch of text) {
+      if (ch === '\n') {
+        flush();
+        process.stdout.write('\n');
+        col = 0;
+        atLineStart = true;
+        endedWithNewline = true;
+        continue;
+      }
+      const w = ch.codePointAt(0)! > 0x2e7f ? 2 : 1;
+      if (atLineStart) emitPrefix(); // 行首字符前输出前缀
+      if (col + w > maxCols) {
+        // 当前行放不下 → 自行折行，避免终端软换行破坏后续对齐
+        flush();
+        process.stdout.write('\n');
+        col = 0;
+        atLineStart = true;
+        emitPrefix();
+      }
+      buf += ch;
+      col += w; // 实时累计当前行宽度（chunk 内折行判断依赖实时 col）
+      endedWithNewline = false;
+    }
+    flush();
+  };
   return {
     get shown() {
       return shown;
@@ -48,45 +89,26 @@ export function createThinkingDisplay(enabled: boolean): ThinkingDisplay {
         atLineStart = true;
         endedWithNewline = true;
       }
-      const maxCols = Math.max(20, (process.stdout.columns ?? 80) - PREFIX_W - 2);
-      const emitPrefix = () => {
-        process.stdout.write(dim(PREFIX));
-        atLineStart = false;
-      };
-      let buf = ''; // 待输出的普通文本（避免逐字符包裹 ANSI 码）
-      const flush = () => {
-        if (!buf) return;
-        if (atLineStart) emitPrefix(); // 行首的第一段内容前补前缀
-        process.stdout.write(dim(buf));
-        buf = '';
-      };
-      for (const ch of piece) {
-        if (ch === '\n') {
-          flush();
-          process.stdout.write('\n');
-          col = 0;
-          atLineStart = true;
-          endedWithNewline = true;
-          continue;
-        }
-        const w = ch.codePointAt(0)! > 0x2e7f ? 2 : 1;
-        if (atLineStart) emitPrefix(); // 行首字符前输出前缀
-        if (col + w > maxCols) {
-          // 当前行放不下 → 自行折行，避免终端软换行破坏后续对齐
-          flush();
-          process.stdout.write('\n');
-          col = 0;
-          atLineStart = true;
-          emitPrefix();
-        }
-        buf += ch;
-        col += w; // 实时累计当前行宽度（chunk 内折行判断依赖实时 col）
-        endedWithNewline = false;
+      // 行缓冲 + LaTeX→Unicode（与 TUI thinking 对齐）：数学 span 不含 \n，
+      // 行完整即 span 完整；尾段留到换行或 finish 再转，不把切开的半个 span 原样输出
+      pending += piece;
+      let emit = '';
+      let idx: number;
+      while ((idx = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, idx);
+        pending = pending.slice(idx + 1);
+        emit += `${inlineMathToText(line)}\n`;
       }
-      flush();
+      if (emit) emitText(emit);
     },
     finish() {
       if (!shown) return;
+      // 尾段（最后一行无换行）：转换后输出，再按原逻辑补换行
+      if (pending.length > 0) {
+        const tail = pending;
+        pending = '';
+        emitText(inlineMathToText(tail));
+      }
       // 最后一行若未以换行结束，补一个换行，让后续内容从新行开始
       if (!endedWithNewline) process.stdout.write('\n');
       shown = false;

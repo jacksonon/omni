@@ -111,14 +111,15 @@ export function latexToUnicode(input: string): string {
  * 行无代码着色可言，转换优先于字面保留。
  */
 export function inlineMathToText(input: string): string {
-  return String(input ?? '').replace(
-    /\$([^$\n]+)\$|\\\(([^)\n]+)\\\)|\\\[([^[\]\n]+)\\\]/g,
-    (m: string, m1: string | undefined, m2: string | undefined, m3: string | undefined) => {
-      const raw = m1 ?? m2 ?? m3 ?? '';
-      if (m2 !== undefined || m3 !== undefined || isMathContent(raw)) return latexToUnicode(raw);
-      return m;
-    }
-  );
+  const s = String(input ?? '');
+  // 行内代码保持原样（与 scanInline 代码优先一致）：按 `…` 切分，只转换非代码段；
+  // 非代码段先转 $…$ / \(…\) / \[…\] 数学 span（同守卫防误伤价格），再转裸 \command
+  //（对齐 Web text 节点：模型输出 `A \rightarrow B` 无 $ 定界时 Web 转、TUI/console 也转）。
+  const parts = s.split(/(`[^`]*`)/g);
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = mathAndBare(parts[i]!);
+  }
+  return parts.join('');
 }
 
 /**
@@ -131,6 +132,23 @@ function isMathContent(c: string): boolean {
   if (c.includes('\\')) return true;
   if (/\s/.test(c) || c.length > 40) return false;
   return /[A-Za-z]/.test(c);
+}
+
+/**
+ * 纯文本段的数学 + 裸命令转换（scanInline 的正文/加粗/斜体等内层共用）：
+ * 先剥 `$…$` / `\(…\)` / `\[…\]` 数学 span（同守卫防误伤价格），再转裸 `\command`
+ * （对齐 Web text 节点）。调用方保证不传行内代码（代码分支在外层优先匹配）。
+ */
+function mathAndBare(text: string): string {
+  const stripped = text.replace(
+    /\$([^$\n]+)\$|\\\(([^)\n]+)\\\)|\\\[([^[\]\n]+)\\\]/g,
+    (m: string, m1: string | undefined, m2: string | undefined, m3: string | undefined) => {
+      const raw = m1 ?? m2 ?? m3 ?? '';
+      if (m2 !== undefined || m3 !== undefined || isMathContent(raw)) return latexToUnicode(raw);
+      return m;
+    }
+  );
+  return latexToUnicode(stripped);
 }
 
 /**
@@ -150,13 +168,15 @@ function scanInline(text: string): MdChunk[] {
   const out: MdChunk[] = [];
   let last = 0;
   for (const m of text.matchAll(INLINE_TOKEN)) {
-    if (m.index > last) out.push({ text: text.slice(last, m.index) });
+    // 纯文本段（非代码非数学）：数学 span 剥定界 + 裸 \command 转 Unicode（对齐 Web text 节点；无反斜杠时 no-op）
+    if (m.index > last) out.push({ text: mathAndBare(text.slice(last, m.index)) });
     const [, b1, b2, s1, code, i1, link, m1, m2, m3] = m;
-    if (b1 || b2) out.push({ text: b1 ?? b2, bold: true });
-    else if (s1) out.push({ text: s1, strike: true });
+    // 加粗/删除线/斜体/链接内同样转数学（`**内存 $\rightarrow$ …**` 的 $ 在内层，顶层 token 够不着）
+    if (b1 || b2) out.push({ text: mathAndBare(b1 ?? b2), bold: true });
+    else if (s1) out.push({ text: mathAndBare(s1), strike: true });
     else if (code) out.push({ text: code, fg: INLINE_CODE_FG });
-    else if (i1) out.push({ text: i1, italic: true });
-    else if (link) out.push({ text: link });
+    else if (i1) out.push({ text: mathAndBare(i1), italic: true });
+    else if (link) out.push({ text: mathAndBare(link) });
     else if (m1 !== undefined || m2 !== undefined || m3 !== undefined) {
       // 数学：`$…$` 按内容守卫判定（防误伤价格）；`\(…\)` / `\[…\]` 显式定界恒为数学
       const raw = m1 ?? m2 ?? m3 ?? '';
@@ -168,7 +188,7 @@ function scanInline(text: string): MdChunk[] {
     }
     last = m.index + m[0].length;
   }
-  if (last < text.length) out.push({ text: text.slice(last) });
+  if (last < text.length) out.push({ text: mathAndBare(text.slice(last)) });
   return out;
 }
 
