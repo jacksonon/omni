@@ -1874,10 +1874,14 @@ function toolBlock(sessionId, data) {
     // 展开（或运行中用户已打开）时实时刷新；head 点击展开后也重绘最新明细
     if (!body.classList.contains('hidden')) subPaint();
   };
-  // head 点击展开/收起：原 toggle handler 已存在，展开后追加重绘最新明细
-  head.addEventListener('click', () => {
-    if (!body.classList.contains('hidden')) subPaint();
-  });
+  // head 点击展开/收起：原 toggle handler 已存在，delegate 卡片展开后追加重绘最新明细。
+  // 仅限 delegate：subPaint 会先清空 body 再画子代理明细，普通工具的 body 由
+  // result() 填充（输出预览），对它们调用 subPaint 会把内容擦掉（点击展开空白）。
+  if (name === 'delegate') {
+    head.addEventListener('click', () => {
+      if (!body.classList.contains('hidden')) subPaint();
+    });
+  }
   return b;
 }
 

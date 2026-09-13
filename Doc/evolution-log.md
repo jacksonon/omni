@@ -1,6 +1,8 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十四次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十六次）。
+
+- **2026-09-13（第二百四十六次）**：**Web 工具卡片点击展开空白（subPaint 误清普通工具输出）**——用户截图：webui 里 `todo_write` 卡片点击展开没有内容。根因：delegate 子代理可视化新增的第二个 head 点击监听（`web/app.js` `toolBlock` 尾部）**无条件**调用 `subPaint()`——它先 `body.innerHTML = ''` 再只重画 delegate 明细（`b._subItems`），普通工具（todo_write / run_command / memory 等）没有明细项 → 刚展开的输出预览被擦成空白；历史渲染路径（`renderHistoryTool`）没有该监听，所以只有实时卡片中招、刷新后反而正常。修：该监听加 `name === 'delegate'` 门控（与 `b.subagent` 的既有守卫一致）。**验证**：chrome-devtools 实机复现（点击前 body `退出码: 0\nmock-ok`，点击后实时卡片变空；修复后内容保留、再点收起）· typecheck ✓ · probe:web 全部通过 · web:sync ✓（`src/web/assets.ts` 内嵌副本同步）。
 
 - **2026-09-13（第二百四十五次）**：**`$\rightarrow$` 在 TUI/CLI 原样显示**——用户截图：TUI 里 `**内存 $\rightarrow$ “随机访问”**` 全是裸 LaTeX。根因两层：①`ConsoleOutput.onAnswer`/思考显示从未做 LaTeX→Unicode（TUI/Web 有，CLI 没有）；②TUI `scanInline` 的数学 token 只在顶层匹配，`**加粗**`/`*斜体*` 内层的 `$…$` 够不着——会话原文恰是 `**内存 $\rightarrow$ …**`（加粗包数学），`$` 定界符永远剥不掉；裸 `\rightarrow`（Web text 节点会转）TUI 也不转。修：①`markdown.ts` 新增 `mathAndBare`（剥数学 span + 转裸命令），正文/加粗/斜体/删除线/链接内层共用，行内代码/围栏保持源码；②`inlineMathToText` 复用它（按 `` `…` `` 保代码）；③`ConsoleOutput` 回答按行缓冲转换（span 不含 `\n`，行完整即完整，防 chunk 切开）+ 围栏感知；④`createThinkingDisplay` 同样行缓冲 + 转换。**验证**：typecheck ✓ · tui:snapshot 全绿（场景 34 moonshot 既有 ✗ 不变）· 会话原文探针（加粗内双 span/取指三连/斜体套加粗 → 全转 `→`；价格 `$5-$10`/行内代码原样）✓。注意：已在跑的 TUI 需重启（`dev:tui` 走源码即时生效；`dist`/二进制需重打包）才能看到效果。
 
