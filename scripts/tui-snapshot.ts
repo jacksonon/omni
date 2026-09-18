@@ -3329,12 +3329,12 @@ async function main(): Promise<void> {
   fs.rmSync(tmp32, { recursive: true, force: true });
   console.log('✓ 场景 32 通过：frontmatter 解析/发现去重/加载/skillMessage/skill 工具//skill 命令分发/find 输出解析');
 
-  // 场景 33：/compact /agents /review /variants 四个命令 + 思考级别面板 + reasoningEffort 同步
-  console.log('=== 场景 33：/compact /agents /review /variants ===');
+  // 场景 33：/compact /agents /review /btw /variants 命令 + 思考级别面板 + reasoningEffort 同步
+  console.log('=== 场景 33：/compact /agents /review /btw /variants ===');
   const cmd33 = await import('../src/tui/commands.js');
   const { openVariantsMenu, handleMenuKey: handleMenuKey33 } = cmd33;
-  // a) 四个命令都已注册
-  for (const n of ['compact', 'agents', 'review', 'variants']) {
+  // a) 命令都已注册
+  for (const n of ['compact', 'agents', 'review', 'btw', 'variants']) {
     if (!cmd33.findCommand(n)) {
       console.error(`✗ 场景 33 /${n} 命令未注册`);
       process.exit(1);
@@ -3474,7 +3474,50 @@ async function main(): Promise<void> {
   }
   process.chdir(oldCwd33);
   fs.rmSync(tmp33, { recursive: true, force: true });
-  console.log('✓ 场景 33 通过：/compact 压缩（短/长对话）/agents 配置展示/variants 面板+自定义选项/review 无 client 守卫 + 真实 git 仓库审查');
+  // f) /btw：无 client 守卫 + 只读工具循环 + 答案不进对话流/消息数组 + --keep 留上下文
+  const s33j = createTuiState();
+  await cmd33.runCommand({ state: s33j, out: {}, session: {}, input: {}, messages: [] } as never, '/btw 这是什么项目');
+  if (!(s33j.cmdPanel?.lines ?? []).some((l) => String(l).includes('/btw 需要 LLM 客户端'))) {
+    console.error(`✗ 场景 33 /btw 无 client 未提示: ${JSON.stringify(s33j.cmdPanel?.lines)}`);
+    process.exit(1);
+  }
+  const btwClient33: any = {
+    chat: {
+      completions: {
+        create: async (params: any) => {
+          const hasTool = (params.messages ?? []).some((m: any) => m.role === 'tool');
+          const chunks = hasTool
+            ? [{ choices: [{ delta: { content: '旁问快照答案（mock）' } }] }]
+            : [{ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c_btw', function: { name: 'list_directory', arguments: '{"path":"."}' } }] } }] }];
+          return (async function* () {
+            for (const c of chunks) yield c;
+          })();
+        },
+      },
+    },
+  };
+  const s33k = createTuiState();
+  const msgs33k: ChatCompletionMessageParam[] = [{ role: 'user', content: '主线上下文' }];
+  await cmd33.runCommand({ state: s33k, out: {}, session: { paint: async () => {} }, input: {}, messages: msgs33k, client: btwClient33, model: 'mock' } as never, '/btw 看看根目录');
+  const btwLines33 = (s33k.cmdPanel?.lines ?? []).map((l) => String(l)).join('\n');
+  if (!btwLines33.includes('旁问快照答案') || !btwLines33.includes('list_directory') || !btwLines33.includes('未进入对话历史')) {
+    console.error(`✗ 场景 33 /btw 未输出旁问结果: ${JSON.stringify(s33k.cmdPanel?.lines)}`);
+    process.exit(1);
+  }
+  if (msgs33k.length !== 1) {
+    console.error(`✗ 场景 33 /btw 不应写入 messages（实际 ${msgs33k.length} 条）`);
+    process.exit(1);
+  }
+  if (s33k.lines.some((l) => l.text.includes('旁问快照答案'))) {
+    console.error('✗ 场景 33 /btw 输出泄漏进了对话流');
+    process.exit(1);
+  }
+  await cmd33.runCommand({ state: s33k, out: {}, session: { paint: async () => {} }, input: {}, messages: msgs33k, client: btwClient33, model: 'mock' } as never, '/btw --keep 再看看');
+  if (msgs33k.length !== 2 || !String(msgs33k[1].content).startsWith('[旁问]')) {
+    console.error(`✗ 场景 33 /btw --keep 未留在上下文: ${JSON.stringify(msgs33k)}`);
+    process.exit(1);
+  }
+  console.log('✓ 场景 33 通过：/compact 压缩（短/长对话）/agents 配置展示/variants 面板+自定义选项/review 无 client 守卫 + 真实 git 仓库审查/btw 只读工具循环 + --keep');
 
   // 场景 34：/model 切换模型 —— config models 多端点展开 + attachRuntime 注入 models/modelRuntime
   //          + /model 面板打开/确认 + createClient 按端点重建

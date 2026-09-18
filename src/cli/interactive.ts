@@ -508,6 +508,32 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
+    if (cmd === '/btw' || cmd.startsWith('/btw ')) {
+      // /btw：旁问——不打断任务的侧问（只读工具循环 + 答案不进对话历史；--keep 留下）
+      const { parseBtwArgs, askBtw, formatBtwNote } = await import('../agent/btw.js');
+      const { keep, question } = parseBtwArgs(cmd.slice('/btw'.length));
+      if (!question) {
+        console.log(dim('用法：/btw [--keep] <问题> —— 不打断任务的旁问（只读工具查证，答案不进对话历史；--keep 留在上下文）'));
+      } else {
+        console.log(dim('旁问中（只读工具）…'));
+        const r = await askBtw(currentClient, currentModel, messages, question, {
+          cwd: process.cwd(),
+          onTool: (name) => console.log(dim(`  · ${name}`)),
+        });
+        if (!r.ok) {
+          console.log(red(`旁问失败：${r.error ?? '未知错误'}`));
+        } else {
+          console.log(r.answer || '（没有回答）');
+          console.log(dim(`—— 旁问结束（${r.toolCalls} 次只读工具调用，未进入对话历史${keep ? '' : '；加 --keep 可留在上下文'}）`));
+          if (keep) {
+            messages.push({ role: 'system', content: formatBtwNote(question, r.answer) });
+            console.log(green('已留在对话上下文（--keep）'));
+          }
+        }
+      }
+      safePrompt();
+      continue;
+    }
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
       // /variants：显示当前思考级别/命名变体；<级别> 切字符串级别；<id> 命中当前模型
       // 的命名 variants 表时切换叠加层（1.0 P0-3，未知报错列可用项）

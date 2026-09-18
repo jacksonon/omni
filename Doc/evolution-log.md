@@ -1,6 +1,8 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十六次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百四十七次）。
+
+- **2026-09-18（第二百四十七次）**：**新增 `/btw` 旁问（不打断任务的侧问）**——用户问「支持 /btw 吗」，确认没有后立项。`src/agent/btw.ts`：`askBtw` = 当前对话快照（`snapshotForBtw` 只取最近 20 条 user/assistant 纯文本、合计 24K 字符上限——过滤脚手架 system/tool 消息与带 tool_calls 的 assistant，防悬空引用）+ 问题 + **只读迷你工具循环**（read_file/search_code/list_directory，最多 4 步、最后一步不带工具强制收口；工具调用只读、不过审批闸门）；转录**不 push 回 messages**（答案不进历史），`--keep` 时 `formatBtwNote` 生成 `[旁问] 问：…答：…` system 消息留在上下文（可落盘）；LLM/工具异常返回 `{ok:false}` 由命令层提示。三端接入：CLI `interactive.ts`（`/btw [--keep] <问题>`，控制台进度 + `safePrompt`）、TUI `commands.ts`（命令面板：旁问中/工具进度/答案/markdown，`btw: 'agent'` 分组，无 client 守卫）、Web `server.ts` 命令路由（`--keep` 时 `appendSessionMessages` 落盘并同步 `s.persisted`）+ `web/app.js` 斜杠表 + markdown 渲染 fmt；help 文案（args.ts 中英 / Web help / AGENTS.md / 使用指导 / Usage-Guide）同步。**验证**：typecheck ✓ · test:features 75/75（新增 btw 套件 8 用例：--keep 解析/快照过滤与上限/格式/无工具直答/工具轮回传/末步收口/异常降级/只读工具约束）✓ · probe:web 全绿（mock 新增 `/btw` 分支：首轮只读工具调用 → 次轮固定回答，新增 F3-F7：答案/工具执行/不进历史/--keep/用法提示）✓ · tui:snapshot 场景 33 扩展 /btw（无 client 守卫/只读循环/不写 messages/--keep 留上下文）✓（唯一 ✗ 场景 34 moonshot 为改动前既有）· CLI 真实链路（mock 8787）`/btw README.md 是什么文件` → `· read_file` → 回答 + 「未进入对话历史」✓ · web:sync ✓（内嵌 assets 同步）。
 
 - **2026-09-13（第二百四十六次）**：**Web 工具卡片点击展开空白（subPaint 误清普通工具输出）**——用户截图：webui 里 `todo_write` 卡片点击展开没有内容。根因：delegate 子代理可视化新增的第二个 head 点击监听（`web/app.js` `toolBlock` 尾部）**无条件**调用 `subPaint()`——它先 `body.innerHTML = ''` 再只重画 delegate 明细（`b._subItems`），普通工具（todo_write / run_command / memory 等）没有明细项 → 刚展开的输出预览被擦成空白；历史渲染路径（`renderHistoryTool`）没有该监听，所以只有实时卡片中招、刷新后反而正常。修：该监听加 `name === 'delegate'` 门控（与 `b.subagent` 的既有守卫一致）。**验证**：chrome-devtools 实机复现（点击前 body `退出码: 0\nmock-ok`，点击后实时卡片变空；修复后内容保留、再点收起）· typecheck ✓ · probe:web 全部通过 · web:sync ✓（`src/web/assets.ts` 内嵌副本同步）。
 

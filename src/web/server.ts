@@ -1456,6 +1456,33 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       return { lines };
     }
 
+    if (cmd === '/btw' || cmd.startsWith('/btw ')) {
+      // /btw：旁问——不打断任务的侧问（只读工具循环 + 答案不进对话历史；--keep 留下）
+      const { parseBtwArgs, askBtw, formatBtwNote } = await import('../agent/btw.js');
+      const { keep, question } = parseBtwArgs(cmd.slice('/btw'.length));
+      if (!question) {
+        add('用法：/btw [--keep] <问题> —— 不打断任务的旁问（只读工具查证，答案不进对话历史；--keep 留在上下文）');
+        return { lines };
+      }
+      add('旁问中（只读工具）…');
+      const r = await askBtw(client, model, messages, question, {
+        onTool: (name) => add(`  · ${name}`),
+      });
+      if (!r.ok) { add(`旁问失败：${r.error ?? '未知错误'}`); return { lines }; }
+      for (const l of (r.answer || '（没有回答）').split('\n')) add(l);
+      add(`旁问结束（${r.toolCalls} 次只读工具调用，未进入对话历史${keep ? '' : '；--keep 可留在上下文'}）`);
+      if (keep && s) {
+        const note: ChatCompletionMessageParam = { role: 'system', content: formatBtwNote(question, r.answer) };
+        messages.push(note);
+        add('已留在对话上下文（--keep）');
+        if (s.file) {
+          await appendSessionMessages(s.file, [note]).catch(() => {});
+          s.persisted = persistableMessages(s.messages).length;
+        }
+      }
+      return { lines };
+    }
+
     if (cmd === '/review') {
       add('正在收集改动并运行 typecheck…');
       const checkCmd = detectCheckCommand();
@@ -1592,7 +1619,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (sub === 'help') {
         add('可用命令：/status（含上下文用量）/context <档位>|默认 /export /diff [--stat|--full] /rewind /doctor /trace /agents');
         add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
-        add('/skill [find|add|show|create|delete] /compact /review /rename /session /resume /mcp /init');
+        add('/skill [find|add|show|create|delete] /compact /review /btw /rename /session /resume /mcp /init');
         add('/orchestrate /goal /loop /spec /preset /send /memory-apply /fork /compact');
         add('/settings help（本帮助）· /settings models [refresh]（模型能力快照）· /settings <面板名>（打开设置面板）');
         return { lines };

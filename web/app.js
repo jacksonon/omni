@@ -3953,6 +3953,7 @@ const SLASH_COMMANDS = [
   { name: '/redo', desc: '重做上次撤销（all = 全部）' },
   { name: '/compact', desc: '手动压缩上下文为摘要' },
   { name: '/review', desc: '代码审查（typecheck + git diff）' },
+  { name: '/btw', desc: '旁问（不打断任务，只读工具查证，答案不进对话历史；--keep 留下）' },
   { name: '/diff', desc: '查看未提交改动（--stat 只看统计 · --full 不截断）' },
   { name: '/rewind', desc: '检查点三模式（无参数开面板，/rewind <N> 预览，/rewind <N> --code|--chat|--both）' },
   { name: '/trace', desc: '查看运行轨迹账本' },
@@ -4426,8 +4427,8 @@ async function runSlashCommand(cmd) {
       body: JSON.stringify({ command: cmd, sessionId: state.session, background: true }),
     });
     if (result.lines && result.lines.length > 0) {
-      // 富文本命令：/diff 走 diff 着色视图，/review 与 /agents 走 markdown 渲染
-      const fmt = base === '/diff' ? 'diff' : base === '/review' || base === '/agents' ? 'markdown' : undefined;
+      // 富文本命令：/diff 走 diff 着色视图，/review /btw 与 /agents 走 markdown 渲染
+      const fmt = base === '/diff' ? 'diff' : base === '/review' || base === '/agents' || base === '/btw' ? 'markdown' : undefined;
       openCmdPanel(result.lines, fmt);
     } else {
       openCmdPanel([t('cmd.executed')]);

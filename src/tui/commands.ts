@@ -1023,6 +1023,48 @@ export const TUI_COMMANDS: TuiCommand[] = [
     },
   },
   {
+    name: 'btw',
+    description: '旁问（/btw [--keep] <问题>）：不打断任务的侧问，只读工具查证，答案不进对话历史',
+    descriptionEn: 'Side question (/btw [--keep] <q>): read-only lookup, answer kept out of history',
+    run: async (ctx) => {
+      // /btw：旁问——独立轻量请求 + 只读工具循环，转录不 push 回 messages；
+      // --keep 时把 Q/A 作为 system 消息留在上下文（下次落盘随会话保存）。
+      const { parseBtwArgs, askBtw, formatBtwNote } = await import('../agent/btw.js');
+      const { keep, question } = parseBtwArgs(ctx.args ?? '');
+      if (!question) {
+        pushCmdLine(ctx.state, {
+          kind: 'warn',
+          text: '用法：/btw [--keep] <问题> —— 不打断任务的旁问（只读工具查证，答案不进对话历史；--keep 留在上下文）',
+        });
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+        return;
+      }
+      const { client, model } = ctx;
+      if (!client || !model) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: '/btw 需要 LLM 客户端（当前环境不可用）' });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'meta', text: '旁问中（只读工具）…' });
+      await ctx.session.paint().catch(() => {});
+      const r = await askBtw(client, model, ctx.messages, question, {
+        onTool: (name) => pushCmdLine(ctx.state, { kind: 'meta', text: `  · ${name}` }),
+      });
+      if (!r.ok) {
+        pushCmdLine(ctx.state, { kind: 'warn', text: `旁问失败：${r.error ?? '未知错误'}` });
+        return;
+      }
+      pushCmdLine(ctx.state, { kind: 'answer', text: r.answer || '（没有回答）' });
+      pushCmdLine(ctx.state, {
+        kind: 'meta',
+        text: `旁问结束（${r.toolCalls} 次只读工具调用，未进入对话历史${keep ? '' : '；--keep 可留在上下文'}）`,
+      });
+      if (keep) {
+        ctx.messages.push({ role: 'system', content: formatBtwNote(question, r.answer) });
+        pushCmdLine(ctx.state, { kind: 'meta', text: '已留在对话上下文（--keep）' });
+      }
+    },
+  },
+  {
     name: 'variants',
     description: '切换模型思考级别（reasoning_effort；选项来自配置 reasoningEffortOptions）',
     descriptionEn: 'Switch reasoning effort (options from config)',
@@ -1988,7 +2030,7 @@ const COMMAND_GROUPS: Record<string, CommandGroupId> = {
   rewind: 'session', undo: 'session', redo: 'session', diff: 'session',
   model: 'model', variants: 'model',
   agents: 'agent', orchestrate: 'agent', goal: 'agent', skill: 'agent',
-  plan: 'agent', thinking: 'agent', review: 'agent', spec: 'agent',
+  plan: 'agent', thinking: 'agent', review: 'agent', btw: 'agent', spec: 'agent',
 };
 /** 命令所属分组（条目 group 字段优先，未设查表，缺省 system） */
 export function commandGroup(cmd: TuiCommand): CommandGroupId {

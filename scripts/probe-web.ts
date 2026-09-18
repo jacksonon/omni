@@ -265,6 +265,18 @@ async function main(): Promise<void> {
     const fAnswer = ofType(sse, 'answer.chunk').filter((e) => e.sessionId === fSid).map((e) => e.text).join('');
     check('F2 回答带 [模型 mock-model]', fAnswer.includes('[模型 mock-model]'), fAnswer.slice(-80));
 
+    /* F3. /btw 旁问（只读工具循环 + 答案不进历史 / --keep 留在上下文） */
+    const btw = await post(WEB_PORT, '/api/command', { command: '/btw README.md 是什么文件', sessionId: fSid });
+    const btwLines: string[] = btw.json.lines ?? [];
+    check('F3 /btw 返回旁问答案', btw.status === 200 && btwLines.some((l) => l.includes('旁问回答（mock）')), JSON.stringify(btwLines).slice(0, 160));
+    check('F4 /btw 只读工具执行 + 不进历史提示', btwLines.some((l) => l.includes('read_file')) && btwLines.some((l) => l.includes('未进入对话历史')), JSON.stringify(btwLines).slice(0, 200));
+    const histF = await (await fetch(`${BASE}/api/sessions/${fSid}/messages`)).json();
+    check('F5 旁问答案未写入会话历史', !JSON.stringify(histF.messages).includes('旁问回答'), '');
+    const btwKeep = await post(WEB_PORT, '/api/command', { command: '/btw --keep 这个仓库是什么', sessionId: fSid });
+    check('F6 /btw --keep 留在上下文', btwKeep.status === 200 && (btwKeep.json.lines ?? []).some((l) => l.includes('已留在对话上下文')), JSON.stringify(btwKeep.json.lines).slice(0, 160));
+    const btwUsage = await post(WEB_PORT, '/api/command', { command: '/btw', sessionId: fSid });
+    check('F7 /btw 无参数用法提示', btwUsage.status === 200 && (btwUsage.json.lines ?? []).some((l) => l.includes('用法：/btw')), JSON.stringify(btwUsage.json.lines).slice(0, 120));
+
     /* G. 会话列表 */
     const sessionsList = await (await fetch(`${BASE}/api/sessions`)).json();
     const live = sessionsList.filter((s: any) => [bSid, cSid, dSid, eSid, fSid].includes(s.id));

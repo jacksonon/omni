@@ -215,6 +215,7 @@ src/
     workspace.ts        # /cd 工作目录解析（空参显示/相对与 ~ 展开/目录校验）
     title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
     review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
+    btw.ts              # 旁问（/btw [--keep]）：当前对话快照 + 只读工具迷你循环，答案不进历史（--keep 留下）
     events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/compact 事件 + console/web /trace 账本源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
     trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console/web 账本）
     types.ts            # RunOptions / ThinkingDisplay 共享类型
@@ -338,6 +339,7 @@ for step in 1..maxSteps:
 | `/orchestrate` 命令 | **编排（2026-09 动态工作流）**：缺省先由模型产出结构化工作流计划（步骤 + 依赖 + 可选 agent），引擎按依赖分层并行执行（共享 task_board + send_message）→ 汇总 → 对抗审查；计划解析失败或 `--pipeline` / `--agents` 时回退固定 fan-out pipeline（`/orchestrate <任务>`）
 | `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
 | `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
+| `/btw` 命令 | **旁问**（`/btw [--keep] <问题>`）：不打断主线任务的侧问——当前对话快照 + 问题跑一次独立请求，带**只读迷你工具循环**（read_file / search_code / list_directory，无写盘、不过审批）；转录不 push 回 messages（答案不进历史），`--keep` 时把 Q/A 作为 system 消息留在上下文（随会话落盘）；CLI/TUI/Web 三端 |
 | `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，优先级 = 配置 reasoningEffortOptions（omni.json，显式空数组=明确关闭）> models.dev 快照查表（effort 子集/仅开关 none·auto）> 默认档位（low/medium/high/xhigh/max + none/auto）；none/auto 不随请求下发参数 |
 | 模型能力快照 | **已移入 `/settings models [refresh]`**（三端统一子命令）：查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
 | `/model` 命令 | **切换/添加模型**（多端点）：`/model` 面板 · `/model <名称>` 切换 · `/model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]` **添加并持久化**（运行时注册进 runOpts.models + 切换，纯 JSON 配置自动追加 **providers 单模型分组**，JSONC 提示手动加）；选项来自配置 providers 分组（端点/密钥的唯一格式，缺省字段回退网关级/环境变量）；切换时用 createClient 重建客户端并更新 ModelRuntime（主循环与子代理同步） |
@@ -388,7 +390,7 @@ for step in 1..maxSteps:
 
 | 文档 | 内容 |
 |---|---|
-| `Doc/evolution-log.md` | 全部迭代记录（第一次 ~ 第一百七十三次，按时间倒序） |
+| `Doc/evolution-log.md` | 全部迭代记录（第一次 ~ 第二百四十七次，按时间倒序） |
 | `Doc/tui-architecture.md` | TUI 渲染实现细节（OpenTUI 踩坑/布局预算/交互设计） |
 | `Doc/roadmap.md` | 路线图全量条目 |
 | `Doc/release-guide.md` | 构建与发布完整流程（CI/npm/关键坑） |

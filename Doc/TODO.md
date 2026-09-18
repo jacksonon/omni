@@ -34,6 +34,7 @@
 | ✅ **FLT 舰队视图 / 后台子代理** | TUI `/tasks` 运行中任务面板 + delegate 后台执行 + Web 远程接入令牌 | P1 |
 | ✅ **MCP elicitation / sampling / 2026-07-28** | 服务器反向请求（用户提问/模型采样）+ 协议版本 + 分页发现 + DCR/CIMD | P1 |
 | ✅ **AI 自动审批** | `autoReview` 模型审阅层（对标 Codex --approve-for-me），不改变沙箱边界 | P1 |
+| ✅ **BTW 旁问（/btw）** | 不打断任务的侧问（对标 Claude Code `/btw`）：当前对话快照 + 只读工具迷你循环，答案不进历史；`--keep` 留在上下文（第二百四十七次） | P2 |
 | ✅ **会话 pin / archive** | SessionMeta 增加 pinned/archived，列表置顶/归档分组 + 三端命令 | P2 |
 | ✅ **会话内 /cd** | 运行中切换工作目录（TUI/CLI） | P2 |
 | ✅ **TUI Vim 键位** | 输入框 Vim 模式（normal/insert + 基础 motions + 可配置） | P2 |
@@ -331,6 +332,11 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
 - [x] **会话内容脱敏**：持久化（JSONL `msg`/`wfile` 等行）与回放时对密钥形状文本做 redact
       （sk-*/Bearer/AKIA/私钥块/常见 token 字段），config `redactSecrets`（默认开）；展示层不
       破坏正常代码。
+- [x] **BTW 旁问 `/btw [--keep] <问题>`**（对标 Claude Code `/btw`，第二百四十七次）：不打断主线
+      任务的侧问——当前对话快照（最近 20 条纯文本，24K 字符上限）+ 问题的独立请求，配只读迷你
+      工具循环（read_file / search_code / list_directory，最多 4 步，无写盘、不过审批）；转录不
+      进 messages（答案不进历史）、不污染对话流（TUI/Web 走命令面板）；`--keep` 把 Q/A 作为
+      `[旁问]` system 消息留在上下文并随会话落盘；CLI/TUI/Web 三端 + help 文案。
 - [ ] **Windows 沙箱（AppContainer）**（实现受限：Node 层无原生模块，现状为文档 + fail-closed 语义 + 单测桩）：Win 平台受限令牌/AppContainer 包裹 run_command，
       不可用时按 `sandboxFailClosed` 语义处理；本机（macOS）无法真机验证，先做实现 +
       文档 + 单测桩，待 Windows CI 验证。

@@ -541,6 +541,7 @@ source of truth. A few are console-only (`/doctor`, `/trace`) and are noted inli
 | `/orchestrate` | orchestration (dynamic workflow): the model drafts a step+dependency plan → layered parallel delegates (shared task_board + send_message) → merge → adversarial review; falls back to the fixed fan-out pipeline (default 3 workers) if planning fails or with `--pipeline` |
 | `/goal` (alias `/loop`) | goal mechanism: derive acceptance criteria and loop until they are met (with iteration log and verdict feedback) |
 | `/review` | code review: typecheck + git diff → LLM review |
+| `/btw [--keep] <question>` | side question: ask without interrupting the task — current-conversation snapshot + read-only tools (read_file/search_code/list_directory) for fact-checking; the answer stays out of history, `--keep` leaves the Q/A in context as a system message |
 | `/spec <feature>` | spec trio: writes `requirements.md` (EARS acceptance clauses) / `design.md` / `tasks.md` under `.omni/specs/<slug>/`, and syncs the tasks into the session todo list |
 | `/preset browser` | one-click install of the browser-automation pair (Playwright MCP + Chrome DevTools MCP) into the global config — no custom browser stack needed |
 | `/status` | session status summary (incl. context usage: model / permission / plan mode / tokens / session file / scaffolds / budget) |

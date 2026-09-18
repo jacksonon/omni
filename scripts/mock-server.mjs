@@ -143,6 +143,9 @@ const server = http.createServer((req, res) => {
     // /review 代码审查（system 提示词以「你是资深代码审查员」开头）
     const wantReview =
       typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是资深代码审查员');
+    // /btw 旁问（system 提示词以「你是 omni 的旁问助手」开头）
+    const wantBtw =
+      typeof messages[0]?.content === 'string' && messages[0].content.startsWith('你是 omni 的旁问助手');
     const last = messages[messages.length - 1];
     const hasToolResult = last?.role === 'tool';
     // 子代理请求识别：首条用户消息以子代理提示词开头（runSubagent 的 messages[0] 是 user 角色
@@ -282,6 +285,49 @@ const server = http.createServer((req, res) => {
         ],
       });
       sendChunk(usageChunk('mock-review-done'));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (wantBtw) {
+      // /btw 旁问：首轮发只读工具 read_file，次轮返回最终文字（旁问 e2e 验证）
+      const hasToolMsg = messages.some((m) => m.role === 'tool');
+      if (!hasToolMsg) {
+        sendChunk({
+          id: 'mock-btw',
+          object: 'chat.completion.chunk',
+          created: Date.now(),
+          model: 'mock',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: [
+                  { index: 0, id: 'call_btw', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'README.md' }) } },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        });
+      } else {
+        sendChunk({
+          id: 'mock-btw-done',
+          object: 'chat.completion.chunk',
+          created: Date.now(),
+          model: 'mock',
+          choices: [
+            {
+              index: 0,
+              delta: { role: 'assistant', content: '旁问回答（mock）：README.md 是项目说明文件。' },
+              finish_reason: null,
+            },
+          ],
+        });
+      }
+      sendChunk(usageChunk('mock-btw-usage'));
       res.write('data: [DONE]\n\n');
       res.end();
       return;
