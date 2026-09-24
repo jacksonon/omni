@@ -70,10 +70,16 @@ export async function runInteractive(
   messages: ChatCompletionMessageParam[],
   runOpts: RunOptions,
   out: Output,
-  /** 入口定制（omni mini）：intro 控制是否打印内置开场提示，prompt 覆盖输入提示符 */
-  opts: { intro?: boolean; prompt?: string } = {}
+  /** 入口定制（omni mini）：intro 控制是否打印内置开场提示，prompt 覆盖输入提示符，
+   *  onRl 把 readline 句柄交给调用方（mini 在一轮进行中接管 stdin 用） */
+  opts: {
+    intro?: boolean;
+    prompt?: string;
+    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void }) => void;
+  } = {}
 ): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: opts.prompt ?? cyan('omni> ') });
+  opts.onRl?.(rl);
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   const safePrompt = () => {
     try {

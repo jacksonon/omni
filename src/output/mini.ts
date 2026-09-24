@@ -1,3 +1,14 @@
+/** 供轮内输入接管使用的宽松 stdin 视图（摘/装 readline 监听器需要按事件名透传） */
+type StdinListener = (...args: unknown[]) => void;
+interface LooseStdin {
+  listeners(event: string): StdinListener[];
+  on(event: string, listener: StdinListener): unknown;
+  off(event: string, listener: StdinListener): unknown;
+  removeAllListeners(event: string): unknown;
+  setRawMode(mode: boolean): void;
+  resume(): void;
+}
+
 /**
  * MiniOutput：`omni mini` 纯终端 CLI 模式的渲染层。
  *
@@ -17,6 +28,7 @@
 import { homedir } from 'node:os';
 import { stdin as input, stderr as errOut } from 'node:process';
 import readline from 'node:readline/promises';
+import { Writable } from 'node:stream';
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import { printHelp } from '../cli/args.js';
@@ -278,14 +290,31 @@ function diffStatLine(detail: ToolResultDetail | undefined): string | null {
  */
 class LiveBlock {
   private lines: string[] = [];
+  /** 最近一次主体行（setSuffix 重绘时复用） */
+  private body: string[] = [];
+  /** 追加在主体之后的固定行（如"已排队输入"提示行） */
+  private suffix: string[] = [];
   constructor(private enabled: boolean, private out = process.stdout) {}
 
   get active(): boolean {
     return this.enabled;
   }
 
+  /** 设置后缀行（内容变化时立即按当前主体重绘） */
+  setSuffix(suffix: string[]): void {
+    const same = suffix.length === this.suffix.length && suffix.every((l, i) => l === this.suffix[i]);
+    if (same) return;
+    this.suffix = suffix;
+    if (this.body.length > 0) this.render([...this.body, ...suffix]);
+  }
+
   /** 用新内容替换当前区块（光标停在区块下一行行首） */
   update(lines: string[]): void {
+    this.body = lines;
+    this.render([...lines, ...this.suffix]);
+  }
+
+  private render(lines: string[]): void {
     if (!this.enabled) return;
     const prev = this.lines.length;
     if (prev > 0) this.out.write(`\x1b[${prev}A`); // 回到区块首行
@@ -304,6 +333,7 @@ class LiveBlock {
     if (!this.enabled || this.lines.length === 0) return;
     this.out.write(`\x1b[${this.lines.length}A\r\x1b[0J`);
     this.lines = [];
+    this.body = [];
   }
 
   /** 清掉区块后把最终内容写入滚动区（带换行、可回滚） */
@@ -409,6 +439,101 @@ export class MiniOutput implements Output {
    * 交互模式标记（cli/mini.ts 调用）：回显用户消息前擦掉 readline 自己回显的那一行
    * （否则输入会显示两遍），并打印输入区提示行（单次任务模式无提示符，不打印）。
    */
+  // ── 轮内输入接管（raw mode） ────────────────────────────────────
+  private rl: {
+    pause(): void;
+    resume(): void;
+    write(data: string): void;
+    /** readline 的输出流（回填时临时换成丢弃流以静音它自己的回显） */
+    output?: NodeJS.WritableStream;
+  } | null = null;
+  private queued = '';
+  private capturing = false;
+  private yieldedInput = false;
+  /** 下一行由排队回填产生：readline 的回显留在**当前行**（键入路径在上一行），清除方式不同 */
+  private queuedFlushPending = false;
+  /** 轮内被临时摘下的 readline 监听器（轮末原样装回） */
+  private savedListeners: { event: string; listener: StdinListener }[] | null = null;
+
+  /**
+   * 轮内 stdin 接管。必须接管的原因：一轮进行中 readline 不消费输入，但终端内核仍会回显，
+   * 字符落在流式输出的光标处被"吃进"回答（用户实测反馈），而 readline 缓存的整行又会在
+   * 下一轮发出。接管后自己收集 → 渲染成 codex 的 `↳ <排队内容>` 提示行 → 轮末回填 readline。
+   */
+  private onInput = (chunk: Buffer | string): void => {
+    for (const ch of String(chunk)) {
+      if (ch === '\r' || ch === '\n') continue;
+      if (ch === '\x7f' || ch === '\b') this.queued = this.queued.slice(0, -1);
+      else if (ch === '\x15') this.queued = '';
+      else if (ch === '\x03') {
+        this.endInputCapture();
+        process.kill(process.pid, 'SIGINT');
+        return;
+      } else if (ch >= ' ') this.queued += ch;
+    }
+    this.live.setSuffix(this.queued ? [`${PREFIX}${dim(`↳ ${this.queued}`)}`] : []);
+  };
+
+  private beginInputCapture(): void {
+    if (this.capturing || this.yieldedInput) return;
+    if (!this.rl || !isTTY || typeof process.stdin.setRawMode !== 'function') return;
+    this.capturing = true;
+    // 关键：把 readline（含 keypress 解码器）的 stdin 监听器**整组摘下来**。
+    // 只 rl.pause() 不行——随后为了让自己的 data 监听器收到字节而 stdin.resume()，
+    // 会把 readline 的渲染一并唤醒，它就把键入字符画进流式回答里（实测踩过）。
+    const stdin = process.stdin as unknown as LooseStdin;
+    this.savedListeners = ['data', 'keypress'].flatMap((event) =>
+      stdin.listeners(event).map((listener) => ({ event, listener }))
+    );
+    stdin.removeAllListeners('data');
+    stdin.removeAllListeners('keypress');
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('data', this.onInput as unknown as StdinListener);
+  }
+
+  /** 释放输入权，必要时把排队内容回填给 readline（成为下一轮用户消息） */
+  private endInputCapture(flush = true): void {
+    if (!this.capturing) return;
+    this.capturing = false;
+    const stdin = process.stdin as unknown as LooseStdin;
+    stdin.off('data', this.onInput as unknown as StdinListener);
+    stdin.setRawMode(false);
+    // 原样装回 readline 的监听器（顺序保持），它继续正常收发/回显
+    for (const { event, listener } of this.savedListeners ?? []) stdin.on(event, listener);
+    this.savedListeners = null;
+    this.live.setSuffix([]);
+    const pending = this.queued;
+    this.queued = '';
+    if (flush && pending.trim()) {
+      console.log('');
+      // 回填时把 readline 的输出临时接到丢弃流：它默认会把这一行**再回显一遍**
+      // （`rl.write` → 渲染 prompt+文本），与我们随后的 `› 原文` 单元格重复。
+      // 静音后屏幕上只剩对话流里的那一份（Node 的 rl.output 是实例属性，可换）。
+      const sink = new Writable({ write(_c, _e, cb) { cb(); } });
+      const real = this.rl?.output;
+      if (real) this.rl!.output = sink;
+      this.rl?.write(`${pending}\n`);
+      if (real) this.rl!.output = real;
+    }
+  }
+
+  private yieldInput(): void {
+    if (!this.capturing) return;
+    this.yieldedInput = true;
+    this.endInputCapture();
+  }
+
+  private resumeInput(): void {
+    this.yieldedInput = false;
+    if (this.turnStart != null) this.beginInputCapture();
+  }
+
+  /** readline 句柄注入（runInteractive 的 onRl 回调） */
+  attachInput(rl: { pause(): void; resume(): void; write(data: string): void }): void {
+    this.rl = rl;
+  }
+
   markInteractive(): void {
     this.interactive = true;
     if (this.opts.stream) {
@@ -540,6 +665,7 @@ export class MiniOutput implements Output {
 
   onTurnStart(): void {
     this.turnStart = Date.now();
+    this.beginInputCapture();
   }
 
   onRequestFailed(err: unknown): void {
@@ -655,9 +781,14 @@ export class MiniOutput implements Output {
   /** 用户消息：`› ` 前缀（bold dim）+ 前后空行（codex UserHistoryCell） */
   onUserMessage(text: string): void {
     this.answer.end();
-    // 交互模式：readline 已把输入回显在上一行（提示符 + 文本），这里擦掉它——
-    // 让"输入 → 提交 → 落进对话流"只出现一次（codex 的 composer 提交后也是这个观感）
-    if (this.interactive && this.live.active) process.stdout.write('\x1b[1A\r\x1b[0J');
+    // 交互模式：readline 已经回显过这条输入，这里擦掉它——让"输入 → 提交 → 落进对话流"
+    // 只出现一次（codex 的 composer 提交后也是这个观感）。两种来源的回显位置不同：
+    // ① 用户键入并回车 → 回显在**上一行**；② 我们轮末 rl.write 回填 → 回显在**当前行**。
+    // 排队回填的那一份已经静音（不会出现在屏幕上），只有"用户键入并回车"的回显在上一行
+    if (this.interactive && this.live.active && !this.queuedFlushPending) {
+      process.stdout.write('\x1b[1A\r\x1b[0J');
+    }
+    this.queuedFlushPending = false;
     const lines = text.split('\n');
     console.log('');
     lines.forEach((l, i) => console.log(`${i === 0 ? `${bold(dim('›'))} ` : PREFIX}${l}`));
@@ -675,6 +806,7 @@ export class MiniOutput implements Output {
       console.log(renderTurnSeparator(Date.now() - start));
       this.gapOpen = false;
     }
+    this.endInputCapture(); // 轮末：释放输入权 + 把排队内容回填给 readline
   }
 
   onWaitForInput(): void {}
@@ -741,6 +873,7 @@ export class MiniOutput implements Output {
 
   private async promptApproval(req: ApprovalRequest): Promise<boolean> {
     if (!isTTY) return false;
+    this.yieldInput();
     this.stopWorking();
     this.live.clear();
     const rl = readline.createInterface({ input, output: errOut });
@@ -751,6 +884,7 @@ export class MiniOutput implements Output {
       return /^y/i.test(ans.trim());
     } finally {
       rl.close();
+      this.resumeInput();
     }
   }
 
@@ -770,6 +904,7 @@ export class MiniOutput implements Output {
 
   private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
     if (!isTTY) return null;
+    this.yieldInput();
     this.stopWorking();
     this.live.clear();
     const rl = readline.createInterface({ input, output: errOut });
@@ -791,6 +926,7 @@ export class MiniOutput implements Output {
       return { choice: t, custom: true, choices: [t] };
     } finally {
       rl.close();
+      this.resumeInput();
     }
   }
 }

@@ -64,7 +64,14 @@ export async function runMiniInteractive(
   if (out instanceof MiniOutput) out.markInteractive();
   try {
     // intro 由 mini 自己接管（banner 的 Tip 行），内置「输入任务开始…」提示跳过
-    await runInteractive(client, model, messages, runOpts, out, { intro: false, prompt: cyan('› ') });
+    await runInteractive(client, model, messages, runOpts, out, {
+      intro: false,
+      prompt: cyan('› '),
+      // 把 readline 句柄交给渲染层：一轮进行中由它接管 stdin（见 MiniOutput.beginInputCapture）
+      onRl: (rl) => {
+        if (out instanceof MiniOutput) out.attachInput(rl);
+      },
+    });
   } finally {
     uninstall();
   }
