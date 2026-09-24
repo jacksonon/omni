@@ -17,7 +17,7 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { createClient, findEndpointByName, getClient, resolveModelRoute, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
+import { createClient, findEndpointByName, getClient, resolveModelRoute, withRequestSession, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
 import { formatToolCall, previewOutput, countDiffLines } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
@@ -25,7 +25,7 @@ import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
 import { buildAssistantMessage, estimateTokens, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
-import { appendWriteDiff } from './session.js';
+import { appendWriteDiff, sessionIdFromPath } from './session.js';
 
 /** 消息里是否含图片输入（多模态前置校验用：content 为分段数组且带 image 类型） */
 export function messagesHaveImage(messages: ChatCompletionMessageParam[]): boolean {
@@ -334,10 +334,28 @@ export function buildToolSchemas(
 }
 
 /**
- * 运行 Agent 循环。messages 会被就地追加（assistant 消息与 tool 结果），
- * 因此交互模式下可跨轮次保持对话上下文。
+ * 运行 Agent 循环（对外入口）：先进入本会话的动态请求头上下文——`{sessionId}` 占位符
+ * （如 OpenCode Go 要求的 x-opencode-session）解析为该会话 id，web 并发多会话经
+ * AsyncLocalStorage 互不串号；循环 / 子代理 / 压缩 / 工具内嵌套 LLM 调用全覆盖。
  */
 export async function runAgent(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  opts: RunOptions,
+  output: Output
+): Promise<void> {
+  await withRequestSession(
+    opts.sessionPath ? sessionIdFromPath(opts.sessionPath) : undefined,
+    () => runAgentInner(client, model, messages, opts, output)
+  );
+}
+
+/**
+ * 循环本体。messages 会被就地追加（assistant 消息与 tool 结果），
+ * 因此交互模式下可跨轮次保持对话上下文。
+ */
+async function runAgentInner(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],

@@ -110,6 +110,7 @@ import {
   persistProviderConfigToGlobal,
   persistProviderModelToGlobal,
   persistProviderCatalogToGlobal,
+  parseHeadersInput,
   removeProviderFromGlobal,
   removeProviderModelFromGlobal,
   persistReasoningEffortToConfig,
@@ -360,6 +361,8 @@ function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
       baseURL: p.baseURL,
       apiKey: p.apiKey,
       userAgent: p.userAgent,
+      // 自定义请求头（分组级；值可含 {sessionId} 占位符，请求时解析）
+      headers: p.headers,
       // 远端模型目录缓存（"获取模型列表" 结果；未拉取过 = undefined，前端据此显示「获取/刷新」）
       modelCatalog: p.modelCatalog,
       models: Object.entries(p.models ?? {}).map(([mid, m]) => ({
@@ -694,6 +697,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           baseURL: ep.baseURL ?? cfg.baseURL,
           apiKey: ep.apiKey ?? cfg.apiKey,
           userAgent: ep.userAgent ?? cfg.userAgent,
+          headers: ep.headers,
         },
         ep.apiKey ?? cfg.apiKey ?? ''
       );
@@ -706,17 +710,27 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   /* ---------------- providers 运行时同步（设置 → 模型配置：一个端点配置多个模型） ---------------- */
 
   /** 同步 provider 级字段到所有属于该 provider 的扁平模型；当前模型端点变化 → 重建 client */
-  function syncProviderFields(provider: string, fields: { baseURL?: string; apiKey?: string; userAgent?: string }): void {
+  function syncProviderFields(
+    provider: string,
+    fields: { baseURL?: string; apiKey?: string; userAgent?: string; headers?: Record<string, string> | null }
+  ): void {
     if (!runOpts.models) return;
     let needRebuild = false;
     runOpts.models.forEach((m, i) => {
       if (m.provider !== provider) return;
-      const p: Record<string, unknown> = {};
-      if (fields.baseURL !== undefined) p.baseURL = fields.baseURL;
-      if (fields.apiKey !== undefined) p.apiKey = fields.apiKey;
-      if (fields.userAgent !== undefined) p.userAgent = fields.userAgent;
-      runOpts.models![i] = { ...runOpts.models![i], ...p };
-      if (fields.baseURL !== undefined || fields.apiKey !== undefined) needRebuild = true;
+      const next: Record<string, unknown> = { ...runOpts.models![i] };
+      if (fields.baseURL !== undefined) next.baseURL = fields.baseURL;
+      if (fields.apiKey !== undefined) next.apiKey = fields.apiKey;
+      if (fields.userAgent !== undefined) next.userAgent = fields.userAgent;
+      // headers：对象 = 替换（含占位符原样保留）；null/空 = 清除
+      if (fields.headers !== undefined) {
+        if (fields.headers && Object.keys(fields.headers).length > 0) next.headers = fields.headers;
+        else delete next.headers;
+      }
+      runOpts.models![i] = next as never;
+      if (fields.baseURL !== undefined || fields.apiKey !== undefined || fields.userAgent !== undefined || fields.headers !== undefined) {
+        needRebuild = true;
+      }
     });
     if (needRebuild) {
       const cur = runOpts.modelRuntime?.model ?? '';
@@ -2194,7 +2208,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           persistStatuslineToConfig(next, cfg);
         }
         // —— providers 分组动作（settings-providers-spec）：一个端点配置多个模型 ——
-        // provider 级新建/更新（共享 baseURL/apiKey/userAgent）
+        // provider 级新建/更新（共享 baseURL/apiKey/userAgent/headers）
         if (body.providerConfig && typeof body.providerConfig === 'object') {
           const pc = body.providerConfig as Record<string, unknown>;
           const provider = typeof pc.provider === 'string' ? pc.provider.trim() : '';
@@ -2202,10 +2216,22 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           const baseURL = typeof pc.baseURL === 'string' && pc.baseURL.trim() ? pc.baseURL.trim() : undefined;
           const apiKey = typeof pc.apiKey === 'string' && pc.apiKey.trim() ? pc.apiKey.trim() : undefined;
           const userAgent = typeof pc.userAgent === 'string' && pc.userAgent.trim() ? pc.userAgent.trim() : undefined;
-          const pr = persistProviderConfigToGlobal({ provider, baseURL, apiKey, userAgent }, cfg);
+          // 自定义请求头：对象或多行文本（每行「名称: 值」）；空 = 清除；未提供 = 保留
+          const headers = parseHeadersInput(pc.headers);
+          const pr = persistProviderConfigToGlobal({ provider, baseURL, apiKey, userAgent, headers }, cfg);
           if (!pr.ok) { json(res, 400, { error: pr.message }); return; }
-          syncProviderFields(provider, { baseURL, apiKey, userAgent });
-          syncCfgProvider(provider, (p) => ({ ...(p ?? {}), ...(baseURL ? { baseURL } : {}), ...(apiKey ? { apiKey } : {}), ...(userAgent ? { userAgent } : {}) }));
+          syncProviderFields(provider, { baseURL, apiKey, userAgent, headers });
+          syncCfgProvider(provider, (p) => {
+            const next = { ...(p ?? {}) } as Record<string, unknown>;
+            if (baseURL) next.baseURL = baseURL;
+            if (apiKey) next.apiKey = apiKey;
+            if (userAgent) next.userAgent = userAgent;
+            if (headers !== undefined) {
+              if (headers) next.headers = headers;
+              else delete next.headers;
+            }
+            return next;
+          });
         }
         // 组内模型新增/更新（含继承/覆盖开关、元数据）
         if (body.providerModel && typeof body.providerModel === 'object') {
@@ -2234,6 +2260,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             ...(overrideBaseURL ? { baseURL: overrideBaseURL } : p?.baseURL ? { baseURL: p.baseURL } : {}),
             ...(overrideApiKey ? { apiKey: overrideApiKey } : p?.apiKey ? { apiKey: p.apiKey } : {}),
             ...(p?.userAgent ? { userAgent: p.userAgent } : {}),
+            ...(p?.headers ? { headers: p.headers } : {}),
             ...(apiModel ? { apiModel } : {}),
             ...(displayName ? { displayName } : {}),
             ...(efforts ? { reasoningEffortOptions: efforts } : {}),
@@ -2305,10 +2332,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           const baseURL = typeof pd.baseURL === 'string' && pd.baseURL.trim() ? pd.baseURL.trim() : undefined;
           const apiKey = typeof pd.apiKey === 'string' && pd.apiKey.trim() ? pd.apiKey.trim() : undefined;
           const provider = typeof pd.provider === 'string' && pd.provider.trim() ? pd.provider.trim() : undefined;
+          const userAgent = typeof pd.userAgent === 'string' && pd.userAgent.trim() ? pd.userAgent.trim() : undefined;
+          const headers = parseHeadersInput(pd.headers) ?? undefined;
           if (!baseURL) { json(res, 400, { error: '缺少 baseURL' }); return; }
           try {
             const { discoverModels } = await import('../client.js');
-            const ids = await discoverModels({ baseURL, apiKey });
+            const ids = await discoverModels({ baseURL, apiKey, userAgent, headers });
             const catalog = ids.map((id) => {
               const cap = resolveModelCapabilities(id);
               return { id, ...(cap.context ? { context: cap.context } : {}), ...(cap.effortOptions?.length ? { effortOptions: cap.effortOptions } : {}) };

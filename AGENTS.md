@@ -107,6 +107,8 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "editor": "gpt-5-mini",                // 模型路由：执行阶段用轻模型（缺省回退当前模型）
   "providers": {                      // 多模型端点（/model 切换）——**端点/密钥的唯一格式**（旧版扁平 models 表与顶层 baseURL/apiKey/userAgent 解析已移除）：
                                       //   一个网关挂多模型，baseURL/apiKey 只写一次；模型条目缺省字段回退网关；
+                                      //   分组级 headers：自定义请求头（设置→模型配置可编辑）——值支持 {sessionId}/{session} 占位符 = 当前会话 id
+                                      //   （OpenCode Go 等网关要求的 x-opencode-session 在此配置，请求发出前解析、并发会话互不串号）；
                                       //   per-model variants：reasoningEffortOptions = 该模型 /variants 面板支持的思考级别选项、reasoningEffort = 当前级别——缺省回退顶层同名字段；
                                       //   /model 切换到该模型自动带出（面板/请求同步），/variants 切换持久化到 providers."<组>".models."<名>".reasoningEffort（仅该模型生效）
                                       //   命名 variants（1.0）：variants = { id: { description?, reasoningEffort?, body?, headers? } } 请求叠加层，variant = 当前选中 id；/variants 面板同时列出思考级别和命名 variants

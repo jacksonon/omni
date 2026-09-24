@@ -872,6 +872,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mc-form-row > label { flex: none; width: 108px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .mc-form-row > .cfg-text, .mc-form-row .apikey-row { flex: 1; min-width: 0; }
 .mc-form-row .cfg-text { width: auto; }
+.mc-form-row-top { align-items: flex-start; }
+.mc-form-row-top > label { padding-top: 10px; }
+.mc-form-row textarea.cfg-text { height: auto; min-height: 64px; padding: 8px 12px; line-height: 1.6; resize: vertical; font-family: inherit; }
 /* —— 模型管理区（表格 + 行内编辑 + 展开高级项） —— */
 .mc-models { display: flex; flex-direction: column; gap: 8px; }
 .mc-models-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }

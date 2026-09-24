@@ -41,8 +41,8 @@
 
 新增四个纯函数（全部沿用现有「纯 JSON 才自动改、JSONC 拒绝」与「合并已有字段」的模式，写入**全局配置** `globalConfigFile()`）：
 
-1. `persistProviderConfigToGlobal(patch: { provider: string; baseURL?: string; apiKey?: string; userAgent?: string }, cfg): PersistModelResult`
-   - 合并写 `obj.providers[provider] = { ...旧, baseURL?, apiKey?, userAgent?, models: 旧.models ?? {} }`（provider 名即 key，不改名；`baseURL` 缺失时保留旧值）。
+1. `persistProviderConfigToGlobal(patch: { provider: string; baseURL?: string; apiKey?: string; userAgent?: string; headers?: Record<string, string> | null }, cfg): PersistModelResult`
+   - 合并写 `obj.providers[provider] = { ...旧, baseURL?, apiKey?, userAgent?, headers?, models: 旧.models ?? {} }`（provider 名即 key，不改名；`baseURL` 缺失时保留旧值；`headers` 未提供保留、null/空 = 清除、对象 = 替换——值支持 `{sessionId}` 占位符，请求发出前解析）。
 2. `persistProviderModelToGlobal(patch: { provider: string; modelName: string; apiModel?: string; displayName?: string; reasoningEffortOptions?: string[]; reasoningEffort?: string; contextLimit?: number; variants?: unknown; overrideBaseURL?: string; overrideApiKey?: string }, cfg): PersistModelResult`
    - 合并写 `obj.providers[provider].models[modelName]`；`overrideBaseURL/overrideApiKey` 缺省不写（继承）；字段为空串/未定义时不落盘。
 3. `removeProviderFromGlobal(provider: string, cfg): PersistModelResult` —— 删除 `providers[provider]`。
@@ -59,7 +59,7 @@
 ```ts
 providers: [{
   name: string;                 // provider 名（未分组显示为虚拟组，见 D3）
-  baseURL?: string; apiKey?: string; userAgent?: string;
+  baseURL?: string; apiKey?: string; userAgent?: string; headers?: Record<string, string>;
   models: [{ name; apiModel?; displayName?; reasoningEffortOptions?; reasoningEffort?; limit?; variants?; overrideBaseURL?; overrideApiKey? }];
 }]
 ```
@@ -72,7 +72,7 @@ providers: [{
 
 | 动作 | payload | 行为 |
 |---|---|---|
-| `providerConfig` | `{ provider, baseURL?, apiKey?, userAgent? }` | 新建/更新 provider → `persistProviderConfigToGlobal` + 运行时同步 |
+| `providerConfig` | `{ provider, baseURL?, apiKey?, userAgent?, headers? }` | 新建/更新 provider → `persistProviderConfigToGlobal` + 运行时同步（`headers` 对象或多行文本「名称: 值」，空 = 清除） |
 | `providerModel` | `{ provider, modelName, apiModel?, displayName?, reasoningEffortOptions?, reasoningEffort?, contextLimit?, variants?, overrideBaseURL?, overrideApiKey? }` | 新增/更新组内模型 → `persistProviderModelToGlobal` + 运行时同步 |
 | `providerRemove` | `{ provider, modelName? }` | `modelName` 缺省删整个 provider，否则删组内模型 |
 | `providerMigrate` | `{ modelName, provider }` | 扁平模型迁入 provider（D3 确认后触发） |

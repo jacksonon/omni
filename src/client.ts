@@ -16,7 +16,9 @@
  * · **跨端点路由**——resolveModelRoute 按模型名反查端点，architect/editor 配在
  *   不同网关也能路由（ModelRuntime 已支持重建，缺的是这层解析）。
  */
-import OpenAI from 'openai';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+import OpenAI, { type ClientOptions } from 'openai';
 
 /** 模型 token 上限（输入上下文窗口 / 输出 max_tokens） */
 export interface ModelLimit {
@@ -103,6 +105,61 @@ export function apiModelName(ep: ModelEndpoint | undefined, fallback: string): s
 }
 
 /* ------------------------------------------------------------------
+ * 会话级动态请求头（2026-09）：部分网关（如 OpenCode Go）要求每个对话随请求携带
+ * 稳定会话 id（`x-opencode-session`）做路由与提示缓存优化。headers 配置值支持
+ * 占位符 `{sessionId}`（别名 `{session}`），发出前解析：
+ * · runAgent 请求上下文内（AsyncLocalStorage）= 当前 omni 会话 id——web 并发
+ *   多会话互不串号；主循环 / 子代理 / 压缩 / 工具内嵌套 LLM 调用全覆盖；
+ * · 上下文外（/review 等独立轻请求）= 进程级稳定兜底 id（值稳定，网关不拒）。
+ * 解析收口在 createClient 的 fetch 包装：defaultHeaders 与每请求 headers 一并生效。
+ * ------------------------------------------------------------------ */
+const requestSession = new AsyncLocalStorage<{ sessionId: string }>();
+let processSessionId = '';
+
+/** 在指定会话的请求上下文内执行 fn（动态请求头占位符解析为该会话 id）。
+ *  未指定会话 id 时沿用外层上下文（子代理等嵌套调用继承主会话 id）。 */
+export function withRequestSession<T>(sessionId: string | undefined, fn: () => T): T {
+  const id = (sessionId ?? '').trim();
+  if (!id) return fn();
+  return requestSession.run({ sessionId: id }, fn);
+}
+
+/** 当前请求上下文的会话 id（无上下文 = 进程级稳定兜底，保证值稳定不被网关拒） */
+function currentSessionId(): string {
+  const sid = requestSession.getStore()?.sessionId ?? '';
+  return sid || (processSessionId ||= `omni-${randomUUID()}`);
+}
+
+/** 解析单个请求头值里的 `{sessionId}` / `{session}` 占位符 */
+function resolveHeaderValue(v: string): string {
+  return v.includes('{session') ? v.replace(/\{sessionId\}|\{session\}/g, currentSessionId()) : v;
+}
+
+/** 解析一组请求头的占位符（无占位符也会返回拷贝，语义简单统一） */
+export function resolveHeaderPlaceholders(
+  headers: Record<string, string> | undefined
+): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) out[k] = resolveHeaderValue(String(v));
+  return out;
+}
+
+/** SDK 请求出口包装：把最终请求头里的占位符解析掉再发真实请求（形状容错：对象/数组/Headers）。
+ *  SDK 的 Fetch 类型来自 node-fetch 声明、与 undici 全局 fetch 不完全兼容——这里用松散签名，
+ *  createClient 处一次性断言。 */
+function dynamicHeaderFetch(input: unknown, init?: unknown): Promise<Response> {
+  const raw = (init as { headers?: unknown } | undefined)?.headers;
+  let headers: Record<string, string> | undefined;
+  if (raw instanceof Headers) headers = Object.fromEntries([...raw.entries()]);
+  else if (Array.isArray(raw)) headers = Object.fromEntries((raw as [string, string][]).map(([k, v]) => [String(k), String(v)]));
+  else if (raw && typeof raw === 'object') headers = { ...(raw as Record<string, string>) };
+  const req = { ...(init as RequestInit | undefined) };
+  if (headers) req.headers = resolveHeaderPlaceholders(headers);
+  return fetch(input as RequestInfo | URL, req);
+}
+
+/* ------------------------------------------------------------------
  * 客户端缓存（provider 复用）：同一 baseURL+apiKey+userAgent+headers 只建一个
  * OpenAI 实例——providers 分组下同组多模型切换共享连接池；/model 跨组切换才重建。
  * 缓存进程级（弱上限 32 个，LRU 粗略淘汰最旧）。
@@ -148,6 +205,9 @@ export function createClient(endpoint: ModelEndpoint, fallbackApiKey: string): O
     baseURL: endpoint.baseURL,
     timeout: 60_000,
     maxRetries: 5,
+    // 动态请求头（{sessionId} 占位符）在 fetch 出口统一解析——defaultHeaders 与
+    // 每请求 headers 都经过这里
+    fetch: dynamicHeaderFetch as unknown as ClientOptions['fetch'],
     ...(endpoint.userAgent || endpoint.headers
       ? {
           defaultHeaders: {
@@ -214,14 +274,23 @@ export function resolveModelRoute(
  * 模型发现（1.0 P1）：GET {baseURL}/models —— OpenAI 兼容协议通用能力
  * （Ollama/LM Studio/vLLM/各类网关都支持）。返回模型 id 列表；失败抛错由调用方提示。
  * ------------------------------------------------------------------ */
-export async function discoverModels(endpoint: Pick<ModelEndpoint, 'baseURL' | 'apiKey'>): Promise<string[]> {
+export async function discoverModels(
+  endpoint: Pick<ModelEndpoint, 'baseURL' | 'apiKey' | 'userAgent' | 'headers'>
+): Promise<string[]> {
   const base = (endpoint.baseURL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
   const url = base.endsWith('/v1') || /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
     const res = await fetch(url, {
-      headers: endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {},
+      headers: {
+        accept: 'application/json',
+        // 自定义 UA / 请求头（含 {sessionId} 占位符）随发现请求一并带上——部分网关
+        // （如 OpenCode Go）对 /models 同样要求会话头
+        ...(endpoint.userAgent ? { 'user-agent': endpoint.userAgent } : {}),
+        ...(resolveHeaderPlaceholders(endpoint.headers) ?? {}),
+        ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
+      },
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

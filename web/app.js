@@ -288,6 +288,9 @@ const I18N_ZH = {
   'provider.delete': '删除',
   'provider.userAgent': 'User-Agent',
   'provider.userAgentDesc': '部分网关需要自定义 User-Agent 绕过 WAF。',
+  'provider.headers': '自定义请求头',
+  'provider.headersPh': 'x-opencode-session: {sessionId}',
+  'provider.headersDesc': '每行一个「名称: 值」；值支持 {sessionId} 占位符（解析为当前会话 id）。OpenCode Go 等网关要求 x-opencode-session。',
   'provider.models': '模型列表',
   'provider.modelsCount': '{n} 个模型',
   'provider.enableHint': '启用该模型',
@@ -742,6 +745,9 @@ const I18N_EN = {
   'provider.delete': 'Delete',
   'provider.userAgent': 'User-Agent',
   'provider.userAgentDesc': 'Some gateways require a custom User-Agent to bypass WAF.',
+  'provider.headers': 'Custom headers',
+  'provider.headersPh': 'x-opencode-session: {sessionId}',
+  'provider.headersDesc': 'One header per line as "Name: value"; values support the {sessionId} placeholder (resolved to the current session id). Gateways such as OpenCode Go require x-opencode-session.',
   'provider.models': 'Model list',
   'provider.modelsCount': '{n} models',
   'provider.enableHint': 'Enable this model',
@@ -6368,8 +6374,29 @@ function currentEffortOf(s, m, opts) {
 }
 
 /**
+ * 自定义请求头 ↔ 文本域互转（每行「名称: 值」，# 开头为注释）。
+ * 值支持 {sessionId} 占位符，这里原样保留——请求发出前由后端解析。
+ */
+function headersToText(h) {
+  return Object.entries(h || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+function textToHeaders(text) {
+  const out = {};
+  for (const line of String(text || '').split('\n')) {
+    const s = line.trim();
+    if (!s || s.startsWith('#')) continue;
+    const i = s.indexOf(':');
+    if (i <= 0) continue;
+    const k = s.slice(0, i).trim();
+    const v = s.slice(i + 1).trim();
+    if (k && v) out[k] = v;
+  }
+  return out;
+}
+
+/**
  * 添加模型前解析目标 provider 名（手动添加与「获取模型列表」勾选两种方式共用）。
- * - 新建模式（__new__）：先落盘 provider 配置（baseURL/apiKey/userAgent），返回新分组名；
+ * - 新建模式（__new__）：先落盘 provider 配置（baseURL/apiKey/userAgent/headers），返回新分组名；
  * - 已选分组：直接返回分组名；未选（null）返回 null（不可添加）。
  */
 async function ensureProviderName() {
@@ -6385,6 +6412,7 @@ async function ensureProviderName() {
             baseURL: $('#p-baseurl').value.trim() || undefined,
             apiKey: $('#p-apikey').value.trim() || undefined,
             userAgent: $('#p-useragent').value.trim() || undefined,
+            headers: textToHeaders($('#p-headers').value),
           },
         }),
       });
@@ -6500,6 +6528,8 @@ function renderProviderPanel(s) {
     }
   }
   $('#p-useragent').value = group ? (group.userAgent || '') : '';
+  const headersInput = $('#p-headers');
+  if (headersInput) headersInput.value = headersToText(group ? group.headers : null);
   const fetchResult = $('#p-fetch-result');
   if (fetchResult) fetchResult.classList.add('hidden');
   const saveNote = $('#mc-save-note');
@@ -6531,6 +6561,7 @@ function renderProviderPanel(s) {
             baseURL: $('#p-baseurl').value.trim() || undefined,
             apiKey: $('#p-apikey').value.trim() || undefined,
             userAgent: $('#p-useragent').value.trim() || undefined,
+            headers: textToHeaders($('#p-headers').value),
           },
         }),
       }).then(() => {
@@ -6633,6 +6664,8 @@ async function fetchProviderModels(group, silent) {
         providerDiscover: {
           baseURL: b,
           apiKey: $('#p-apikey').value.trim() || (group ? group.apiKey : undefined) || undefined,
+          userAgent: $('#p-useragent').value.trim() || undefined,
+          headers: textToHeaders($('#p-headers').value),
           provider: group ? group.name : undefined, // 已保存 provider → 目录落盘缓存
         },
       }),

@@ -314,6 +314,7 @@
           },
           "headers": {
             "type": "object",
+            "description": "分组级自定义请求头（所有组内模型生效；设置→模型配置可编辑）。值支持 {sessionId} / {session} 占位符 = 当前会话 id（请求发出前解析，如 OpenCode Go 要求的 x-opencode-session）",
             "additionalProperties": {
               "type": "string"
             }

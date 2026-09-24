@@ -230,6 +230,10 @@
                   <label data-i18n="provider.userAgent">User-Agent</label>
                   <input type="text" id="p-useragent" class="cfg-text" placeholder="curl/7.79.1" autocomplete="off" spellcheck="false">
                 </div>
+                <div class="mc-form-row mc-form-row-top">
+                  <label data-i18n="provider.headers">自定义请求头</label>
+                  <textarea id="p-headers" class="cfg-text" rows="3" placeholder="x-opencode-session: {sessionId}" data-i18n-placeholder="provider.headersPh" title="每行一个「名称: 值」；值支持 {sessionId} 占位符（解析为当前会话 id）" data-i18n-title="provider.headersDesc" spellcheck="false"></textarea>
+                </div>
               </div>
               <div class="provider-actions" id="provider-actions">
                 <span class="provider-actions-spacer"></span>

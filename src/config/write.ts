@@ -265,6 +265,11 @@ export interface ProviderConfigPatch {
   baseURL?: string;
   apiKey?: string;
   userAgent?: string;
+  /**
+   * 自定义请求头（分组级）：值支持 `{sessionId}` 占位符（请求时解析为当前会话 id）。
+   * undefined = 保留旧值；null = 清除；对象 = 整体替换。
+   */
+  headers?: Record<string, string> | null;
 }
 
 export interface ProviderModelPatch {
@@ -321,7 +326,44 @@ function providersOf(obj: Record<string, unknown>): Record<string, Record<string
 }
 
 /**
- * 新建/更新 provider（provider 级共享 baseURL/apiKey/userAgent）。
+ * 解析自定义请求头输入（设置 → 模型配置）：对象（{ 名: 值 }）或多行文本（每行
+ * 「名称: 值」，# 开头为注释）。空输入/全非法 = null（清除）；未提供 = undefined
+ * （保留旧值）。值支持 `{sessionId}` 占位符，这里原样保留、请求发出前解析。
+ */
+export function parseHeadersInput(v: unknown): Record<string, string> | null | undefined {
+  if (v === undefined || v === null) return undefined;
+  const out: Record<string, string> = {};
+  const put = (k: string, val: string): void => {
+    const key = k.trim();
+    const sval = val.trim();
+    if (key && sval) out[key] = sval;
+  };
+  if (typeof v === 'string') {
+    for (const line of v.split('\n')) {
+      const s = line.trim();
+      if (!s || s.startsWith('#')) continue;
+      const i = s.indexOf(':');
+      if (i <= 0) continue;
+      put(s.slice(0, i), s.slice(i + 1));
+    }
+  } else if (Array.isArray(v)) {
+    for (const line of v.map(String)) {
+      const s = line.trim();
+      if (!s || s.startsWith('#')) continue;
+      const i = s.indexOf(':');
+      if (i <= 0) continue;
+      put(s.slice(0, i), s.slice(i + 1));
+    }
+  } else if (typeof v === 'object') {
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) put(k, String(val ?? ''));
+  } else {
+    return undefined;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * 新建/更新 provider（provider 级共享 baseURL/apiKey/userAgent/headers）。
  * 合并已有字段：缺省字段保留旧值；provider 名即 key（改名 = 删除后重建）。
  */
 export function persistProviderConfigToGlobal(patch: ProviderConfigPatch, _cfg: OmniConfig): PersistModelResult {
@@ -337,6 +379,10 @@ export function persistProviderConfigToGlobal(patch: ProviderConfigPatch, _cfg: 
   if (patch.baseURL !== undefined) cur.baseURL = patch.baseURL;
   if (patch.apiKey !== undefined) cur.apiKey = patch.apiKey;
   if (patch.userAgent !== undefined) cur.userAgent = patch.userAgent;
+  if (patch.headers !== undefined) {
+    if (patch.headers && Object.keys(patch.headers).length > 0) cur.headers = patch.headers;
+    else delete cur.headers;
+  }
   providers[provider] = cur;
   load.obj.providers = providers;
   return persistGlobalJson(file, load.obj, ` providers.${provider}`);
