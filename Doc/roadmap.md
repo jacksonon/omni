@@ -25,7 +25,7 @@
 - [x] **Electron 桌面应用（`omni`）**：独立 mac/win/linux 应用（内置后端，Electron 自带 Node 无需系统 Node）——GitHub Actions 打 tag 自动构建（mac zip / win exe / linux AppImage）并附 GitHub Release + npm 发布（5 平台子包 + 主包）
 - [x] **嵌套 AGENTS.md**：项目记忆按目录层级**嵌套加载**——从 cwd 向上收集所有 AGENTS.md 到 git 根/home 边界（每目录一层，各生成一条 system 消息、独立截断），越贴近 cwd 的层级排在越后面、权重越高（内层可覆盖/细化外层）
 - [x] **MCP 增强**：Resources 协议（资源列表/读取工具）+ Prompts 协议（提示词模板/获取工具）+ server instructions（注入系统提示）+ per-tool 审批模式（enabled/disabled 白黑名单 + defaultToolsApprovalMode 对接安全闸门）+ 运行时 add/remove + streamable HTTP 传输 + OAuth 登录（RFC 8414 + PKCE）
-- [x] **安全与信任**：工作区信任（未信任 = 只读 + 跳过项目级 hooks/skills/子代理/记忆；信任清单持久化）+ 危险命令正则库扩充与可配置（`dangerousPatterns`）+ OS 级沙箱（read-only / workspace-write，sandbox-exec / bwrap 包裹 run_command）
+- [x] **安全与信任**：工作区信任（未信任 = 只读 + 跳过 hooks/MCP/skills/子代理/记忆；信任清单持久化）+ 危险命令正则库扩充与可配置（`dangerousPatterns`）+ OS 级沙箱（read-only / workspace-write，sandbox-exec / bwrap 包裹 run_command）
 - [x] **技能系统增强**：安装即时生效（`/skill add` 后刷新注入清单）+ frontmatter 扩展（disable-model-invocation / context:fork 子代理执行 / agent / background）+ 技能市场（`--global` + 来源标记）+ 清单渐进披露（15 条截断 + 剩余提示）
 - [x] **会话管理增强**：`/fork` 会话分叉（从历史某点复制独立新会话，原会话保留）+ `/send` 跨会话消息（向指定会话发消息取结果，串行执行 + 结果注入当前上下文）
 - [x] **记忆与上下文增强**：渐进披露（memory_search/read 工具）+ 项目级自动写入（待提交片段 + /memory-apply）+ override/fallback 文件名 + 嵌套合计上限 + /init 子目录 + /status 记忆清单 + 记忆 TTL 归档 + TodoWrite/WebFetch/diagnose 工具 + repo map + 关键词语义检索

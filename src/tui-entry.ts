@@ -68,8 +68,9 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Headless 子命令（exec / mcp-server / web）恒走 console 路径——TUI 全屏没有机器可读输出、web 是服务模式
-  const headlessCmd = taskArgs[0] === 'exec' || taskArgs[0] === 'mcp-server' || taskArgs[0] === 'web';
+  // Headless / 终端子命令（exec / mcp-server / web / mini）恒走 console 路径——TUI 全屏没有机器可读输出、
+  // web 是服务模式、mini 本身就是纯终端模式（不能又被全屏 TUI 接管）
+  const headlessCmd = taskArgs[0] === 'exec' || taskArgs[0] === 'mcp-server' || taskArgs[0] === 'web' || taskArgs[0] === 'mini';
   const useTui = !headlessCmd && isBun && isTTY && !flags.noTui;
   if (!useTui) {
     await main((cfg) => new ConsoleOutput({ stream: true, showThinking: cfg.showThinking }));

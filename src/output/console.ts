@@ -17,7 +17,7 @@ import type { ThinkingDisplay } from '../agent/types.js';
 import { createThinkingDisplay } from '../agent/thinking.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
-import { bold, createSpinner, cyan, dim, green, isTTY, red, yellow, type Spinner } from '../ui.js';
+import { bold, createSpinner, cyan, dim, green, isTTY, red, useColor, yellow, type Spinner } from '../ui.js';
 import { inlineMathToText } from '../tui/markdown.js';
 import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, editToUnifiedDiff, isExitCodeZeroLine, unifiedDiff, wrapText } from './format.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
@@ -232,10 +232,10 @@ export class ConsoleOutput implements Output {
           const padNo = noStr.padStart(digits, ' ');
           if (dl.kind === 'rem') {
             const line = `  ${padNo} -  ${dl.text}`;
-            console.log(isTTY ? `\x1b[48;5;52m\x1b[38;5;203m${line}\x1b[0m` : line);
+            console.log(useColor ? `\x1b[48;5;52m\x1b[38;5;203m${line}\x1b[0m` : line);
           } else if (dl.kind === 'add') {
             const line = `  ${padNo} +  ${dl.text}`;
-            console.log(isTTY ? `\x1b[48;5;22m\x1b[38;5;120m${line}\x1b[0m` : line);
+            console.log(useColor ? `\x1b[48;5;22m\x1b[38;5;120m${line}\x1b[0m` : line);
           } else {
             const line = `  ${dim(padNo)}     ${dl.text}`;
             console.log(line);

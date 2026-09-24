@@ -21,7 +21,7 @@ Currently at **Beta (feature-complete)**: single-agent loop + 8 static tools (+ 
 - **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)
 - **8 static tools + runtime-injected tools**: static `read_file` / `write_file` / `edit_file` (targeted edits) / `list_directory` / `search_code` (ripgrep-first) / `run_command` (dangerous-command interception) / `skill` (on-demand SKILL.md loading) / `lsp` (definition/references/hover/symbol navigation) + runtime-injected `delegate` (subagent) + `mcp_*` (MCP external tools); plus context tools `memory_search` / `memory_read` (progressive memory disclosure) · `todo_write` (task list) · `web_fetch` / `web_search` (URL→text / web search) · `diagnose` (typecheck/lint feedback) · `ask_user` (questions) · `task_board` / `send_message` (team collaboration)
 - **Safety guardrails**: permission tiers (full / safe / ask / read) + dangerous-command confirmation (built-in + configurable `dangerousPatterns`) + approval UI + audit log
-- **Workspace trust**: first entry into an untrusted directory prompts for trust (TUI card / console); untrusted = read-only (`/permission` locked) + skips project-level hooks/skills/subagent defs/project memory (blocks repo-injected malicious config); trust list persisted in `~/.config/omni/trusted-workspaces.json`
+- **Workspace trust**: first entry into an untrusted directory prompts for trust (TUI card / console); untrusted = read-only (`/permission` locked) + skips hooks/MCP servers/skills/subagent defs/project memory (they can spawn commands or inject content — this is what blocks repo-injected malicious config); trust list persisted in `~/.config/omni/trusted-workspaces.json`
 - **OS-level sandbox**: `sandbox` config (`read-only` / `workspace-write` / `danger-full-access`) wraps `run_command` with macOS `sandbox-exec` or Linux `bwrap` (deny writes/network; workspace-write allows only cwd), degrading gracefully when unavailable
 - **Context management**: tool-result truncation, relevant-file preloading, long-conversation summarization
 - **Thinking display**: streamed live (kept on screen in dim color), full reasoning saved to `.omni/last-thinking.md`
@@ -44,6 +44,7 @@ Currently at **Beta (feature-complete)**: single-agent loop + 8 static tools (+ 
 - **Telemetry (P1-11)**: opt-in OTLP/HTTP JSON exporter (zero deps), prompt content redacted by default, fire-and-forget — config `telemetry`
 - **LSP feedback loop (P1-3)**: `diagnoseAfterEdit` runs a quick typecheck/lint after `write_file` and appends diagnostics so the model self-fixes; plus a hand-rolled minimal LSP client exposed as the `lsp` navigation tool (definition/hover/references/documentSymbol)
 - **2026-09 market-alignment batch**: dynamic workflow orchestration + team board/messaging + background subagents (`/orchestrate` `/tasks` `/team`) · plugin system (`plugin.json` bundling skills/subagents/hooks/MCP; `/plugin` + `omni plugin`) · session pin/archive + `/cd` working-directory switch · AI auto-approval (`/auto`; boundaries unchanged) · MCP elicitation/sampling reverse requests + paginated discovery + DCR/CIMD · secret redaction (session files/replay) · TUI Vim keybindings
+- **Mini mode (`omni mini`)**: a pure terminal CLI in Codex CLI style (rounded info box · `• Ran` bullets · `  └ ` output previews with `+N lines (ctrl+t to view transcript)` · per-turn `Worked for` rule) — same runtime, sessions and slash commands as `omni`, plain scrollback lines only
 - **Web mode (`omni web`)**: local backend service (REST + SSE, zero new dependencies) + browser UI — multi-session sidebar, live thinking/tool/answer streaming, approval & ask_user cards, model/permission/reasoning settings, cancel, per-turn token stats; works in both browser and the Electron desktop app
 - **Electron desktop app** (macOS / Windows / Linux): a standalone app bundling the web backend via Electron's own Node runtime (no system Node needed); built automatically by GitHub Actions on tag push (mac arm64/x64 zip, win x64 exe, linux x64 AppImage) and attached to the GitHub Release
 - **Layered config**: defaults → global config → project config → custom config → env vars → CLI args (JSONC with comments)
@@ -84,11 +85,13 @@ npm install
 npm run dev -- "list the files in the current directory"
 ```
 
-### Option 4: TUI development run (requires bun)
+### Option 4: TUI / mini development run (TUI needs bun; mini runs on Node)
 
 ```bash
-npm run dev:tui -- "task description"  # single task
-npm run dev:tui                        # interactive multi-turn conversation
+npm run dev:tui -- "task description"   # single task (full-screen TUI, needs bun + real TTY)
+npm run dev:tui                         # interactive multi-turn conversation
+npm run dev:mini -- "task description"  # pure terminal CLI (Codex CLI style, Node only)
+npm run dev:mini                        # interactive terminal session
 ```
 
 ### Option 5: Electron desktop app (macOS / Windows / Linux, no Node needed)
@@ -311,6 +314,33 @@ Runs omni as an **MCP server** over stdio JSON-RPC, exposing `omni_exec` (new se
 omni mcp-server     # stdio JSON-RPC: initialize / tools/list / tools/call
 ```
 
+### Mini mode (`omni mini`)
+
+A **pure terminal CLI mode** (Codex CLI style): same agent runtime, session persistence, safety gate,
+slash commands and interactive loop as `omni`, with a different rendering layer — a rounded info box,
+`• Ran <cmd>` bullets with `└` output previews, `› ` user lines, `• `-prefixed answers and a dim
+per-turn `Worked for 12s · 22:31` separator. Every line is a
+plain scrollback line: no cursor control, no alternate screen, safe to pipe and scroll back through.
+
+```bash
+omni mini                      # terminal session (info box · • Ran bullets · worked-for rule)
+omni mini "<task>"             # one-shot task in the same terminal style
+omni mini -c / -s <session-id> # resume a session in mini mode
+```
+
+| Element | Behavior |
+|---|---|
+| **info box** | `>_ Omni (vX)` / `model: <name> <effort>   /model to change` / `directory: ~/…` / `permissions:` (`full` → `YOLO mode`) + `sandbox:` when enabled, followed by a random `Tip:` |
+| **tool bullets** | `• Ran <cmd>` / `• Read <path>` / `• Edited <path>` / `• Searched for "x"` (MCP & unknown tools → `• Called`), then the first 3 output lines as `  └ …` |
+| **collapsed output** | beyond 3 lines: `+N lines (ctrl+t to view transcript)` — **Ctrl+T** prints the full trace ledger; write/edit show a compact `└ +A −R` |
+| **turn shape** | user echo `› …` with a blank line around it, answers as `• <first line>` + 2-space continuation indent (dim italic for reasoning), dim `Worked for 12s · 22:31` at turn end (elapsed shown once > 60s) |
+| **live** | `• Working (12s • esc to interrupt)` re-rendered in place while the model thinks; tool cells flip from `⠋ Running <cmd>` to a `• Ran <cmd>` bullet coloured green/red by exit status; command output streams in place (last 3 lines) |
+| **noise** | `退出码: 0` lines are filtered; a turn with no prose prints nothing |
+
+Because it reuses the interactive loop, every slash command (`/model`, `/permission`, `/plan`, `/undo`,
+`/btw`, `/session`, `/diff`, `/review`, …) works exactly as in `omni`. `omni mini` stays on the console
+path even under bun + real TTY (it is never taken over by the full-screen TUI).
+
 ### Web Mode (`omni web`)
 
 Runs omni as a **local backend service** (REST + SSE, zero extra dependencies) and serves a browser UI — modeled on `dsh web` / `opencode serve`: the same agent stack is now reachable from both the CLI (`omni` / `omni exec`) and the web page.
@@ -471,6 +501,7 @@ npm run typecheck             # TypeScript type checking
 npm run build                 # typecheck + tsc compile + bun single-file bundle
 npm run mock                  # local mock API server (port 8787, keyless validation)
 npm run dev:tui -- "<task>"    # full-screen TUI mode (bun + real TTY)
+npm run dev:mini -- "<task>"    # pure terminal CLI mode (Codex CLI style; `npm run dev:mini` = interactive)
 npm run tui:snapshot          # TUI snapshot tests (in-memory render assertions)
 npm run bundle:tui            # bundle the TUI (output: packages/omni-tui/dist/)
 npm run pack:tui              # one-click TUI npm package (version sync + bundle + npm pack → omni-tui-<version>.tgz)

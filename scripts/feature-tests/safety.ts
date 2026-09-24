@@ -1,11 +1,15 @@
 /**
  * 功能测试：安全与信任（权限分级 / 危险命令扩展 / 工作区信任 / OS 级沙箱）。
- * 纯函数断言（import 源文件），无需网络。
+ * 以纯函数断言为主（import 源文件，无需网络）；信任闸门另有一条端到端用例
+ * （未信任目录不拉起项目 mcpServers），需要本地 mock 服务。
  */
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { TestSuite } from './framework.js';
+import { isTTY, useColorFor } from '../../src/ui.js';
 import { dangerousCommand, gateTool, applyApprovalMode, isWriteOperation } from '../../src/safety/policy.js';
 import {
   addTrustedWorkspace,
@@ -23,6 +27,38 @@ import {
 
 const mkTool = (name: string, extra?: Record<string, unknown>) =>
   ({ name, description: '', parameters: {}, execute: async () => '', ...extra }) as never;
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function waitFor(fn: () => Promise<boolean>, timeoutMs = 10000, msg = 'timeout'): Promise<void> {
+  const t0 = Date.now();
+  for (;;) {
+    if (await fn().catch(() => false)) return;
+    if (Date.now() - t0 > timeoutMs) throw new Error(`waitFor: ${msg}`);
+    await sleep(150);
+  }
+}
+
+/** 以指定 cwd 拉起真实 CLI（tsx 用仓库内绝对路径，cwd 可指向临时工作区以验证配置发现） */
+function runCliIn(args: string[], cwd: string, env: Record<string, string>, timeoutMs = 60_000): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(path.join(ROOT, 'node_modules', '.bin', 'tsx'), [path.join(ROOT, 'src', 'index.ts'), ...args], {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
+  });
+}
 
 export function safetySuite(): TestSuite {
   const suite = new TestSuite('安全与信任（权限分级 / 危险命令 / 工作区信任 / 沙箱）');
@@ -100,6 +136,72 @@ export function safetySuite(): TestSuite {
       process.env.XDG_CONFIG_HOME = oldXdg;
       fs.rmSync(fakeXdg, { recursive: true, force: true });
     }
+  });
+
+  suite.test('工作区信任：未信任不拉起项目 mcpServers（信任后恢复）', async () => {
+    const xdg = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ft-trust-mcp-')));
+    // macOS 的 /var → /private/var 符号链接：子进程 process.cwd() 是 realpath，
+    // 信任清单/配置路径必须用同一形态，否则信任判定对不上（实测踩过）
+    const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ft-ws-')));
+    const marker = path.join(work, 'mcp-started.txt');
+    const port = 46_000 + Math.floor(Math.random() * 900);
+    // 项目配置里声明一条 stdio MCP server：启动即写标记文件（模拟"仓库自带的恶意 MCP"）。
+    // 包装脚本写标记后 exec 仓库自带的 mock MCP server——握手能成功，避免因
+    // 连接失败等满 CONNECT_TIMEOUT（15s）把用例拖成龟速。
+    const wrapper = path.join(work, 'mcp-marker.mjs');
+    fs.writeFileSync(
+      wrapper,
+      `import fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(marker)}, 'x');\nawait import(${JSON.stringify(path.join(ROOT, 'scripts', 'mock-mcp.mjs'))});\n`
+    );
+    fs.writeFileSync(
+      path.join(work, 'omni.json'),
+      JSON.stringify({ mcpServers: { marker: { command: 'node', args: [wrapper] } } })
+    );
+    const mock = spawn('node', [path.join(ROOT, 'scripts', 'mock-server.mjs')], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const env = {
+      XDG_CONFIG_HOME: xdg,
+      OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+      OMNI_API_KEY: 'sk-mock',
+      OMNI_MODEL: 'mock-model',
+      OMNI_PERMISSION: 'full',
+      OMNI_SHOW_THINKING: '0',
+    };
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      // ① 未信任（隔离 XDG、无信任清单）+ 非 TTY（审批 fail-safe 拒绝）→ 不得拉起 MCP
+      const untrusted = await runCliIn(['mini', '信任闸门验证'], work, env);
+      suite.assert(untrusted.code === 0, `未信任仍可正常跑完（退出码 ${untrusted.code}）`);
+      suite.assert(!fs.existsSync(marker), '未信任：项目 mcpServers 未被拉起（无标记文件）');
+      // ② 把该目录写入信任清单后重跑 → 恢复拉起
+      fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+      fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [work] }));
+      const trusted = await runCliIn(['mini', '信任闸门验证'], work, env);
+      suite.assert(trusted.code === 0, `信任后正常跑完（退出码 ${trusted.code}）`);
+      suite.assert(fs.existsSync(marker), '信任后：mcpServers 恢复拉起（标记文件已生成）');
+    } finally {
+      mock.kill();
+      fs.rmSync(xdg, { recursive: true, force: true });
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('终端/颜色解耦：NO_COLOR 只关颜色，不关交互（审批询问）', () => {
+    // 优先级：FORCE_COLOR > NO_COLOR > 终端判定
+    suite.assert(useColorFor({ NO_COLOR: '1' }, true) === false, 'NO_COLOR=1 + 终端 → 不上色');
+    suite.assert(useColorFor({ FORCE_COLOR: '1' }, false) === true, 'FORCE_COLOR=1 + 管道 → 强制上色');
+    suite.assert(useColorFor({}, true) === true, '默认：终端上色');
+    suite.assert(useColorFor({}, false) === false, '默认：管道不上色');
+    suite.assert(useColorFor({ FORCE_COLOR: '1', NO_COLOR: '1' }, true) === true, 'FORCE_COLOR 优先级高于 NO_COLOR');
+    // 关键回归：isTTY 只看终端，不受 NO_COLOR/FORCE_COLOR 影响
+    //（曾把三者揉在一起 → NO_COLOR=1 的真实终端里审批/信任询问被静默跳过、全部 fail-safe 拒绝）
+    suite.assert(isTTY === (process.stdout.isTTY === true), 'isTTY = 终端事实（与环境变量无关）');
   });
 
   suite.test('OS 级沙箱：模式解析 + 命令包装 + 降级', () => {

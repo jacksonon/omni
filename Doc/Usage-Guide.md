@@ -118,7 +118,9 @@ chmod +x omni-darwin-arm64 && ./omni-darwin-arm64 "<task>"
 npm install
 npm run dev -- "List the files in the current directory"   # Console edition (tsx)
 npm run dev:tui -- "<task>"                                # TUI edition (needs bun + real TTY)
-npm run dev:tui                                             # no task = interactive multi-turn
+npm run dev:tui                                            # no task = interactive multi-turn
+npm run dev:mini -- "<task>"                               # pure terminal CLI edition (Codex CLI style)
+npm run dev:mini                                           # no task = interactive terminal session
 ```
 
 ### Setting the API key
@@ -153,6 +155,17 @@ omni
 Enters a multi-turn loop: type after the `❯` prompt, context is kept across turns; `/exit` to quit,
 `/clear` to clear the screen, `/help` for the command list (full list in the
 [Command Reference](#8-command-reference)).
+
+### Mini mode (`omni mini`)
+
+A pure terminal CLI in Codex CLI style: same runtime, sessions, safety gate and slash commands as `omni`,
+different rendering — rounded info box, `• Ran <cmd>` bullets, `  └ ` output preview (first 3 lines, then
+`+N lines (ctrl+t to view transcript)`; Ctrl+T prints the full trace ledger), `› ` user lines, `• `-prefixed
+answers (2-space continuation indent, dim italic for reasoning) and a dim `Worked for 12s · 22:31` separator
+per turn. While the model works the status line `• Working (12s • esc to interrupt)` is re-rendered in place;
+tool cells start as `⠋ Running <cmd>` and end as a green/red `• Ran <cmd>` bullet. Everything is a plain scrollback line (no cursor control), so it can
+be piped or scrolled back; `omni mini "<task>"` runs a single task in the same style, and `omni mini -c` /
+`-s <id>` resumes a session.
 
 ### Full-screen TUI mode
 
@@ -207,6 +220,7 @@ defaults → global config → project config → custom config → environment 
 ```bash
 omni "<task>"                     # single run
 omni                              # interactive mode (auto full-screen TUI with real TTY + bun)
+omni mini                         # pure terminal CLI mode (Codex CLI style, never taken over by the TUI)
 omni -m glm-4-flash "<task>"       # explicit model (overrides config)
 omni -C ./my-config.json "<task>" # explicit config file (-c now means continue)
 omni --profile work "<task>"        # use a config profile (see 4.1)
@@ -354,8 +368,11 @@ The first time you enter a directory that is not yet trusted, omni asks whether 
 
 - **Untrusted = read-only.** The permission tier is locked to read-only and cannot be raised with
   `/permission`.
-- **Untrusted = skips project-level config.** Project hooks, skills, subagent definitions
-  (`.agents/subagents/*.md`) and project memory are all skipped.
+- **Untrusted = skips everything that can execute or inject.** Hooks, MCP servers, skills,
+  subagent definitions (`.agents/subagents/*.md`) and project memory are all skipped. MCP is
+  included because a stdio server spawns a command from the config at startup (and MCP tools
+  default to `auto` approval) — so it is skipped wholesale, global entries too, until you trust
+  the directory (`/mcp` says why).
 
 That second rule is the point of the mechanism: a cloned repository cannot smuggle in hooks or
 skills that execute on your machine the moment you run omni inside it.

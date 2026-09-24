@@ -21,7 +21,7 @@
 - **Agent 主循环**：流式调用 LLM → 工具调用（并行执行）→ 执行 → 结果回传，支持自我纠错（工具失败信息回传由模型自行修正）
 - **8 个静态工具 + 运行时注入工具**：静态 `read_file` / `write_file` / `edit_file`（局部编辑）/ `list_directory` / `search_code`（优先 ripgrep）/ `run_command`（危险命令拦截）/ `skill`（技能 SKILL.md 按需加载）/ `lsp`（定义·引用·悬停·符号导航）+ 运行时注入 `delegate`（子代理）+ `mcp_*`（MCP 外部工具）；另有上下文工具 `memory_search` / `memory_read`（记忆渐进披露）· `todo_write`（任务清单）· `web_fetch` / `web_search`（URL→文本 / 联网搜索）· `diagnose`（typecheck/lint 反馈）· `ask_user`（提问）· `task_board` / `send_message`（Team 协作）
 - **安全护栏**：权限分级（full / safe / ask / read）+ 危险命令确认（内置 + 可配置 `dangerousPatterns`）+ 审批 UI + 审计日志
-- **工作区信任**：首次进入未信任目录时提示信任（TUI 卡片 / console）；未信任 = 只读（`/permission` 锁定）+ 跳过项目级 hooks/技能/子代理定义/项目记忆（防仓库注入恶意配置）；信任清单持久化 `~/.config/omni/trusted-workspaces.json`
+- **工作区信任**：首次进入未信任目录时提示信任（TUI 卡片 / console）；未信任 = 只读（`/permission` 锁定）+ 跳过 hooks/MCP 服务器/技能/子代理定义/项目记忆（它们都能拉起命令或注入内容——这正是防仓库注入恶意配置的那道闸）；信任清单持久化 `~/.config/omni/trusted-workspaces.json`
 - **OS 级沙箱**：`sandbox` 配置（`read-only` / `workspace-write` / `danger-full-access`）用 macOS `sandbox-exec` 或 Linux `bwrap` 包裹 `run_command`（拒绝写/网络；workspace-write 仅允许工作目录写），平台不支持时降级并提示
 - **上下文管理**：工具结果截断、相关文件预载、长对话摘要压缩
 - **思考过程展示**：流式实时显示（浅色保留在屏幕），完整思考落盘 `.omni/last-thinking.md`
@@ -44,6 +44,7 @@
 - **遥测（P1-11）**：opt-in OTLP/HTTP JSON 导出（零依赖），prompt 默认脱敏，fire-and-forget——config `telemetry`
 - **LSP 反馈闭环（P1-3）**：`diagnoseAfterEdit` 在 write_file 后跑快速 typecheck/lint 并回传诊断，模型即时自修复；外加热手写最小 LSP 客户端的 `lsp` 导航工具（definition/hover/references/documentSymbol）
 - **2026-09 市场对齐批次**：动态工作流编排 + Team 共享看板/消息 + 后台子代理（`/orchestrate` `/tasks` `/team`）· 插件系统（`plugin.json` 打包技能/子代理/hooks/MCP，`/plugin` + `omni plugin`）· 会话 pin/archive + `/cd` 切换工作目录 · AI 自动审批（`/auto`，不改权限/沙箱边界）· MCP elicitation/sampling 反向请求 + 分页发现 + DCR/CIMD · 密钥脱敏（会话落盘/回放）· TUI Vim 键位
+- **纯终端 CLI 模式（`omni mini`）**：Codex CLI 形态的终端会话（圆角信息框 · `• Ran` 项目符号 · `  └ ` 输出预览 + `+N lines (ctrl+t to view transcript)` 折叠提示 · 每轮 `Worked for` 耗时线）——运行时/会话/斜杠命令与 `omni` 完全一致，只输出普通滚动行（无光标控制、可管道可回滚）
 - **Web 模式（`omni web`）**：本地后端服务（REST + SSE，零新增依赖）+ 浏览器界面——多会话侧栏、思考/工具/回答实时流式、审批与提问卡片、模型/权限/思考级别设置、取消、每轮 token 统计；浏览器与 Electron 桌面应用均可使用
 - **Electron 桌面应用**（macOS / Windows / Linux）：独立桌面应用，内置 web 后端（走 Electron 自带的 Node，无需系统安装 Node）；GitHub Actions 打 tag 自动构建（mac arm64/x64 zip、win x64 exe、linux x64 AppImage）并附到 GitHub Release
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
@@ -84,11 +85,13 @@ npm install
 npm run dev -- "列出当前目录的文件"
 ```
 
-### 方式四：TUI 开发运行（需 bun）
+### 方式四：TUI / mini 开发运行（TUI 需 bun；mini 只需 Node）
 
 ```bash
-npm run dev:tui -- "任务描述"  # 单次任务
-npm run dev:tui                # 交互式多轮对话
+npm run dev:tui -- "任务描述"   # 单次任务（全屏 TUI，需 bun + 真实 TTY）
+npm run dev:tui                 # 交互式多轮对话
+npm run dev:mini -- "任务描述"  # 纯终端 CLI 模式（Codex 形态，Node 即可）
+npm run dev:mini                # 交互式终端会话
 ```
 
 ### 方式五：Electron 桌面应用（macOS / Windows / Linux，无需 Node）
@@ -310,6 +313,30 @@ omni exec resume <session_id> "接着上次继续"
 omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 ```
 
+### 纯终端 CLI 模式（`omni mini`）
+
+Codex CLI 形态的**纯终端模式**：与 `omni` 共用同一套 Agent 运行时、会话持久化、安全闸门、斜杠命令
+与交互循环，只换渲染层——圆角信息框、`• Ran <命令>` 项目符号 + `└` 输出预览、`› ` 用户行、`• ` 起头的正文、
+耗时线。所有内容都是普通滚动行：不做光标控制、不进备用屏，可安全重定向、可回滚查看。
+
+```bash
+omni mini                      # 终端会话（信息框 · • Ran 项目符号 · 回合耗时线）
+omni mini "<任务>"              # 单次任务（同一终端形态）
+omni mini -c / -s <会话id>      # 恢复会话继续（Ctrl+T 打印完整轨迹账本）
+```
+
+| 元素 | 行为 |
+|---|---|
+| **信息框** | `>_ Omni (vX)` / `model: <名称> <思考级别>   /model to change` / `directory: ~/…` / `permissions:`（`full` → `YOLO mode`），启用沙箱时加一行 `sandbox:`；框下随机一条 `Tip:` |
+| **工具项目符号** | `• Ran <命令>` / `• Read <路径>` / `• Edited <路径>` / `• Searched for "x"`（MCP 等动态工具 → `• Called`），下接前 3 行输出 `  └ …` |
+| **输出折叠** | 超过 3 行 → `+N lines (ctrl+t to view transcript)`，**Ctrl+T** 打印完整轨迹账本；写/改文件显示紧凑 `└ +A −R` |
+| **回合形态** | 用户输入 `› …`（前后空行）、正文 `• 首行` + 续行 2 空格缩进（思考为 dim italic）、回合结束 dim 行 `Worked for 12s · 22:31`（耗时 >60s 才显示） |
+| **失败处理** | 工具失败用红色 `✗` 起头（而非 `└`）；过滤 `退出码: 0` 噪声行 |
+
+因为复用交互循环，全部斜杠命令（`/model`、`/permission`、`/plan`、`/undo`、`/btw`、`/session`、
+`/diff`、`/review` 等）行为与 `omni` 一致。`omni mini` 恒走 console 路径——即便在 bun + 真实 TTY 下
+也不会被全屏 TUI 接管。
+
 ### Web 模式（`omni web`）
 
 把 omni 跑成**本地后端服务**（REST + SSE，零新增依赖）并托管浏览器界面——对标 `dsh web` / `opencode serve`：同一个 Agent 栈现在既可以从 CLI（`omni` / `omni exec`）访问，也可以从网页访问。
@@ -463,6 +490,7 @@ npm run typecheck             # TypeScript 类型检查
 npm run build                 # typecheck + tsc 编译 + bun 打包单文件
 npm run mock                  # 本地 mock API 服务器（端口 8787，无 Key 验证）
 npm run dev:tui -- "<任务>"    # TUI 全屏模式（bun + 真实 TTY）
+npm run dev:mini -- "<任务>"    # 纯终端 CLI 模式（Codex 形态；不带参数 = 交互会话）
 npm run tui:snapshot          # TUI 快照验证（内存渲染断言）
 npm run bundle:tui            # 打包 TUI bundle（产物 packages/omni-tui/dist/）
 npm run pack:tui              # 一键打包 TUI npm 包（版本同步 + bundle + npm pack → omni-tui-<版本>.tgz）

@@ -25,6 +25,7 @@ import { createSession, findSessionById, formatSessionInfo, latestSession, listS
 import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
+import { runMiniInteractive, runMiniOneShot } from './cli/mini.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
@@ -33,6 +34,7 @@ import { setEnabledPlugins, pluginHooks, pluginMcpServers } from './agent/plugin
 import { TeamBoard } from './agent/team.js';
 import { createTaskBoardTool, createSendMessageTool } from './tools/team-tools.js';
 import { formatToolCall } from './output/format.js';
+import { MiniOutput } from './output/mini.js';
 import type { Output } from './output/types.js';
 import type { PermissionTier } from './safety/policy.js';
 import { SubagentSemaphore } from './agent/semaphore.js';
@@ -145,10 +147,27 @@ export function prepareRun(
     apiKey = 'missing-api-key'; // 占位：OpenAI SDK 构造时要求非空；发请求时才会 401
   }
   if (!apiKey) {
+    // 诊断信息：配置分层（全局 → 项目 → 自定义 → 环境变量）合并后，很容易出现
+    // 「项目配置改了 model，但该模型没挂在任何 providers 分组下」——只报「未找到 API Key」
+    // 用户无从下手（实测踩过：项目 omni.json 写 model: hy3，而 hy3 只在 modelCatalog 里）。
+    // 这里把「哪些模型已挂载」和「配置来源（优先级递增）」一并列出。
+    const groups = Object.entries(cfg.providers ?? {})
+      .map(([name, g]) => ({ name, models: Object.keys(g.models ?? {}) }))
+      .filter((g) => g.models.length > 0);
+    const catalog = groups.map(
+      (g) => `  · ${g.name}: ${g.models.slice(0, 8).join(', ')}${g.models.length > 8 ? ` …（共 ${g.models.length} 个）` : ''}`
+    );
+    const mounted = groups.some((g) => g.models.includes(cfg.model));
     throw new Error(
       `未找到 API Key。设置方式：
   · 配置文件 omni.json / omni.jsonc 的 providers 分组（providers."<组>".apiKey，模型 ${cfg.model} 须在该分组 models 中）
   · 环境变量 OMNI_API_KEY（或 OPENAI_API_KEY）
+${
+  mounted
+    ? ''
+    : `模型 ${cfg.model} 未挂在任何 providers 分组的 models 下——只有分组的 models 提供端点/密钥，modelCatalog（/model fetch 的目录快照）不算。\n`
+}${catalog.length > 0 ? `providers 已挂载的模型：\n${catalog.join('\n')}\n` : ''}生效配置来源（越靠后优先级越高）：${cfg.sources.length ? cfg.sources.join(' → ') : '默认值'}
+临时换个可用模型：-m <模型名>；会话内可用 /model 切换
 更多帮助见 omni --help`
     );
   }
@@ -182,8 +201,9 @@ export async function resolveWorkspaceTrust(cwd: string, output: Output): Promis
       tool: 'workspace-trust',
       summary: cwd,
       reason:
-        '首次进入未信任目录：信任后允许写入，并加载项目记忆（AGENTS.md）/技能/子代理定义与 hooks；' +
-        '不信任则以只读模式运行（所有写操作被拒绝，项目级配置不加载）',
+        '首次进入未信任目录：信任后允许写入，并加载项目记忆（AGENTS.md）/技能/子代理定义/MCP 服务器与 hooks；' +
+        '不信任则以只读模式运行（拒绝所有写操作，且 hooks/MCP 服务器/技能/子代理定义/项目记忆都不加载；' +
+        '/permission 锁定为只读）',
     });
     if (ok) addTrustedWorkspace(cwd);
     return ok;
@@ -200,7 +220,8 @@ export async function resolveWorkspaceTrust(cwd: string, output: Output): Promis
  * · 动态工具链：静态 5 工具 + delegate 子代理工具（可关）+ MCP 外部工具（配置了才连）
  * · 上下文管理：相关文件预载 + 长对话摘要压缩（按配置注入 runOpts.context）
  * · 工作区信任（第九节）：opts.trust=false（未信任目录）→ 强制 read 档位 +
- *   跳过项目级 hooks/skills/子代理定义/项目记忆（防仓库注入恶意配置）；
+ *   跳过 hooks/MCP 服务器/技能/子代理定义/项目记忆——它们都能执行命令或注入内容，
+ *   是"仓库注入恶意配置"的载体（防注入，信任目录后全部恢复）；
  * · OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap）。
  */
 export async function attachRuntime(
@@ -480,12 +501,16 @@ export async function attachRuntime(
   // 基础工具链（静态 + delegate，不含 MCP）：/mcp 重连时以此为基底重建 tools
   ctx.runOpts.baseTools = toolchain;
   // MCP 服务器：插件声明 + 用户配置（同名用户配置优先），2026-09 PLG
-  const mergedMcpServers = { ...pluginMcpServers(), ...(cfg.mcpServers ?? {}) };
+  // **未信任目录整体跳过**（与 hooks 同口径）：stdio server 会在启动时拉起配置里的任意
+  // 命令、HTTP server 可外联，且 MCP 工具的默认审批模式是 auto——同属"仓库注入恶意配置"
+  // 的载体（项目 omni.json 一条 mcpServers 即可，无需任何审批）。配置层无法区分某个
+  // server 来自全局还是项目，故一并跳过，信任目录后恢复（/mcp 会提示原因）。
+  const mergedMcpServers = trusted ? { ...pluginMcpServers(), ...(cfg.mcpServers ?? {}) } : {};
   ctx.runOpts.mcpServers = mergedMcpServers;
   // 发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）；
   // 反向请求处理器（elicitation→askUser；sampling→当前模型）声明 2026-07-28 能力
   const mcpHandlers = createMcpHandlers({ client, model: cfg.model, askUser });
-  const mcpHandles = await discoverMcpServers(mergedMcpServers, mcpHandlers);
+  const mcpHandles = trusted ? await discoverMcpServers(mergedMcpServers, mcpHandlers) : [];
   // 组装 MCP 工具链（server 工具 + Resources/Prompts 辅助工具）
   const mcpTools = buildMcpTools(mcpHandles);
   toolchain.push(...mcpTools);
@@ -664,9 +689,16 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     return; // watch 常驻：runWatch 内部监听循环保持进程存活
   }
 
+  // omni mini：纯终端 CLI 模式（Codex CLI 形态）——同一套运行时/交互循环/斜杠命令，
+  // 只换渲染层（MiniOutput：圆角信息框 + `• Ran` 项目符号 + 回合分隔线）。
+  const miniMode = taskArgs[0] === 'mini';
+  if (miniMode) taskArgs.shift();
+
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
-  const output = makeOutput(cfg);
+  const output: Output = miniMode
+    ? new MiniOutput({ showThinking: cfg.showThinking, stream: true })
+    : makeOutput(cfg);
   // 工作区信任（第九节）：首次进入未信任目录时询问；未信任 → 只读 + 跳过项目级配置
   const trust = await resolveWorkspaceTrust(process.cwd(), output);
   await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
@@ -692,9 +724,18 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     }
     messages.push({ role: 'user', content: userPrompt });
     await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
+    if (miniMode) {
+      // mini 单次任务：回显输入 + 回合耗时线（与交互模式同一终端形态）
+      await runMiniOneShot(client, cfg.model, messages, runOpts, output, singleTask);
+      return;
+    }
     await runAgent(client, cfg.model, messages, runOpts, output);
     return;
   }
 
+  if (miniMode) {
+    await runMiniInteractive(client, cfg.model, messages, runOpts, output);
+    return;
+  }
   await runInteractive(client, cfg.model, messages, runOpts, output);
 }

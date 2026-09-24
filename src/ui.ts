@@ -8,21 +8,37 @@
 
 /** 是否运行在 bun 运行时（OpenTUI 全屏 TUI 依赖 bun 的原生 FFI） */
 export const isBun: boolean = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
-export const isTTY: boolean =
-  process.env.FORCE_COLOR === '1'
-    ? true
-    : process.env.NO_COLOR === '1'
-      ? false
-      : process.stdout.isTTY === true;
+
+/**
+ * 是否接在真实终端上——决定"能不能交互/能不能做光标控制"（审批询问、ask_user、
+ * spinner、实时输出、窗口标题），**与是否上色无关**。
+ * ⚠️ 不要把 NO_COLOR/FORCE_COLOR 掺进来：`NO_COLOR=1` 的真实终端里，审批/信任询问
+ * 会被静默跳过（fail-safe 拒绝一切），`FORCE_COLOR=1` 的管道里则会误当真终端去询问。
+ */
+export const isTTY: boolean = process.stdout.isTTY === true;
+
+/**
+ * 是否输出 ANSI 颜色：真实终端且未设 NO_COLOR；FORCE_COLOR=1 强制开启（优先级最高），
+ * NO_COLOR=1 强制关闭。仅颜色决策用这个，交互决策用 isTTY。
+ */
+export function useColorFor(env: { FORCE_COLOR?: string; NO_COLOR?: string }, stdoutIsTTY: boolean): boolean {
+  if (env.FORCE_COLOR === '1') return true; // 强制开启（优先级最高）
+  if (env.NO_COLOR === '1') return false; // 强制关闭
+  return stdoutIsTTY;
+}
+
+export const useColor: boolean = useColorFor(process.env, isTTY);
 
 const wrap =
   (code: string) =>
   (s: string): string =>
-    isTTY ? `\x1b[${code}m${s}\x1b[0m` : s;
+    useColor ? `\x1b[${code}m${s}\x1b[0m` : s;
 
 export const bold = wrap('1');
 export const dim = wrap('2');
+export const italic = wrap('3');
 export const cyan = wrap('36');
+export const magenta = wrap('35');
 export const green = wrap('32');
 export const yellow = wrap('33');
 export const red = wrap('31');

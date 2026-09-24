@@ -128,6 +128,11 @@ Headless (compose omni as a Unix command, like codex exec / claude -p):
   omni mcp-server                Run as MCP server (stdio JSON-RPC: omni_exec / omni_reply tools)
   headless exit code: 0 = done; 1 = request failed / max steps reached / schema mismatch (use &&/|| to branch)
 
+Pure terminal CLI (Codex-style rendering; same runtime and slash commands as interactive mode):
+  omni mini                      Terminal session (rounded info box · • Ran bullets · worked-for rule per turn)
+  omni mini "<task>"             One-shot task rendered in the same terminal style
+  omni mini -c / -s <session-id> Resume a session in mini mode (Ctrl+T prints the full trace ledger)
+
 Web service (local backend + web UI: CLI and browser share the same backend):
   omni web                       Start backend service (REST + SSE) and serve Web UI (default http://127.0.0.1:3080)
   omni web --host 0.0.0.0 --token <t>   Remote access (non-loopback requires a token; open http://host:port/?token=<t>)
@@ -195,6 +200,11 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   omni exec resume <会话id> "<继续任务>"   恢复 headless 会话继续（json 输出带 session_id）
   omni mcp-server                作为 MCP server（stdio JSON-RPC：omni_exec / omni_reply 工具）
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
+
+纯终端 CLI（Codex 形态渲染；运行时与斜杠命令跟交互模式完全一致）：
+  omni mini                      终端会话（圆角信息框 · • Ran 项目符号 · 每轮耗时线）
+  omni mini "<任务>"             单次任务（同一终端形态）
+  omni mini -c / -s <会话id>     恢复会话继续（Ctrl+T 打印完整轨迹账本）
 
 Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访问同一个后端）：
   omni web                       启动后端服务（REST + SSE）并托管 Web UI（默认 http://127.0.0.1:3080）

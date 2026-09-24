@@ -69,9 +69,11 @@ export async function runInteractive(
   model: string,
   messages: ChatCompletionMessageParam[],
   runOpts: RunOptions,
-  out: Output
+  out: Output,
+  /** 入口定制（omni mini）：intro 控制是否打印内置开场提示，prompt 覆盖输入提示符 */
+  opts: { intro?: boolean; prompt?: string } = {}
 ): Promise<void> {
-  const rl = readline.createInterface({ input, output, prompt: cyan('omni> ') });
+  const rl = readline.createInterface({ input, output, prompt: opts.prompt ?? cyan('omni> ') });
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   const safePrompt = () => {
     try {
@@ -125,7 +127,7 @@ export async function runInteractive(
     // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
     await runOpts.events?.flush().catch(() => {});
   };
-  console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
+  if (opts.intro !== false) console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
   safePrompt();
   for await (const line of rl) {
     const cmd = line.trim();
@@ -791,6 +793,10 @@ export async function runInteractive(
       const handles = runOpts.mcpHandles ?? [];
       const arg = cmd.slice(4).trim(); // 去掉 '/mcp '
       const sub = arg.split(/\s+/)[0] ?? '';
+      // 未信任目录：MCP/hooks/技能/子代理整体跳过（attachRuntime 的信任闸门）
+      if (runOpts.trusted === false) {
+        console.log(yellow('当前目录未受信任：MCP 服务器已跳过（hooks/技能/子代理定义同样不加载）——信任该目录后恢复'));
+      }
       if (sub === 'reconnect') {
         console.log(dim('正在重连 MCP 服务器…'));
         closeMcpClients();

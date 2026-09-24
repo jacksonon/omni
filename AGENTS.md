@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
+当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）+ 纯终端 CLI 模式（`omni mini`，Codex CLI 形态）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -21,6 +21,7 @@ npm run build             # typecheck + tsc 编译 + bun 打包单文件（dist/
 npm start -- "<任务>"     # 运行 tsc 产物（node dist/index.js）
 npm run mock              # 启动本地 mock API 服务器（无 Key 端到端验证，端口 8787）
 npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
+npm run dev:mini             # 纯终端 CLI 模式（Codex CLI 形态；不带参数 = 交互会话；bun/TTY 下也不进全屏 TUI）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 npm run dev:web           # Web 服务（本地后端 + 网页界面，默认 3080 端口，不自动开浏览器）
 npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
@@ -196,6 +197,12 @@ src/
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
+    mini.ts             # **纯终端 CLI 模式（`omni mini`）**：复用 runInteractive（全部斜杠命令/审批/会话/撤销栈），
+                        #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：内容自适应圆角框 / `› ` 用户行 /
+                        #   `• ` 正文+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
+                        #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
+                        #   + Ctrl+T 完整轨迹账本；
+                        #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）
   agent/
     loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
     thinking.ts         # 思考过程：流式显示（浅色保留在屏幕，不折叠）/落盘（reasoning + reasoningMs 耗时字段提取，恢复会话回放 thinking 块带「· 耗时」头行）
@@ -225,7 +232,7 @@ src/
     index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用）
     policy.ts           # 权限分级（full/safe/ask/read）+ 危险命令检测（内置 + 扩展正则）+ per-tool 审批模式
     audit.ts            # 审计日志落盘（~/.config/omni/audit.log）
-    trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删；未信任 = 只读 + 跳过项目级配置
+    trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删；未信任 = 只读 + 跳过 hooks/MCP/技能/子代理/项目记忆（能执行或注入的一律不加载）
     sandbox.ts          # **OS 级沙箱**：read-only / workspace-write（macOS sandbox-exec / Linux bwrap 包裹 run_command）；Windows（2026-09）显式不支持（AppContainer 需原生模块）+ fail-closed 语义
     auto-review.ts      # **AI 自动审批（2026-09）**：createAutoReviewer（模型审阅 approve/deny，失败回退人工）+ parseAutoReviewVerdict
   hooks/

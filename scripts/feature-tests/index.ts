@@ -19,6 +19,7 @@ import { memoryEnhanceSuite } from './memory-enhance.js';
 import { rewindSuite } from './rewind.js';
 import { extras2026Suite } from './extras-2026-09.js';
 import { btwSuite } from './btw.js';
+import { miniSuite } from './mini.js';
 
 console.log('🧪 Omni 功能回归测试');
 console.log('═══════════════════════════════════════════');
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
     rewindSuite(),
     extras2026Suite(),
     btwSuite(),
+    miniSuite(),
     coreSuite(),
   ];
 

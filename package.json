@@ -71,6 +71,7 @@
     "dev": "tsx src/index.ts",
     "dev:tui": "bun run ./src/tui-entry.ts",
     "dev:web": "tsx src/index.ts web --no-open",
+    "dev:mini": "tsx src/index.ts mini",
     "web:vendor": "bun build ./web/vendor-entry.mjs --target=browser --outfile=web/vendor.js --minify",
     "web:sync": "npm run web:vendor && node scripts/web-sync.mjs",
     "probe:web": "tsx scripts/probe-web.ts",

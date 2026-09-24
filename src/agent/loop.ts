@@ -18,7 +18,7 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, findEndpointByName, getClient, resolveModelRoute, withRequestSession, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
-import { formatToolCall, previewOutput, countDiffLines } from '../output/format.js';
+import { formatToolCall, previewOutput, countDiffLines, isExitCodeZeroLine } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
@@ -331,6 +331,15 @@ export function buildToolSchemas(
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }))
     .sort((a, b) => a.function.name.localeCompare(b.function.name));
+}
+
+/** 展示层可见行数（非空 + 非「退出码: 0」）——mini 的折叠提示基数，与 previewOutput 过滤口径一致 */
+function displayLines(result: string): number {
+  let n = 0;
+  for (const line of result.split('\n')) {
+    if (line.trim() !== '' && !isExitCodeZeroLine(line)) n++;
+  }
+  return n;
 }
 
 /**
@@ -1004,7 +1013,14 @@ async function runAgentInner(
                 },
               };
             }
-            output.onToolResult(!TOOL_ERROR_PREFIX.test(result), result.length, previewOutput(result), detail, seq);
+            output.onToolResult(
+              !TOOL_ERROR_PREFIX.test(result),
+              result.length,
+              previewOutput(result),
+              detail,
+              seq,
+              displayLines(result)
+            );
             // 轨迹：工具结果（与 tool/call 按 callId 配对；耗时 = result - call）
             opts.events?.toolResult(call.id, !TOOL_ERROR_PREFIX.test(result), result.length);
             return result;
