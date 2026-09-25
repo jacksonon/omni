@@ -299,12 +299,20 @@ class LiveBlock {
     return this.enabled;
   }
 
-  /** 设置后缀行（内容变化时立即按当前主体重绘） */
+  /**
+   * 设置后缀行（轮内打的字）。**主体为空时也要画**——否则正文流式/单元格提交的间隙
+   * 里用户会看不到自己刚打的字（用户实测反馈"回答时输入的看不到了"）。
+   */
   setSuffix(suffix: string[]): void {
     const same = suffix.length === this.suffix.length && suffix.every((l, i) => l === this.suffix[i]);
     if (same) return;
     this.suffix = suffix;
-    if (this.body.length > 0) this.render([...this.body, ...suffix]);
+    const lines = [...this.body, ...suffix];
+    if (lines.length === 0) {
+      this.clear();
+      return;
+    }
+    this.render(lines);
   }
 
   /** 用新内容替换当前区块（光标停在区块下一行行首） */
@@ -335,10 +343,11 @@ class LiveBlock {
     this.body = [];
   }
 
-  /** 清掉区块后把最终内容写入滚动区（带换行、可回滚） */
+  /** 清掉区块后把最终内容写入滚动区（带换行、可回滚）；随后把后缀行补回（保持可见） */
   commit(lines: string[]): void {
     if (this.enabled && this.lines.length > 0) this.clear();
     for (const l of lines) console.log(l);
+    if (this.enabled && this.suffix.length > 0) this.render([...this.suffix]);
   }
 }
 
@@ -439,13 +448,22 @@ export class MiniOutput implements Output {
    * （否则输入会显示两遍），并打印输入区提示行（单次任务模式无提示符，不打印）。
    */
   // ── 轮内输入接管（raw mode） ────────────────────────────────────
-  private rl: { pause(): void; resume(): void; write(data: string): void } | null = null;
+  private rl: {
+    pause(): void;
+    resume(): void;
+    write(data: string): void;
+    /** preserveCursor=true 时不要把光标重置为 0（否则用户退格删不掉刚放回来的字） */
+    prompt(preserveCursor?: boolean): void;
+  } | null = null;
   private queued = '';
   private capturing = false;
   private yieldedInput = false;
   /** 轮内是否按过 Enter：按了 → 轮末把整行发出；没按 → 只放回输入行等用户自己确认 */
   private queuedSubmit = false;
-  /** 上一行是"停在输入行"的轮内输入：提交时 readline 会在回车处重渲染一次，需多擦一行 */
+  /**
+   * 上一行是"轮内打字停在输入行"的内容：提交时 readline 会在回车处把整行**再重画一次**
+   * （编辑行 + 重画行），所以回显要擦两行才不会留下重复的一份。
+   */
   private parkedLine = false;
   /** 轮内被临时摘下的 readline 监听器（轮末原样装回） */
   private savedListeners: { event: string; listener: StdinListener }[] | null = null;
@@ -507,17 +525,16 @@ export class MiniOutput implements Output {
     this.queued = '';
     this.queuedSubmit = false;
     if (flush && pending) {
-      // 以"合成键入"的方式把文字还给 readline（等价于用户真的敲了这些键）：
-      // · 没按过 Enter → 只补文字，readline 把它放进输入行并回显 → 停在提示符后等用户确认
-      //   （用户实测要求：正在回答时打的字不该自动发出去）
-      // · 按过 Enter → 补文字 + 换行 → readline 立即产出该行，循环把它当作下一轮用户消息
-      // 注意不能用 rl.write()：它塞进行缓冲但不渲染（实测屏幕上什么也看不到）。
-      // 推迟到下一个 tick：交互循环会在 onTurnEnd 之后立刻 safePrompt()，等提示符画好
-      // 再注入，readline 就是在提示符后原地补字（否则提示符行与注入行会各画一次、出现两行）。
-      if (!submit) this.parkedLine = true;
-      setImmediate(() => {
-        process.stdin.emit('data', Buffer.from(`${pending}${submit ? '\n' : ''}`, 'utf8'));
-      });
+      // 用 rl.write 把文字放回 readline 的**行缓冲**（不是合成 stdin 事件——那样光标会错位、
+      // 退格删不掉）：
+      // · 没按过 Enter → rl.write(文字) + prompt(true)：文字留在输入行、光标停在末尾，
+      //   用户可以继续编辑/退格；只有他自己按 Enter 才会发出（用户实测要求）
+      // · 按过 Enter → rl.write(文字 + 换行)：readline 立即产出该行，作为下一轮用户消息
+      this.rl?.write(submit ? `${pending}\n` : pending);
+      if (!submit) {
+        this.parkedLine = true;
+        this.rl?.prompt(true); // preserveCursor：不重置光标，否则退格无效
+      }
     }
   }
 
@@ -533,7 +550,12 @@ export class MiniOutput implements Output {
   }
 
   /** readline 句柄注入（runInteractive 的 onRl 回调） */
-  attachInput(rl: { pause(): void; resume(): void; write(data: string): void }): void {
+  attachInput(rl: {
+    pause(): void;
+    resume(): void;
+    write(data: string): void;
+    prompt(preserveCursor?: boolean): void;
+  }): void {
     this.rl = rl;
   }
 
@@ -787,8 +809,10 @@ export class MiniOutput implements Output {
     // 交互模式：readline 已经回显过这条输入，这里擦掉它——让"输入 → 提交 → 落进对话流"
     // 只出现一次（codex 的 composer 提交后也是这个观感）。两种来源的回显位置不同：
     // ① 用户键入并回车 → 回显在**上一行**；② 我们轮末 rl.write 回填 → 回显在**当前行**。
+    // 擦掉 readline 的回显，只留对话流里的单元格：
+    // · 轮内打字停到输入行的那份 → 编辑行 + 回车重画行 = 两行
+    // · 直接在提示符上键入回车 → 一行
     if (this.interactive && this.live.active) {
-      // 停在输入行的那份，提交时 readline 会在回车处重渲染 → 屏幕上留两行同样内容，一起擦掉
       const up = this.parkedLine ? 2 : 1;
       this.parkedLine = false;
       process.stdout.write(`\x1b[${up}A\r\x1b[0J`);

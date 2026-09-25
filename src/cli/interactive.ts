@@ -75,7 +75,7 @@ export async function runInteractive(
   opts: {
     intro?: boolean;
     prompt?: string;
-    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void }) => void;
+    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void; prompt(preserveCursor?: boolean): void }) => void;
   } = {}
 ): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: opts.prompt ?? cyan('omni> ') });
