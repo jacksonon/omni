@@ -28,7 +28,6 @@ interface LooseStdin {
 import { homedir } from 'node:os';
 import { stdin as input, stderr as errOut } from 'node:process';
 import readline from 'node:readline/promises';
-import { Writable } from 'node:stream';
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
 import { printHelp } from '../cli/args.js';
@@ -440,18 +439,14 @@ export class MiniOutput implements Output {
    * （否则输入会显示两遍），并打印输入区提示行（单次任务模式无提示符，不打印）。
    */
   // ── 轮内输入接管（raw mode） ────────────────────────────────────
-  private rl: {
-    pause(): void;
-    resume(): void;
-    write(data: string): void;
-    /** readline 的输出流（回填时临时换成丢弃流以静音它自己的回显） */
-    output?: NodeJS.WritableStream;
-  } | null = null;
+  private rl: { pause(): void; resume(): void; write(data: string): void } | null = null;
   private queued = '';
   private capturing = false;
   private yieldedInput = false;
-  /** 下一行由排队回填产生：readline 的回显留在**当前行**（键入路径在上一行），清除方式不同 */
-  private queuedFlushPending = false;
+  /** 轮内是否按过 Enter：按了 → 轮末把整行发出；没按 → 只放回输入行等用户自己确认 */
+  private queuedSubmit = false;
+  /** 上一行是"停在输入行"的轮内输入：提交时 readline 会在回车处重渲染一次，需多擦一行 */
+  private parkedLine = false;
   /** 轮内被临时摘下的 readline 监听器（轮末原样装回） */
   private savedListeners: { event: string; listener: StdinListener }[] | null = null;
 
@@ -462,22 +457,26 @@ export class MiniOutput implements Output {
    */
   private onInput = (chunk: Buffer | string): void => {
     for (const ch of String(chunk)) {
-      if (ch === '\r' || ch === '\n') continue;
+      if (ch === '\r' || ch === '\n') {
+        this.queuedSubmit = true;
+        continue;
+      }
       if (ch === '\x7f' || ch === '\b') this.queued = this.queued.slice(0, -1);
       else if (ch === '\x15') this.queued = '';
       else if (ch === '\x03') {
-        this.endInputCapture();
+        this.endInputCapture(false); // 中断：丢弃轮内打的字，还原终端后按原行为抛 SIGINT
         process.kill(process.pid, 'SIGINT');
         return;
       } else if (ch >= ' ') this.queued += ch;
     }
-    this.live.setSuffix(this.queued ? [`${PREFIX}${dim(`↳ ${this.queued}`)}`] : []);
+    this.live.setSuffix(this.queued ? [`${PREFIX}${dim(this.queuedSubmit ? `↳ ${this.queued} ↵` : `↳ ${this.queued}`)}`] : []);
   };
 
   private beginInputCapture(): void {
     if (this.capturing || this.yieldedInput) return;
     if (!this.rl || !isTTY || typeof process.stdin.setRawMode !== 'function') return;
     this.capturing = true;
+    this.queuedSubmit = false;
     // 关键：把 readline（含 keypress 解码器）的 stdin 监听器**整组摘下来**。
     // 只 rl.pause() 不行——随后为了让自己的 data 监听器收到字节而 stdin.resume()，
     // 会把 readline 的渲染一并唤醒，它就把键入字符画进流式回答里（实测踩过）。
@@ -504,17 +503,21 @@ export class MiniOutput implements Output {
     this.savedListeners = null;
     this.live.setSuffix([]);
     const pending = this.queued;
+    const submit = this.queuedSubmit;
     this.queued = '';
-    if (flush && pending.trim()) {
-      console.log('');
-      // 回填时把 readline 的输出临时接到丢弃流：它默认会把这一行**再回显一遍**
-      // （`rl.write` → 渲染 prompt+文本），与我们随后的 `› 原文` 单元格重复。
-      // 静音后屏幕上只剩对话流里的那一份（Node 的 rl.output 是实例属性，可换）。
-      const sink = new Writable({ write(_c, _e, cb) { cb(); } });
-      const real = this.rl?.output;
-      if (real) this.rl!.output = sink;
-      this.rl?.write(`${pending}\n`);
-      if (real) this.rl!.output = real;
+    this.queuedSubmit = false;
+    if (flush && pending) {
+      // 以"合成键入"的方式把文字还给 readline（等价于用户真的敲了这些键）：
+      // · 没按过 Enter → 只补文字，readline 把它放进输入行并回显 → 停在提示符后等用户确认
+      //   （用户实测要求：正在回答时打的字不该自动发出去）
+      // · 按过 Enter → 补文字 + 换行 → readline 立即产出该行，循环把它当作下一轮用户消息
+      // 注意不能用 rl.write()：它塞进行缓冲但不渲染（实测屏幕上什么也看不到）。
+      // 推迟到下一个 tick：交互循环会在 onTurnEnd 之后立刻 safePrompt()，等提示符画好
+      // 再注入，readline 就是在提示符后原地补字（否则提示符行与注入行会各画一次、出现两行）。
+      if (!submit) this.parkedLine = true;
+      setImmediate(() => {
+        process.stdin.emit('data', Buffer.from(`${pending}${submit ? '\n' : ''}`, 'utf8'));
+      });
     }
   }
 
@@ -784,11 +787,12 @@ export class MiniOutput implements Output {
     // 交互模式：readline 已经回显过这条输入，这里擦掉它——让"输入 → 提交 → 落进对话流"
     // 只出现一次（codex 的 composer 提交后也是这个观感）。两种来源的回显位置不同：
     // ① 用户键入并回车 → 回显在**上一行**；② 我们轮末 rl.write 回填 → 回显在**当前行**。
-    // 排队回填的那一份已经静音（不会出现在屏幕上），只有"用户键入并回车"的回显在上一行
-    if (this.interactive && this.live.active && !this.queuedFlushPending) {
-      process.stdout.write('\x1b[1A\r\x1b[0J');
+    if (this.interactive && this.live.active) {
+      // 停在输入行的那份，提交时 readline 会在回车处重渲染 → 屏幕上留两行同样内容，一起擦掉
+      const up = this.parkedLine ? 2 : 1;
+      this.parkedLine = false;
+      process.stdout.write(`\x1b[${up}A\r\x1b[0J`);
     }
-    this.queuedFlushPending = false;
     const lines = text.split('\n');
     console.log('');
     lines.forEach((l, i) => console.log(`${i === 0 ? `${bold(dim('›'))} ` : PREFIX}${l}`));
