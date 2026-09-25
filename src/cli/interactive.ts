@@ -75,7 +75,7 @@ export async function runInteractive(
   opts: {
     intro?: boolean;
     prompt?: string;
-    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void; prompt(preserveCursor?: boolean): void }) => void;
+    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void; line: string; prompt(preserveCursor?: boolean): void }) => void;
   } = {}
 ): Promise<void> {
   const rl = readline.createInterface({ input, output, prompt: opts.prompt ?? cyan('omni> ') });
@@ -83,7 +83,11 @@ export async function runInteractive(
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   const safePrompt = () => {
     try {
-      rl.prompt();
+      // mini 轮末停放：输入行已有回填文字，用 prompt(true) 把光标留在末尾
+      //（无参 prompt 会把光标重置为 0，退格删不掉；takeParked 消费一次，
+      // console 等渲染层没有该方法，可选链回退 false，原行为不变）
+      const preserve = (out as unknown as { takeParked?: () => boolean }).takeParked?.() ?? false;
+      rl.prompt(preserve);
     } catch {
       /* 接口已关闭，忽略 */
     }

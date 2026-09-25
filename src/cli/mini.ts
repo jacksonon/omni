@@ -67,7 +67,7 @@ export async function runMiniInteractive(
     await runInteractive(client, model, messages, runOpts, out, {
       intro: false,
       prompt: cyan('› '),
-      // 把 readline 句柄交给渲染层：一轮进行中由它接管 stdin（见 MiniOutput.beginInputCapture）
+      // 把 readline 句柄交给渲染层：轮内输出经它重画 › 输入行（见 MiniOutput 输出协作）
       onRl: (rl) => {
         if (out instanceof MiniOutput) out.attachInput(rl);
       },
