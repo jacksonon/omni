@@ -5,9 +5,11 @@
  * status_indicator_widget.rs、bottom_pane/footer.rs），不是"看着截图猜"：
  * - 会话信息框：内容自适应宽度（上限 56）+ `╭─╮` 细边框（history_cell/session.rs）；
  * - 正文/思考：`• ` 开头 + 续行 2 空格缩进（history_cell/messages.rs AgentMessageCell /
- *   ReasoningSummaryCell：思考为 dim + italic，正文正常色）；
+ *   ReasoningSummaryCell：思考为 dim + italic 纯文本；正文走 MiniMarkdownRenderer ——
+ *   复用 tui/markdown.ts 同一套解析（加粗/行内代码/标题/引用/列表/任务/围栏隐藏 +
+ *   代码着色/GFM 表格框线）输出 ANSI，行级状态机见 markdown-ansi.ts）；
  * - 用户消息：`› ` 前缀（bold dim）+ 前后空行（UserHistoryCell）；
- * - 工具调用：`• Ran <cmd>`，`•` 是状态色（成功绿/失败红/运行中动画），标题
+ * - 工具调用：`• Ran <cmd>`（用户 `!` 直跑为 `• You ran <cmd>`，codex is_user_shell_command），`•` 是状态色（成功绿/失败红/运行中动画），标题
  *   运行中为 `Running`、结束为 `Ran`（exec_cell/render.rs）；输出预览取前 3 行 +
  *   `+N lines (ctrl+t to view transcript)`（tool_output.rs，与快照逐字一致）；
  * - 运行中状态行：`• Working (12s • esc to interrupt)` 原地计时（status_indicator_widget.rs）；
@@ -29,6 +31,7 @@ import { visualWidth } from '../tui/width.js';
 import { bold, cyan, dim, green, isTTY, italic, magenta, red, useColor, yellow } from '../ui.js';
 import { VERSION } from '../version.js';
 import { countDiffLines, isExitCodeZeroLine, truncateToWidth } from './format.js';
+import { MiniMarkdownRenderer } from './markdown-ansi.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
 export interface MiniOutputOptions {
@@ -36,6 +39,8 @@ export interface MiniOutputOptions {
   showThinking: boolean;
   /** 是否流式输出（管道/重定向为 false 时只保留最终结果） */
   stream: boolean;
+  /** 正文 Markdown 渲染（缺省跟随终端颜色：TTY 上色渲染，管道保持原文可 grep） */
+  markdown?: boolean;
 }
 
 /** 会话框内宽上限（codex: SESSION_HEADER_MAX_INNER_WIDTH = 56，注释就是 "Just an eyeballed value"） */
@@ -46,6 +51,26 @@ const PREFIX = '  ';
 const PREVIEW_LINES = 3;
 /** 折叠提示（与 codex ui_consts::TRANSCRIPT_HINT 同字面量） */
 export const TRANSCRIPT_HINT = 'ctrl+t to view transcript';
+/** onToolStep 展示参数中的用户 shell 标记（interactive `!` 直跑命令时置位 → 标题 `You ran`） */
+export const USER_SHELL_FLAG = '__userShell';
+
+/** 会话记住键：工具 + 精确摘要（codex "allow for this session" 的 mini 版——同工具同命令才自动放行） */
+export function approvalSessionKey(tool: string, summary: string): string {
+  return `${tool}::${summary.trim()}`;
+}
+
+/** 审批提示文案（纯函数：颜色跟随终端，管道下为纯文本） */
+export function formatApprovalPrompt(req: ApprovalRequest): string {
+  return `\n${yellow('⚠')} ${bold(req.tool)}\n${PREFIX}${req.summary}\n${PREFIX}${dim(req.reason)}\n${PREFIX}批准执行？[y]本次允许 / [a]本会话记住 / [N]拒绝 `;
+}
+
+/** 审批回答解析：`a` 开头 = 本会话记住，`y` 开头 = 仅本次允许，其余 = 拒绝 */
+export function parseApprovalAnswer(ans: string): 'once' | 'session' | 'deny' {
+  const text = ans.trim();
+  if (/^a/i.test(text)) return 'session';
+  if (/^y/i.test(text)) return 'once';
+  return 'deny';
+}
 /** 空输出占位（codex exec cell 同款） */
 const NO_OUTPUT = '(no output)';
 const OMITTED_MARK = '…（输出过长，已省略剩余）';
@@ -93,6 +118,8 @@ const TIPS = [
   '用 -c 或 /session 恢复历史会话。',
   'Ctrl+T 打印完整轨迹账本（工具输出默认只显示前 3 行）。',
   '打 / 后按 Tab 看全部命令；/model 与 /variants 支持 ↑↓ 选择。',
+  '行首 ! 直跑 shell（如 !git status），不经过模型（codex bash mode）。',
+  '用 @ 提及文件：打字过滤，Tab 选择（单候选直插，多候选 ↑↓+Enter）。',
   '/exit 退出，Ctrl+C 中断当前任务。',
 ];
 
@@ -172,20 +199,38 @@ export function renderMiniBanner(info: MiniBannerInfo, width: number): string[] 
   rows.push({ plain: title, styled: `${dim('>_ ')}${bold('Omni')} ${dim(`(v${VERSION})`)}` });
   rows.push({ plain: '', styled: '' });
 
-  // model 行：模型 + 思考级别，3 空格后接 `/model to change`（codex 不右对齐）
+  // model 行（codex session.rs）：`model: <模型>[ <effort>]   /model to change`
+  // - effort 为纯文本（无样式，与 codex `Span::from(reasoning)` 一致）；
+  // - `/model` 为 accent 高亮（codex accent_color，这里面向终端用 cyan 近似）；
+  // - yolo 时三个标签按最宽对齐（codex label_width = max(directory, permissions)）。
+  const isYolo = (PERM_LABEL[info.permission]?.yolo ?? false) || info.permission === 'full';
+  const labelW = isYolo ? Math.max('model:'.length, 'directory:'.length, 'permissions:'.length) : 0;
+  const padLabel = (label: string): string =>
+    labelW > 0 ? label.padEnd(labelW, ' ') : label;
   const modelPlain = `${info.model}${info.effort ? ` ${info.effort}` : ''}`;
-  const modelStyled = `${info.model}${info.effort ? ` ${dim(info.effort)}` : ''}`;
   rows.push({
-    plain: `model: ${modelPlain}   /model to change`,
-    styled: `${dim('model:')} ${modelStyled}${' '.repeat(3)}${cyan('/model')}${dim(' to change')}`,
+    plain: `${padLabel('model:')} ${modelPlain}   /model to change`,
+    styled: `${dim(`${padLabel('model:')} `)}${info.model}${info.effort ? ` ${info.effort}` : ''}${dim('   ')}${cyan('/model')}${dim(' to change')}`,
   });
 
-  rows.push({ plain: `directory: ${homify(info.directory)}`, styled: `${dim('directory:')} ${homify(info.directory)}` });
-  const perm = PERM_LABEL[info.permission] ?? { name: info.permission };
+  // directory 行（codex format_directory_inner + center_truncate_path）：
+  // home 简写 ~，超 inner 宽时中间截断 `…`（保留首尾），与 codex 行为一致。
+  const dirFull = homify(info.directory);
+  const dirPrefixW = visualWidth(`${padLabel('directory:')} `);
+  const dirMax = Math.max(1, inner - dirPrefixW);
+  const dirShown = visualWidth(dirFull) > dirMax ? truncateMiddle(dirFull, dirMax) : dirFull;
   rows.push({
-    plain: `permissions: ${perm.name}${perm.note ? ` · ${perm.note}` : ''}`,
-    styled: `${dim('permissions:')} ${perm.yolo ? bold(magenta(perm.name)) : perm.name}${perm.note ? dim(` · ${perm.note}`) : ''}`,
+    plain: `${padLabel('directory:')} ${dirShown}`,
+    styled: `${dim(`${padLabel('directory:')} `)}${dirShown}`,
   });
+  // permissions 行：仅 YOLO 时展示（codex session.rs：`if self.yolo_mode` 才 push）；
+  // 非 YOLO 档位不占行（权限经 /permissions 与 /status 查看，与 codex 一致）。
+  if (isYolo) {
+    rows.push({
+      plain: `${padLabel('permissions:')} YOLO mode`,
+      styled: `${dim(`${padLabel('permissions:')} `)}${bold(magenta('YOLO mode'))}`,
+    });
+  }
   if (info.sandbox) {
     rows.push({ plain: `sandbox: ${info.sandbox}`, styled: `${dim('sandbox:')} ${yellow(info.sandbox)}` });
   }
@@ -400,7 +445,13 @@ class StreamingCell {
     /** 首行行首：可见 bullet */
     private first = `${dim('•')} `,
     /** 续行行首：2 空格缩进（与 `• ` 同宽，见 CONT_INDENT） */
-    private rest = CONT_INDENT
+    private rest = CONT_INDENT,
+    /** Markdown 行渲染（正文单元格）：逻辑行 → 可见行（已折行已上色）；缺省走旧 foldRows+style 路径 */
+    private renderLine?: (line: string, avail: number) => string[],
+    /** 单元格收尾时吐暂存（表格/表头候选）；缺省无 */
+    private renderFlush?: (avail: number) => string[],
+    /** live 预览行渲染；缺省 style + 尾部截断 */
+    private renderPartialText?: (text: string, room: number) => string
   ) {}
 
   get began(): boolean {
@@ -422,17 +473,31 @@ class StreamingCell {
   private renderPartial(): void {
     if (!this.live.active) return;
     const room = Math.max(8, cols() - 6);
-    this.live.update([`${this.prefix()}${this.style(tailToWidth(this.buf, room))}${dim(CURSOR)}`]);
+    const body = this.renderPartialText
+      ? this.renderPartialText(this.buf, room)
+      : this.style(tailToWidth(this.buf, room));
+    this.live.update([`${this.prefix()}${body}${dim(CURSOR)}`]);
   }
 
   private prefix(): string {
     return this.started ? this.rest : this.first;
   }
 
-  private commit(line: string): void {
-    this.live.clear();
+  /** 可用列宽（前缀占 2 列，与 foldRows 断点一致） */
+  private avail(): number {
+    return Math.max(8, cols() - 2);
+  }
+
+  /** 一个逻辑行 → 已定样式的可见行（'' = 裸空行） */
+  private toRows(line: string): string[] {
+    if (this.renderLine) return this.renderLine(line, this.avail());
+    return foldRows(line).map((row) => (row === '' ? '' : this.style(row)));
+  }
+
+  /** 提交可见行：仅单元格首行挂 •，其余 2 空格缩进；空数组（围栏标记/表格收集中）直接跳过 */
+  private emitRows(rows: string[]): void {
+    if (rows.length === 0) return;
     if (!this.started) this.hooks.beforeFirst?.();
-    const rows = foldRows(line);
     rows.forEach((row, idx) => {
       if (row === '') {
         this.print('');
@@ -440,31 +505,29 @@ class StreamingCell {
       }
       // 仅整个单元格的首行挂 •，其余（含首个逻辑行折出来的续行）全部 2 空格缩进
       const prefix = !this.started && idx === 0 ? this.first : this.rest;
-      this.print(`${prefix}${this.style(row)}`);
+      this.print(`${prefix}${row}`);
     });
     this.started = true;
     this.hooks.afterLine?.();
   }
 
-  /** 收尾：冲掉缓冲区（无换行结尾的最后一行 / 空消息补行） */
+  private commit(line: string): void {
+    this.live.clear();
+    this.emitRows(this.toRows(line));
+  }
+
+  /** 收尾：冲掉缓冲区（无换行结尾的最后一行 / 空消息补行）+ 渲染器暂存（表格/表头候选） */
   end(): void {
     this.live.clear();
+    const pending: string[] = [];
     if (this.buf.length > 0) {
       const line = this.buf;
       this.buf = '';
-      if (!this.started) this.hooks.beforeFirst?.();
-      const rows = foldRows(line);
-      rows.forEach((row, idx) => {
-        if (row === '') {
-          this.print('');
-          return;
-        }
-        const prefix = !this.started && idx === 0 ? this.first : this.rest;
-        this.print(`${prefix}${this.style(row)}`);
-      });
-      this.started = true;
-      this.hooks.afterLine?.();
+      pending.push(...this.toRows(line));
     }
+    if (this.renderFlush) pending.push(...this.renderFlush(this.avail()));
+    if (pending.length === 0) return;
+    this.emitRows(pending);
     // 注意：本轮没有任何正文（例如只发起了工具调用）时**什么都不打印**——
     // 之前会打印一个孤零零的 `•`（实测肉眼可见的脏输出）
   }
@@ -486,6 +549,8 @@ export class MiniOutput implements Output {
     detail: string;
     running: boolean;
     out: string[];
+    /** 用户直跑 shell（codex is_user_shell_command）：标题用 `You ran` 而非 `Ran` */
+    userShell: boolean;
   } | null = null;
   private toolSeq = 0;
   private turnStart: number | null = null;
@@ -619,14 +684,19 @@ export class MiniOutput implements Output {
     this.gapOpen = true;
   }
 
-  /** 正文单元格（codex AgentMessageCell：`• ` + 续行 2 空格） */
+  /** 正文单元格（codex AgentMessageCell：`• ` + 续行 2 空格；内容走 Markdown 渲染） */
   private newAnswerCell(): StreamingCell {
+    const md = (this.opts.markdown ?? useColor) ? new MiniMarkdownRenderer() : null;
     return new StreamingCell(this.live, (l) => inlineMathToText(l), {
       beforeFirst: () => this.ensureGap(),
       afterLine: () => {
         this.gapOpen = false;
       },
-    }, (line) => this.print(line));
+    }, (line) => this.print(line),
+    undefined, undefined,
+    md ? (line, avail) => md.pushLine(line, avail) : undefined,
+    md ? (avail) => md.flush(avail) : undefined,
+    md ? (text, room) => md.partial(text, room) : undefined);
   }
 
   /** 思考单元格（codex ReasoningSummaryCell：同为 `• ` 单元格，但 dim + italic） */
@@ -673,7 +743,7 @@ export class MiniOutput implements Output {
     } as ThinkingDisplay;
   }
 
-  /** 会话信息框 + Tip 行 + 输入区提示行 */
+  /** 会话信息框 + 上手帮助 + Tip 行（codex new_session_info 首事件帮助块） */
   banner(cfg: OmniConfig): void {
     const info: MiniBannerInfo = {
       model: cfg.model,
@@ -683,8 +753,18 @@ export class MiniOutput implements Output {
       sandbox: cfg.sandbox && cfg.sandbox !== 'off' ? cfg.sandbox : undefined,
     };
     for (const line of renderMiniBanner(info, cols())) this.print(line);
-    const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
     this.print('');
+    this.print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
+    this.print('');
+    const helps: Array<[string, string]> = [
+      ['/init', 'create an AGENTS.md file with instructions'],
+      ['/status', 'show current session configuration'],
+      ['/model', 'choose what model and reasoning effort to use'],
+      ['/review', 'review any changes and find issues'],
+    ];
+    for (const [cmd, desc] of helps) this.print(`${PREFIX}${cmd} ${dim(`- ${desc}`)}`);
+    this.print('');
+    const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
     this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
     this.print('');
   }
@@ -772,6 +852,7 @@ export class MiniOutput implements Output {
       detail: toolDetail(name, args, argsPreview),
       running: true,
       out: [],
+      userShell: (args as Record<string, unknown> | undefined)?.[USER_SHELL_FLAG] === true,
     };
     this.renderTool();
   }
@@ -782,9 +863,10 @@ export class MiniOutput implements Output {
     if (!t) return;
     if (!this.live.active) return;
     const width = termWidth();
+    const title = t.userShell ? 'You ran' : t.verb;
     const head = t.running
       ? `${dim(ACTIVITY_FRAMES[Math.floor(Date.now() / 100) % ACTIVITY_FRAMES.length]!)} ${bold('Running')} ${truncateToWidth(t.detail, width)}`
-      : `${green(bold('•'))} ${bold(t.verb)} ${truncateToWidth(t.detail, width)}`;
+      : `${green(bold('•'))} ${bold(title)} ${truncateToWidth(t.detail, width)}`;
     const lines = ['', head];
     for (const [i, l] of t.out.slice(-PREVIEW_LINES).entries()) {
       lines.push(`${i === 0 ? `${PREFIX}${dim('└ ')}` : '    '}${dim(truncateToWidth(oneLine(l), width))}`);
@@ -810,7 +892,7 @@ export class MiniOutput implements Output {
     const width = termWidth();
     // bullet 是状态色：成功绿 / 失败红（codex exec_cell/render.rs），失败同时换 ✗ 起头
     const bullet = ok ? green(bold('•')) : red(bold('•'));
-    const head = `${bullet} ${bold(t.verb)} ${truncateToWidth(t.detail, width)}`;
+    const head = `${bullet} ${bold(t.userShell ? 'You ran' : t.verb)} ${truncateToWidth(t.detail, width)}`;
     const lines: string[] = [head];
 
     const diff = diffStatLine(detail);
@@ -925,12 +1007,22 @@ export class MiniOutput implements Output {
 
   // ── 审批 / 提问（readline，写 stderr 不污染 stdout） ────────────
   private approvalTail: Promise<void> = Promise.resolve();
+  /** 本会话记住的审批（codex "allow for session"）：键 = 工具 + 精确摘要，同命令才自动放行 */
+  private sessionApprovals = new Set<string>();
+  /** 预置会话记住（测试 / 外部面板用；与审批 UI 中按 `a` 等效） */
+  rememberApproval(tool: string, summary: string): void {
+    this.sessionApprovals.add(approvalSessionKey(tool, summary));
+  }
+  /** 清掉会话记住（`/new` 新会话文件时调用；codex 会话级 allow 随会话结束） */
+  clearSessionApprovals(): void {
+    this.sessionApprovals.clear();
+  }
   requestApproval(req: ApprovalRequest): Promise<boolean> {
     let resolveMe!: (b: boolean) => void;
     const p = new Promise<boolean>((r) => (resolveMe = r));
     this.approvalTail = this.approvalTail.then(async () => {
       try {
-        resolveMe(await this.promptApproval(req));
+        resolveMe(await this.decideApproval(req));
       } catch {
         resolveMe(false);
       }
@@ -938,17 +1030,30 @@ export class MiniOutput implements Output {
     return p;
   }
 
-  private async promptApproval(req: ApprovalRequest): Promise<boolean> {
-    if (!isTTY) return false;
+  private async decideApproval(req: ApprovalRequest): Promise<boolean> {
+    const key = approvalSessionKey(req.tool, req.summary);
+    if (this.sessionApprovals.has(key)) {
+      if (this.opts.stream) this.print(`${PREFIX}${dim(`✓ 会话已记住 ${req.tool}（自动放行）`)}`);
+      return true;
+    }
+    const ans = await this.promptApproval(req);
+    if (ans === 'session') {
+      this.sessionApprovals.add(key);
+      if (this.opts.stream) this.print(`${PREFIX}${dim(`已记住：本会话内 ${req.tool} 同类操作自动放行`)}`);
+      return true;
+    }
+    return ans === 'once';
+  }
+
+  private async promptApproval(req: ApprovalRequest): Promise<'once' | 'session' | 'deny'> {
+    if (!isTTY) return 'deny';
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
     const rl = readline.createInterface({ input, output: errOut });
     try {
-      const ans = await rl.question(
-        `\n${yellow('⚠')} ${bold(req.tool)}\n${PREFIX}${req.summary}\n${PREFIX}${dim(req.reason)}\n${PREFIX}批准执行？[y/N] `
-      );
-      return /^y/i.test(ans.trim());
+      const ans = await rl.question(formatApprovalPrompt(req));
+      return parseApprovalAnswer(ans);
     } finally {
       rl.close();
       this.resumeInput();

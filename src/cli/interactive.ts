@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import readline from 'node:readline/promises';
+import classicReadline from 'node:readline';
 import { parseModelAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
 import { stdin as input, stdout as output } from 'node:process';
@@ -59,13 +60,17 @@ import {
   rewindModeLabel,
 } from '../agent/rewind.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
+import { previewOutput, isExitCodeZeroLine } from '../output/format.js';
+import { runCommandTool } from '../tools/run-command.js';
+import { MiniOutput, USER_SHELL_FLAG } from '../output/mini.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import { createClient, discoverModels } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
-import { cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
+import { bold, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
-import { completeMiniLine, MINI_SLASH_COMMANDS, pickFromList, installSlashSuggest } from './picker.js';
+import { applyMentionInsert, completeMiniLine, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix } from './picker.js';
+import type { MentionSuggestHandle } from './picker.js';
 
 export async function runInteractive(
   client: OpenAI,
@@ -85,6 +90,8 @@ export async function runInteractive(
   // `/model <片>`→模型名、`/variants <片>`→级别/命名 id。只在 TTY 挂载，
   // 管道保持原行为；数据源经 runOpts 实时读（/model add 后即时可补）。
   const completer = (line: string): [string[], string] => {
+    // @ 提及 Tab 由专职拦截器处理（模态选择/同步插入；readline 补全异步落行，
+    // 被动面板看不到同一 tick 的结果）——这里对 @ 行一律 no-op，避免双 UI 打架
     const modelName = runOpts.modelRuntime?.model ?? model;
     const ep = (runOpts.models ?? []).find((m) => m.name === modelName);
     // 第二词补全（data-driven）+ /cd 目录候选（同步 readdir，失败兜底 []）
@@ -154,6 +161,86 @@ export async function runInteractive(
   opts.onRl?.(rl);
   // 空闲提示符下的打 / 联想面板（纯显示被动监听；轮内 inTurn 一律不渲染不擦除）
   let inTurn = false;
+  // `!` shell 模式提示符态（codex composer bash mode）：函数作用域——TTY 监听器与主循环共用
+  let bangPrompt = false;
+  const basePrompt = opts.prompt ?? cyan('omni> ');
+  // Esc 中断当前回合（codex `esc to interrupt`）：每轮独立 AbortController，
+  // runAgent 经 runOpts.abortSignal 感知取消（loop 内首 chunk/工具边界检查）；
+  // rearmAbort 由 loop 在 abort 消费后调用换新信号（与 TUI cancelRun 同机制）。
+  let turnAbort: AbortController | null = null;
+  const rearmTurnAbort = (): void => {
+    turnAbort = new AbortController();
+    runOpts.abortSignal = turnAbort.signal;
+  };
+  runOpts.rearmAbort = () => {
+    rearmTurnAbort();
+  };
+  rearmTurnAbort();
+  if (input.isTTY) {
+    const flagged = input as unknown as { __omniKeypressOn?: boolean };
+    if (!flagged.__omniKeypressOn) {
+      classicReadline.emitKeypressEvents(input);
+      flagged.__omniKeypressOn = true;
+    }
+    input.on('keypress', (_ch: unknown, key?: { name?: string; ctrl?: boolean }) => {
+      try {
+        if (!inTurn || !turnAbort || turnAbort.signal.aborted) return;
+        // Esc 中断（codex status 行 `esc to interrupt`）；Ctrl+C 同样中断而非退出
+        if (key?.name === 'escape' || (key?.ctrl && key?.name === 'c')) turnAbort.abort();
+      } catch {
+        /* 中断失败忽略，本轮自然结束 */
+      }
+    });
+    // Ctrl+C 在 readline 行：轮内 abort（中断任务）；空闲清掉当前输入行
+    // （codex clear_for_ctrl_c：清 draft 不退出；退出走 /exit 或 Ctrl+D）。
+    // Shell 模式（`!` 开头）提示符同步回正常（下方的 bang 监听器平时维护，SIGINT 后补一次）。
+    (rl as unknown as { on(e: string, h: () => void): void }).on('SIGINT', () => {
+      try {
+        if (inTurn) turnAbort?.abort();
+        else {
+          (rl as unknown as { line: string }).line = '';
+          (rl as unknown as { cursor: number }).cursor = 0;
+          (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
+          bangPrompt = false;
+          redrawBangPrompt();
+        }
+      } catch {
+        /* 忽略 */
+      }
+    });
+    // `!` shell 模式提示符（codex composer bash mode：`!` light_red bold 替代 `›`）：
+    // 空闲时随行首 `!` 切换 prompt（状态翻转才重画，避免与联想面板打架）；轮内不动。
+    // 空闲 Esc + 裸 `!`（无命令体）→ 退出 shell 模式（codex Esc 清空 bash mode）。
+    const redrawBangPrompt = (): void => {
+      try {
+        rl.prompt(true);
+      } catch {
+        /* 接口已关闭，忽略 */
+      }
+    };
+    input.on('keypress', (_ch: unknown, key?: { name?: string; ctrl?: boolean }) => {
+      try {
+        if (inTurn || !input.isTTY) return;
+        const cur = rl.line ?? '';
+        if (key?.name === 'escape' && isBangShellCommand(cur) && stripBangPrefix(cur) === '') {
+          (rl as unknown as { line: string }).line = '';
+          (rl as unknown as { cursor: number }).cursor = 0;
+          (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
+          bangPrompt = false;
+          redrawBangPrompt();
+          return;
+        }
+        const want = isBangShellCommand(cur);
+        if (want !== bangPrompt) {
+          bangPrompt = want;
+          (rl as unknown as { setPrompt(p: string): void }).setPrompt(want ? red(bold('! ')) : basePrompt);
+          redrawBangPrompt();
+        }
+      } catch {
+        /* 提示符维护永不打断输入 */
+      }
+    });
+  }
   const suggestPrint = (out as unknown as { print?: (s: string) => void }).print?.bind(out) ?? ((s: string) => console.log(s));
   const suggest = installSlashSuggest({
     stdin: input,
@@ -168,6 +255,32 @@ export async function runInteractive(
       }
     },
   });
+  // readline 行缓冲读写（Tab 提及插入用；promises 接口的 line/cursor 是可写属性）
+  const rlCursor = (): number => (rl as unknown as { cursor?: number }).cursor ?? rl.line.length;
+  const setRlText = (text: string, cursor: number): void => {
+    (rl as unknown as { line: string }).line = text;
+    (rl as unknown as { cursor: number }).cursor = cursor;
+  };
+  const redrawInput = (): void => {
+    try {
+      rl.prompt(true);
+    } catch {
+      /* 接口已关闭，忽略 */
+    }
+  };
+  let mentionPanel: MentionSuggestHandle | null = null;
+  // @ 提及联想面板（纯显示被动监听；选择走下面的 Tab 拦截器）
+  mentionPanel = installMentionSuggest({
+    stdin: input,
+    getLine: () => rl.line,
+    getCursor: () => rlCursor(),
+    getCwd: () => process.cwd(),
+    isActive: () => !inTurn,
+    print: (s) => suggestPrint(s),
+    redraw: () => {
+      redrawInput();
+    },
+  });
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   const safePrompt = () => {
     try {
@@ -180,6 +293,57 @@ export async function runInteractive(
       /* 接口已关闭，忽略 */
     }
   };
+  // Tab 拦截器（@ 提及选择；只观察 Tab，其余按键直接放行——readline 原生编辑零影响）。
+  // 背景：readline 的 Tab 补全异步落行，被动面板在同一 tick 只能看到旧行；
+  // 且多候选时原生 completer 只能哑巴列表、选不中。所以 @ 行的 Tab 在这里拥有：
+  // 0 候选 → 放行（readline 哔一声）；1 候选 → 同步插入 + 同步擦面板；
+  // 多候选 → 模态选择器（↑↓/Enter/Esc/数字，pickFromList 已验证组件）。
+  // completer 对 @ 行一律 no-op（防双 UI 打架）；非 @ 的 Tab 全放行（/ 命令补全不受影响）。
+  if (input.isTTY) {
+    input.on('keypress', ((ss: unknown, key?: { name?: string; ctrl?: boolean }) => {
+      try {
+        if (key?.name === 'tab' && !key?.ctrl && !inTurn) {
+          const cur = rl.line ?? '';
+          if (!cur.trimStart().startsWith('/')) {
+            const m = matchMention(cur, process.cwd(), rlCursor());
+            if (m) {
+              if (m.cands.length === 1) {
+                const ins = applyMentionInsert(cur, m.atIndex, m.query.length, m.cands[0]!);
+                setRlText(ins.text, ins.cursor);
+                mentionPanel?.close();
+                redrawInput();
+              } else if (m.cands.length > 1) {
+                void (async () => {
+                  try {
+                    const items = m.cands.slice(0, 15).map((c) => ({ label: `@${c}`, value: c }));
+                    const idx = await pickFromList(input, items, {
+                      selected: 0,
+                      hint: `↑↓ 选择 · Enter 插入 · Esc 取消${m.cands.length > 15 ? '（仅列前 15，继续打字过滤）' : ''}`,
+                    });
+                    if (idx >= 0) {
+                      const now = rl.line ?? '';
+                      const m2 = matchMention(now, process.cwd(), rlCursor());
+                      // 提及仍在同一位置才插入（选择期间行被改过则放弃，防错位）
+                      if (m2 && m2.atIndex === m.atIndex) {
+                        const ins = applyMentionInsert(now, m2.atIndex, m2.query.length, items[idx]!.value);
+                        setRlText(ins.text, ins.cursor);
+                      }
+                    }
+                  } catch {
+                    /* 选择器异常：保留原行 */
+                  }
+                  mentionPanel?.close();
+                  redrawInput();
+                })();
+              }
+            }
+          }
+        }
+      } catch {
+        /* 拦截器永不打断输入 */
+      }
+    }) as (...args: unknown[]) => void);
+  }
   // 计划模式（/plan 切换，会话级）：每轮同步进 runOpts.planMode（loop 只暴露只读工具 + 系统提示）
   let planMode = false;
   // 安全权限档位（/permission 切换，会话级）：低=read / 中=safe / 高=ask / 全量=full。
@@ -295,6 +459,9 @@ export async function runInteractive(
       runOpts.sessionHookNote = undefined;
       runOpts.hooks?.resetSessionStart();
       runOpts.undoStack?.clear();
+      // 会话记住的审批跟会话文件走（codex allow-for-session 是会话级）：新会话清掉，
+      // /clear不清（同会话文件，只是上下文重置）
+      if (out instanceof MiniOutput) out.clearSessionApprovals();
       console.log(dim('（已新建会话，回到初始状态）'));
       safePrompt();
       continue;
@@ -1592,6 +1759,54 @@ export async function runInteractive(
       continue;
     }
     if (!cmd) {
+      // 空行提交：shell 模式提示符可能还停在 `!` 态，回到正常（行已空，不可能是 bang）
+      if (bangPrompt) {
+        bangPrompt = false;
+        (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
+      }
+      safePrompt();
+      continue;
+    }
+    if (isBangShellCommand(cmd)) {
+      // `!` shell 模式（codex bash mode：`!` 开头直跑 shell，不进 LLM）。
+      // 用户亲手键入 = 显式授权，直接执行（只读/未信任档位仍拒绝）；
+      // 渲染 `• You ran`（codex is_user_shell_command → "You ran"）。
+      const shellCmd = stripBangPrefix(cmd);
+      if (!shellCmd) {
+        safePrompt();
+        continue;
+      } // 裸 `!`：仅提示符态，不执行
+      if (permission === 'read' || runOpts.trusted === false) {
+        console.log(red('当前为只读权限——`!` shell 命令被拒绝（/permission 提升后可用）'));
+        safePrompt();
+        continue;
+      }
+      const dispArgs: Record<string, unknown> = { command: shellCmd, [USER_SHELL_FLAG]: true };
+      // 轨迹账本：`!` 直跑同样落 turn/user/tool-call/tool-result（Ctrl+T 与会话 JSONL 可见）
+      const bangTurn = runOpts.events?.turnStart() ?? 0;
+      const bangCallId = `bang-${Date.now().toString(36)}`;
+      runOpts.events?.user(cmd);
+      runOpts.events?.toolCall(bangTurn, bangCallId, 'run_command', JSON.stringify({ command: shellCmd }));
+      out.onTurnStart?.();
+      out.onToolStep(0, 1, 'run_command', `$ ${shellCmd}`, dispArgs);
+      let shellResult: string;
+      try {
+        shellResult = await runCommandTool.execute({ command: shellCmd }, {
+          cwd: process.cwd(),
+          onCommandOutput: (line, isErr) => out.onCommandOutput?.(line, isErr),
+        });
+      } catch (err) {
+        shellResult = `执行失败\n${(err as Error)?.message ?? String(err)}`;
+      }
+      const shellOk = !/^(错误|执行失败|已拦截)/.test(shellResult);
+      let shellLines = 0;
+      for (const l of shellResult.split('\n')) {
+        if (l.trim() !== '' && !isExitCodeZeroLine(l)) shellLines++;
+      }
+      out.onToolResult(shellOk, shellResult.length, previewOutput(shellResult), undefined, undefined, shellLines);
+      runOpts.events?.toolResult(bangCallId, shellOk, shellResult.length);
+      runOpts.events?.turnEnd('completed');
+      out.onTurnEnd();
       safePrompt();
       continue;
     }

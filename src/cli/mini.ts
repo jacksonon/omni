@@ -13,7 +13,7 @@ import { buildTraceTextLines } from '../agent/trace.js';
 import type { RunOptions } from '../agent/types.js';
 import { MiniOutput, TRANSCRIPT_HINT } from '../output/mini.js';
 import type { Output } from '../output/types.js';
-import { cyan, dim } from '../ui.js';
+import { bold, dim } from '../ui.js';
 import { runInteractive } from './interactive.js';
 
 /** stdin 的 keypress 事件类型（readline 接口激活后由解码器派发） */
@@ -66,7 +66,7 @@ export async function runMiniInteractive(
     // intro 由 mini 自己接管（banner 的 Tip 行），内置「输入任务开始…」提示跳过
     await runInteractive(client, model, messages, runOpts, out, {
       intro: false,
-      prompt: cyan('› '),
+      prompt: bold('› '),
       // 把 readline 句柄交给渲染层：轮内输出经它重画 › 输入行（见 MiniOutput 输出协作）
       onRl: (rl) => {
         if (out instanceof MiniOutput) out.attachInput(rl);

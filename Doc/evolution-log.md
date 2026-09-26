@@ -1,6 +1,10 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百五十九次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十一次）。
+
+- **2026-09-27（第二百六十一次）**：**mini @ 提及选文件/目录（可用）**——此前 mini 无 @ 选择 UI（提交后的 `@路径` 预载展开三端早已通用，缺的只是输入侧）：① 被动联想面板 `installMentionSuggest`（与 `/` 面板同一光标纪律，固定 8 槽位 + 1 状态行，打字过滤；复用 `tui/mention` 检索）；② Tab 拦截器（readline 补全异步落行、被动监听看不到同 tick 结果，且多候选原生只能哑巴列表：单候选同步插入 + 同步擦面板，多候选弹 `pickFromList` 模态选择 ↑↓/Enter/Esc，确认/取消都确定性擦面板；completer 对 @ 行 no-op 防双 UI）；③ 空白根治（选后残留来自异步竞态，同步化后消失；Ctrl+T 打印会顶走面板，两面板加 abandon 保护防错位擦除）。验证：typecheck ✓ + 新增 11 断言 ✓ + PTY（单选插入/多选 picker/Esc/斜杠回归/Ctrl+T）✓。
+
+- **2026-09-27（第二百六十次）**：**mini 正文 Markdown 完整渲染**——正文单元格经 `MiniMarkdownRenderer`（新文件 `src/output/markdown-ansi.ts`）输出 ANSI：解析复用 `tui/markdown.ts` 同一套规则（抽 `scanInlineChunks`/`parseMarkdownLine`/`codeLineChunks`/`FENCE_RE`，`markdownToRows` 改调共用函数，TUI 行为不变）；行级状态机处理跨行结构（围栏标记隐藏+代码/diff 着色、表格表头暂存一行、成表整表渲染）；折行复用 TUI `wrapChunks`（样式不断）；`• ` 仅首行、续行 2 空格不变；`markdown` 选项缺省跟随 useColor（管道保持原文可 grep）。验证：typecheck ✓ + 新增回归 17 断言 ✓ + TUI 快照 ✓ + 功能回归 84/85（唯一失败系本地 xhigh vs 用例 medium 既有环境问题）。
 
 - **2026-09-27（第二百五十九次）**：**mini 续行改回空格缩进（用户实测：思考每行左侧都有 · 不对）**——第二百五十八次的 SGR 8 隐藏版 bullet 在多数终端被直接忽略，续行仍显示淡色 •/› → 改回 codex 同款：整个单元格仅首行挂 `•`（含首个逻辑行折出的续行），其余全部 2 空格缩进（`• ` 与两空格同宽 2 列）；用户行 `› ` 续行同步改空格；回归用例同步（折行断言改为首行 • + 续行空格）。验证：typecheck ✓ + 功能回归 83/84（唯一失败系本地 omni.json 自配 xhigh 与用例硬编码 medium 不一致，非回归）。
 

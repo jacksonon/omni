@@ -18,6 +18,10 @@ import { TestSuite } from './framework.js';
 import {
   MiniOutput,
   TRANSCRIPT_HINT,
+  USER_SHELL_FLAG,
+  approvalSessionKey,
+  formatApprovalPrompt,
+  parseApprovalAnswer,
   fmtElapsed,
   foldRows,
   renderMiniBanner,
@@ -26,6 +30,10 @@ import {
   toolDetail,
   verbForTool,
 } from '../../src/output/mini.js';
+import { MiniMarkdownRenderer, chunksToAnsi } from '../../src/output/markdown-ansi.js';
+import { completeMention } from '../../src/cli/picker.js';
+import { applyMentionInsert } from '../../src/cli/picker.js';
+import { isBangShellCommand, stripBangPrefix } from '../../src/cli/picker.js';
 import { visualWidth } from '../../src/tui/width.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -91,13 +99,17 @@ export function miniSuite(): TestSuite {
     suite.assert(widths.length === 1, `框内每行等宽（实际 ${JSON.stringify(widths)}）`);
     suite.assert(/^╭─+╮$/.test(box[0]!) && /^╰─+╯$/.test(box.at(-1)!), '圆角边框（╭ ╰）');
     suite.assert(box.join('\n').includes('>_ Omni (v'), '标题行 `>_ Omni (vX)`');
-    // codex session.rs：模型行 = `model: <模型> <effort>` + 3 空格 + `/model to change`（不右对齐）
-    suite.assert(box.some((l) => l.includes('model: mock-model medium   /model to change')), 'model 行（3 空格接 /model 提示）');
+    // codex session.rs：模型行 = `model: <模型> <effort>` + 3 空格 + `/model to change`（不右对齐；effort 纯文本）
+    suite.assert(box.some((l) => l.includes('model:') && l.includes('mock-model medium') && l.includes('/model to change')), 'model 行（模型 + effort + /model 提示）');
     suite.assert(box.some((l) => l.includes('directory:') && l.includes('~')), 'directory 行（home 简写 ~）');
-    suite.assert(box.some((l) => l.includes('permissions: YOLO mode')), 'full 档位 → YOLO mode');
+    suite.assert(box.some((l) => l.includes('permissions: YOLO mode')), 'full 档位 → YOLO mode（codex 仅 YOLO 展示该行）');
     suite.assert(
-      renderMiniBanner({ model: 'm', directory: '/tmp', permission: 'read' }, 80).some((l) => l.includes('permissions: Read Only')),
-      'read 档位 → Read Only'
+      !renderMiniBanner({ model: 'm', directory: '/tmp', permission: 'read' }, 80).some((l) => l.includes('permissions:')),
+      '非 YOLO 档位不展示 permissions 行（codex session.rs if yolo 才 push）'
+    );
+    suite.assert(
+      !renderMiniBanner({ model: 'm', directory: '/tmp', permission: 'safe' }, 80).some((l) => l.includes('permissions:')),
+      'safe 档位不展示 permissions 行（经 /permissions 查看）'
     );
     // 内容自适应：框宽随内容变化（codex with_border 按最宽内容行定宽）
     const short = renderMiniBanner({ model: 'a', directory: '/tmp', permission: 'safe' }, 80)[0]!;
@@ -158,6 +170,49 @@ export function miniSuite(): TestSuite {
     suite.assert(text.includes('└ boom'), '失败单元格仍用 `└ `（bullet 颜色区分状态）');
     suite.assert(text.includes('└ +2 −1'), 'write_file 显示紧凑 diff 统计');
     suite.assert(!/• Read src\/a\.ts\n\s+└/.test(text), 'read_file 不铺输出内容');
+  });
+
+  suite.test('`!` shell：判定/剥前缀 + `• You ran` 标题（codex bash mode）', () => {
+    suite.assert(isBangShellCommand('!git status'), '`!` 开头是 shell 命令');
+    suite.assert(isBangShellCommand('  !ls'), '前导空格后 `!` 仍是 shell 命令');
+    suite.assert(!isBangShellCommand('ls'), '普通文本不是 shell 命令');
+    suite.assert(!isBangShellCommand('/model'), '斜杠命令不是 shell 命令');
+    suite.assert(!isBangShellCommand(''), '空行不是 shell 命令');
+    suite.assert(stripBangPrefix('!git status') === 'git status', '剥 `!` 取命令体');
+    suite.assert(stripBangPrefix('!') === '', '裸 `!` 命令体为空');
+    const out = new MiniOutput({ showThinking: false, stream: true });
+    const text = renderAt(80, () => {
+      out.onTurnStart();
+      out.onToolStep(0, 1, 'run_command', '$ echo hi', { command: 'echo hi', [USER_SHELL_FLAG]: true }, 1);
+      out.onToolResult(true, 8, ['hi'], undefined, 1, 1);
+      out.onTurnEnd();
+    });
+    const plain = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    suite.assert(plain.includes('You ran echo hi'), '用户直跑标题 `• You ran <cmd>`（codex is_user_shell_command）');
+    suite.assert(!plain.includes('• Ran echo hi'), '用户直跑不用 `• Ran` 标题');
+    suite.assert(plain.includes('└ hi'), '输出仍用 `└ ` 单元格');
+  });
+
+  suite.test('审批：y 本次 / a 本会话记住 / 其余拒绝（codex allow for session）', async () => {
+    suite.assert(parseApprovalAnswer('y') === 'once', '`y` = 仅本次允许');
+    suite.assert(parseApprovalAnswer('YES') === 'once', '`YES` = 仅本次允许（兼容旧行为）');
+    suite.assert(parseApprovalAnswer('a') === 'session', '`a` = 本会话记住');
+    suite.assert(parseApprovalAnswer('n') === 'deny', '`n` = 拒绝');
+    suite.assert(parseApprovalAnswer('') === 'deny', '空输入 = 拒绝（fail-safe）');
+    suite.assert(approvalSessionKey('run_command', '  $ npm test ') === 'run_command::$ npm test', '记住键：工具 + 去空格摘要');
+    const prompt = formatApprovalPrompt({ tool: 'run_command', summary: '$ npm test', reason: '危险命令' }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    suite.assert(prompt.includes('[y]本次允许') && prompt.includes('[a]本会话记住') && prompt.includes('[N]拒绝'), '提示文案含三选项');
+    suite.assert(prompt.includes('$ npm test') && prompt.includes('危险命令'), '提示文案含摘要与原因');
+    const out = new MiniOutput({ showThinking: false, stream: true });
+    // 非 TTY fail-safe：无记住时拒绝（管道/测试环境 isTTY=false）
+    suite.assert(await out.requestApproval({ tool: 'run_command', summary: '$ npm test', reason: '危险命令' }) === false, '无记住时拒绝');
+    // 预置记住后自动放行（同工具同摘要）；摘要不同仍拒绝
+    out.rememberApproval('run_command', '$ npm test');
+    suite.assert(await out.requestApproval({ tool: 'run_command', summary: '$ npm test', reason: '危险命令' }) === true, '记住后同命令自动放行');
+    suite.assert(await out.requestApproval({ tool: 'run_command', summary: '$ rm -rf /', reason: '危险命令' }) === false, '不同命令不受记住影响');
+    suite.assert(await out.requestApproval({ tool: 'write_file', summary: '$ npm test', reason: 'x' }) === false, '不同工具不受记住影响');
+    out.clearSessionApprovals();
+    suite.assert(await out.requestApproval({ tool: 'run_command', summary: '$ npm test', reason: '危险命令' }) === false, '/new 语义：清掉后重新询问');
   });
 
   suite.test('回合形态：› 用户行 / • 正文行 / 运行中状态行 / Worked for 分隔行', () => {
@@ -227,6 +282,79 @@ export function miniSuite(): TestSuite {
     suite.assert(lines.some((l) => l === '  分段下'), '后续段落同样缩进（同一单元格仅首行 •）');
   });
 
+  suite.test('mini markdown：行内样式 + 围栏隐藏 + 表格框线 + 仅首行 •', () => {
+    // SGR 映射（纯函数，color 显式开关）
+    suite.assert(chunksToAnsi([{ text: '粗', bold: true }], true).includes('\x1b[1m粗\x1b[0m'), '加粗 SGR');
+    suite.assert(chunksToAnsi([{ text: '码', fg: '#e6b450' }], true).includes('38;2;230;180;80'), '行内代码琥珀色');
+    suite.assert(chunksToAnsi([{ text: '粗', bold: true }], false) === '粗', '无颜色时纯文本（管道可 grep）');
+    // 行级状态机：围栏标记隐藏 + 代码着色
+    const r = new MiniMarkdownRenderer(true);
+    suite.assert(r.pushLine('```js', 80).length === 0, '围栏起始行隐藏');
+    const code = r.pushLine('const a = 1;', 80);
+    suite.assert(code.length === 1 && code[0]!.includes('const a = 1;') && !code[0]!.includes('```'), '代码行输出且无围栏标记');
+    suite.assert(r.pushLine('```', 80).length === 0, '围栏结束行隐藏');
+    // 表格：头/分隔/数据缓冲，空行触发整表渲染
+    const t = new MiniMarkdownRenderer(false);
+    suite.assert(t.pushLine('| 项目 | 状态 |', 80).length === 0, '表头暂存');
+    suite.assert(t.pushLine('| --- | --- |', 80).length === 0, '分隔行暂存');
+    suite.assert(t.pushLine('| 工具 | 成功 |', 80).length === 0, '数据行暂存');
+    const table = t.pushLine('', 80);
+    suite.assert(table.some((l) => l.includes('┌') && l.includes('┐')), '表格上边框');
+    suite.assert(table.some((l) => l.includes('工具') && l.includes('成功')), '表格内容行');
+    const widths = [...new Set(table.filter((l) => l !== '').map((l) => visualWidth(l)))];
+    suite.assert(widths.length === 1, `表格每行等宽（${JSON.stringify(widths)}）`);
+    // 孤含 | 行：下一行非分隔行则回吐原文
+    const p = new MiniMarkdownRenderer(false);
+    suite.assert(p.pushLine('a | b', 80).length === 0, '疑似表头暂存一行');
+    suite.assert(p.pushLine('普通行', 80).join('\n').includes('a | b'), '非表格回吐原文');
+    // 整机：markdown 多行仍仅首行 •
+    const text = renderAt(80, () => {
+      const out = new MiniOutput({ showThinking: false, stream: true, markdown: true });
+      out.onAnswer('# 标\n**加粗**正文\n- 项\n');
+      out.onAnswerEnd();
+    });
+    const stripped = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const lines = stripped.split('\n').filter((l) => l !== '');
+    suite.assert(lines[0]!.startsWith('• ') && lines.slice(1).every((l) => l.startsWith('  ')), 'markdown 下仍仅首行 •');
+    suite.assert(!stripped.includes('**') && !stripped.includes('# 标'), '标记已渲染（无残留）');
+    suite.assert(lines.every((l) => visualWidth(l) <= 80), '无超宽行');
+  });
+
+  suite.test('@ 提及：Tab 补全候选（文件尾空格/目录留/·模糊/空白结束/斜杠抑制）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mention-'));
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src', 'app.ts'), 'x');
+    fs.writeFileSync(path.join(dir, 'readme.md'), 'x');
+    // 空查询：顶层浏览（目录保留 /，文件尾空格结束提及）
+    const top = completeMention('@', dir)!;
+    suite.assert(top[1] === '@', '被替换词为 @');
+    suite.assert(top[0].includes('@src/'), '目录候选保留 /（继续深入）');
+    suite.assert(top[0].includes('@readme.md '), '文件候选尾空格（结束提及）');
+    // 非空查询：跨目录模糊命中
+    const hits = completeMention('@app', dir)!;
+    suite.assert(hits[0].includes('@src/app.ts '), '跨目录模糊命中文件');
+    // 目录前缀下检索 + 行内位置
+    const sub = completeMention('看看 @src/', dir)!;
+    suite.assert(sub[0].includes('@src/app.ts '), '目录前缀下检索（行内 @ 生效）');
+    // @ 后空白 → 提及结束
+    suite.assert(completeMention('@app x', dir) === null, '@ 后空白无提及');
+    // / 命令文本抑制（TUI 同款）
+    suite.assert(completeMention('/model @app', dir) === null, '/ 文本不触发提及');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  suite.test('@ 提及插入纯函数（文件尾空格/目录留/·行内光标）', () => {
+    // '看看 @app'：@ 下标 3，查询 'app' 长 3
+    const f = applyMentionInsert('看看 @app', 3, 3, 'src/app.ts');
+    suite.assert(f.text === '看看 @src/app.ts ', `文件插入尾空格：${JSON.stringify(f.text)}`);
+    suite.assert(f.cursor === f.text.length, '光标落在插入段末尾');
+    const d = applyMentionInsert('@src', 0, 3, 'src/');
+    suite.assert(d.text === '@src/' && d.cursor === 5, '目录保留 / 继续深入（不加空格）');
+    // 行内 @ 后半截保留
+    const mid = applyMentionInsert('看 @ap 好', 2, 2, 'src/app.ts');
+    suite.assert(mid.text === '看 @src/app.ts  好', `行内插入保留后半截：${JSON.stringify(mid.text)}`);
+  });
+
   suite.test('端到端：omni mini "<任务>"（mock 服务）', async () => {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-'));
     fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
@@ -265,9 +393,10 @@ export function miniSuite(): TestSuite {
         });
       });
       suite.assert(code === 0, `进程退出码 0（实际 ${code}）`);
-      suite.assert(out.includes('>_ Omni (v'), 'banner 信息框');
-      suite.assert(out.includes('model: mock-model medium   /model to change'), 'banner 模型行版式');
-      suite.assert(out.includes('permissions: YOLO mode'), 'banner 展示权限档位');
+      const plain = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+      suite.assert(plain.includes('>_ Omni (v'), 'banner 信息框');
+      suite.assert(plain.includes('model:') && plain.includes('mock-model') && plain.includes('/model to change'), 'banner 模型行版式（codex：model + /model to change）');
+      suite.assert(plain.includes('permissions: YOLO mode'), 'banner 展示权限档位（YOLO 才展示）');
       suite.assert(out.includes('› 验证 mini 模式'), '用户输入回显（› 前缀）');
       suite.assert(out.includes('• Ran echo mock-ok'), '工具调用项目符号行');
       suite.assert(out.includes('• 任务完成'), '正文用 • 前缀');
@@ -316,6 +445,8 @@ export function miniSuite(): TestSuite {
       await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
       child.stdin.write('验证 mini 交互\n');
       await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+      child.stdin.write('!echo ledger-bang\n');
+      await waitFor(async () => out.includes('You ran echo ledger-bang'), 15000, '`!` 直跑回显');
       child.stdin.write('/exit\n');
       const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
       suite.assert(out.includes('>_ Omni (v'), '交互模式同样打印信息框');
@@ -324,6 +455,16 @@ export function miniSuite(): TestSuite {
       suite.assert(out.includes('› 验证 mini 交互'), '用户输入回显（› 前缀）');
       suite.assert(out.includes('• Ran echo mock-ok'), '工具调用项目符号行');
       suite.assert(/\d\d:\d\d/.test(out), '回合分隔行带本地时间（codex separators.rs）');
+      suite.assert(out.includes('└ ledger-bang'), '`!` 输出进 `└ ` 单元格');
+      // 落盘账本：会话 JSONL 含 bang 工具调用（Ctrl+T 同源）
+      let ledger = '';
+      try {
+        const dir = path.join(xdg, 'omni', 'sessions');
+        for (const f of fs.readdirSync(dir)) {
+          if (f.endsWith('.jsonl')) ledger += fs.readFileSync(path.join(dir, f), 'utf8');
+        }
+      } catch { /* 会话目录缺失则断言失败 */ }
+      suite.assert(ledger.includes('ledger-bang'), '`!` 直跑进会话账本');
       suite.assert(code === 0 || code === null, `退出码 0（实际 ${code}）`);
     } finally {
       mock.kill();

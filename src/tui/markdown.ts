@@ -164,7 +164,7 @@ const INLINE_TOKEN =
   /\*\*([^*]+)\*\*|(?<!\w)__([^_]+)__(?!\w)|~~([^~\n]+)~~|`([^`]+)`|(?<!\w)\*([^*\n]+)\*(?!\w)|\[([^\]]+)\]\([^)]*\)|\$([^$\n]+)\$|\\\(([^)\n]+)\\\)|\\\[([^[\]\n]+)\\\]/g;
 
 /** 扫描一行内的 Markdown 标记，产出样式片段 */
-function scanInline(text: string): MdChunk[] {
+export function scanInlineChunks(text: string): MdChunk[] {
   const out: MdChunk[] = [];
   let last = 0;
   for (const m of text.matchAll(INLINE_TOKEN)) {
@@ -195,7 +195,7 @@ function scanInline(text: string): MdChunk[] {
 /* ---------------------------------- 表格 ---------------------------------- */
 
 /** 拆分 GFM 表格行：去掉首尾 |，按 | 拆列并 trim（`| a | b |` → ['a','b']） */
-function splitTableRow(line: string): string[] {
+export function splitTableRow(line: string): string[] {
   let s = line.trim();
   if (s.startsWith('|')) s = s.slice(1);
   if (s.endsWith('|')) s = s.slice(0, -1);
@@ -203,7 +203,7 @@ function splitTableRow(line: string): string[] {
 }
 
 /** 表格分隔行（| --- | :---: | ---: |）：每列都是破折号 + 可选冒号（对齐标记） */
-function isTableSepLine(line: string): boolean {
+export function isTableSepLine(line: string): boolean {
   const cells = splitTableRow(line);
   return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c));
 }
@@ -279,7 +279,7 @@ function tableContentRow(
   const chunks: MdChunk[] = [];
   for (let i = 0; i < cells.length; i++) {
     const cellText = truncCell(cells[i] ?? '', widths[i]);
-    const cellChunks = scanInline(cellText);
+    const cellChunks = scanInlineChunks(cellText);
     const rendered = isHeader ? cellChunks.map((c) => ({ ...c, bold: true, fg: 'cyan' })) : cellChunks;
     // 用「渲染后」宽度算补齐：scanInline 会剥掉 ~~ / ** / ` 等标记（渲染更窄），
     // 若按原始文本宽算 pad 会多出空列、整行对不齐边框（行宽不一致）
@@ -309,7 +309,7 @@ function tableContentRow(
  * 列宽按内容自然宽度（CJK 全角算 2 列），超内容宽度时收缩最宽列并截断单元格——
  * 保证每行总宽 ≤ contentWidth，折行不会打破对齐（与工具卡片同一宽度约定）。
  */
-function renderTable(
+export function renderTable(
   headerCells: string[],
   sepCells: string[],
   dataCells: string[][],
@@ -346,7 +346,7 @@ function renderTable(
     const plain: MdRow[] = [];
     const allRows: [string[], boolean][] = [[header, true], ...data.map((d) => [d, false] as [string[], boolean])];
     for (const [cells, isHeader] of allRows) {
-      plain.push({ chunks: scanInline(cells.join(' | ')).map((c) => (isHeader ? { ...c, bold: true } : c)) });
+      plain.push({ chunks: scanInlineChunks(cells.join(' | ')).map((c) => (isHeader ? { ...c, bold: true } : c)) });
     }
     return plain;
   }
@@ -359,6 +359,66 @@ function renderTable(
   for (const row of data) rows.push(tableContentRow(row, fitted, align, false));
   rows.push({ chunks: [{ text: tableBorderLine('┴', ['└', '┘'], fitted), dim: true }] });
   return rows;
+}
+
+/* -------------------------------------------------------------------------- */
+
+/** 围栏行判定（与 markdownToRows 同规则：行首 ``` / ~~~，兼容 ```js extra 元信息） */
+export const FENCE_RE = /^(```+|~~~+)\s*(\S*)/;
+
+/**
+ * 围栏内代码行 → 样式片段（diff 围栏按行首着色 + 绿 / - 红 / @@ 青，其余统一代码色）。
+ * markdownToRows 的围栏内分支与 mini 共用，行为一致。
+ */
+export function codeLineChunks(line: string, codeLang: string): MdChunk[] {
+  const trimmed = line.trimStart();
+  if (codeLang === 'diff') {
+    if (trimmed.startsWith('+')) return [{ text: line, fg: DIFF_ADD_FG }];
+    if (trimmed.startsWith('-')) return [{ text: line, fg: DIFF_REM_FG }];
+    if (trimmed.startsWith('@@')) return [{ text: line, fg: 'cyan' }];
+  }
+  return [{ text: line, fg: CODE_FG }];
+}
+
+/**
+ * 单行块级解析（非围栏、非表格）：标题 / 引用 / 水平线 / 任务清单 /
+ * 无序列表 / 有序列表 / 普通行 → 样式片段。markdownToRows 的同名分支与
+ * mini 共用，行为一致。
+ */
+export function parseMarkdownLine(line: string): MdChunk[] {
+  const trimmed = line.trimStart();
+  // 标题：# ~ ######（加粗 + 青色，行内样式生效：## **加粗** 标题）
+  const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+  if (heading) {
+    return scanInlineChunks(heading[2]).map((c) => ({ ...c, bold: true, fg: 'cyan' }));
+  }
+  // 引用：> 文本（支持嵌套 >> 与行内样式，浅色）
+  const quote = /^>+\s?(.*)$/.exec(trimmed);
+  if (quote) {
+    return scanInlineChunks(quote[1]).map((c) => ({ ...c, dim: true, fg: QUOTE_FG }));
+  }
+  // 水平线：--- / *** / ___（浅色虚线）
+  if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
+    return [{ text: '──────', dim: true }];
+  }
+  // 任务清单：- [x] / - [ ]（☑/☐）
+  const task = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
+  if (task) {
+    const done = task[1].toLowerCase() === 'x';
+    return [{ text: done ? '☑ ' : '☐ ', fg: 'cyan' }, ...scanInlineChunks(task[2])];
+  }
+  // 无序列表：- / * / +（•）
+  const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
+  if (bullet) {
+    return [{ text: '• ', fg: 'cyan' }, ...scanInlineChunks(bullet[1])];
+  }
+  // 有序列表：1. 2. …（保留序号，行内样式生效）
+  const ordered = /^(\d+\.)\s+(.*)$/.exec(trimmed);
+  if (ordered) {
+    return [{ text: `${ordered[1]} ` }, ...scanInlineChunks(ordered[2])];
+  }
+
+  return scanInlineChunks(line);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -389,7 +449,7 @@ export function markdownToRows(text: string, contentWidth?: number): MdRow[] {
     const trimmed = line.trimStart();
 
     // 围栏代码块：``` / ~~~ 开闭围栏行隐藏（代码行单独着色；兼容 ```js extra 元信息行）
-    const fence = /^(```+|~~~+)\s*(\S*)/.exec(trimmed);
+    const fence = FENCE_RE.exec(trimmed);
     if (fence) {
       if (!inCode) codeLang = (fence[2] ?? '').toLowerCase();
       else codeLang = '';
@@ -397,23 +457,7 @@ export function markdownToRows(text: string, contentWidth?: number): MdRow[] {
       continue;
     }
     if (inCode) {
-      // diff 围栏：+ 绿 / - 红 / @@ 青 / 其余代码色（对标 Web markstream 的 diff 渲染；
-      // 模型常在回答里贴 ```diff，之前整块单色蓝灰，用户以为重载丢格式）
-      if (codeLang === 'diff') {
-        if (trimmed.startsWith('+')) {
-          rows.push({ chunks: [{ text: line, fg: DIFF_ADD_FG }] });
-          continue;
-        }
-        if (trimmed.startsWith('-')) {
-          rows.push({ chunks: [{ text: line, fg: DIFF_REM_FG }] });
-          continue;
-        }
-        if (trimmed.startsWith('@@')) {
-          rows.push({ chunks: [{ text: line, fg: 'cyan' }] });
-          continue;
-        }
-      }
-      rows.push({ chunks: [{ text: line, fg: CODE_FG }] });
+      rows.push({ chunks: codeLineChunks(line, codeLang) });
       continue;
     }
 
@@ -437,44 +481,7 @@ export function markdownToRows(text: string, contentWidth?: number): MdRow[] {
       continue;
     }
 
-    // 标题：# ~ ######（加粗 + 青色，行内样式生效：## **加粗** 标题）
-    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-    if (heading) {
-      rows.push({ chunks: scanInline(heading[2]).map((c) => ({ ...c, bold: true, fg: 'cyan' })) });
-      continue;
-    }
-    // 引用：> 文本（支持嵌套 >> 与行内样式，浅色）
-    const quote = /^>+\s?(.*)$/.exec(trimmed);
-    if (quote) {
-      rows.push({ chunks: scanInline(quote[1]).map((c) => ({ ...c, dim: true, fg: QUOTE_FG })) });
-      continue;
-    }
-    // 水平线：--- / *** / ___（浅色虚线）
-    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
-      rows.push({ chunks: [{ text: '──────', dim: true }] });
-      continue;
-    }
-    // 任务清单：- [x] / - [ ]（☑/☐）
-    const task = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
-    if (task) {
-      const done = task[1].toLowerCase() === 'x';
-      rows.push({ chunks: [{ text: done ? '☑ ' : '☐ ', fg: 'cyan' }, ...scanInline(task[2])] });
-      continue;
-    }
-    // 无序列表：- / * / +（•）
-    const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
-    if (bullet) {
-      rows.push({ chunks: [{ text: '• ', fg: 'cyan' }, ...scanInline(bullet[1])] });
-      continue;
-    }
-    // 有序列表：1. 2. …（保留序号，行内样式生效）
-    const ordered = /^(\d+\.)\s+(.*)$/.exec(trimmed);
-    if (ordered) {
-      rows.push({ chunks: [{ text: `${ordered[1]} ` }, ...scanInline(ordered[2])] });
-      continue;
-    }
-
-    rows.push({ chunks: scanInline(line) });
+    rows.push({ chunks: parseMarkdownLine(line) });
   }
 
   if (mdCache.size >= MD_CACHE_MAX) mdCache.clear();

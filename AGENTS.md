@@ -199,9 +199,12 @@ src/
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
     mini.ts             # **纯终端 CLI 模式（`omni mini`）**：复用 runInteractive（全部斜杠命令/审批/会话/撤销栈），
                         #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：内容自适应圆角框 / `› ` 用户行 /
-                        #   `• ` 正文+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
+                        #   `• ` 正文（MiniMarkdownRenderer：复用 tui/markdown 解析输出 ANSI，围栏隐藏/表格框线）+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
                         #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
-                        #   + Ctrl+T 完整轨迹账本；
+                        #   + Ctrl+T 完整轨迹账本；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
+                        #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C 轮内中断、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
+                        #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
+                        #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
                         #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）
   agent/
     loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
