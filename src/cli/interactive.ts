@@ -3,6 +3,8 @@
  * 支持 /exit、/clear、/settings help 等命令。
  */
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import readline from 'node:readline/promises';
 import { parseModelAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
@@ -63,6 +65,7 @@ import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
 import { cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
+import { completeMiniLine, MINI_SLASH_COMMANDS, pickFromList, installSlashSuggest } from './picker.js';
 
 export async function runInteractive(
   client: OpenAI,
@@ -78,8 +81,93 @@ export async function runInteractive(
     onRl?: (rl: { pause(): void; resume(): void; write(data: string): void; line: string; prompt(preserveCursor?: boolean): void }) => void;
   } = {}
 ): Promise<void> {
-  const rl = readline.createInterface({ input, output, prompt: opts.prompt ?? cyan('omni> ') });
+  // Tab 补全（readline 原生 completer，只读行缓冲不提交）：`/mo`→命令名、
+  // `/model <片>`→模型名、`/variants <片>`→级别/命名 id。只在 TTY 挂载，
+  // 管道保持原行为；数据源经 runOpts 实时读（/model add 后即时可补）。
+  const completer = (line: string): [string[], string] => {
+    const modelName = runOpts.modelRuntime?.model ?? model;
+    const ep = (runOpts.models ?? []).find((m) => m.name === modelName);
+    // 第二词补全（data-driven）+ /cd 目录候选（同步 readdir，失败兜底 []）
+    let dirs: string[] | undefined;
+    const trimmedHead = line.trimStart();
+    if (trimmedHead === '/cd' || trimmedHead.startsWith('/cd ')) {
+      try {
+        const m = trimmedHead.match(/^\/cd\s+(\S*)$/);
+        const rawArg = m?.[1] ?? '';
+        const home = os.homedir?.() ?? '';
+        const expandTilde = (p: string): string =>
+          p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p;
+        const slashIdx = rawArg.lastIndexOf('/');
+        if (slashIdx >= 0) {
+          // 带路径：按其目录列出（~ 展开），候选带前缀以便与 arg 前缀匹配
+          const dirPart = rawArg.slice(0, slashIdx + 1);
+          const base = dirPart.startsWith('~/') || dirPart === '~/'
+            ? expandTilde(dirPart)
+            : dirPart.startsWith('/')
+              ? dirPart
+              : path.join(process.cwd(), dirPart);
+          const entries = fs.readdirSync(base);
+          dirs = entries.filter((n) => {
+            try { return fs.statSync(path.join(base, n)).isDirectory(); } catch { return false; }
+          }).map((n) => `${dirPart}${n}/`);
+        } else {
+          const base = process.cwd();
+          const entries = fs.readdirSync(base);
+          dirs = entries.filter((n) => {
+            try { return fs.statSync(path.join(base, n)).isDirectory(); } catch { return false; }
+          }).map((n) => `${n}/`);
+        }
+      } catch {
+        dirs = [];
+      }
+    }
+    const [hits, word] = completeMiniLine(line, {
+      modelNames: (runOpts.models ?? []).map((m) => m.name),
+      modelName,
+      effortOptions: runOpts.reasoningEffortOptions ?? [],
+      variantIds: Object.keys(ep?.variants ?? {}),
+    }, {
+      secondWords: {
+        '/mcp': ['reconnect', 'resources', 'prompts'],
+        '/skill': ['find', 'add', 'show', 'create', 'delete'],
+        '/permission': ['只读', '请求批准', '帮我批准', '完全访问', 'read', 'safe', 'ask', 'full'],
+      },
+      dirs,
+    });
+    // 裸 `/` + Tab：直接打印全部可用命令（免得用户去猜双 Tab 才出列表）。
+    // 走 MiniOutput.print 便带上轮内输入行协作；console 等无此方法则回退直打。
+    if (word === '/' && line.trim() === '/') {
+      const list = MINI_SLASH_COMMANDS.join('  ');
+      const print = (out as unknown as { print?: (s: string) => void }).print;
+      if (print) print(dim(list));
+      else console.log(dim(list));
+      return [[], word];
+    }
+    return [hits, word];
+  };
+  const rl = readline.createInterface({
+    input,
+    output,
+    prompt: opts.prompt ?? cyan('omni> '),
+    completer: input.isTTY ? completer : undefined,
+  });
   opts.onRl?.(rl);
+  // 空闲提示符下的打 / 联想面板（纯显示被动监听；轮内 inTurn 一律不渲染不擦除）
+  let inTurn = false;
+  const suggestPrint = (out as unknown as { print?: (s: string) => void }).print?.bind(out) ?? ((s: string) => console.log(s));
+  const suggest = installSlashSuggest({
+    stdin: input,
+    getLine: () => rl.line,
+    isActive: () => !inTurn,
+    print: (s) => suggestPrint(s),
+    redraw: () => {
+      try {
+        rl.prompt(true);
+      } catch {
+        /* 接口已关闭，忽略 */
+      }
+    },
+  });
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   const safePrompt = () => {
     try {
@@ -136,6 +224,27 @@ export async function runInteractive(
     savedCount = persistable.length;
     // 轨迹事件批量落盘（`{"t":"ev"}` 行与消息共存；失败静默不打扰对话）
     await runOpts.events?.flush().catch(() => {});
+  };
+  // 单候选继续整套（/session </id> 与 /resume </id> 及二者无参 picker 共用）：
+  // loadSession/替换 messages/sessionPath/savedCount/重开 events/删空占位/标题。文案由 verb 区分（恢复/继续）。
+  const continueSessionFile = async (file: string, verb: string, label: string): Promise<void> => {
+    const loaded = await loadSession(file);
+    if (!loaded) {
+      console.log(red(`会话「${label}」加载失败`));
+      return;
+    }
+    const prevPath = runOpts.sessionPath;
+    messages.length = 0;
+    messages.push(...loaded.messages);
+    runOpts.sessionPath = file; // 继续追加到同一会话文件
+    savedCount = persistableMessages(messages).length;
+    // 轨迹记录器同步重开到新会话文件（读回其历史事件续 seq/turn；失败保留原内存事件）
+    const oldEv = runOpts.events;
+    runOpts.events = await EventRecorder.open(file).catch(() => oldEv);
+    // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
+    if (prevPath && prevPath !== file) await removeEmptySession(prevPath).catch(() => {});
+    console.log(green(`已${verb}会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
+    if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
   };
   if (opts.intro !== false) console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
   safePrompt();
@@ -213,12 +322,11 @@ export async function runInteractive(
       const PERM_LABEL: Record<PermissionTier, string> = {
         read: '只读', safe: '帮我批准', ask: '请求批准', full: '完全访问',
       };
-      if (!want) {
-        console.log(dim(`当前安全权限：${PERM_LABEL[permission]}（/permission 只读|请求批准|帮我批准|完全访问 切换）`));
-      } else {
-        const next = PERMS[want];
+      // 切换整套（含未知校验/未信任锁定/切换打印；带参直调与 picker 确认共用）
+      const applyPermissionChoice = (choice: string): void => {
+        const next = PERMS[choice];
         if (!next) {
-          console.log(red(`未知权限「${want}」——可选：只读 / 请求批准 / 帮我批准 / 完全访问`));
+          console.log(red(`未知权限「${choice}」——可选：只读 / 请求批准 / 帮我批准 / 完全访问`));
         } else if (runOpts.trusted === false && next !== 'read') {
           // 未信任目录：强制只读，禁止提升（工作区信任的硬约束，/permission 不能绕过）
           console.log(red('当前目录未受信任——权限锁定为只读（read），无法提升（首次进入时批准信任即可提升）'));
@@ -228,6 +336,26 @@ export async function runInteractive(
           runOpts.safetyGate?.setTier(next); // 共用闸门（子代理）同步
           console.log(green(`已切换安全权限 → ${PERM_LABEL[next]}`));
         }
+      };
+      if (!want) {
+        if (input.isTTY) {
+          // TTY 箭头选择器：四档（顺序 只读/read → 请求批准/ask → 帮我批准/safe → 完全访问/full，当前✓）
+          const tiers: PermissionTier[] = ['read', 'ask', 'safe', 'full'];
+          const items = tiers.map((t) => ({
+            label: `${PERM_LABEL[t]}${permission === t ? ' ✓' : ''}`,
+            value: t,
+          }));
+          const idx = await pickFromList(input, items, { selected: Math.max(0, tiers.indexOf(permission)) });
+          if (idx < 0) {
+            safePrompt();
+            continue;
+          }
+          applyPermissionChoice(items[idx].value);
+        } else {
+          console.log(dim(`当前安全权限：${PERM_LABEL[permission]}（/permission 只读|请求批准|帮我批准|完全访问 切换）`));
+        }
+      } else {
+        applyPermissionChoice(want);
       }
       safePrompt();
       continue;
@@ -281,10 +409,37 @@ export async function runInteractive(
     if (cmd === '/skill' || cmd.startsWith('/skill ')) {
       // /skill：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装（本会话即时生效）；show 查看内容
       const args = cmd.slice('/skill'.length).trim();
+      // 查看整套（/skill show <name> 与无参 picker 确认共用）
+      const showSkillByName = async (name: string): Promise<void> => {
+        const content = await loadSkillContent(name);
+        if (!content) {
+          console.log(red(`未找到技能「${name}」（/skill 查看已发现列表）`));
+        } else {
+          console.log(dim(`技能「${name}」内容：`));
+          console.log(content);
+        }
+      };
       if (!args) {
         const skills = await discoverSkills();
         if (skills.length === 0) {
           console.log(dim('未发现技能（.opencode/.claude/.agents/skills 下无 SKILL.md）。用 /skill find <关键词> 网络检索，或 /skill add <owner/repo> --skill <名称> 安装。'));
+        } else if (input.isTTY) {
+          // TTY 箭头选择器：label 沿用文本列表 tags 拼法，选中走 show 整套
+          const items = skills.map((s) => {
+            const tags: string[] = [];
+            if (s.global) tags.push('全局');
+            if (s.disableModelInvocation) tags.push('仅手动');
+            if (s.context === 'fork') tags.push('子代理');
+            if (s.source) tags.push(s.source);
+            const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
+            return { label: `${s.name} — ${s.description}${tag}`, value: s.name };
+          });
+          const idx = await pickFromList(input, items, { selected: 0 });
+          if (idx < 0) {
+            safePrompt();
+            continue;
+          }
+          await showSkillByName(items[idx].value);
         } else {
           console.log(dim(`已发现 ${skills.length} 个技能（模型可用 skill 工具按 name 加载；/skill find 网络检索更多）：`));
           for (const s of skills) {
@@ -352,13 +507,7 @@ export async function runInteractive(
       }
       const showM = args.match(/^show\s+(\S+)$/);
       if (showM) {
-        const content = await loadSkillContent(showM[1]);
-        if (!content) {
-          console.log(red(`未找到技能「${showM[1]}」（/skill 查看已发现列表）`));
-        } else {
-          console.log(dim(`技能「${showM[1]}」内容：`));
-          console.log(content);
-        }
+        await showSkillByName(showM[1]);
         safePrompt();
         continue;
       }
@@ -553,44 +702,77 @@ export async function runInteractive(
       const ep = (runOpts.models ?? []).find((m) => m.name === currentModel);
       const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();
+      // 三分支赋值 + 持久化（带参直调 / picker 确认后复用同一套）
+      const applyVariant = (name: string): void => {
+        if (!opts.includes(name) && !namedIds.includes(name)) {
+          console.log(red(`未知思考级别「${name}」——可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`));
+        } else if (namedIds.includes(name) && !opts.includes(name)) {
+          runOpts.activeVariant = name;
+          console.log(green(`已切换命名变体 → ${name}`));
+          const cfg = runOpts.cfg;
+          if (cfg) {
+            const res = persistVariantToConfig(name, cfg, currentModel);
+            console.log(res.ok ? dim(res.message) : yellow(res.message));
+          }
+        } else if (!namedIds.includes(name) && runOpts.activeVariant && !ep?.variants?.[runOpts.activeVariant]?.reasoningEffort) {
+          // 字符串级别 + 当前叠加层无自带 effort → 切级别同时清除命名叠加（避免语义打架）
+          runOpts.reasoningEffort = name;
+          runOpts.activeVariant = undefined;
+          console.log(green(`已切换思考级别 → ${name}（已退出命名变体）`));
+          const cfg = runOpts.cfg;
+          if (cfg) {
+            const res = persistReasoningEffortToConfig(name, cfg, currentModel);
+            console.log(res.ok ? dim(res.message) : yellow(res.message));
+          }
+        } else {
+          runOpts.reasoningEffort = name;
+          console.log(green(`已切换思考级别 → ${name}`));
+          const cfg = runOpts.cfg;
+          if (cfg) {
+            const res = persistReasoningEffortToConfig(name, cfg, currentModel);
+            console.log(res.ok ? dim(res.message) : yellow(res.message));
+          }
+        }
+      };
       if (!want) {
         if (opts.length === 0 && namedIds.length === 0) {
           console.log(dim('当前模型没有可切换的思考级别。'));
           safePrompt();
           continue;
         }
-        const cur = runOpts.activeVariant
-          ? `命名变体 ${runOpts.activeVariant}`
-          : (runOpts.reasoningEffort ?? '（未设置，用模型默认）');
-        console.log(dim(`当前：${cur}（级别：${opts.join('|')}${namedIds.length ? ` · 命名：${namedIds.join('|')}` : ''}）`));
-      } else if (!opts.includes(want) && !namedIds.includes(want)) {
-        console.log(red(`未知思考级别「${want}」——可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`));
-      } else if (namedIds.includes(want) && !opts.includes(want)) {
-        runOpts.activeVariant = want;
-        console.log(green(`已切换命名变体 → ${want}`));
-        const cfg = runOpts.cfg;
-        if (cfg) {
-          const res = persistVariantToConfig(want, cfg, currentModel);
-          console.log(res.ok ? dim(res.message) : yellow(res.message));
-        }
-      } else if (!namedIds.includes(want) && runOpts.activeVariant && !ep?.variants?.[runOpts.activeVariant]?.reasoningEffort) {
-        // 字符串级别 + 当前叠加层无自带 effort → 切级别同时清除命名叠加（避免语义打架）
-        runOpts.reasoningEffort = want;
-        runOpts.activeVariant = undefined;
-        console.log(green(`已切换思考级别 → ${want}（已退出命名变体）`));
-        const cfg = runOpts.cfg;
-        if (cfg) {
-          const res = persistReasoningEffortToConfig(want, cfg, currentModel);
-          console.log(res.ok ? dim(res.message) : yellow(res.message));
+        if (input.isTTY) {
+          // TTY 箭头选择器：effort 原样 + 命名 variant（value 加 variant: 前缀分流）
+          const items = [
+            ...opts.map((o) => ({
+              label: `${o}${!runOpts.activeVariant && runOpts.reasoningEffort === o ? ' ✓' : ''}`,
+              value: o,
+            })),
+            ...namedIds.map((id) => {
+              const v = ep?.variants?.[id];
+              const extra = [v?.description, v?.reasoningEffort].filter(Boolean).join(' · ');
+              return {
+                label: `${id}（命名${extra ? ` · ${extra}` : ''}）${runOpts.activeVariant === id ? ' ✓' : ''}`,
+                value: `variant:${id}`,
+              };
+            }),
+          ];
+          const curValue = runOpts.activeVariant ? `variant:${runOpts.activeVariant}` : (runOpts.reasoningEffort ?? '');
+          const curIdx = items.findIndex((it) => it.value === curValue);
+          const idx = await pickFromList(input, items, { selected: curIdx >= 0 ? curIdx : 0 });
+          if (idx < 0) {
+            safePrompt();
+            continue;
+          }
+          const picked = items[idx].value;
+          applyVariant(picked.startsWith('variant:') ? picked.slice('variant:'.length) : picked);
+        } else {
+          const cur = runOpts.activeVariant
+            ? `命名变体 ${runOpts.activeVariant}`
+            : (runOpts.reasoningEffort ?? '（未设置，用模型默认）');
+          console.log(dim(`当前：${cur}（级别：${opts.join('|')}${namedIds.length ? ` · 命名：${namedIds.join('|')}` : ''}）`));
         }
       } else {
-        runOpts.reasoningEffort = want;
-        console.log(green(`已切换思考级别 → ${want}`));
-        const cfg = runOpts.cfg;
-        if (cfg) {
-          const res = persistReasoningEffortToConfig(want, cfg, currentModel);
-          console.log(res.ok ? dim(res.message) : yellow(res.message));
-        }
+        applyVariant(want);
       }
       safePrompt();
       continue;
@@ -641,8 +823,47 @@ export async function runInteractive(
       // /model：显示当前模型 + 可用列表；/model <名称> 切换；/model add <名称> [--base-url] [--api-key] [--user-agent] 添加并持久化
       const want = cmd.slice('/model'.length).trim();
       const models = runOpts.models ?? [];
+      // 按名切换整套逻辑（带参直调 / picker 确认后复用同一套，文案与持久化原样）
+      const switchToModel = (name: string): void => {
+        const ep = models.find((m) => m.name === name);
+        if (!ep) {
+          console.log(red(`未知模型「${name}」——可用：${models.map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加，config models 可配不同端点）`));
+        } else if (name === currentModel) {
+          console.log(dim(`已是当前模型 ${name}`));
+        } else {
+          switchModel(name); // 重建 client + 更新 modelRuntime（子代理同步）
+          console.log(green(`已切换模型 → ${name}${ep.baseURL ? `（${ep.baseURL}）` : ''}${ep.reasoningEffort ? `（思考级别 ${ep.reasoningEffort}）` : ''}`));
+          // 持久化：切换后下次启动默认就是新模型（纯 JSON 配置文件自动改写；JSONC 提示手动）
+          const cfg = runOpts.cfg;
+          if (cfg) {
+            const res = persistModelDefaultToConfig(name, cfg);
+            console.log(res.ok ? dim(res.message) : yellow(res.message));
+          }
+        }
+      };
       if (!want) {
-        console.log(dim(`当前模型：${currentModel}（可用：${models.length > 0 ? models.map((m) => m.name).join(' / ') : currentModel}；/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加 · /model fetch 拉取网关模型列表 · config models/providers 可配多端点）`));
+        if (input.isTTY && models.length > 0) {
+          // TTY 箭头选择器：有多少字段拼多少（名称 · provider · 上下文k/输出k · 当前✓）
+          const fmtK = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`);
+          const items = models.map((m) => {
+            const segs = [m.displayName ?? m.name];
+            if (m.provider) segs.push(m.provider);
+            const k = [m.limit?.context ? fmtK(m.limit.context) : '', m.limit?.output ? fmtK(m.limit.output) : '']
+              .filter(Boolean).join('/');
+            if (k) segs.push(k);
+            if (m.name === currentModel) segs.push('✓');
+            return { label: segs.join(' · '), value: m.name };
+          });
+          const curIdx = models.findIndex((m) => m.name === currentModel);
+          const idx = await pickFromList(input, items, { selected: curIdx >= 0 ? curIdx : 0 });
+          if (idx < 0) {
+            safePrompt();
+            continue;
+          }
+          switchToModel(items[idx].value);
+        } else {
+          console.log(dim(`当前模型：${currentModel}（可用：${models.length > 0 ? models.map((m) => m.name).join(' / ') : currentModel}；/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加 · /model fetch 拉取网关模型列表 · config models/providers 可配多端点）`));
+        }
       } else if (want === 'fetch' || want.startsWith('fetch ')) {
         // /model fetch [名称]（1.0 P1）：GET {baseURL}/models 自动补全——OpenAI 兼容协议
         // 通用能力（Ollama/LM Studio/vLLM/各类网关）。列出本地未登记的远端 id。
@@ -706,21 +927,7 @@ export async function runInteractive(
           console.log(res.ok ? dim(res.message) : yellow(res.message));
         }
       } else {
-        const ep = models.find((m) => m.name === want);
-        if (!ep) {
-          console.log(red(`未知模型「${want}」——可用：${models.map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加，config models 可配不同端点）`));
-        } else if (want === currentModel) {
-          console.log(dim(`已是当前模型 ${want}`));
-        } else {
-          switchModel(want); // 重建 client + 更新 modelRuntime（子代理同步）
-          console.log(green(`已切换模型 → ${want}${ep.baseURL ? `（${ep.baseURL}）` : ''}${ep.reasoningEffort ? `（思考级别 ${ep.reasoningEffort}）` : ''}`));
-          // 持久化：切换后下次启动默认就是新模型（纯 JSON 配置文件自动改写；JSONC 提示手动）
-          const cfg = runOpts.cfg;
-          if (cfg) {
-            const res = persistModelDefaultToConfig(want, cfg);
-            console.log(res.ok ? dim(res.message) : yellow(res.message));
-          }
-        }
+        switchToModel(want);
       }
       safePrompt();
       continue;
@@ -1081,6 +1288,25 @@ export async function runInteractive(
         const list = await listSessions();
         if (list.length === 0) {
           console.log(dim('没有已保存的会话（交互模式退出时自动落盘；/resume <id> 恢复）'));
+        } else if (input.isTTY) {
+          // TTY 箭头选择器（数据源是全部会话列表；选中走单候选继续整套）
+          const currentId = runOpts.sessionPath ? sessionIdFromPath(runOpts.sessionPath) : '';
+          const filtered = list.filter((s) => s.id !== currentId);
+          if (filtered.length === 0) {
+            console.log(dim('没有已保存的会话（交互模式退出时自动落盘；/resume <id> 恢复）'));
+          } else {
+            const items = filtered.map((s) => ({
+              label: `${s.pinned ? '★ ' : ''}${s.title || '（无标题）'}（${s.messages} 条）`,
+              value: s.id,
+            }));
+            const idx = await pickFromList(input, items, { selected: 0 });
+            if (idx < 0) {
+              safePrompt();
+              continue;
+            }
+            const picked = filtered[idx];
+            await continueSessionFile(picked.path, '恢复', picked.id);
+          }
         } else {
           console.log(dim(`已保存 ${list.length} 个会话（/resume <id> 恢复）：`));
           for (const s of list.slice(0, 15)) console.log(dim(`· ${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
@@ -1105,24 +1331,7 @@ export async function runInteractive(
         continue;
       }
       const file = cands[0].path;
-      const loaded = await loadSession(file);
-      if (!loaded) {
-        console.log(red(`会话「${id}」加载失败`));
-        safePrompt();
-        continue;
-      }
-      const prevResumePath = runOpts.sessionPath;
-      messages.length = 0;
-      messages.push(...loaded.messages);
-      runOpts.sessionPath = file; // 继续追加到同一会话文件
-      savedCount = persistableMessages(messages).length;
-      // 轨迹记录器同步重开到新会话文件（读回其历史事件续 seq/turn；失败保留原内存事件）
-      const oldEvents = runOpts.events;
-      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
-      // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
-      if (prevResumePath && prevResumePath !== file) await removeEmptySession(prevResumePath).catch(() => {});
-      console.log(green(`已恢复会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
-      if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
+      await continueSessionFile(file, '恢复', id);
       safePrompt();
       continue;
     }
@@ -1253,6 +1462,19 @@ export async function runInteractive(
         const list = (await listSessions(isAll ? undefined : process.cwd(), { includeArchived: false })).filter((s) => s.id !== currentId);
         if (list.length === 0) {
           console.log(dim(isAll ? '没有已保存的会话（交互模式退出时自动落盘；/session 查看当前目录）' : '当前目录没有历史会话（交互模式退出时自动落盘；/session all 查看全部）'));
+        } else if (!isAll && !arg && input.isTTY) {
+          // /session 无参 TTY 箭头选择器（保持“当前目录”过滤列表；选中走单候选继续整套）
+          const items = list.map((s) => ({
+            label: `${s.pinned ? '★ ' : ''}${s.title || '（无标题）'}（${s.messages} 条）`,
+            value: s.id,
+          }));
+          const idx = await pickFromList(input, items, { selected: 0 });
+          if (idx < 0) {
+            safePrompt();
+            continue;
+          }
+          const picked = list[idx];
+          await continueSessionFile(picked.path, '继续', picked.id);
         } else {
           console.log(dim(isAll ? `已保存 ${list.length} 个会话（/session <id> 继续）：` : `当前目录 ${list.length} 个历史会话（/session <id> 继续 · /session all 查看全部）：`));
           for (const s of list.slice(0, 15)) console.log(dim(`· ${s.pinned ? '★ ' : ''}${s.id} — ${s.title || '（无标题）'}（${s.messages} 条消息）`));
@@ -1277,24 +1499,7 @@ export async function runInteractive(
         continue;
       }
       const file = cands[0].path;
-      const loaded = await loadSession(file);
-      if (!loaded) {
-        console.log(red(`会话「${arg}」加载失败`));
-        safePrompt();
-        continue;
-      }
-      const prevSessionPath = runOpts.sessionPath;
-      messages.length = 0;
-      messages.push(...loaded.messages);
-      runOpts.sessionPath = file; // 继续追加到同一会话文件
-      savedCount = persistableMessages(messages).length;
-      // 轨迹记录器同步重开到新会话文件（读回其历史事件续 seq/turn；失败保留原内存事件）
-      const oldEvents = runOpts.events;
-      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
-      // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
-      if (prevSessionPath && prevSessionPath !== file) await removeEmptySession(prevSessionPath).catch(() => {});
-      console.log(green(`已继续会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
-      if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
+      await continueSessionFile(file, '继续', arg);
       safePrompt();
       continue;
     }
@@ -1409,11 +1614,13 @@ export async function runInteractive(
     runOpts.safetyGate?.setTier(permission); // 共用闸门（子代理）同步，与 TUI 路径一致
     // 请求失败（网络/401/端点错误）时 runAgent 已提示并正常返回；这里再兜底捕获意外异常，
     // 只在控制台提示、不把交互循环打崩
+    inTurn = true;
     try {
       await runAgent(currentClient, currentModel, messages, runOpts, out);
     } catch (err) {
       console.log(red(`运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`));
     }
+    inTurn = false;
     await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
     // 自动 git commit（config autoCommit，Aider 原子提交）：有改动则提交（消息 = 本轮用户消息）
     if (runOpts.cfg?.autoCommit) {
@@ -1423,5 +1630,6 @@ export async function runInteractive(
     out.onTurnEnd();
     safePrompt();
   }
+  suggest?.dispose();
   rl.close();
 }

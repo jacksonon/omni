@@ -92,6 +92,7 @@ const TIPS = [
   '用 /review 审查当前改动，/diff 查看改动明细。',
   '用 -c 或 /session 恢复历史会话。',
   'Ctrl+T 打印完整轨迹账本（工具输出默认只显示前 3 行）。',
+  '打 / 后按 Tab 看全部命令；/model 与 /variants 支持 ↑↓ 选择。',
   '/exit 退出，Ctrl+C 中断当前任务。',
 ];
 
@@ -209,6 +210,40 @@ export function renderTurnSeparator(elapsedMs: number, date = new Date()): strin
   if (secs > 60) parts.push(`Worked for ${fmtElapsed(elapsedMs)}`);
   parts.push(clockNow(date));
   return dim(`${PREFIX}${parts.join(' · ')}`);
+}
+
+/**
+ * 续行缩进：2 空格（与 `• ` / `› ` 同宽 2 列，对齐）。
+ * 此前用过 SGR 8（conceal）隐藏版 bullet/chevron 做“同字形同宽”对齐，
+ * 但多数终端直接忽略 SGR 8，续行仍显示出淡色 •/›（用户实测：思考每行左侧都有 ·）。
+ * •（U+2022）按 1 列算，`• ` 与两空格同宽，沿用 codex 的空格缩进即可。
+ */
+const CONT_INDENT = '  ';
+
+/**
+ * 提交行按终端宽折行（CJK 感知，不断代理对）。
+ * scrollback 没有布局引擎：超长行不折会被终端软换行甩到 0 列错位（实测抓到）。
+ * avail 取 cols()-2（前缀占 2 列），与终端原生换行断点一致——用户回显与
+ * 对话流用同一断点，擦回显时行数才对得上。
+ */
+export function foldRows(text: string): string[] {
+  if (text === '') return [''];
+  const avail = Math.max(8, cols() - 2);
+  const out: string[] = [];
+  let cur = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = visualWidth(ch);
+    if (w + cw > avail && cur !== '') {
+      out.push(cur);
+      cur = '';
+      w = 0;
+    }
+    cur += ch;
+    w += cw;
+  }
+  out.push(cur);
+  return out;
 }
 
 /** 运行中状态行（codex status_indicator_widget.rs：`• Working (12s • esc to interrupt)`） */
@@ -360,10 +395,12 @@ class StreamingCell {
     /** beforeFirst：首个单元格输出前的空行钩子（codex 相邻 HistoryCell 之间空一行）
      *  afterLine：每提交一行后回调（渲染层据此维护"当前是否已有空行"的状态） */
     private hooks: { beforeFirst?: () => void; afterLine?: () => void } = {},
-    private first = `${dim('•')} `,
-    private rest = PREFIX,
     /** 行输出（MiniOutput.print：轮内带输入行擦写协作，不能直接 console.log） */
-    private print: (line: string) => void = (line) => console.log(line)
+    private print: (line: string) => void = (line) => console.log(line),
+    /** 首行行首：可见 bullet */
+    private first = `${dim('•')} `,
+    /** 续行行首：2 空格缩进（与 `• ` 同宽，见 CONT_INDENT） */
+    private rest = CONT_INDENT
   ) {}
 
   get began(): boolean {
@@ -395,7 +432,16 @@ class StreamingCell {
   private commit(line: string): void {
     this.live.clear();
     if (!this.started) this.hooks.beforeFirst?.();
-    this.print(`${this.prefix()}${this.style(line)}`);
+    const rows = foldRows(line);
+    rows.forEach((row, idx) => {
+      if (row === '') {
+        this.print('');
+        return;
+      }
+      // 仅整个单元格的首行挂 •，其余（含首个逻辑行折出来的续行）全部 2 空格缩进
+      const prefix = !this.started && idx === 0 ? this.first : this.rest;
+      this.print(`${prefix}${this.style(row)}`);
+    });
     this.started = true;
     this.hooks.afterLine?.();
   }
@@ -407,7 +453,15 @@ class StreamingCell {
       const line = this.buf;
       this.buf = '';
       if (!this.started) this.hooks.beforeFirst?.();
-      this.print(`${this.prefix()}${this.style(line)}`);
+      const rows = foldRows(line);
+      rows.forEach((row, idx) => {
+        if (row === '') {
+          this.print('');
+          return;
+        }
+        const prefix = !this.started && idx === 0 ? this.first : this.rest;
+        this.print(`${prefix}${this.style(row)}`);
+      });
       this.started = true;
       this.hooks.afterLine?.();
     }
@@ -572,7 +626,7 @@ export class MiniOutput implements Output {
       afterLine: () => {
         this.gapOpen = false;
       },
-    }, `${dim('•')} `, PREFIX, (line) => this.print(line));
+    }, (line) => this.print(line));
   }
 
   /** 思考单元格（codex ReasoningSummaryCell：同为 `• ` 单元格，但 dim + italic） */
@@ -582,7 +636,7 @@ export class MiniOutput implements Output {
       afterLine: () => {
         this.gapOpen = false;
       },
-    }, `${dim('•')} `, PREFIX, (line) => this.print(line));
+    }, (line) => this.print(line));
   }
 
   /** 收尾并重置单元格（每轮/每个工具边界都是一段独立内容，不能续用上一条的前缀） */
@@ -794,18 +848,17 @@ export class MiniOutput implements Output {
   }
 
   // ── 用户消息 / 回合收尾 ────────────────────────────────────────
-  /** 用户消息：`› ` 前缀（bold dim）+ 前后空行（codex UserHistoryCell） */
+  /** 用户消息：首行 `› ` + 续行 2 空格缩进 + 前后空行 */
   onUserMessage(text: string): void {
     this.answer.end();
-    // 交互模式：readline 已经回显过这条输入，这里擦掉它——让"输入 → 提交 → 落进对话流"
-    // 只出现一次（codex 的 composer 提交后也是这个观感）。回车提交的回显占一行
-    // （轮末回填 + safePrompt 单次 prompt，PTY 验证过只有一行；之前双 prompt 才有两行）。
+    // 折行后回显可能多行：先算出折后行数，一次擦掉 readline 回显的整块——
+    // 让"输入 → 提交 → 落进对话流"只出现一次（回显与对话流用同一断点，行数一致）。
+    const rows = text.split('\n').flatMap((l) => foldRows(l));
     if (this.interactive && this.live.active) {
-      process.stdout.write('\x1b[1A\r\x1b[0J');
+      process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
     }
-    const lines = text.split('\n');
     this.print('');
-    lines.forEach((l, i) => this.print(`${i === 0 ? `${bold(dim('›'))} ` : PREFIX}${l}`));
+    rows.forEach((l, i) => this.print(l === '' ? '' : `${i === 0 ? `${bold(dim('›'))} ` : CONT_INDENT}${l}`));
     this.print('');
     this.gapOpen = true;
   }

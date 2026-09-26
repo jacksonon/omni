@@ -19,6 +19,7 @@ import {
   MiniOutput,
   TRANSCRIPT_HINT,
   fmtElapsed,
+  foldRows,
   renderMiniBanner,
   renderTurnSeparator,
   renderWorkingLine,
@@ -186,6 +187,44 @@ export function miniSuite(): TestSuite {
     const long = renderTurnSeparator(1_000_000, new Date(2026, 8, 24, 22, 30));
     suite.assert(long.includes('Worked for 16m 40s') && long.includes('22:30'), '1m 40s 以上显示 Worked for');
     suite.assert(fmtElapsed(65_000) === '1m 05s', '耗时格式 1m 05s');
+  });
+
+  suite.test('提交行折行：超长按终端宽折断 + 首行 • / 续行 2 空格（codex 同款）', () => {
+    let rows: string[] = [];
+    renderAt(80, () => {
+      rows = foldRows('a'.repeat(200));
+    });
+    suite.assert(rows.length === 3, '200 列按可用宽折成 3 行');
+    suite.assert(rows.every((r) => visualWidth(r) <= 78), '每 folded 行不超过终端宽（终端不软换行）');
+    suite.assert(rows.join('') === 'a'.repeat(200), '折行不断字符');
+    let cjk: string[] = [];
+    renderAt(80, () => {
+      cjk = foldRows('中'.repeat(50));
+    });
+    suite.assert(cjk.join('') === '中'.repeat(50), 'CJK 不拆字');
+    suite.assert(cjk.every((r) => visualWidth(r) <= 78), 'CJK 每行不超过终端宽');
+    let blank: string[] = [];
+    renderAt(80, () => {
+      blank = foldRows('');
+    });
+    suite.assert(blank.length === 1 && blank[0] === '', '空行保持单空行（不挂孤 bullet）');
+    // 单元格级：仅首行挂 •，续行 2 空格缩进（codex AgentMessageCell）+ 超长折断 + 空行裸空行
+    const text = renderAt(80, () => {
+      const out = new MiniOutput({ showThinking: false, stream: true });
+      out.onAnswer(`${'b'.repeat(200)}\n空行上\n\n分段下\n`);
+      out.onAnswerEnd();
+    });
+    const stripped = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const lines = stripped.split('\n');
+    const brows = lines.filter((l) => l.includes('b'));
+    suite.assert(
+      brows.length === 3 && brows[0]!.startsWith('• ') && brows.slice(1).every((l) => l.startsWith('  ') && !l.startsWith('• ')),
+      '超长正文折成 3 行：仅首行 •，续行 2 空格缩进'
+    );
+    suite.assert(lines.every((l) => visualWidth(l) <= 80), '输出无超宽行（终端不软换行顶到 0 列）');
+    suite.assert(lines.some((l) => l === '  空行上'), '续行 2 空格缩进（非每行 •）');
+    suite.assert(!lines.some((l) => l === '• '), '空行不挂孤 bullet');
+    suite.assert(lines.some((l) => l === '  分段下'), '后续段落同样缩进（同一单元格仅首行 •）');
   });
 
   suite.test('端到端：omni mini "<任务>"（mock 服务）', async () => {
