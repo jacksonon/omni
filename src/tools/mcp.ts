@@ -20,7 +20,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
-import { loadMcpToken, oauthLogin, type McpOAuthToken } from './mcp-oauth.js';
+import { isStaleOAuthToken, loadMcpToken, oauthLogin, type McpOAuthToken } from './mcp-oauth.js';
 import { pushWarning } from '../agent/warnings.js';
 import type { Tool } from './types.js';
 import type { ToolApprovalMode } from './types.js';
@@ -41,6 +41,11 @@ export interface McpServerConfig {
    * 预注册 client_id；缺省则登录时尝试 RFC 7591 动态注册，失败回退 'omni'。
    */
   clientId?: string;
+  /**
+   * OAuth 预注册保密客户端密钥（codex mcp add --oauth-client-secret 对等）：
+   * 须与 clientId 成对配置；换 token 时发送，`mcp get` 等展示走脱敏。
+   */
+  clientSecret?: string;
   /**
    * OAuth RFC 8707 resource 指示（codex mcp add --oauth-resource 对等）：
    * 授权与换 token 时携带；缺省不发。
@@ -291,8 +296,12 @@ class HttpTransport implements McpTransport {
   constructor(private cfg: McpServerConfig) {}
 
   async start(): Promise<void> {
-    // 预读已存 token（OAuth 登录过才有）
-    if (this.cfg.url) this.token = await loadMcpToken(this.cfg.url);
+    // 预读已存 token（OAuth 登录过才有）；配置 id 与存量凭证不一致 → 丢弃，
+    // 后续 401 指引重新登录（codex 83b56bc 保密客户端变更即失效）
+    if (this.cfg.url) {
+      const loaded = await loadMcpToken(this.cfg.url);
+      this.token = isStaleOAuthToken(this.cfg.clientId, loaded) ? null : loaded;
+    }
   }
 
   private headers(): Record<string, string> {
@@ -486,6 +495,7 @@ class HttpTransport implements McpTransport {
     if (!this.cfg.url) return false;
     const tok = await oauthLogin(this.cfg.url, 'mcp', {
       ...(this.cfg.clientId ? { clientId: this.cfg.clientId } : {}),
+      ...(this.cfg.clientSecret ? { clientSecret: this.cfg.clientSecret } : {}),
       ...(this.cfg.oauthResource ? { resource: this.cfg.oauthResource } : {}),
       ...(this.cfg.oauthClientRegistration ? { clientRegistration: this.cfg.oauthClientRegistration } : {}),
       clientName: `omni (${this.serverNameHint()})`,

@@ -25,7 +25,7 @@ import { printHelp } from '../cli/args.js';
 import type { HookEventName } from '../hooks/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
-import { composeInEditor, resolveEditorCommand } from '../cli/external-editor.js';
+import { composeInEditor, flattenComposedText, resolveEditorCommand } from '../cli/external-editor.js';
 import { truncateMiddle } from '../tui/layout.js';
 import { inlineMathToText } from '../tui/markdown.js';
 import { visualWidth } from '../tui/width.js';
@@ -934,11 +934,13 @@ export class MiniOutput implements Output {
       this.rl.prompt();
       return 'failed';
     }
-    // Ctrl+U 清行再回填（write(null, key) 走 readline 按键模拟，非显示层擦除）
+    // Ctrl+U 清行再回填（write(null, key) 走 readline 按键模拟，非显示层擦除）；
+    // 多行压单行（行缓冲见换行即提交，直写会误发首行）
     this.rl.write(null, { ctrl: true, name: 'u' });
-    if (res.text) this.rl.write(res.text);
+    const flat = flattenComposedText(res.text);
+    if (flat) this.rl.write(flat);
     this.rl.prompt();
-    return res.text ? 'done' : 'empty';
+    return flattenComposedText(res.text) ? 'done' : 'empty';
   }
 
   /** 通知打印后把 `› ` 输入行重画回来（readline 下次按键也会自重画，这里立即恢复） */
@@ -1044,6 +1046,19 @@ export class MiniOutput implements Output {
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
     this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
     this.print('');
+  }
+
+  /** 会话中重打 compact 头（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜会话头；
+   * 只打标题/版本/目录/YOLO，不带问候语与上手帮助——滚动终端避免刷屏）。
+   */
+  reprintHeader(cfg: OmniConfig, permission?: string): void {
+    const info: MiniBannerInfo = {
+      directory: process.cwd(),
+      // 会话级档位（/permission 可切换）：调用方传当前值，回退启动配置
+      permission: permission ?? cfg.permission ?? 'safe',
+      sandbox: cfg.sandbox,
+    };
+    for (const line of renderMiniBanner(info, cols(), null)) this.print(line);
   }
 
   // ── 运行中状态行 ───────────────────────────────────────────────

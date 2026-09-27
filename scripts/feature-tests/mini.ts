@@ -64,7 +64,7 @@ import { approvalDiffText } from '../../src/output/format.js';
 import { prefixLines } from '../../src/output/format.js';
 
 import { lastAssistantText, lastUserText, sumSessionUsage } from '../../src/agent/report.js';
-import { composeInEditor, resolveEditorCommand } from '../../src/cli/external-editor.js';
+import { composeInEditor, flattenComposedText, resolveEditorCommand } from '../../src/cli/external-editor.js';
 import { pushWarning, sessionWarnings } from '../../src/agent/warnings.js';
 import { deleteSessionFile, sessionsDir } from '../../src/agent/session.js';
 import { compactedSince } from '../../src/agent/events.js';
@@ -417,6 +417,8 @@ export function miniSuite(): TestSuite {
     suite.assert(isStopCommand('/stop1') === false, '前缀不误判');
     suite.assert(isStopCommand('') === false, '空行不认');
     suite.assert(MINI_SLASH_COMMANDS.includes('/stop'), '补全表含 /stop');
+    suite.assert(MINI_SLASH_COMMANDS.includes('/exit'), '补全表含 /exit（与 /quit 同为退出入口）');
+    suite.assert(fuzzySlashMatch('ex').includes('/exit'), '/ex 模糊命中 /exit');
     suite.assert(formatShortcutsHelp().join('\n').includes('/stop'), '? 帮助提及 /stop');
   });
 
@@ -939,6 +941,8 @@ export function miniSuite(): TestSuite {
     suite.assert(r2.ok && (r2 as { text: string }).text === '', '存空回空（调用方清行）');
     const r3 = composeInEditor('x', ['/nonexistent-editor-xyz']);
     suite.assert(!r3.ok, '坏命令返回失败（不抛异常）');
+    suite.assert(flattenComposedText('a\nb\r\nc  ') === 'a b c', '多行压单行（行缓冲见换行即提交）');
+    suite.assert(flattenComposedText('   ') === '', '纯空白压空（调用方走清空）');
   });
 
   suite.test('mini markdown：空列表项保留 marker（codex #48623）', () => {
@@ -951,6 +955,11 @@ export function miniSuite(): TestSuite {
     suite.assert(one('- [ ]') === '☐ ', '空任务项保留 ☐');
     suite.assert(one('- [x]') === '☑ ', '空已办项保留 ☑');
     suite.assert(one('> -') === '• ', '引用内裸 marker 保留 •');
+    suite.assert(one('> - x') === '• x', '引用内列表项成 •（非原样透出）');
+    suite.assert(one('>   - y') === '• y', '引用内嵌套去缩进与顶层一致');
+    suite.assert(one('> 1. y') === '1. y', '引用内有序项解析');
+    suite.assert(one('> - [x] done') === '☑ done', '引用内任务项解析');
+    suite.assert(one('> foo') === 'foo', '纯文本引用去前缀既定风格不动');
     suite.assert(one('- 项') === '• 项', '非空无序项不受影响');
     suite.assert(one('1. 首') === '1. 首', '非空有序项不受影响');
     suite.assert(one('3.14') === '3.14', '小数不误判空序号');
@@ -1033,9 +1042,11 @@ export function miniSuite(): TestSuite {
     suite.assert(f.cursor === f.text.length, '光标落在插入段末尾');
     const d = applyMentionInsert('@src', 0, 3, 'src/');
     suite.assert(d.text === '@src/' && d.cursor === 5, '目录保留 / 继续深入（不加空格）');
-    // 行内 @ 后半截保留
+    // 行内 @ 后半截保留（已有空格不与尾空格叠加）
     const mid = applyMentionInsert('看 @ap 好', 2, 2, 'src/app.ts');
-    suite.assert(mid.text === '看 @src/app.ts  好', `行内插入保留后半截：${JSON.stringify(mid.text)}`);
+    suite.assert(mid.text === '看 @src/app.ts 好', `行内插入保留后半截：${JSON.stringify(mid.text)}`);
+    const sp = applyMentionInsert('see @a then', 4, 1, 'a b.txt');
+    suite.assert(sp.text === 'see @a b.txt then', `带空格文件名不叠空格：${JSON.stringify(sp.text)}`);
   });
 
   suite.test('端到端：omni mini "<任务>"（mock 服务）', async () => {
@@ -1693,6 +1704,7 @@ export function miniSuite(): TestSuite {
       await waitFor(async () => rolloutPaths().length >= 1, 15000, '首个会话路径');
       child.stdin.write('/clear\n');
       await waitFor(async () => out.includes('已清空上下文'), 15000, '/clear 执行');
+      suite.assert(out.split('>_ ').length - 1 >= 2, '/clear 后重打 compact 会话头（codex e8fdbf1：新鲜会话头）');
       child.stdin.write('/rollout\n');
       await waitFor(async () => rolloutPaths().length >= 2, 15000, '/clear 后新会话路径');
       const [a, b] = rolloutPaths();
@@ -1831,6 +1843,19 @@ export function miniSuite(): TestSuite {
       suite.assert(v.noGhost === true, '答案行未漏进主循环（无幽灵第三轮）');
       suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+      // 审批块版式顺序锁（真终端 transcript 实测：⚠ 工具 → $ 命令 → 原因 → 三选项 → 记住确认；只弹一次）
+      try {
+        const raw = fs.readFileSync(log, 'utf8');
+        const plain = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r\n?/g, '\n');
+        const iWarn = plain.indexOf('⚠ run_command');
+        const iCmd = plain.indexOf('$ git push origin main');
+        const iAsk = plain.indexOf('批准执行？');
+        const iRemembered = plain.indexOf('会话已记住 run_command');
+        suite.assert(iWarn >= 0 && iWarn < iCmd && iCmd < iAsk && iAsk < iRemembered, '审批块顺序：工具→命令→三选项→记住确认');
+        suite.assert(plain.split('批准执行？').length - 1 === 1, '审批只弹一次（第二轮走记住）');
+      } catch (err) {
+        suite.assert(false, `审批 transcript 读取失败：${(err as Error)?.message ?? err}`);
+      }
     } finally {
       mock.kill();
       fs.rmSync(tmpCwd, { recursive: true, force: true });
@@ -1881,9 +1906,78 @@ export function miniSuite(): TestSuite {
       suite.assert(v.pwdAlive === true, '提问后 stdin 存活（input.resume 生效）');
       suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+      // 提问卡版式顺序锁（真终端 transcript 实测：? 问题 → 序号选项 → 输入提示 → Asked 回显；只问一次）
+      try {
+        const raw = fs.readFileSync(log, 'utf8');
+        const plain = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r\n?/g, '\n');
+        const seq = ['? 接下来怎么做？', '1. 继续执行', '输入选项序号', '• Asked', '用户选择了选项'];
+        const idx = seq.map((s) => plain.indexOf(s));
+        suite.assert(idx.every((v, k) => v >= 0 && (k === 0 || idx[k - 1] < v)), '提问卡顺序：问题→选项→输入提示→Asked 回显');
+        suite.assert(plain.split('? 接下来怎么做？').length - 1 === 1, '提问只弹一次（答案未触发第二轮）');
+      } catch (err) {
+        suite.assert(false, `提问 transcript 读取失败：${(err as Error)?.message ?? err}`);
+      }
     } finally {
       mock.kill();
       fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：Ctrl+G 外部编辑器组稿（PTY 真终端）', async () => {
+    // 种子行 seed（不换行）→ Ctrl+G → 桩 EDITOR 改写暂存为 seed-edited → 回车提交整轮
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-editor-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const stub = path.join(xdg, 'stub-editor.sh');
+    fs.writeFileSync(stub, '#!/bin/sh\nprintf "%s" "$(cat "$1")-edited" > "$1"\n');
+    fs.chmodSync(stub, 0o755);
+    const port = MOCK_PORT + 89;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'editor-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/editor-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log, OMNI_FT_EDITOR: stub },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; done?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.done === true, '组稿回填行回车提交、整轮完成');
+      // 提交的是编辑器改写文本（种子 seed → seed-edited），读会话文件断言
+      const sessDir = path.join(xdg, 'omni', 'sessions');
+      let submitted = '';
+      try {
+        for (const f of fs.readdirSync(sessDir).filter((f) => f.endsWith('.jsonl'))) {
+          submitted += fs.readFileSync(path.join(sessDir, f), 'utf8');
+        }
+      } catch { /* 无会话文件则下面断言失败 */ }
+      suite.assert(submitted.includes('seed-edited'), '提交文本来自编辑器（非空行/种子原文）');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
     }
   });
 
@@ -2739,6 +2833,7 @@ export function miniSuite(): TestSuite {
         await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
         child.stdin.write('/new\n');
         await waitFor(async () => out.includes('已新建会话'), 15000, '/new 开新会话');
+        suite.assert(out.split('>_ ').length - 1 >= 2, '/new 后重打 compact 会话头（codex e8fdbf1：新鲜会话头）');
         const victim = oldestFile();
         suite.assert(!!victim, '旧会话文件存在');
         // 管道（非 TTY）无真人确认：/delete 必须拒绝且不删文件（与审批/rewind 同哲学）

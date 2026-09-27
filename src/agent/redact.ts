@@ -74,7 +74,15 @@ export function redactDeep<T>(value: T): T {
   if (Array.isArray(value)) return value.map((v) => redactDeep(v)) as unknown as T;
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = redactDeep(v);
+    for (const [k, v] of Object.entries(value)) {
+      // 密钥名字段整值替换（codex 83b56bc：client_secret 不进展示/日志；
+      // 形状正则兜不住裸随机串，键名命中直接整值换——`mcp get` 即走此路）
+      if (typeof v === 'string' && /secret|passwd|password/i.test(k)) {
+        out[k] = REDACTED;
+        continue;
+      }
+      out[k] = redactDeep(v);
+    }
     return out as unknown as T;
   }
   return value;

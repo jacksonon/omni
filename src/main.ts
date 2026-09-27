@@ -682,6 +682,13 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   if (taskArgs[0] === 'e') taskArgs[0] = 'exec';
   // `omni exec --help` 打专属帮助（codex exec --help 对等；与 tui-entry 共用预检）
   if (handleExecHelp(process.argv.slice(2), lang)) return;
+  // `omni mcp --help` 打子命令专属帮助（codex mcp --help 对等；否则被全局帮助淹没）
+  if (taskArgs[0] === 'mcp' && process.argv.slice(2).some((a) => a === '--help' || a === '-h')) {
+    const { runMcpCommand } = await import('./cli/mcp.js');
+    // taskArgs 已剥掉 --help（进 help 布尔位）：传字面量触发专属帮助分支
+    process.exitCode = await runMcpCommand(['--help'], overrides);
+    return;
+  }
   if (help) {
     printHelp(lang ?? 'en');
     return;

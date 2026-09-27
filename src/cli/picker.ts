@@ -296,6 +296,16 @@ export async function pickFromList(
   let sel = Math.min(Math.max(opts.selected, 0), items.length - 1);
   const block = items.length + 1; // 菜单行 + 底部提示行
 
+  /** 收尾清场（未经确认/取消都删掉菜单块，不在对话流里留残块——此前 done 直接 resolve，
+   * 菜单永久留在 scrollback，每次 Tab 多选都多十几行杂物）。
+   * 调用时光标在块下方：上移到块首 → DL 整块删除 → 回列首；
+   * 调用方随后重画输入行/打印结果，无缝接回。 */
+  const cleanup = (): void => {
+    out.write(`\x1b[${block}A`);
+    out.write(`\x1b[${block}M`);
+    out.write('\r');
+  };
+
   const renderRow = (i: number): string => {
     const prefix = i === sel ? bold(cyan('› ')) : '  ';
     const body = i === sel ? bold(cyan(items[i].label)) : items[i].label;
@@ -317,6 +327,12 @@ export async function pickFromList(
     // 先挂自己的，再逐个摘掉保存的（own 占位，计数恒≥1）
     const saved = [...stdin.listeners('keypress')] as ((...args: unknown[]) => void)[];
     const done = (n: number): void => {
+      // 确认/取消都先删掉菜单块（scrollback 不留残块；调用方随后 redraw 重画输入行）
+      try {
+        cleanup();
+      } catch {
+        /* 清场失败不影响结果 */
+      }
       stdin.removeListener('keypress', onKey);
       for (const fn of saved) stdin.on('keypress', fn as (...args: unknown[]) => void);
       resolve(n);
@@ -406,8 +422,8 @@ export interface SlashSuggestHandle {
  * 打 / 实时联想面板（纯显示，绝不拦截按键）。
  * 常驻被动 keypress 监听（永不摘除，只观察不消费）；每次按键后读 getLine()
  * 做状态机：空闲提示符下行匹配 `^\/[a-z-]*$` 时列出前 8 个候选（超出加一行提示），
- * 行变化才重绘；Enter 提交留块作参考、下次按键放弃；不匹配则擦除关闭；
- * 轮内/Ctrl+C 只放弃不擦除。光标纪律（闭环）：面板打在输入行下方，
+ * 行变化才重绘（旧块整块删除，不留空白残留）；Enter 提交后删块归位；
+ * 轮内/Ctrl+C/Ctrl+T 只放弃不碰屏。光标纪律（闭环）：面板打在输入行下方，
  * 结束必须重画输入行——否则 readline 后续重绘落错行（输入隐身、Tab 插入错位）。
  * 非 TTY 返回 null。行格式为两空格前缀 + 命令名（dim 包裹整行，不做序号/高亮）。
  */
@@ -422,38 +438,50 @@ export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHand
   const out = process.stdout;
   let H = 0; // 当前面板行数
   let lastRows: string[] = []; // 上次渲染内容（diff 用）
-  let justSubmitted = false; // Enter 提交标记（下次按键先放弃再清标记）
-  // 擦除旧块（逐行清；调用方保证 H>0）
-  const eraseBlock = (): void => {
+  // 删除面板块（整块 DL，不留空行——此前逐行 EL 清空，旧块内容虽被擦掉但行仍在，
+  // 每次按键在下方重打新块，旧块变成 H 个空白残留；打几个字符就攒几十个空行）。
+  // 调用时光标在输入行：上移到块首 → DL 整块删除 → 回列首；
+  // 输入行内容安全（readline 行缓冲），随后重画恢复。
+  const deleteBlock = (): void => {
+    if (H <= 0) return;
     out.write(`\x1b[${H}A`);
-    for (let i = 0; i < H; i++) {
-      out.write('\r\x1b[2K');
-      out.write('\x1b[1B');
-    }
+    out.write(`\x1b[${H}M`);
     out.write('\r');
   };
-  // 放弃旧块（H=0，不擦除，避免与他人输出错位）
+  // 放弃旧块（H=0，不碰屏幕——轮内/ledger 输出已把面板顶出视口，
+  // 此时 H 已过期，任何擦除都会清掉别人的行）
   const abandon = (): void => {
     H = 0;
     lastRows = [];
   };
-  // 重画面板：擦旧块 → 清输入行（免得留残影行）→ 打新块 → 重画输入行。
+  // 重画面板：删旧块 → 清输入行（免得留残影行）→ 打新块 → 重画输入行。
   // 结束时光标必在新鲜输入行上，这是 readline 后续重绘落点正确的唯一前提。
   const render = (rows: string[]): void => {
-    if (H > 0) eraseBlock();
+    if (H > 0) {
+      deleteBlock();
+      H = 0;
+      lastRows = [];
+    }
     out.write('\r\x1b[2K');
     for (const r of rows) print(dim(`  ${r}`));
     H = rows.length;
     lastRows = rows;
     if (H > 0) redraw();
   };
+  // 擦除旧块并关闭（无新内容时：删块 + 重画输入行，不留空白残留）
+  const eraseAndClose = (): void => {
+    if (H <= 0) return;
+    deleteBlock();
+    H = 0;
+    lastRows = [];
+    redraw();
+  };
   const onKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
     try {
-      // Ctrl+C / Ctrl+T：放弃旧块（不擦除），不干扰 readline 默认行为；
+      // Ctrl+C / Ctrl+T：放弃旧块（不碰屏），不干扰 readline 默认行为；
       // Ctrl+T 会直接打印轨迹账本把面板顶出视口，此时 H 已过期，擦除会清掉别人的行
       if (key?.ctrl && (key?.name === 'c' || key?.name === 't')) {
         abandon();
-        justSubmitted = false;
         return;
       }
       // 轮内一律不渲染不擦除（H>0 只放弃不擦除）
@@ -461,17 +489,12 @@ export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHand
         if (H > 0) abandon();
         return;
       }
-      // 上次 Enter 提交后首次按键：先放弃旧块（不擦除）再清标记，然后正常处理
-      if (justSubmitted) {
-        abandon();
-        justSubmitted = false;
-      }
       const line = getLine() ?? '';
       const isReturn = key?.name === 'return';
       const matched = /^\/[a-z-]*$/.test(line);
-      // Enter 且当前行匹配（提交动作）：本次跳过渲染（面板行留在 scrollback 当参考）
+      // Enter 提交：删块归位（命令随即执行，对话流自然接续；面板不留在 scrollback 占行）
       if (isReturn && matched) {
-        justSubmitted = true;
+        if (H > 0) eraseAndClose();
         return;
       }
       if (matched) {
@@ -479,18 +502,14 @@ export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHand
         const filtered = fuzzySlashMatch(frag);
         const rows = filtered.slice(0, 8);
         if (filtered.length > 8) rows.push(`…还有 ${filtered.length - 8} 个（继续打字过滤，Tab 直接列出全部）`);
-        if (!justSubmitted) {
-          const same = rows.length === lastRows.length && rows.every((r, i) => r === lastRows[i]);
-          if (!same) render(rows);
-        }
+        const same = rows.length === lastRows.length && rows.every((r, i) => r === lastRows[i]);
+        if (!same) render(rows);
         return;
       }
-      // 其他不匹配：擦除旧块并关闭
+      // 其他不匹配：删块关闭（删整块 + 重画输入行归位，无空白残留）
       if (H > 0) {
-        eraseBlock();
-        abandon();
+        eraseAndClose();
       }
-      justSubmitted = false;
     } catch {
       /* 联想面板永不打断输入 */
     }
@@ -511,7 +530,7 @@ export interface MentionSuggestOptions extends SlashSuggestOptions {
   getCursor: () => number;
 }
 
-/** @ 提及面板固定高度：8 个候选槽位 + 1 行状态行（打字过滤时不抖动） */
+/** @ 提及面板每屏候选上限（不足只打实际行，不垫空行占位） */
 const MENTION_SLOTS = 8;
 
 /** installMentionSuggest 返回句柄（比 SlashSuggest 多 refresh/close 供 Tab 流程收尾） */
@@ -535,7 +554,9 @@ export function applyMentionInsert(
 ): { text: string; cursor: number } {
   const sep = item.endsWith('/') ? '' : ' ';
   const before = line.slice(0, atIndex + 1); // 含 @
-  const after = line.slice(atIndex + 1 + queryLength); // @ 后其余部分（保留）
+  // @ 后其余部分（保留；picker 确认时行内可能已有空格，不与尾空格叠加）
+  let after = line.slice(atIndex + 1 + queryLength);
+  if (sep && after.startsWith(' ')) after = after.slice(1);
   const inserted = `${before}${item}${sep}`;
   return { text: `${inserted}${after}`, cursor: inserted.length };
 }
@@ -543,9 +564,8 @@ export function applyMentionInsert(
 /**
  * @ 提及实时联想面板（纯显示，绝不拦截按键；与 installSlashSuggest 同一套光标纪律）。
  * 空闲提示符下、非 / 文本、detectMention 命中时列出前 8 个候选（`@rel`，目录带 /；
- * 无候选不打面板）；选择走 Tab（readline completer 的 completeMention 分支）。
- * 行变化才重绘；Enter 提交留块作参考、下次按键放弃；不匹配则擦除关闭；
- * 轮内/Ctrl+C 只放弃不擦除。
+ * 无候选不打面板；候选不足只打实际行，不垫空行）；选择走 Tab；Enter 提交删块归位；
+ * 轮内/Ctrl+C/Ctrl+T 只放弃不碰屏。
  */
 export function installMentionSuggest(opts: MentionSuggestOptions): MentionSuggestHandle | null {
   const { stdin, getLine, getCursor, getCwd, isActive, print, redraw } = opts;
@@ -556,92 +576,93 @@ export function installMentionSuggest(opts: MentionSuggestOptions): MentionSugge
     flagged.__omniKeypressOn = true;
   }
   const out = process.stdout;
-  let H = 0; // 当前面板行数（固定 MENTION_SLOTS + 1）
+  let H = 0; // 当前面板行数（实际候选行 + 1 状态行，不垫空行）
   let lastRows: string[] = []; // 上次渲染内容（diff 用）
-  let justSubmitted = false; // Enter 提交标记（下次按键先放弃再清标记）
-  // 擦除旧块（逐行清；调用方保证 H>0）
-  const eraseBlock = (): void => {
+  // 删除面板块（整块 DL，不留空行——逐行 EL 只清空内容不删行，打字过滤每
+  // 按一键旧块就变出固定高度的空白残留，几次下来几十个空行）。光标 discipline
+  // 同 slash 面板：调用时光标在输入行，上移→DL→回列首，随后重画输入行。
+  const deleteBlock = (): void => {
+    if (H <= 0) return;
     out.write(`\x1b[${H}A`);
-    for (let i = 0; i < H; i++) {
-      out.write('\r\x1b[2K');
-      out.write('\x1b[1B');
-    }
+    out.write(`\x1b[${H}M`);
     out.write('\r');
   };
-  // 放弃旧块（H=0，不擦除，避免与他人输出错位）
+  // 放弃旧块（H=0，不碰屏幕——轮内/ledger 输出已把面板顶出视口，
+  // 此时 H 已过期，任何擦除都会清掉别人的行）
   const abandon = (): void => {
     H = 0;
     lastRows = [];
   };
-  // 重画面板：擦旧块 → 清输入行（免得留残影行）→ 打新块 → 重画输入行。
+  // 重画面板：删旧块 → 清输入行（免得留残影行）→ 打新块 → 重画输入行。
   // 结束时光标必在新鲜输入行上，这是 readline 后续重绘落点正确的唯一前提。
+  // print 经 MiniOutput.print 带轮内输入行协作（preOut/postOut）——空闲时直通 stdout。
   const render = (rows: string[]): void => {
-    if (H > 0) eraseBlock();
+    if (H > 0) {
+      deleteBlock();
+      H = 0;
+      lastRows = [];
+    }
     out.write('\r\x1b[2K');
-    for (const r of rows) print(r === '' ? '' : dim(`  ${r}`));
+    for (const r of rows) print(dim(`  ${r}`));
     H = rows.length;
     lastRows = rows;
     if (H > 0) redraw();
   };
-  // 核心重估（按键/外部 refresh 共用）：候选不足一屏时拿空行垫到固定高度
+  // 擦除旧块并关闭（无新内容时：删块 + 重画输入行，不留空白残留）
+  const eraseAndClose = (): void => {
+    if (H <= 0) return;
+    deleteBlock();
+    H = 0;
+    lastRows = [];
+    redraw();
+  };
+  // 核心重估（按键/外部 refresh 共用）：候选不足 MENTION_SLOTS 时只打实际行
+  //（不再拿空行垫固定高度——补位空行随提交在 scrollback 永久留白，打几次攒几屏）。
   const update = (isReturn: boolean): void => {
     const line = getLine() ?? '';
     const cursor = getCursor() ?? line.length;
     // TUI 同款：/ 命令文本不显示提及
     const m = !line.trimStart().startsWith('/') ? detectMention(line, cursor) : null;
-    // Enter 且有提及（提交动作）：本次跳过渲染（面板行留在 scrollback 当参考）
+    // Enter 提交：删块归位（命令随即执行，对话流自然接续；面板不留在 scrollback 占行）
     if (isReturn && m) {
-      justSubmitted = true;
+      if (H > 0) eraseAndClose();
       return;
     }
     if (m) {
       const cands = listMentionCandidates(getCwd(), m.query);
       if (cands.length === 0) {
         if (H > 0) {
-          eraseBlock();
-          abandon();
+          eraseAndClose();
         }
-        justSubmitted = false;
         return;
       }
       const rows = cands.slice(0, MENTION_SLOTS).map((c) => `@${c}`);
-      while (rows.length < MENTION_SLOTS) rows.push('');
       rows.push(
         cands.length > MENTION_SLOTS
           ? `…还有 ${cands.length - MENTION_SLOTS} 个（继续打字过滤，Tab 选择）`
           : 'Tab 选择 · 继续打字过滤'
       );
-      if (!justSubmitted) {
-        const same = rows.length === lastRows.length && rows.every((r, i) => r === lastRows[i]);
-        if (!same) render(rows);
-      }
+      const same = rows.length === lastRows.length && rows.every((r, i) => r === lastRows[i]);
+      if (!same) render(rows);
       return;
     }
-    // 其他不匹配：擦除旧块并关闭
+    // 其他不匹配：删块关闭（删整块 + 重画输入行归位，无空白残留）
     if (H > 0) {
-      eraseBlock();
-      abandon();
+      eraseAndClose();
     }
-    justSubmitted = false;
   };
   const onKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
     try {
-      // Ctrl+C / Ctrl+T：放弃旧块（不擦除）——不干扰 readline 默认行为；
+      // Ctrl+C / Ctrl+T：放弃旧块（不碰屏）——不干扰 readline 默认行为；
       // Ctrl+T 会直接打印轨迹账本把面板顶出视口，此时 H 已过期，擦除会清掉别人的行
       if (key?.ctrl && (key?.name === 'c' || key?.name === 't')) {
         abandon();
-        justSubmitted = false;
         return;
       }
       // 轮内一律不渲染不擦除（H>0 只放弃不擦除）
       if (!isActive()) {
         if (H > 0) abandon();
         return;
-      }
-      // 上次 Enter 提交后首次按键：先放弃旧块（不擦除）再清标记，然后正常处理
-      if (justSubmitted) {
-        abandon();
-        justSubmitted = false;
       }
       update(key?.name === 'return');
     } catch {
@@ -662,11 +683,10 @@ export function installMentionSuggest(opts: MentionSuggestOptions): MentionSugge
     },
     close: () => {
       try {
+        // Tab 插入/picker 确认后收尾：删块 + 重画归位，不留空白残留
         if (H > 0) {
-          eraseBlock();
-          abandon();
+          eraseAndClose();
         }
-        justSubmitted = false;
       } catch {
         /* 联想面板永不打断输入 */
       }

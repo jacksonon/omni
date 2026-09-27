@@ -351,6 +351,8 @@ export interface ConfigOverrides {
   askForApproval?: string;
   /** --strict-config：配置文件含未知顶层字段时报错（codex 同款；防拼写错误与已移除的旧字段） */
   strictConfig?: boolean;
+  /** --ignore-user-config：跳过全局（用户级）配置文件（codex 同款；项目/显式 --config/profile/环境变量/CLI 照常生效） */
+  ignoreUserConfig?: boolean;
 }
 
 /**
@@ -789,6 +791,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
             : undefined,
           // clientId 曾被 allowlist 漏掉：add 落盘后重载即丢，OAuth 登录永远走回退
           clientId: typeof raw.clientId === 'string' ? raw.clientId : undefined,
+          clientSecret: typeof raw.clientSecret === 'string' ? raw.clientSecret : undefined,
           oauthResource: typeof raw.oauthResource === 'string' ? raw.oauthResource : undefined,
           oauthClientRegistration:
             raw.oauthClientRegistration === 'cimd' || raw.oauthClientRegistration === 'dcr' || raw.oauthClientRegistration === 'auto'
@@ -864,7 +867,8 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   const strict = overrides.strictConfig === true;
   const globalFile = findInDir(path.join(configHome, 'omni'));
-  if (globalFile) {
+  // --ignore-user-config：只跳用户层（codex 同款；显式 --config 照常加载见下）
+  if (globalFile && overrides.ignoreUserConfig !== true) {
     const data = readJson(globalFile);
     if (strict) checkStrictKeys(data, globalFile);
     apply(cfg, data, globalFile, sources);

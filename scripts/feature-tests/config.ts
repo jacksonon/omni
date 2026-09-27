@@ -180,12 +180,12 @@ export function configSuite(): TestSuite {
       });
     const en = await runHelp(['--help']);
     suite.assert(en.code === 0, '英文帮助退出码 0');
-    for (const s of ['/stop stop the running turn', '/import import config from Claude Code', '/recap summarize', 'exec fork', 'exec review', '--ephemeral', '--add-dir', '--color', '/clear clear context', '/trace full trace ledger', '/spec spec workflow', '--strict-config']) {
+    for (const s of ['/stop stop the running turn', '/import import config from Claude Code', '/recap summarize', 'exec fork', 'exec review', '--ephemeral', '--add-dir', '--color', '/clear clear context', '/trace full trace ledger', '/spec spec workflow', '--strict-config', '--ignore-user-config']) {
       suite.assert(en.out.includes(s), `英文帮助含 ${s}`);
     }
     const zh = await runHelp(['--help', '--lang', 'zh']);
     suite.assert(zh.code === 0, '中文帮助退出码 0');
-    for (const s of ['/stop 停止当前任务', '/import 从 Claude Code 迁移配置', '/recap 总结当前对话', '分叉出新会话', '非交互代码审查', '不落盘会话文件', '沙箱额外可写目录', '--color', '/clear 清空上下文', '/trace 完整轨迹账本', '/spec 规格工作流', '严格配置校验']) {
+    for (const s of ['/stop 停止当前任务', '/import 从 Claude Code 迁移配置', '/recap 总结当前对话', '分叉出新会话', '非交互代码审查', '不落盘会话文件', '沙箱额外可写目录', '--color', '/clear 清空上下文', '/trace 完整轨迹账本', '/spec 规格工作流', '严格配置校验', '跳过用户级配置文件']) {
       suite.assert(zh.out.includes(s), `中文帮助含 ${s}`);
     }
   });
@@ -274,6 +274,70 @@ export function configSuite(): TestSuite {
       suite.assert(cfg.model === 'test-model', 'CLI 参数覆盖默认模型');
     } finally {
       if (saved !== undefined) process.env.OMNI_MODEL = saved;
+    }
+  });
+
+  suite.test('--ignore-user-config 跳过用户层（codex 同款）', () => {
+    const r = parseArgs(['exec', '--ignore-user-config', 'task']);
+    suite.assert(r.overrides.ignoreUserConfig === true && r.taskArgs.join(' ') === 'exec task', 'flag 剥离不污染任务（子命令保留同 -a 用例）');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgignore-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgignore-w-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmp); // 空目录：无项目配置
+    const savedModel = process.env.OMNI_MODEL;
+    try {
+      mkdirSync(path.join(tmpXdg, 'omni'), { recursive: true });
+      writeFileSync(path.join(tmpXdg, 'omni', 'omni.json'), JSON.stringify({ model: 'global-model' }));
+      suite.assert(loadConfig().model === 'global-model', '缺省读用户层');
+      suite.assert(loadConfig({ ignoreUserConfig: true }).model === 'gpt-4o-mini', 'ignore 后回默认值');
+      process.env.OMNI_MODEL = 'env-model';
+      suite.assert(loadConfig({ ignoreUserConfig: true }).model === 'env-model', '环境变量照常生效');
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      if (savedModel === undefined) delete process.env.OMNI_MODEL;
+      else process.env.OMNI_MODEL = savedModel;
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('--ignore-user-config 端到端：doctor 配置来源行（真 CLI 子进程）', async () => {
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgignore-e2e-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    try {
+      mkdirSync(path.join(tmpXdg, 'omni'), { recursive: true });
+      writeFileSync(path.join(tmpXdg, 'omni', 'omni.json'), JSON.stringify({ model: 'global-marker-model' }));
+      const runDoctor = (args: string[]) =>
+        new Promise<string>((resolve) => {
+          const child = spawn('npx', ['tsx', 'src/index.ts', ...args], {
+            cwd: ROOT,
+            env: { ...process.env },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let acc = '';
+          child.stdout.on('data', (d) => (acc += d));
+          child.stderr.on('data', (d) => (acc += d));
+          const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+          child.on('close', () => {
+            clearTimeout(timer);
+            resolve(acc);
+          });
+        });
+      const marker = path.join(tmpXdg, 'omni', 'omni.json');
+      const plain = await runDoctor(['doctor']);
+      suite.assert(plain.includes(marker), '缺省来源行含用户层文件');
+      const ignored = await runDoctor(['--ignore-user-config', 'doctor']);
+      suite.assert(!ignored.includes(marker), 'flag 后来源行无用户层文件');
+      suite.assert(ignored.includes('omni.json'), '项目层配置仍在来源行');
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      rmSync(tmpXdg, { recursive: true, force: true });
     }
   });
 

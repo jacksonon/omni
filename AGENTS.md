@@ -211,6 +211,7 @@ src/
                         #   审批处 Ctrl+C PTY e2e（取消即 deny fail-safe，模型收尾，会话存活可继续）；
                         #   console 模式审批 PTY e2e（同双 readline 修复覆盖 mini/console 两路）；
                         #   /delete 双覆盖（管道非 TTY 拒绝防误触 + PTY 真终端 y 确认删旧会话）；
+                        #   会话头重打（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜 compact 头，只标题行不带问候/帮助；档位读会话级当前值）；
                         #   审批双 readline 实锤两 bug（次 close() 会 pause 共享 stdin 致主循环饿死→input.resume()；答案字节同时进主 rl→swallowedQa 队列主循环命中吞掉；PTY 证 pwd 存活+无幽灵轮）；
                         #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
                         #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
@@ -235,13 +236,15 @@ src/
                         #   回合 tip 双轨（codex ca41ed3：working 持续 30s 状态行下方随机一条，同轮跳过 completion tip；completion 带最终回答/3 轮起/间隔 3/全会话 2 条）；
                         #   自动压缩可见反馈（codex compact 单元格：以本轮新增 compact 事件为准打印 dim 提示）；
                         #   写/改文件单元格带 hunk diff 预览（codex patch cell：变更±2 ctx、add 绿/rem 红，超 10 行截断）；
-                        #   空 marker 保号（codex #48623：裸 -/8./> -/空任务项渲染成 • /8. /• /☐☑；嵌套去缩进与非空一致）；
+                        #   空 marker 保号（codex #48623：裸 -/8./> -/空任务项渲染成 • /8. /• /☐☑；嵌套去缩进与非空一致；引用内列表项剥 `>` 后同样块级解析）；
                         #   /status 会话累计 token（assistant 落盘 usage 求和；无用量文案；web /status 同口径）；
-                        #   Ctrl+G 外部编辑器组稿（codex open_external_editor：$VISUAL/$EDITOR 接管→回填行缓冲；空闲门控 turnStart；未配置给 hint；doctor 报编辑器环境）；
+                        #   Ctrl+G 外部编辑器组稿（codex open_external_editor：$VISUAL/$EDITOR 接管→回填行缓冲；空闲门控 turnStart；未配置给 hint；doctor 报编辑器环境；多行压单行防误提交；PTY e2e 种子→改写→提交→会话断言）；
                         #   /warnings retained 警告（codex /warnings：MCP 建连失败/未信任降级/代理失败保留，上限 50）；
                         #   review --title（codex exec review --title：标题进审查输入；help 双语+补全同步）；
                         #   MCP OAuth 加齐（add --oauth-resource/--oauth-client-registration；login --no-browser/--scopes/单次 registration；config loader 补 clientId 透传；交互会话内 no-browser 指路顶层）；
+                        #   预注册保密客户端（codex 83b56bc：add --oauth-client-secret 须配对 clientId；显式对跳过 DCR；token 记 clientId（secret 永不落盘）；id 变更丢缓存重登；redactDeep 密钥名字段整值换，mcp get 不泄）；
                         #   -a/--ask-for-approval（codex -a：never→full/on-request→safe+原生直通；非法抛错 fail-closed；最高优先级；补全同步）；
+                        #   --ignore-user-config（codex 同款：只跳用户层，项目/显式 --config/profile/环境变量/CLI 照常；另三枚 exec flag 评估后不定植：thread-source 系遥测内务/skip-git-repo-check 无此要求/ignore-rules 无 .rules 对应物）；
                         #   空行 Esc 取回上一条（codex edit-previous：lastUserText+单行压平；轮内/续行/模态不触发；pty e2e）；
                         #   未知斜杠报错不送模型 + 模糊推荐（联想面板同算法子序列：/ac→/compact；did-you-mean 前 3）；
                         #   Tab 补全对齐 popup（首词模糊兜底：唯一命中直插；/plugin·/diff 第二词表）；

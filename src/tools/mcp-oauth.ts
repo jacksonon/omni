@@ -24,6 +24,11 @@ export interface McpOAuthToken {
   tokenType: string;
   expiresAt?: number; // epoch ms；未知 = 永不过期
   scope?: string;
+  /**
+   * 换 token 时用的 client_id（codex 83b56bc：配置的保密客户端 id 与存量
+   * 凭证不一致时要求重新登录；client_secret 永不进持久化记录）。
+   */
+  clientId?: string;
 }
 
 /** OAuth 服务器元数据（RFC 8414 discovery 结果） */
@@ -45,6 +50,12 @@ export type OAuthClientRegistration = 'auto' | 'cimd' | 'dcr';
 /** OAuth 客户端选项：clientId 传 HTTPS URL 即 CIMD 模式；缺省尝试 DCR → 回退 'omni' */
 export interface OAuthClientOptions {
   clientId?: string;
+  /**
+   * 预注册保密客户端密钥（codex mcp add --oauth-client-secret 对等）：
+   * 与 clientId 成对配置，换 token 时以 client_secret(_post) 发送；
+   * DCR 下发的临密钥仍走旧路径；本字段来自配置文件，不打 debug 日志。
+   */
+  clientSecret?: string;
   clientName?: string;
   /**
    * RFC 8707 resource 指示（codex mcp add --oauth-resource 对等）：部分网关要求
@@ -171,7 +182,13 @@ export async function resolveOAuthClientId(
     if (!opts?.clientId || !opts.clientId.startsWith('https://')) {
       throw new Error('CIMD 注册策略要求显式 --oauth-client-id（HTTPS URL 元数据文档）');
     }
-    return { clientId: opts.clientId };
+    // CIMD 下配置的 secret 同行（显式 id 的一部分，不丢）
+    return { clientId: opts.clientId, ...(opts.clientSecret ? { clientSecret: opts.clientSecret } : {}) };
+  }
+  // 预注册保密客户端（仅 auto 策略）：显式 id + secret 直接用，不走 DCR 注册；
+  // 显式 dcr 要求全新注册，配置密钥让路（flag 优先）
+  if (strategy !== 'dcr' && opts?.clientId && opts?.clientSecret) {
+    return { clientId: opts.clientId, clientSecret: opts.clientSecret };
   }
   if (strategy !== 'dcr' && opts?.clientId) return { clientId: opts.clientId };
   if (strategy === 'dcr' && !meta.registration_endpoint) {
@@ -217,6 +234,15 @@ export async function resolveOAuthClientId(
  * scope 归一（codex --scopes 逗号形态兼容）：逗号/空白切分去空 → 空格连接；
  * 空输入回 undefined（调用方用默认 scope）。
  */
+/**
+ * 存量 token 是否因配置变更失效（codex 83b56bc：配置的保密客户端 id 与
+ * 存量凭证不一致 → 丢弃缓存连接，要求重新登录；无配置 id 或无记录时不判）。
+ */
+export function isStaleOAuthToken(configuredClientId: string | undefined, token: McpOAuthToken | null): boolean {
+  if (!configuredClientId || !token?.clientId) return false;
+  return token.clientId !== configuredClientId;
+}
+
 export function normalizeScopes(input?: string): string | undefined {
   const parts = `${input ?? ''}`.split(/[,\s]+/).map((p) => p.trim()).filter(Boolean);
   return parts.length > 0 ? parts.join(' ') : undefined;
@@ -368,6 +394,7 @@ export async function oauthLogin(baseUrl: string, scope = 'mcp', opts?: OAuthCli
     tokenType: String(data.token_type ?? 'Bearer'),
     scope: typeof data.scope === 'string' ? data.scope : undefined,
     expiresAt: typeof data.expires_in === 'number' ? Date.now() + data.expires_in * 1000 : undefined,
+    clientId,
   };
   if (!token.accessToken) throw new Error('OAuth token 交换响应缺少 access_token');
   await saveMcpToken(baseUrl, token);

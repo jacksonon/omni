@@ -9,6 +9,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+/**
+ * 组稿回填展平（行式终端行缓冲遇到换行即提交，多行存盘不能直写）：
+ * 内部换行压成空格（与空行 Esc 取回同策略）；首尾空白去干净。
+ */
+export function flattenComposedText(text: string): string {
+  return text.replace(/\r?\n/g, ' ').trim();
+}
+
 /** 编辑器命令解析（`$VISUAL` 优先于 `$EDITOR`；含参数形态按空白拆分） */
 export function resolveEditorCommand(env: NodeJS.ProcessEnv = process.env): string[] | null {
   const raw = (env.VISUAL ?? env.EDITOR ?? '').trim();

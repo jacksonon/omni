@@ -519,6 +519,12 @@ export async function runInteractive(
   };
   // 单候选继续整套（/session </id> 与 /resume </id> 及二者无参 picker 共用）：
   // loadSession/替换 messages/sessionPath/savedCount/重开 events/删空占位/标题。文案由 verb 区分（恢复/继续）。
+    // 会话头重打（codex e8fdbf1：resume/fork/clear 等流程统一新鲜 compact 头；
+    // mini 滚动终端只重打标题行，不带问候语/帮助——console 等非 mini 渲染层不动）。
+    const reprintHeader = (): void => {
+      const cfg = runOpts.cfg;
+      if (cfg && out instanceof MiniOutput) out.reprintHeader(cfg, runOpts.permission);
+    };
   const continueSessionFile = async (file: string, verb: string, label: string): Promise<void> => {
     const loaded = await loadSession(file);
     if (!loaded) {
@@ -536,6 +542,7 @@ export async function runInteractive(
     // 被替换的是本次交互刚创建的空占位会话（0 条消息）→ 删除，避免残留孤儿会话
     if (prevPath && prevPath !== file) await removeEmptySession(prevPath).catch(() => {});
     console.log(green(`已${verb}会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 模型 ${loaded.meta.model}${loaded.meta.title ? ` · 标题「${loaded.meta.title}」` : ''}）`));
+    reprintHeader();
     if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
   };
   if (opts.intro !== false) console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
@@ -548,9 +555,23 @@ export async function runInteractive(
     finished = true;
     // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
     if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
-      await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
-      // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
-      await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
+      // 退出预算：死端点/慢网关不能拖住退出（失败会话实测两段提取串行拖几十秒）；
+      // 正常端点几秒内完成，15s 只裁异常尾巴；超时后底层的 fetch 孤儿 resolve 也无副作用
+      let budget: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          (async () => {
+            await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+            // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
+            await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
+          })(),
+          new Promise<void>((resolve) => {
+            budget = setTimeout(resolve, 15_000);
+          }),
+        ]);
+      } finally {
+        if (budget !== undefined) clearTimeout(budget);
+      }
     }
     // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底退出边界）
     await runOpts.events?.flush().catch(() => {});
@@ -637,6 +658,7 @@ export async function runInteractive(
         continue;
       }
       console.log(dim('（已清空上下文，开始新一轮对话）'));
+      reprintHeader();
       safePrompt();
       continue;
     }
@@ -665,6 +687,7 @@ export async function runInteractive(
         continue;
       }
       console.log(dim('（已新建会话，回到初始状态）'));
+      reprintHeader();
       safePrompt();
       continue;
     }
@@ -1691,6 +1714,7 @@ export async function runInteractive(
       runOpts.events = await EventRecorder.open(forkFile).catch(() => oldEvents);
       if (prevResumePath && prevResumePath !== forkFile) await removeEmptySession(prevResumePath).catch(() => {});
       console.log(green(`已分叉新会话 ${loaded.meta.id}（${loaded.messages.length} 条消息 · 原会话保留）`));
+      reprintHeader();
       if (loaded.meta.title) setTerminalTitle(loaded.meta.title);
       safePrompt();
       continue;

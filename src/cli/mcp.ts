@@ -30,6 +30,20 @@ export async function runMcpCommand(
   opts: { fromInteractive?: boolean } = {}
 ): Promise<number> {
   const [sub, ...rest] = args;
+  // 子命令专属帮助（codex mcp --help 对等；此前淹没在全局帮助里不可发现）
+  if (sub === '--help' || sub === '-h' || sub === 'help') {
+    console.log([
+      '用法：omni mcp <子命令>（codex mcp 对等；读写配置文件 mcpServers 字段）',
+      '  list                                    列出已配置服务器（传输形态；连接状态看交互 /mcp）',
+      '  get <名称>                              查看单个服务器配置（密钥脱敏）',
+      '  add <名称> --url <地址> [--oauth-client-id X] [--oauth-client-secret S] [--oauth-client-registration auto|cimd|dcr] [--oauth-resource R] [--bearer-token-env-var E]',
+      '  add <名称> -- <命令> [参数...] [--env K=V ...]   stdio 服务器',
+      '  remove <名称>                           删除服务器配置',
+      '  login <名称> [--no-browser] [--scopes a,b] [--oauth-client-registration auto|cimd|dcr]   OAuth 登录',
+      '  logout <名称>                           清除登录态',
+    ].join('\n'));
+    return 0;
+  }
   const cfg = loadConfig(overrides);
   const servers = (cfg.mcpServers ?? {}) as Record<string, McpServerConfig>;
   const names = Object.keys(servers);
@@ -162,10 +176,10 @@ export async function runMcpCommand(
       console.log(r.message);
       return 0;
     }
-    // add <name> --url <url> [--oauth-client-id X] | add <name> -- <cmd> [...] [--env K=V ...]
+    // add <name> --url <url> [--oauth-client-id X] [--oauth-client-secret S] | add <name> -- <cmd> [...] [--env K=V ...]
     const { name, entry, error } = parseMcpAddArgs(rest);
     if (error || !name || !entry) {
-      console.error(error ?? '用法：omni mcp add <名称> --url <地址> [--oauth-client-id X] [--oauth-client-registration auto|cimd|dcr] [--oauth-resource R] | omni mcp add <名称> -- <命令> [参数...] [--env K=V ...]');
+      console.error(error ?? '用法：omni mcp add <名称> --url <地址> [--oauth-client-id X] [--oauth-client-secret S] [--oauth-client-registration auto|cimd|dcr] [--oauth-resource R] | omni mcp add <名称> -- <命令> [参数...] [--env K=V ...]');
       return 1;
     }
     if (servers[name]) {
@@ -178,6 +192,11 @@ export async function runMcpCommand(
       return 1;
     }
     console.log(`${r.message}（重启会话生效）`);
+    // HTTP 无 bearer 条目：可能需要 OAuth 登录（codex add 的 Unknown 分支同款指引；
+    // 上游 add 即发现并登录，本命令保持离线安全，只指路不自动跑流程）
+    if (entry.url && !entry.headers?.['Authorization']) {
+      console.log(`如需 OAuth 登录：omni mcp login ${name}`);
+    }
     return 0;
   }
   console.error(
@@ -197,6 +216,7 @@ export function parseMcpAddArgs(rest: string[]): {
   const cmd = dash < 0 ? [] : rest.slice(dash + 1);
   let url: string | undefined;
   let clientId: string | undefined;
+  let clientSecret: string | undefined;
   let oauthResource: string | undefined;
   let oauthReg: string | undefined;
   let bearerEnv: string | undefined;
@@ -207,6 +227,7 @@ export function parseMcpAddArgs(rest: string[]): {
     const a = pre[i]!;
     if (a === '--url') url = pre[++i];
     else if (a === '--oauth-client-id') clientId = pre[++i];
+    else if (a === '--oauth-client-secret') clientSecret = pre[++i];
     else if (a === '--oauth-resource') oauthResource = pre[++i];
     else if (a === '--oauth-client-registration') oauthReg = pre[++i];
     else if (a === '--bearer-token-env-var') bearerEnv = pre[++i];
@@ -216,7 +237,7 @@ export function parseMcpAddArgs(rest: string[]): {
       if (eq <= 0) return { error: `--env 须为 K=V 形态（收到「${kv}」）` };
       env[kv.slice(0, eq)] = kv.slice(eq + 1);
     } else if (a.startsWith('-')) {
-      return { error: `未知参数：${a}（可用：--url/--bearer-token-env-var/--oauth-client-id/--oauth-resource/--oauth-client-registration/--env，或 -- <命令>）` };
+      return { error: `未知参数：${a}（可用：--url/--bearer-token-env-var/--oauth-client-id/--oauth-client-secret/--oauth-resource/--oauth-client-registration/--env，或 -- <命令>）` };
     } else {
       positional.push(a);
     }
@@ -239,6 +260,15 @@ export function parseMcpAddArgs(rest: string[]): {
   if (oauthReg !== undefined && oauthReg !== 'auto' && oauthReg !== 'cimd' && oauthReg !== 'dcr') {
     return { error: `--oauth-client-registration 非法（auto|cimd|dcr）：${oauthReg}` };
   }
+  if (clientSecret !== undefined && url === undefined && cmd.length > 0) {
+    return { error: '--oauth-client-secret 仅 streamable HTTP 服务器可用' };
+  }
+  if (clientSecret !== undefined && clientSecret.trim().length === 0) {
+    return { error: '--oauth-client-secret 不可为空' };
+  }
+  if (clientSecret !== undefined && (!clientId || clientId.trim().length === 0)) {
+    return { error: '--oauth-client-secret 须与非空 --oauth-client-id 成对使用（预注册保密客户端）' };
+  }
   const oauthFields = {
     ...(oauthResource !== undefined ? { oauthResource } : {}),
     ...(oauthReg !== undefined && oauthReg !== 'auto' ? { oauthClientRegistration: oauthReg as 'cimd' | 'dcr' } : {}),
@@ -252,7 +282,7 @@ export function parseMcpAddArgs(rest: string[]): {
       // token 不落盘：运行时由 {env:} 解析（与 apiKey 同机制；缺失时该 header 被移除）
       bearerHeaders = { Authorization: `Bearer {env:${bearerEnv}}` };
     }
-    return { name, entry: { url, ...(clientId ? { clientId } : {}), ...oauthFields, ...(bearerHeaders ? { headers: bearerHeaders } : {}) } };
+    return { name, entry: { url, ...(clientId ? { clientId } : {}), ...(clientSecret ? { clientSecret } : {}), ...oauthFields, ...(bearerHeaders ? { headers: bearerHeaders } : {}) } };
   }
   if (cmd.length === 0) return { error: '缺少传输（二选一）：--url <地址> 或 -- <命令> [参数...]' };
   return { name, entry: { command: cmd[0]!, args: cmd.slice(1), ...(envKeys.length > 0 ? { env } : {}), ...(clientId ? { clientId } : {}) } };

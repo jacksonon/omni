@@ -400,28 +400,12 @@ function bareListMarkerChunks(text: string): MdChunk[] | null {
 }
 
 /**
- * 单行块级解析（非围栏、非表格）：标题 / 引用 / 水平线 / 任务清单 /
- * 无序列表 / 有序列表 / 普通行 → 样式片段。markdownToRows 的同名分支与
- * mini 共用，行为一致。
+ * 列表项块级解析（任务清单 / 无序 / 裸 marker / 有序；入参需已 trimStart）。
+ * 引用分支剥 `>` 后复用——`> - x` 这类引用内列表项同样成 `• x` 而非原样透出
+ *（codex 98072cf 引用内空 marker 同理；缩进策略与顶层一致：去缩进）。
+ * 返回 null = 非列表行。
  */
-export function parseMarkdownLine(line: string): MdChunk[] {
-  const trimmed = line.trimStart();
-  // 标题：# ~ ######（加粗 + 青色，行内样式生效：## **加粗** 标题）
-  const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-  if (heading) {
-    return scanInlineChunks(heading[2]).map((c) => ({ ...c, bold: true, fg: 'cyan' }));
-  }
-  // 引用：> 文本（支持嵌套 >> 与行内样式，浅色；`> -` 这类空 marker 行保留 marker）
-  const quote = /^>+\s?(.*)$/.exec(trimmed);
-  if (quote) {
-    const bare = bareListMarkerChunks(quote[1]);
-    if (bare) return bare.map((c) => ({ ...c, dim: true }));
-    return scanInlineChunks(quote[1]).map((c) => ({ ...c, dim: true, fg: QUOTE_FG }));
-  }
-  // 水平线：--- / *** / ___（浅色虚线）
-  if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
-    return [{ text: '──────', dim: true }];
-  }
+function parseListItemChunks(trimmed: string): MdChunk[] | null {
   // 任务清单：- [x] / - [ ]（☑/☐；`- [ ]` 空项保留 marker）
   const task = /^[-*+]\s+\[([ xX])\](?:\s+(.*))?$/.exec(trimmed);
   if (task) {
@@ -441,6 +425,37 @@ export function parseMarkdownLine(line: string): MdChunk[] {
   if (ordered) {
     return [{ text: `${ordered[1]} ` }, ...scanInlineChunks(ordered[2])];
   }
+  return null;
+}
+
+/**
+ * 单行块级解析（非围栏、非表格）：标题 / 引用 / 水平线 / 任务清单 /
+ * 无序列表 / 有序列表 / 普通行 → 样式片段。markdownToRows 的同名分支与
+ * mini 共用，行为一致。
+ */
+export function parseMarkdownLine(line: string): MdChunk[] {
+  const trimmed = line.trimStart();
+  // 标题：# ~ ######（加粗 + 青色，行内样式生效：## **加粗** 标题）
+  const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+  if (heading) {
+    return scanInlineChunks(heading[2]).map((c) => ({ ...c, bold: true, fg: 'cyan' }));
+  }
+  // 引用：> 文本（支持嵌套 >> 与行内样式，浅色；`> -` 这类空 marker 行保留 marker）
+  const quote = /^>+\s?(.*)$/.exec(trimmed);
+  if (quote) {
+    // 引用内列表项同样按块级解析（`> - x` → `• x`，`>   - y` 去缩进同顶层）；
+    // 纯文本引用保持原样（去 `>` 前缀的既定风格不动）
+    const asList = parseListItemChunks(quote[1].trimStart());
+    if (asList) return asList.map((c) => ({ ...c, dim: true }));
+    return scanInlineChunks(quote[1]).map((c) => ({ ...c, dim: true, fg: QUOTE_FG }));
+  }
+  // 水平线：--- / *** / ___（浅色虚线）
+  if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
+    return [{ text: '──────', dim: true }];
+  }
+  // 列表项（任务/无序/裸 marker/有序；与引用分支共用同一实现）
+  const asList = parseListItemChunks(trimmed);
+  if (asList) return asList;
 
   return scanInlineChunks(line);
 }

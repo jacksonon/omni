@@ -80,6 +80,10 @@ export function parseArgs(args: string[]): ParsedArgs {
         // 严格配置校验（codex 同款；未知顶层字段报错，防拼写错误与静默失效的旧字段）
         overrides.strictConfig = true;
         break;
+      case '--ignore-user-config':
+        // 跳过全局配置文件（codex 同款；只跳用户层，项目/显式 --config/环境变量/CLI 照常）
+        overrides.ignoreUserConfig = true;
+        break;
       case '--add-dir': {
         // 沙箱额外可写目录（codex --add-dir 对等；可重复，追加语义）
         const v = takeValue();
@@ -253,6 +257,7 @@ Options:
   -p, --profile <name>    Apply a config profile (config "profiles" field, e.g. work/personal/offline snapshots)
       --sandbox <mode>    OS sandbox override: off | read-only | workspace-write | danger-full-access (like codex -s)
       --strict-config         Error on unrecognized config file fields (like codex --strict-config)
+      --ignore-user-config    Skip the user-level config file (like codex --ignore-user-config)
       --add-dir <dir>     Extra writable dir for the sandbox, repeatable (like codex --add-dir)
   -s, -r, --resume <session-id>   Resume a specific session
   -l, --list-sessions   List saved sessions (cwd only by default; add -f/--full/--all for all)
@@ -350,6 +355,7 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   -p, --profile <名>    套用配置档案（config profiles 字段；如工作/个人/离线多套快照）
       --sandbox <档位>    OS 沙箱覆盖：off | read-only | workspace-write | danger-full-access（对标 codex -s）
       --strict-config         严格配置校验：未知顶层字段报错（对标 codex --strict-config）
+      --ignore-user-config    跳过用户级配置文件（对标 codex --ignore-user-config）
       --add-dir <目录>    沙箱额外可写目录，可重复（对标 codex --add-dir）
   -s, -r, --resume <会话id>   恢复指定会话
   -l, --list-sessions   列出会话（默认仅当前目录；加 -f/--full/--all 查看全部）
