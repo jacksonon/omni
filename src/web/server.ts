@@ -63,6 +63,7 @@ import {
   exportSession,
   fullStatusReport,
   memoryFilesFromMessages,
+  sumSessionUsage,
 } from '../agent/report.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import {
@@ -1048,7 +1049,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const stat = /(?:^|\s)--stat(?=\s|$)/.test(arg);
       const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       add('正在收集 git diff…');
-      const d = await collectDiff({ stat, full });
+      const d = await collectDiff({ stat, full, includeUntracked: true });
       if (!d.ok) add(`无法获取 git diff：${d.output.slice(0, 200)}`);
       else if (d.output === '（无改动）') add('工作区没有未提交的改动');
       else if (stat) {
@@ -1210,8 +1211,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         add(`正在打开浏览器完成 OAuth 授权…（60s 内未完成将取消）`);
         const { oauthLogin } = await import('../tools/mcp-oauth.js');
         try {
-          const token = await oauthLogin(new URL(srv.url).origin, 'mcp', {
+          // token 按完整 server URL 索引（与 McpClient 读取/顶层 login-logout 一致；
+          // 用 origin 会导致客户端读不到，登录成功也始终未认证）
+          const token = await oauthLogin(srv.url, 'mcp', {
             ...(srv.clientId ? { clientId: srv.clientId } : {}),
+            ...(srv.oauthResource ? { resource: srv.oauthResource } : {}),
+            ...(srv.oauthClientRegistration ? { clientRegistration: srv.oauthClientRegistration } : {}),
             clientName: `omni (${serverName})`,
           });
           add(token ? `已登录「${serverName}」（token 已保存，之后请求自动携带）` : '登录未完成（取消或超时）');
@@ -1632,9 +1637,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const subArg = arg.slice(sub.length).trim();
       if (sub === 'help') {
         add('可用命令：/status（含上下文用量）/context <档位>|默认 /export /diff [--stat|--full] /rewind /doctor /trace /agents');
-        add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo');
-        add('/skill [find|add|show|create|delete] /compact /review /btw /rename /session /resume /mcp /init');
-        add('/orchestrate /goal /loop /spec /preset /send /memory-apply /fork /compact');
+        add('/model [名称|add] /variants [级别] /permission [档位] /plan /clear /undo /redo /warnings /rollout /hooks');
+        add('/skill (/skills) [find|add|show|create|delete] /compact /review /btw /rename /session /resume /mcp [verbose] /init');
+        add('/orchestrate /goal /loop /spec /preset /send /memory-apply /fork /compact /plugins list');
         add('/settings help（本帮助）· /settings models [refresh]（模型能力快照）· /settings <面板名>（打开设置面板）');
         return { lines };
       }
@@ -1668,6 +1673,68 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       return { lines };
     }
 
+    if (cmd === '/warnings') {
+      // /warnings： retained 会话警告回看（与交互端同源 sessionWarnings）
+      const { sessionWarnings } = await import('../agent/warnings.js');
+      const kept = sessionWarnings();
+      if (kept.length === 0) add('本会话暂无警告（MCP/信任/网络降级会保留在这里）。');
+      else {
+        add(`会话警告（${kept.length} 条）：`);
+        for (const w of kept) add(`· [${w.source}] ${w.message}`);
+      }
+      return { lines };
+    }
+    if (cmd === '/rollout') {
+      // /rollout：当前会话文件路径（交互端对等；Web 会话取自 s.file）
+      const sp = s?.file ?? runOpts.sessionPath;
+      add(sp ? `当前会话文件：${sp}` : '当前无会话文件。');
+      return { lines };
+    }
+    if (cmd === '/hooks') {
+      // /hooks：生效中的 lifecycle hooks 只读视图（交互端对等）
+      const { HOOK_EVENTS } = await import('../hooks/index.js');
+      const defs = runOpts.hooks?.list?.() ?? {};
+      const events = HOOK_EVENTS.filter((e) => (defs[e] ?? []).length > 0);
+      if (events.length === 0) add('未配置 hooks（配置文件 hooks 字段按事件配 command，改后重启生效）。');
+      else {
+        add(`hooks（${events.length} 个事件有配置）：`);
+        for (const e of events) {
+          const list = defs[e] ?? [];
+          add(`· ${e}（${list.length}）：`);
+          for (const d of list.slice(0, 8)) {
+            add(`  · ${d.matcher ? `[${d.matcher}] ` : ''}${d.command ?? d.url ?? '（空定义）'}`);
+          }
+        }
+      }
+      return { lines };
+    }
+    if (cmd === '/skills' || cmd.startsWith('/skills ')) {
+      // /skills：/skill 复数别名（交互端对等）
+      return runSlashCommand(cmd.replace(/^\/skills/, '/skill'), s);
+    }
+    if (cmd === '/plugins' || cmd.startsWith('/plugins ')) {
+      // /plugins：插件 list 只读（交互端透传顶层同实现；安装等写操作走设置页）
+      const { runPluginCommand } = await import('../cli/plugin.js');
+      const args = cmd.slice('/plugins'.length).trim().split(/\s+/).filter(Boolean);
+      const sub = args[0] ?? 'list';
+      if (sub !== 'list' && sub !== 'ls' && sub !== 'get') {
+        add('Web 端仅支持查看：/plugins list（安装/启停走 omni plugin CLI 或设置页）。');
+        return { lines };
+      }
+      const out: string[] = [];
+      const origLog = console.log;
+      const origErr = console.error;
+      console.log = (...a: unknown[]) => { out.push(a.map(String).join(' ')); };
+      console.error = (...a: unknown[]) => { out.push(a.map(String).join(' ')); };
+      try {
+        await runPluginCommand([sub, ...args.slice(1)]);
+      } finally {
+        console.log = origLog;
+        console.error = origErr;
+      }
+      for (const l of out) add(l);
+      return { lines };
+    }
     if (cmd === '/models' || cmd.startsWith('/models ')) {
       // 顶层 /models 已移入 /settings models：保留迁移提示
       add('模型能力快照已移入 /settings models（/settings models refresh 在线更新）');

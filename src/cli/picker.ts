@@ -29,7 +29,8 @@ export const MINI_SLASH_COMMANDS = [
   '/mcp', '/diff', '/rewind', '/rename', '/memory-apply', '/fork', '/send',
   '/resume', '/cd', '/pin', '/archive', '/unarchive', '/auto', '/vim',
   '/team', '/session', '/redo', '/doctor', '/trace', '/init', '/import', '/recap',
-  '/copy', '/pwd', '/quit', '/stop', '/delete', '/tasks', '/plugin',
+  '/copy', '/pwd', '/quit', '/stop', '/delete', '/tasks', '/plugin', '/warnings',
+  '/skills', '/plugins', '/hooks', '/rollout',
 ];
 
 export interface CompleteContext {
@@ -88,9 +89,14 @@ export function completeMiniLine(line: string, ctx: CompleteContext, extra?: Com
   if (parts.length <= 1) {
     const word = parts[0]!;
     const hits = MINI_SLASH_COMMANDS.filter((c) => c.startsWith(word) && c !== word);
+    if (hits.length > 0) return [hits, word];
     // 命令已打全：补一个空格方便继续输参数
-    if (hits.length === 0 && MINI_SLASH_COMMANDS.includes(word)) return [[`${word} `], word];
-    return [hits, word];
+    if (MINI_SLASH_COMMANDS.includes(word)) return [[`${word} `], word];
+    // 无前缀命中 → 模糊兜底（与联想面板同算法）：唯一命中直接补全（含尾空格），
+    // 多命中交 readline 双 Tab 列表（@ 提及单选直插同款节奏）
+    const fuzzy = fuzzySlashMatch(word.slice(1));
+    if (fuzzy.length === 1) return [[`${fuzzy[0]} `], word];
+    return [fuzzy, word];
   }
   const [cmd, arg] = parts;
   if (arg === undefined || parts.length > 2) return [[], line];
@@ -224,7 +230,7 @@ export function formatShortcutsHelp(): string[] {
     '! 开头直跑 shell（bash mode，不进模型）',
     '@ 提及文件/图片（Tab 补全），/ 斜杠命令（Tab 补全）',
     'Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）',
-    'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹',
+    'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹 · Ctrl+G 外部编辑器组稿 · 空行 Esc 取回上一条',
     'Ctrl+D 退出（与 /exit 同一收尾） · /quit 也是退出',
   ];
 }
@@ -357,6 +363,30 @@ export function isPickerConfirmKey(name: string): boolean {
   return name === 'return' || name === 'enter';
 }
 
+/**
+ * 斜杠命令模糊匹配（codex slash popup 对等：子序列即命中，如 /ac → /compact）。
+ * 排序：前缀命中在前，其余子序列命中随后（各按命令表原序，保证稳定）。
+ */
+export function fuzzySlashMatch(frag: string, commands: readonly string[] = MINI_SLASH_COMMANDS): string[] {
+  const q = frag.toLowerCase();
+  if (!q) return [...commands];
+  const isSubseq = (target: string): boolean => {
+    let j = 0;
+    for (let i = 0; i < target.length && j < q.length; i++) {
+      if (target[i] === q[j]) j++;
+    }
+    return j === q.length;
+  };
+  const pre: string[] = [];
+  const rest: string[] = [];
+  for (const c of commands) {
+    const body = c.slice(1).toLowerCase();
+    if (body.startsWith(q)) pre.push(c);
+    else if (isSubseq(body)) rest.push(c);
+  }
+  return [...pre, ...rest];
+}
+
 /** installSlashSuggest 配置（纯显示联想面板；按键只观察不消费） */
 export interface SlashSuggestOptions {
   stdin: NodeJS.ReadStream;
@@ -446,7 +476,7 @@ export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHand
       }
       if (matched) {
         const frag = line.slice(1);
-        const filtered = MINI_SLASH_COMMANDS.filter((c) => c.slice(1).startsWith(frag));
+        const filtered = fuzzySlashMatch(frag);
         const rows = filtered.slice(0, 8);
         if (filtered.length > 8) rows.push(`…还有 ${filtered.length - 8} 个（继续打字过滤，Tab 直接列出全部）`);
         if (!justSubmitted) {

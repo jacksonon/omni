@@ -356,6 +356,27 @@ export class ConsoleOutput implements Output {
    * y/回车 = 允许，其余 = 拒绝；非 TTY（管道）自动拒绝（fail-safe）。
    * 并行工具调用的多个审批通过 promise 链串行（readline 接口不并发）。
    */
+  /**
+   * 问答消费行吞没队列（mini 同款双 readline 教训：答案字节同时进主 rl 行缓冲，
+   * 次 close() 还会 pause 共享 stdin；记录供主循环跳过，关闭后恢复流动）。
+   */
+  private swallowedQa: string[] = [];
+  private recordSwallowedQa(ans: string): void {
+    const t = ans.trim();
+    if (!t) return;
+    this.swallowedQa.push(t);
+    while (this.swallowedQa.length > 10) this.swallowedQa.shift();
+  }
+
+  /** 主循环调用：命中队首消费记录返回 true（跳过本行），不命中不清理 */
+  swallowQaLine(line: string): boolean {
+    if (this.swallowedQa.length > 0 && this.swallowedQa[0] === line.trim()) {
+      this.swallowedQa.shift();
+      return true;
+    }
+    return false;
+  }
+
   private approvalTail: Promise<void> = Promise.resolve();
   requestApproval(req: ApprovalRequest): Promise<boolean> {
     let resolveMe!: (b: boolean) => void;
@@ -377,9 +398,11 @@ export class ConsoleOutput implements Output {
       const ans = await rl.question(
         `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n${dim(prefixLines(req.reason, '  '))}\n  批准执行？[y/N] `
       );
+      this.recordSwallowedQa(ans);
       return /^y/i.test(ans.trim());
     } finally {
       rl.close();
+      input.resume();
     }
   }
 
@@ -410,6 +433,7 @@ export class ConsoleOutput implements Output {
       const ans = await rl.question(
         `\n${cyan('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
       );
+      this.recordSwallowedQa(ans);
       const t = ans.trim();
       if (!t) return null; // 空输入 = 取消
       // 纯数字/逗号 = 选项序号（多选逗号分隔）；其它 = 自定义输入
@@ -422,6 +446,7 @@ export class ConsoleOutput implements Output {
       return { choice: t, custom: true, choices: [t] };
     } finally {
       rl.close();
+      input.resume();
     }
   }
 }

@@ -194,6 +194,9 @@
   //   · url/headers           streamable HTTP 传输（headers 可带 Authorization）
   //   · enabledTools/disabledTools  工具白/黑名单
   //   · defaultToolsApprovalMode    auto|prompt|writes|approve——该 server 工具的默认审批模式
+  //   · clientId/oauthResource/oauthClientRegistration  HTTP 服务器 OAuth 登录
+  //     （clientId：HTTPS URL = CIMD / 普通串 = 预注册；resource：RFC 8707 资源指示；
+  //     registration：auto|cimd|dcr；对应 mcp add --oauth-client-id/--oauth-resource/--oauth-client-registration）
   // 示例（官方文件系统服务器）：
   // "mcpServers": {
   //   "demo": { "command": "node", "args": ["scripts/mock-mcp.mjs"] }

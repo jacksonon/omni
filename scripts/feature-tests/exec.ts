@@ -10,6 +10,7 @@ import { TestSuite } from './framework.js';
 import { execHelpText, handleExecHelp, parseExecArgs } from '../../src/exec.js';
 import { isConsoleCommand } from '../../src/main.js';
 import { collectImageAttachments, loadImageAttachment, userMessageWithImages } from '../../src/agent/context.js';
+import { reviewCode } from '../../src/agent/review.js';
 import { dim, isTTY, setColorOverride } from '../../src/ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -149,6 +150,15 @@ export function execSuite(): TestSuite {
     suite.assert(rc1.reviewCommit === 'abc123', '--commit 审查提交');
     const ru = parseExecArgs(['review', '--uncommitted']);
     suite.assert(ru.reviewMode === true, '--uncommitted 显式缺省照常进 review');
+    const rt = parseExecArgs(['review', '--title', 'Fix login', '看看']);
+    suite.assert(rt.reviewMode === true && rt.reviewTitle === 'Fix login' && rt.promptRaw === '看看', '--title 审查对象标题');
+    let threwTitle = '';
+    try {
+      parseExecArgs(['--title', 'x', 'task']);
+    } catch (e) {
+      threwTitle = (e as Error).message;
+    }
+    suite.assert(threwTitle.includes('仅 exec review 可用'), '--title 非 review 域限定报错');
     for (const args of [['review', '--base', 'main', '--commit', 'abc123'], ['review', '--base', 'main', '--uncommitted'], ['--base', 'main', 'task'], ['--uncommitted', 'task']]) {
       let threw = '';
       try {
@@ -167,6 +177,30 @@ export function execSuite(): TestSuite {
       }
       suite.assert(threw.includes('exec review 不支持'), `${args.join(' ')} loop 系 flags 互斥报错`);
     }
+  });
+
+  suite.test('review --title 进模型输入（codex --title 审查摘要标题）', async () => {
+    let seen = '';
+    async function* chunks(): AsyncGenerator<unknown> {
+      yield { choices: [{ delta: { content: 'ok' } }] };
+    }
+    const stubClient = {
+      chat: { completions: { create: async (req: { messages: { content: unknown }[] }) => {
+        seen = JSON.stringify(req.messages.map((m) => m.content));
+        return chunks();
+      } } },
+    };
+    const r = await reviewCode(stubClient as never, 'm', 'diff-body', { command: null, output: 'x' }, 'extra-req', [], 'Fix login race');
+    suite.assert(r === 'ok', '桩 client 跑通');
+    suite.assert(seen.includes('Fix login race') && seen.includes('审查对象标题'), '标题进输入上下文');
+    suite.assert(seen.includes('extra-req') && seen.includes('diff-body'), '原有输入不受影响');
+    let seen2 = '';
+    const stub2 = { chat: { completions: { create: async (req: { messages: { content: unknown }[] }) => {
+      seen2 = JSON.stringify(req.messages.map((m) => m.content));
+      return chunks();
+    } } } };
+    await reviewCode(stub2 as never, 'm', 'd', { command: null, output: 'x' });
+    suite.assert(!seen2.includes('审查对象标题'), '无标题不加段');
   });
 
   suite.test('exec flags 解析：--json 事件 JSONL（codex --json，即 stream-json）', () => {
@@ -629,6 +663,8 @@ export function execSuite(): TestSuite {
       suite.assert(r3s.code === 0 && last.t === 'result' && last.exit_code === 0 && last.result.includes('## 审查结果（mock）'), 'review stream-json 末行结果');
       const r3u = await runExec(['exec', 'review', '--uncommitted']);
       suite.assert(r3u.code === 0 && r3u.out.includes('## 审查结果（mock）'), '--uncommitted 与缺省同效');
+      const r3t = await runExec(['exec', 'review', '--title', 'Fix login race', '关注并发']);
+      suite.assert(r3t.code === 0 && r3t.out.includes('## 审查结果（mock）'), '--title 标题随审查发出（codex --title）');
       // 审查范围：第二提交 → --commit 审它，--base 审相对它的改动（codex --base/--commit）
       spawnSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
       spawnSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-m', 'second'], { cwd: repo, stdio: 'ignore' });
@@ -794,6 +830,7 @@ export function execSuite(): TestSuite {
     const en = execHelpText('en');
     suite.assert(zh.includes('用法：omni exec') && en.includes('Usage: omni exec'), '中英 Usage 行');
     suite.assert(en.includes('exec fork') && en.includes('--ephemeral'), '英文含 fork/ephemeral 行');
+    suite.assert(zh.includes('[--title') && en.includes('[--title'), '中英 review 帮助含 --title');
     const zhLines = zh.split('\n').length;
     const enLines = en.split('\n').length;
     suite.assert(zhLines === enLines, `中英行数一一对应（${zhLines} vs ${enLines}）`);
@@ -821,6 +858,7 @@ export function execSuite(): TestSuite {
       '-- 之后不当 flag（任务文本语义）'
     );
     suite.assert(handleExecHelp(['exec', 'task']) === false, '普通任务不命中');
+    suite.assert(handleExecHelp(['review', '--help']) === true, '顶层 review --help 命中（codex review --help）');
   });
 
   suite.test('exec --help 打专属帮助（codex exec --help，不被全局帮助吞掉）', async () => {
@@ -893,6 +931,7 @@ export function execSuite(): TestSuite {
     suite.assert(out.includes('Git：'), '含 Git 仓库节（codex doctor git）');
     suite.assert(out.includes('终端：'), '含终端状态节（TTY/尺寸/颜色，mini 排障）');
     suite.assert(out.includes('搜索：'), '含搜索后端节（rg/bundled，codex doctor search）');
+    suite.assert(out.includes('外部编辑器：'), '含编辑器环境节（VISUAL/EDITOR，codex doctor environment）');
   });
 
   return suite;

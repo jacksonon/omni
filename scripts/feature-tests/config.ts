@@ -90,6 +90,42 @@ export function configSuite(): TestSuite {
     }
   });
 
+  suite.test('-a/--ask-for-approval 审批策略覆盖（codex -a 对等）', () => {
+    const r1 = parseArgs(['mini', '-a', 'never', 'task']);
+    suite.assert(r1.overrides.askForApproval === 'never' && r1.taskArgs.join(' ') === 'mini task', '-a 短式剥离不污染任务');
+    const r2 = parseArgs(['exec', '--ask-for-approval=read', 'task']);
+    suite.assert(r2.overrides.askForApproval === 'read', '--ask-for-approval= 形态');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgask-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgask-w-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmp);
+    const savedPerm = process.env.OMNI_PERMISSION;
+    try {
+      suite.assert(loadConfig().permission === 'safe', '缺省 safe');
+      suite.assert(loadConfig({ askForApproval: 'never' }).permission === 'full', 'never→full');
+      suite.assert(loadConfig({ askForApproval: 'on-request' }).permission === 'safe', 'on-request→safe');
+      suite.assert(loadConfig({ askForApproval: 'read' }).permission === 'read', '原生档位直通');
+      process.env.OMNI_PERMISSION = 'read';
+      suite.assert(loadConfig({ askForApproval: 'never' }).permission === 'full', 'CLI 高于环境变量');
+      delete process.env.OMNI_PERMISSION;
+      for (const bad of ['sometimes', '']) {
+        let threw = '';
+        try { loadConfig({ askForApproval: bad }); } catch (e) { threw = (e as Error).message; }
+        suite.assert(threw.includes('ask-for-approval'), `非法值 ${JSON.stringify(bad)} 抛错（不静默回退）`);
+      }
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      if (savedPerm === undefined) delete process.env.OMNI_PERMISSION;
+      else process.env.OMNI_PERMISSION = savedPerm;
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
   suite.test('--add-dir 沙箱额外可写目录（codex --add-dir，可重复追加）', () => {
     const r1 = parseArgs(['mini', '--add-dir', '/tmp/a', 'task']);
     suite.assert((r1.overrides.addDirs ?? []).join(',') === '/tmp/a' && r1.taskArgs.join(' ') === 'mini task', '--add-dir 剥离不污染任务');

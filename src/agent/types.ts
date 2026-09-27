@@ -155,6 +155,12 @@ export interface RunOptions {
    */
   mcpHandles?: import('../tools/mcp.js').McpServerHandle[];
   /**
+   * MCP 反向请求处理器（elicitation/sampling；attachRuntime 创建后注入，
+   * /mcp reconnect/add 复用——重建工具链不断反向通道；sampling 经 getters
+   * 读当前模型运行时，/model 切换不 stale）。
+   */
+  mcpHandlers?: import('../tools/mcp.js').McpServerRequestHandlers;
+  /**
    * Hooks 生命周期自动化运行器（入口 attachRuntime 按配置创建）：
    * loop 在工具调用前（PreToolUse）/后（PostToolUse）、回合结束（Stop）触发；
    * 交互层在用户提交时（UserPromptSubmit）触发；Notification 会话完成 fire-and-forget。

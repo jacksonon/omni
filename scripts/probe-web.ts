@@ -277,6 +277,18 @@ async function main(): Promise<void> {
     const btwUsage = await post(WEB_PORT, '/api/command', { command: '/btw', sessionId: fSid });
     check('F7 /btw 无参数用法提示', btwUsage.status === 200 && (btwUsage.json.lines ?? []).some((l) => l.includes('用法：/btw')), JSON.stringify(btwUsage.json.lines).slice(0, 120));
 
+    /* G0. 新增只读命令（/warnings /rollout /hooks /skills /plugins，与交互端同源） */
+    const gWarn = await post(WEB_PORT, '/api/command', { command: '/warnings', sessionId: fSid });
+    check('G0 /warnings 可用', gWarn.status === 200 && (gWarn.json.lines ?? []).some((l) => l.includes('警告')), JSON.stringify(gWarn.json.lines).slice(0, 120));
+    const gRoll = await post(WEB_PORT, '/api/command', { command: '/rollout', sessionId: fSid });
+    check('G0 /rollout 打印会话路径', gRoll.status === 200 && (gRoll.json.lines ?? []).some((l) => l.includes('.jsonl')), JSON.stringify(gRoll.json.lines).slice(0, 120));
+    const gHooks = await post(WEB_PORT, '/api/command', { command: '/hooks', sessionId: fSid });
+    check('G0 /hooks 可用', gHooks.status === 200 && (gHooks.json.lines ?? []).some((l) => l.includes('hook')), JSON.stringify(gHooks.json.lines).slice(0, 120));
+    const gSkills = await post(WEB_PORT, '/api/command', { command: '/skills', sessionId: fSid });
+    check('G0 /skills 别名透传', gSkills.status === 200 && (gSkills.json.lines ?? []).some((l) => l.includes('技能')), JSON.stringify(gSkills.json.lines).slice(0, 120));
+    const gPlugins = await post(WEB_PORT, '/api/command', { command: '/plugins list', sessionId: fSid });
+    check('G0 /plugins list 只读', gPlugins.status === 200 && (gPlugins.json.lines ?? []).some((l) => l.includes('插件')), JSON.stringify(gPlugins.json.lines).slice(0, 160));
+
     /* G. 会话列表 */
     const sessionsList = await (await fetch(`${BASE}/api/sessions`)).json();
     const live = sessionsList.filter((s: any) => [bSid, cSid, dSid, eSid, fSid].includes(s.id));

@@ -31,6 +31,7 @@ import {
   formatApprovalPrompt,
   parseApprovalAnswer,
   fmtElapsed,
+  fmtLapDuration,
   foldRows,
   renderMiniBanner,
   renderTurnSeparator,
@@ -39,8 +40,13 @@ import {
   verbForTool,
 } from '../../src/output/mini.js';
 import { MiniMarkdownRenderer, chunksToAnsi } from '../../src/output/markdown-ansi.js';
+import { parseMarkdownLine } from '../../src/tui/markdown.js';
+import { normalizeScopes, buildAuthorizeUrl, parseCallbackParams } from '../../src/tools/mcp-oauth.js';
 import { completeMention, MINI_SLASH_COMMANDS } from '../../src/cli/picker.js';
 import { applyMentionInsert } from '../../src/cli/picker.js';
+import { fuzzySlashMatch } from '../../src/cli/picker.js';
+import { completeMiniLine } from '../../src/cli/picker.js';
+import { loadInputHistory, saveInputHistory } from '../../src/cli/history.js';
 import { isBangShellCommand, stripBangPrefix } from '../../src/cli/picker.js';
 import { formatModePrompt } from '../../src/cli/picker.js';
 import { hasLineContinuation, stripLineContinuation } from '../../src/cli/picker.js';
@@ -57,7 +63,9 @@ import { parseAskAnswer } from '../../src/output/mini.js';
 import { approvalDiffText } from '../../src/output/format.js';
 import { prefixLines } from '../../src/output/format.js';
 
-import { lastAssistantText } from '../../src/agent/report.js';
+import { lastAssistantText, lastUserText, sumSessionUsage } from '../../src/agent/report.js';
+import { composeInEditor, resolveEditorCommand } from '../../src/cli/external-editor.js';
+import { pushWarning, sessionWarnings } from '../../src/agent/warnings.js';
 import { deleteSessionFile, sessionsDir } from '../../src/agent/session.js';
 import { compactedSince } from '../../src/agent/events.js';
 import { splitMiniOneShotFlags } from '../../src/cli/mini.js';
@@ -135,6 +143,11 @@ export function miniSuite(): TestSuite {
     suite.assert(text.includes('~'), '目录行（home 简写 ~）');
     suite.assert(!text.includes('model:'), '无模型行（上游已删 boxed model row）');
     suite.assert(text.includes('permissions: YOLO mode'), 'YOLO 行保留');
+    // YOLO 判定（codex has_yolo_permissions：full + 沙箱近乎关闭；沙箱收紧即非 YOLO）
+    const sandboxed = renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'read-only' }, 80, 'hi').join('\n');
+    suite.assert(!sandboxed.includes('YOLO mode'), 'full + 沙箱收紧不显示 YOLO');
+    const danger = renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'danger-full-access' }, 80, 'hi').join('\n');
+    suite.assert(danger.includes('YOLO mode'), 'full + 无 OS 沙箱保持 YOLO');
     const plain = renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, 'hi').join('\n');
     suite.assert(!plain.includes('permissions:'), '非 YOLO 无权限行');
     const nogreet = renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, null).join('\n');
@@ -477,6 +490,27 @@ export function miniSuite(): TestSuite {
     }
   });
 
+  suite.test('/plugin install 本地目录往返（manifest 校验 + 启用 + 删除）', async () => {
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-plugin-ins-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const src = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-plugin-src-'));
+    try {
+      fs.writeFileSync(path.join(src, 'plugin.json'), JSON.stringify({ name: 'ft-demo', version: '0.0.1', description: 'fixture' }));
+      suite.assert((await runPluginCommand(['install', src, '--yes'])) === 0, '本地目录 install 成功');
+      suite.assert(fs.existsSync(path.join(tmpXdg, 'omni', 'plugins', 'ft-demo', 'plugin.json')), '插件目录落盘');
+      suite.assert((await runPluginCommand(['install', src, '--yes'])) === 1, '重复安装拒绝（需 --force）');
+      suite.assert((await runPluginCommand(['remove', 'ft-demo', '--yes'])) === 0, 'remove 成功');
+      suite.assert(!fs.existsSync(path.join(tmpXdg, 'omni', 'plugins', 'ft-demo')), '插件目录已移除');
+      suite.assert((await runPluginCommand(['install', '/nonexistent-dir-xyz'])) === 1, '非法源拒绝');
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      fs.rmSync(src, { recursive: true, force: true });
+    }
+  });
+
   suite.test('/delete：会话文件删除（目录内才删/外部拒绝/缺失报错）', async () => {
     const prev = process.env.XDG_CONFIG_HOME;
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-del-'));
@@ -614,6 +648,7 @@ export function miniSuite(): TestSuite {
     const zsh = completionScript('zsh');
     suite.assert(typeof bash === 'string' && bash.includes('mini') && bash.includes('--approve-for-me'), 'bash 含子命令与 mini flags');
     suite.assert(bash!.includes(' doctor ') && bash!.includes('review) COMPREPLY'), 'bash 含顶层 doctor 与 review 专属补全');
+    suite.assert(bash.includes('--ask-for-approval') && bash.includes('--title') && bash.includes('--no-browser'), 'bash 含新增 flags（-a/review --title/mcp 登录旗）');
     suite.assert(typeof zsh === 'string' && zsh.includes('#compdef omni') && zsh.includes('mini'), 'zsh 含 compdef 与 mini');
     const fish = completionScript('fish');
     const ps = completionScript('powershell');
@@ -719,6 +754,7 @@ export function miniSuite(): TestSuite {
     suite.assert(text.includes('› 验证一下环境'), '用户消息用 `› ` 前缀（codex UserHistoryCell）');
     suite.assert(text.includes('• Ran echo mock-ok'), '工具单元格 `• Ran <cmd>`');
     suite.assert(text.includes('• 任务完成 ✅'), '正文用 `• ` 前缀（codex AgentMessageCell）');
+    suite.assert(text.includes('Local tools: 1 call ('), '轮末分隔行带工具统计（lap/结果累积）');
     suite.assert(!text.includes('>>'), '不再使用早期的 `>> … <<` 形态');
     suite.assert(!text.includes('💭'), '思考不再用 💭 前缀');
     // 运行中状态行（codex status_indicator_widget.rs）
@@ -729,7 +765,24 @@ export function miniSuite(): TestSuite {
     suite.assert(!short.includes('Worked for') && short.includes('22:30'), '≤60s 只显示时间');
     const long = renderTurnSeparator(1_000_000, new Date(2026, 8, 24, 22, 30));
     suite.assert(long.includes('Worked for 16m 40s') && long.includes('22:30'), '1m 40s 以上显示 Worked for');
-    suite.assert(fmtElapsed(65_000) === '1m 05s', '耗时格式 1m 05s');
+    suite.assert(fmtElapsed(65_000) === '1m 5s', '耗时不补零（codex separators.rs：2m 5s 形态）');
+    suite.assert(fmtElapsed(3_661_000) === '1h 1m 1s', '小时形态同样不补零');
+    suite.assert(fmtLapDuration(300) === '300ms' && fmtLapDuration(1200) === '1.2s', 'lap 耗时毫秒/秒形态');
+    const withStats = renderTurnSeparator(
+      5_000, new Date(2026, 8, 24, 22, 30),
+      { toolCalls: 2, toolMs: 1200, llmCalls: 1, llmMs: 300 }
+    );
+    suite.assert(withStats.includes('Local tools: 2 calls (1.2s)') && withStats.includes('Inference: 1 call (300ms)'), '分隔行带统计后缀');
+    const noStats = renderTurnSeparator(5_000, new Date(2026, 8, 24, 22, 30), { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 });
+    suite.assert(!noStats.includes('Local tools') && !noStats.includes('Inference'), '零调用不展示统计段');
+    const stripAnsi = (t: string): string => t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const wideLines = stripAnsi(renderTurnSeparator(5_000, new Date(2026, 8, 24, 22, 30),
+      { toolCalls: 12, toolMs: 34500, llmCalls: 8, llmMs: 120300 }, 80)).split('\n');
+    suite.assert(wideLines.length === 1 && wideLines.every((l) => visualWidth(l) <= 80), '宽屏统计行单行不超宽');
+    const narrow = stripAnsi(renderTurnSeparator(5_000, new Date(2026, 8, 24, 22, 30),
+      { toolCalls: 12, toolMs: 34500, llmCalls: 8, llmMs: 120300 }, 40)).split('\n');
+    suite.assert(narrow.length >= 2 && narrow.every((l) => visualWidth(l) <= 40), '窄屏按段折行且每行不超宽');
+    suite.assert(narrow.every((l) => l.startsWith('  ')), '折行续行同缩进');
   });
 
   suite.test('提交行折行：超长按终端宽折断 + 首行 • / 续行 2 空格（codex 同款）', () => {
@@ -806,6 +859,148 @@ export function miniSuite(): TestSuite {
     suite.assert(lines[0]!.startsWith('• ') && lines.slice(1).every((l) => l.startsWith('  ')), 'markdown 下仍仅首行 •');
     suite.assert(!stripped.includes('**') && !stripped.includes('# 标'), '标记已渲染（无残留）');
     suite.assert(lines.every((l) => visualWidth(l) <= 80), '无超宽行');
+  });
+
+  suite.test('输入历史跨会话落盘/读回（codex composer history）', () => {
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-hist-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    try {
+      const f = path.join(tmpXdg, 'omni', 'input-history.json');
+      suite.assert(loadInputHistory().join() === '', '缺失回空');
+      saveInputHistory(['b-new', 'a-old']);
+      suite.assert(JSON.parse(fs.readFileSync(f, 'utf8')).join() === 'a-old,b-new', '落盘 oldest→newest');
+      suite.assert(loadInputHistory().join() === 'a-old,b-new', '读回保序');
+      saveInputHistory(['', '  ', 'x']);
+      suite.assert(JSON.parse(fs.readFileSync(f, 'utf8')).join() === 'x', '空行不收');
+      saveInputHistory(Array.from({ length: 250 }, (_, i) => `l${i}`));
+      const capped = JSON.parse(fs.readFileSync(f, 'utf8')) as string[];
+      suite.assert(capped.length === 200 && capped[0] === 'l199' && capped[199] === 'l0', '上限 200 保最新（newest-first 输入）');
+      fs.writeFileSync(f, 'not-json{');
+      suite.assert(loadInputHistory().join() === '', '损坏回空不断交互');
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('Esc 取回上一条输入数据源（codex edit-previous）', () => {
+    const msgs = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'a' },
+      { role: 'user', content: 'second' },
+    ];
+    suite.assert(lastUserText(msgs as never) === 'second', '取最近 user 消息');
+    suite.assert(lastUserText([{ role: 'assistant', content: 'a' }] as never) === '', '无 user 消息回空');
+    suite.assert(lastUserText([]) === '', '空历史回空');
+    suite.assert(lastUserText([{ role: 'user', content: '  ' }] as never) === '', '空白消息跳过');
+  });
+
+  suite.test('/status 会话累计 token：assistant 落盘 usage 求和（codex token usage）', () => {
+    const msgs = [
+      { role: 'system', content: '[全局记忆] x' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'a', usage: { prompt: 100, completion: 20, total: 120, cached: 30 } },
+      { role: 'assistant', content: null, tool_calls: [], usage: { prompt: 50, completion: 5, total: 55 } },
+      { role: 'assistant', content: 'b' },
+    ];
+    const sum = sumSessionUsage(msgs as never);
+    suite.assert(sum?.prompt === 150 && sum?.completion === 25 && sum?.total === 175, '多轮调用分别累计');
+    suite.assert(sum?.cached === 30, 'cached 累计');
+    suite.assert(sumSessionUsage([{ role: 'user', content: 'hi' }] as never) === undefined, '无用量回 undefined（保留暂无文案）');
+    suite.assert(sumSessionUsage([]) === undefined, '空消息回 undefined');
+  });
+
+  suite.test('/warnings retained 警告：追加/快照/上限（codex /warnings）', () => {
+    pushWarning('unittest', 'warn-a-1');
+    pushWarning('unittest', 'warn-b-2');
+    const tail = sessionWarnings().slice(-2);
+    suite.assert(tail[0]?.source === 'unittest' && tail[0]?.message === 'warn-a-1', '追加保序');
+    suite.assert(tail[1]?.message === 'warn-b-2', '快照只读含新项');
+    pushWarning('unittest', '   ');
+    suite.assert(!sessionWarnings().some((w) => w.source === 'unittest' && w.message === ''), '空正文忽略');
+    for (let i = 0; i < 55; i++) pushWarning('capfill', `c${i}`);
+    const all = sessionWarnings();
+    suite.assert(all.length === 50, `上限 50（实际 ${all.length}）`);
+    suite.assert(all[all.length - 1]?.message === 'c54', '超限丢最旧、保最新');
+  });
+
+  suite.test('外部编辑器组稿：命令解析 + 桩编辑器往返（codex Ctrl+G）', () => {
+    suite.assert(resolveEditorCommand({ VISUAL: 'code --wait', EDITOR: 'vi' })?.join('|') === 'code|--wait', 'VISUAL 优先');
+    suite.assert(resolveEditorCommand({ EDITOR: '  vim  ' })?.join('|') === 'vim', 'EDITOR 去空白');
+    suite.assert(resolveEditorCommand({}) === null, '未配置回 null（调用方提示而非悄悄 vi）');
+    // 桩编辑器：node -e 把第二个 argv（tmp 文件）覆写成定稿
+    const stub = (body: string): string[] => [process.execPath, '-e', `require('fs').writeFileSync(process.argv[1], ${JSON.stringify(body)})`];
+    const r1 = composeInEditor('种子', stub('组稿正文\n\n'));
+    suite.assert(r1.ok && (r1 as { text: string }).text === '组稿正文', '桩编辑器往返 + 去尾部空白');
+    const r2 = composeInEditor('', stub(''));
+    suite.assert(r2.ok && (r2 as { text: string }).text === '', '存空回空（调用方清行）');
+    const r3 = composeInEditor('x', ['/nonexistent-editor-xyz']);
+    suite.assert(!r3.ok, '坏命令返回失败（不抛异常）');
+  });
+
+  suite.test('mini markdown：空列表项保留 marker（codex #48623）', () => {
+    const m = new MiniMarkdownRenderer(false);
+    const one = (line: string): string => m.pushLine(line, 80).join('\n');
+    suite.assert(one('-') === '• ', '裸 - 保留 •');
+    suite.assert(one('  -') === '• ', '缩进裸 - 同样保留（与非空嵌套同策略去缩进）');
+    suite.assert(one('*') === '• ', '裸 * 保留 •');
+    suite.assert(one('8.') === '8. ', '裸 8. 保留序号');
+    suite.assert(one('- [ ]') === '☐ ', '空任务项保留 ☐');
+    suite.assert(one('- [x]') === '☑ ', '空已办项保留 ☑');
+    suite.assert(one('> -') === '• ', '引用内裸 marker 保留 •');
+    suite.assert(one('- 项') === '• 项', '非空无序项不受影响');
+    suite.assert(one('1. 首') === '1. 首', '非空有序项不受影响');
+    suite.assert(one('3.14') === '3.14', '小数不误判空序号');
+    suite.assert(one('- [x]foo') !== '☑ foo', '缺空格的任务语法不误判');
+  });
+
+  suite.test('/ 联想模糊匹配（codex slash popup：子序列即命中）', () => {
+    const hit = fuzzySlashMatch('ac');
+    suite.assert(hit.includes('/compact'), '/ac 命中 /compact');
+    suite.assert(hit[0] === '/compact' || hit[0] === '/auto', '前缀命中排前');
+    suite.assert(fuzzySlashMatch('st')[0] === '/status', '/st 首选 /status');
+    suite.assert(fuzzySlashMatch('xyz').length === 0, '无命中回空');
+    suite.assert(fuzzySlashMatch('').length === MINI_SLASH_COMMANDS.length, '空串回全表');
+    // 未知命令报错附推荐（与面板同算法）
+    const guesses = fuzzySlashMatch('staus').slice(0, 3);
+    suite.assert(guesses.includes('/status'), 'staus（漏字）推荐 /status');
+  });
+
+  suite.test('边界鲁棒性：新纯函数坏输入不抛（fuzz 锁定）', () => {
+    suite.assert(normalizeScopes(undefined) === undefined && normalizeScopes(',,,') === undefined, 'scope 空回 undefined');
+    let threwUrl = '';
+    try { buildAuthorizeUrl('not a url', { clientId: 'c', redirectUri: 'r', challenge: 'h', state: 's' }); }
+    catch { threwUrl = 'yes'; }
+    suite.assert(threwUrl === 'yes', '非法授权端点抛错');
+    suite.assert(parseCallbackParams(new URLSearchParams('code=a&state=s'), 's') === 'a', '回调取码');
+    for (const l of ['', '-', '8.', '> -', '- [ ]', '*', '   ', '---', '- [x]', '> foo']) {
+      suite.assert(Array.isArray(parseMarkdownLine(l)), `markdown 行可渲染：${JSON.stringify(l)}`);
+    }
+    suite.assert(sumSessionUsage([{ role: 'assistant', usage: null }] as never) === undefined, 'usage null 回 undefined');
+    suite.assert(lastUserText([{ role: 'user', content: null }] as never) === '', 'content null 回空');
+    suite.assert(resolveEditorCommand({}) === null && resolveEditorCommand({ EDITOR: '   ' }) === null, '编辑器未配置回 null');
+    suite.assert(fmtElapsed(-5) === '0s' && fmtLapDuration(-3) === '0ms', '负耗时钳零');
+    suite.assert(typeof renderTurnSeparator(1000, new Date(2026, 0, 1, 0, 5), { toolCalls: 1, toolMs: 5, llmCalls: 1, llmMs: 5 }, 20) === 'string', '极窄分隔行不断裂');
+  });
+
+  suite.test('Tab 补全：首词模糊兜底 + 第二词表（codex popup 对等）', () => {
+    const ctx = { modelNames: [], modelName: 'm', effortOptions: [], variantIds: [] };
+    const sw = { '/plugin': ['install', 'list', 'enable', 'disable', 'remove'], '/diff': ['--stat', '--full'] };
+    suite.assert(completeMiniLine('/mo', ctx)[0].includes('/model'), '前缀命中');
+    const [single, word] = completeMiniLine('/compact', ctx);
+    suite.assert(single.join() === '/compact ' && word === '/compact', '打全补空格');
+    const [fz, w] = completeMiniLine('/mpa', ctx);
+    suite.assert(fz.join() === '/compact ' && w === '/mpa', '唯一模糊命中直插');
+    suite.assert(completeMiniLine('/ac', ctx)[0].join(',') === '/compact,/archive,/unarchive,/trace', '多模糊命中列表');
+    const [multi] = completeMiniLine('/st', ctx);
+    suite.assert(multi.includes('/status') && multi.includes('/stop'), '多前缀命中列表');
+    suite.assert(completeMiniLine('/plugin ', ctx, { secondWords: sw })[0].join(',') === 'install,list,enable,disable,remove', '/plugin 第二词表');
+    suite.assert(completeMiniLine('/plugin ins', ctx, { secondWords: sw })[0].join() === 'install', '/plugin 第二词过滤');
+    suite.assert(completeMiniLine('/diff --', ctx, { secondWords: sw })[0].join(',') === '--stat,--full', '/diff flags 第二词');
+    suite.assert(completeMiniLine('/bogusxyz', ctx)[0].length === 0, '无命中回空');
   });
 
   suite.test('@ 提及：Tab 补全候选（文件尾空格/目录留/·模糊/空白结束/斜杠抑制）', () => {
@@ -1172,6 +1367,52 @@ export function miniSuite(): TestSuite {
     }
   });
 
+  suite.test('端到端：空行 Esc 取回上一条输入（PTY 真终端，codex edit-previous）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-esc-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 17;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'esc-recall-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/esc-recall-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 120_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; answered?: boolean; recalled?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.answered === true, 'mock 首轮回答（回提示符，行空）');
+      suite.assert(v.recalled === true, '空行 Esc 后 marker 计数增加（取回重画）');
+      suite.assert(v.quit0 === true, `取回后清行退出干净（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+    }
+  });
+
   suite.test('端到端：mini -i 交互首轮图片附件（codex -i，全局通道）', async () => {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-gi-'));
     fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
@@ -1293,6 +1534,1325 @@ export function miniSuite(): TestSuite {
     } finally {
       child.kill('SIGKILL');
       fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/warnings 回看启动期 MCP 失败（codex /warnings）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-warnings-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    // 空目录隔离 cwd：mcpServers 按层覆盖非合并，cwd=仓库会用仓库 omni.json 盖掉本用例配置
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-warncwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    // 坏 stdio 命令：启动发现即失败（ENOENT），只保留不建连
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({ mcpServers: { deadsvc: { command: 'omni-ft-no-such-binary-xyz' } } })
+    );
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/warnings\n');
+      // deadsvc 在启动 ⚠️ 行里已出现过——等 /warnings 本体输出（含 server 名 + 来源标签）才算数
+      await waitFor(async () => out.includes('[mcp]') && out.includes('deadsvc'), 15000, '/warnings 含失败 server 名与来源标签');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/skills /plugins 别名 + /hooks 查看（codex 复数/($)Hooks）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-alias-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-aliascwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'write_file', command: 'echo hookhi' }] } })
+    );
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/hooks\n');
+      await waitFor(async () => out.includes('PostToolUse') && out.includes('echo hookhi'), 15000, '/hooks 列出事件与命令');
+      child.stdin.write('/skills\n');
+      await waitFor(async () => out.includes('技能'), 15000, '/skills 复数别名透传');
+      child.stdin.write('/plugins list\n');
+      await waitFor(async () => out.includes('插件'), 15000, '/plugins 复数别名透传');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/mcp verbose 状态详情 + /rollout 会话路径（codex 对等）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-verbose-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-verbosecwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    // demo 走本地 mock（已连接态），dead 走坏命令（启动失败态），remote 走 http（未登录态）
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({ mcpServers: {
+        demo: { command: 'node', args: [path.join(ROOT, 'scripts/mock-mcp.mjs')] },
+        dead: { command: 'omni-ft-no-such-binary-xyz' },
+        remote: { url: 'https://127.0.0.1:9/' },
+      } })
+    );
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/mcp verbose extra\n');
+      await waitFor(async () => out.includes('用法：/mcp [verbose]'), 15000, 'verbose 带参报用法');
+      child.stdin.write('/mcp verbose\n');
+      await waitFor(async () => out.includes('已连接') && out.includes('启动失败') && out.includes('未登录'), 20000, 'verbose 三态齐全');
+      suite.assert(out.includes('认证：'), 'verbose 含认证行');
+      child.stdin.write('/rollout\n');
+      await waitFor(async () => out.includes('当前会话文件：') && out.includes('.jsonl'), 15000, '/rollout 打印会话路径');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/clear 开新会话文件（codex ClearUi→fresh，旧文件保留）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-clear-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-clearcwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    const port = MOCK_PORT + 23;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let child: ReturnType<typeof spawn> | null = null;
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+    child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: {
+        ...process.env,
+        XDG_CONFIG_HOME: xdg,
+        OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        OMNI_API_KEY: 'sk-mock',
+        OMNI_MODEL: 'mock-model',
+        OMNI_PERMISSION: 'full',
+        OMNI_SHOW_THINKING: '0',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    const rolloutPaths = (): string[] => {
+      const m = out.match(/当前会话文件：(\S+\.jsonl)/g) ?? [];
+      return m.map((l) => l.replace('当前会话文件：', ''));
+    };
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('clear-me-first-turn\n');
+      await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答（旧文件非空）');
+      child.stdin.write('/rollout\n');
+      await waitFor(async () => rolloutPaths().length >= 1, 15000, '首个会话路径');
+      child.stdin.write('/clear\n');
+      await waitFor(async () => out.includes('已清空上下文'), 15000, '/clear 执行');
+      child.stdin.write('/rollout\n');
+      await waitFor(async () => rolloutPaths().length >= 2, 15000, '/clear 后新会话路径');
+      const [a, b] = rolloutPaths();
+      suite.assert(a !== b, '换文件（同文件清空会在 resume 时复活，实锤 bug 回归锁）');
+      for (const f of [a!, b!]) suite.assert(fs.existsSync(f), `旧文件保留可找回：${f}`);
+      const oldText = fs.readFileSync(a!, 'utf8');
+      const newText = fs.readFileSync(b!, 'utf8');
+      suite.assert(oldText.includes('clear-me-first-turn'), '旧文件保留首轮内容');
+      suite.assert(!newText.includes('clear-me-first-turn'), '新文件不含已清内容');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child!.kill('SIGKILL');
+    }
+    } finally {
+      mock.kill();
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：输入历史跨会话召回（PTY 双进程，codex composer history）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-hist-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const log = path.join(xdg, 'hist-recall-pty.log');
+    const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+      const py = spawn('python3', ['scripts/feature-tests/hist-recall-pty.py'], {
+        cwd: ROOT,
+        env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_LOG: log },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let acc = '';
+      py.stdout.on('data', (d) => (acc += d));
+      py.stderr.on('data', (d) => (acc += d));
+      const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+      py.on('close', (c) => {
+        clearTimeout(timer);
+        resolve({ code: c, out: acc });
+      });
+    });
+    const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+    let v: { prompted1?: boolean; prompted2?: boolean; recalled?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+    try {
+      v = JSON.parse(lastLine);
+    } catch { /* 非 JSON 则下面断言失败 */ }
+    suite.assert(v.prompted1 === true, '会话一提示符就绪并提交');
+    suite.assert(v.prompted2 === true, '会话二（新进程同 XDG）提示符就绪');
+    suite.assert(v.recalled === true, 'Up 召回上一会话的输入行');
+    suite.assert(v.quit0 === true, `清行退出干净（exit ${v.exitCode}）`);
+    suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+  });
+
+  suite.test('端到端：/diff 含未跟踪新文件内容（codex /diff 对等）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-diff-'));
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-diff-work-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [work] }));
+    // hermetic git 仓库：一次提交 + 一个未跟踪新文件
+    const sh = (args: string[]): void => {
+      const r = spawnSync('git', args, { cwd: work });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} 失败`);
+    };
+    fs.writeFileSync(path.join(work, 'a.txt'), 'v1\n');
+    sh(['init', '-q']);
+    sh(['config', 'user.email', 't@t.t']);
+    sh(['config', 'user.name', 't']);
+    sh(['add', '.']);
+    sh(['commit', '-qm', 'init']);
+    fs.writeFileSync(path.join(work, 'newfile.txt'), 'untracked-marker-456\nsecond\n');
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: work,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/diff\n');
+      await waitFor(async () => out.includes('untracked-marker-456'), 15000, '/diff 含新文件内容');
+      suite.assert(out.includes('newfile.txt'), '/diff 标出新文件名');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：危险命令审批问答往返（PTY 真终端，codex approval）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-approve-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    // 空目录 cwd：审批通过后 git push 必 fast-fail（非仓库），无副作用
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-approvecwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    const port = MOCK_PORT + 29;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_DANGEROUS: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'approve-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/approve-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log, OMNI_FT_CWD: tmpCwd },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; approvalAsked?: boolean; approvedDone?: boolean; remembered?: boolean; noGhost?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.approvalAsked === true, 'safe 档位危险命令弹出审批（y/a/N）');
+      suite.assert(v.approvedDone === true, '回答 a 后放行执行、回合完成');
+      suite.assert(v.remembered === true, '第二轮同命令免询问（本会话记住）');
+      suite.assert(v.noGhost === true, '答案行未漏进主循环（无幽灵第三轮）');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：ask_user 提问往返 + 答案不泄漏（PTY 真终端）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-ask-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-askcwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    const port = MOCK_PORT + 31;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_ASK: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'ask-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/ask-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log, OMNI_FT_CWD: tmpCwd },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; asked?: boolean; answeredDone?: boolean; noGhost?: boolean; pwdAlive?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.asked === true, 'ask_user 提问卡弹出');
+      suite.assert(v.answeredDone === true, '回序号后放行、回合完成');
+      suite.assert(v.noGhost === true, '答案 1 未漏进主循环（无第二轮提问）');
+      suite.assert(v.pwdAlive === true, '提问后 stdin 存活（input.resume 生效）');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：审批提示处 Ctrl+C = 拒绝并继续（PTY 真终端）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-sigint-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-sigintcwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    const port = MOCK_PORT + 37;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_DANGEROUS: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'sigint-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/sigint-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log, OMNI_FT_CWD: tmpCwd },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; asked?: boolean; deniedDone?: boolean; alive?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.asked === true, '审批提示弹出');
+      suite.assert(v.deniedDone === true, 'Ctrl+C 取消 = 拒绝，模型收尾完成');
+      suite.assert(v.alive === true, '拒绝后会话存活可继续');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：console 模式审批往返（同双 readline 修复覆盖）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-con-approve-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-con-approvecwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    const port = MOCK_PORT + 41;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_DANGEROUS: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'console-approve-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/console-approve-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log, OMNI_FT_CWD: tmpCwd },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; asked?: boolean; done?: boolean; noGhost?: boolean; alive?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 console 提示符');
+      suite.assert(v.asked === true, '审批提示弹出');
+      suite.assert(v.done === true, '回答 y 后放行、回合完成');
+      suite.assert(v.noGhost === true, '答案未漏进主循环');
+      suite.assert(v.alive === true, '审批后 stdin 存活');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/compact 压缩后继续对话（mock 服务）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-compact-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 43;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const answers = (): number => out.split('mock 端到端验证通过').length - 1;
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        for (const t of ['compact-t1', 'compact-t2', 'compact-t3']) {
+          child.stdin.write(`${t}\n`);
+          const want = answers() + 1;
+          await waitFor(async () => answers() >= want, 30000, `${t} 回答`);
+        }
+        child.stdin.write('/compact\n');
+        await waitFor(async () => out.includes('已压缩'), 30000, '/compact 执行压缩');
+        child.stdin.write('compact-t4\n');
+        const want4 = answers() + 1;
+        await waitFor(async () => answers() >= want4, 30000, '压缩后继续对话');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：write 后 /undo 删除新建文件（mock MOCK_WRITE）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-undo-'));
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-undo-work-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [work] }));
+    const port = MOCK_PORT + 47;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_WRITE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: work,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const target = path.join(work, 'undo-test.txt');
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('write something\n');
+        await waitFor(async () => fs.existsSync(target), 30000, 'mock write_file 落盘');
+        suite.assert(fs.readFileSync(target, 'utf8').includes('mock-write-content'), '写入内容正确');
+        child.stdin.write('/undo\n');
+        await waitFor(async () => out.includes('已删除本次新建的文件'), 15000, '/undo 删除新建文件');
+        suite.assert(!fs.existsSync(target), '文件已移除');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/cd 切换 + /pwd 确认 + /export 落盘（无 API）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-cdexp-'));
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-cdexp-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-cdexp-b-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [dirA, dirB] }));
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: dirA,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write(`/cd ${dirB}\n`);
+      await waitFor(async () => out.includes('工作目录已切换'), 15000, '/cd 切换');
+      child.stdin.write('/pwd\n');
+      await waitFor(async () => out.includes(dirB), 15000, '/pwd 确认新目录');
+      child.stdin.write('/export\n');
+      await waitFor(async () => out.includes('已导出会话'), 15000, '/export 落盘');
+      const exported = fs.readdirSync(path.join(dirB, '.omni')).filter((f) => f.startsWith('export-') && f.endsWith('.md'));
+      suite.assert(exported.length === 1, `导出文件落到新目录（${exported.join()}）`);
+      suite.assert(fs.readFileSync(path.join(dirB, '.omni', exported[0]!), 'utf8').includes('Omni 会话导出'), '导出含标题头');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(dirA, { recursive: true, force: true });
+      fs.rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/plan /permission /pin /rename /archive 联动（无 API）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-meta-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-metacwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [tmpCwd] }));
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    const metaFile = (): string => {
+      const dir = path.join(xdg, 'omni', 'sessions');
+      const fsx = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+      if (fsx.length !== 1) throw new Error(`期望恰好 1 个会话文件，实际 ${fsx.length}`);
+      return path.join(dir, fsx[0]!);
+    };
+    const metaOf = (): Record<string, unknown> => JSON.parse(fs.readFileSync(metaFile(), 'utf8').split('\n')[0]!);
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/plan\n');
+      await waitFor(async () => out.includes('已进入计划模式'), 15000, '/plan 进入');
+      child.stdin.write('/plan\n');
+      await waitFor(async () => out.includes('已退出计划模式'), 15000, '/plan 退出');
+      child.stdin.write('/permission 只读\n');
+      await waitFor(async () => out.includes('只读'), 15000, '/permission 切换只读');
+      child.stdin.write('/status\n');
+      await waitFor(async () => out.includes('权限：read'), 15000, '/status 确认档位');
+      child.stdin.write('/pin\n');
+      await waitFor(async () => out.includes('置顶'), 15000, '/pin 置顶');
+      suite.assert(metaOf()['pinned'] === true, 'meta pinned 落盘');
+      child.stdin.write('/rename MetaTitle\n');
+      await waitFor(async () => out.includes('MetaTitle'), 15000, '/rename 改名');
+      suite.assert(metaOf()['title'] === 'MetaTitle', 'meta title 落盘');
+      child.stdin.write('/archive\n');
+      await waitFor(async () => out.includes('已归档会话'), 15000, '/archive 归档');
+      suite.assert(metaOf()['archived'] === true, 'meta archived 落盘');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/auto /context 开关档位（无 API）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-toggles-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-togglescwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [tmpCwd] }));
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/auto on\n');
+      await waitFor(async () => out.includes('已开启'), 15000, '/auto on');
+      child.stdin.write('/auto off\n');
+      await waitFor(async () => out.includes('已关闭'), 15000, '/auto off');
+      child.stdin.write('/context 256\n');
+      await waitFor(async () => out.includes('256'), 15000, '/context 256 生效');
+      child.stdin.write('/context 默认\n');
+      await waitFor(async () => out.includes('默认') || out.includes('清除'), 15000, '/context 默认清除');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/undo 后 /redo 恢复文件（mock MOCK_WRITE）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-redo-'));
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-redo-work-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [work] }));
+    const port = MOCK_PORT + 53;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port), MOCK_WRITE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: work,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const target = path.join(work, 'undo-test.txt');
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('write something\n');
+        await waitFor(async () => fs.existsSync(target), 30000, 'mock write_file 落盘');
+        child.stdin.write('/undo\n');
+        await waitFor(async () => !fs.existsSync(target), 15000, '/undo 删除新建文件');
+        child.stdin.write('/redo\n');
+        await waitFor(async () => fs.existsSync(target), 15000, '/redo 恢复文件');
+        suite.assert(fs.readFileSync(target, 'utf8').includes('mock-write-content'), '重做内容正确');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/import 迁移 + /init 生成（mock/夹具）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-impinit-'));
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-impinit-work-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [work] }));
+    // /import 夹具：CLAUDE.md + .claude/skills/demo/SKILL.md（纯文件操作，无需网络）
+    fs.writeFileSync(path.join(work, 'CLAUDE.md'), '# Claude 项目记忆\n');
+    fs.mkdirSync(path.join(work, '.claude', 'skills', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(work, '.claude', 'skills', 'demo', 'SKILL.md'), '# demo skill\n');
+    fs.mkdirSync(path.join(work, 'sub'));
+    const port = MOCK_PORT + 59;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: work,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('/import\n');
+        await waitFor(async () => fs.existsSync(path.join(work, 'AGENTS.md')), 15000, '/import 生成 AGENTS.md');
+        suite.assert(fs.readFileSync(path.join(work, 'AGENTS.md'), 'utf8').includes('Claude 项目记忆'), 'CLAUDE.md 内容迁移');
+        suite.assert(fs.existsSync(path.join(work, '.agents', 'skills', 'demo', 'SKILL.md')), '技能目录迁移');
+        child.stdin.write('/init sub\n');
+        await waitFor(async () => fs.existsSync(path.join(work, 'sub', 'AGENTS.md')), 30000, '/init 子目录生成（mock）');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/model 双模型切换（无 API，直调切换）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-model-'));
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-modelcwd-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [tmpCwd] }));
+    // 双模型同端点（切换本身不调 API；不配 mock 也能验证切换 + /status 跟随）
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({
+        model: 'mock-a',
+        providers: { t: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test', models: { 'mock-a': {}, 'mock-b': {} } } },
+      })
+    );
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/model mock-b\n');
+      await waitFor(async () => out.includes('已切换模型') && out.includes('mock-b'), 15000, '/model 切换');
+      child.stdin.write('/status\n');
+      await waitFor(async () => out.includes('mock-b'), 15000, '/status 跟随新模型');
+      child.stdin.write('/model no-such-model\n');
+      await waitFor(async () => out.includes('未知模型'), 15000, '未知模型报错');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/variants /skill /mcp reconnect 联动（无 API）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-misc-'));
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-misccwd-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [tmpCwd] }));
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({
+        model: 'mock-a',
+        providers: { t: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test', models: { 'mock-a': { reasoningEffortOptions: ['low', 'high'] } } } },
+        mcpServers: { demo: { command: 'node', args: [path.join(ROOT, 'scripts/mock-mcp.mjs')] } },
+      })
+    );
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/variants low\n');
+      await waitFor(async () => out.includes('已切换思考级别'), 15000, '/variants 切换');
+      child.stdin.write('/variants bogus\n');
+      await waitFor(async () => out.includes('未知思考级别'), 15000, '/variants 非法报错');
+      child.stdin.write('/status\n');
+      await waitFor(async () => out.includes('思考级别：low'), 15000, '/status 跟随级别');
+      child.stdin.write('/skill\n');
+      await waitFor(async () => out.includes('技能'), 15000, '/skill 列表');
+      child.stdin.write('/mcp reconnect\n');
+      await waitFor(async () => out.includes('已重连'), 15000, '/mcp 重连');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/btw 旁问 + /team 空看板（mock 服务）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-btwteam-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 61;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('/btw README.md 是什么文件\n');
+        await waitFor(async () => out.includes('旁问回答'), 30000, '/btw 旁问回答');
+        child.stdin.write('/team\n');
+        await waitFor(async () => out.includes('任务看板为空'), 15000, '/team 空看板');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/session 列出 + id 继续（mock 服务）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-sess-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 67;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const sessDir = path.join(xdg, 'omni', 'sessions');
+      const firstId = (): string | null => {
+        try {
+          const fsx = fs.readdirSync(sessDir).filter((f) => f.endsWith('.jsonl'));
+          if (fsx.length === 0) return null;
+          const first = fsx.map((f) => path.join(sessDir, f)).sort(
+            (a, b) => Number(fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs)
+          )[0]!;
+          return path.basename(first, '.jsonl');
+        } catch {
+          return null;
+        }
+      };
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('session-one-task\n');
+        await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+        child.stdin.write('/new\n');
+        await waitFor(async () => out.includes('已新建会话'), 15000, '/new 开新会话');
+        child.stdin.write('/session\n');
+        await waitFor(async () => out.includes('历史会话') || out.includes('条消息'), 15000, '/session 列出旧会话');
+        const id = firstId();
+        suite.assert(!!id, '旧会话文件存在');
+        child.stdin.write(`/session ${id!.slice(0, 12)}\n`);
+        await waitFor(async () => out.includes('已继续会话') || out.includes(id!.slice(0, 12)), 15000, '/session id 前缀继续');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/vim /memory-apply /fork 空会话（无 API）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-misc2-'));
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-misc2cwd-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [tmpCwd] }));
+    fs.mkdirSync(path.join(tmpCwd, '.omni'), { recursive: true });
+    fs.writeFileSync(path.join(tmpCwd, '.omni', 'memory-pending.md'), '# 项目记忆片段\n');
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/vim on\n');
+      await waitFor(async () => out.includes('已开启'), 15000, '/vim on');
+      child.stdin.write('/vim off\n');
+      await waitFor(async () => out.includes('已关闭'), 15000, '/vim off');
+      child.stdin.write('/memory-apply\n');
+      await waitFor(async () => out.includes('已应用项目记忆'), 15000, '/memory-apply 应用');
+      suite.assert(fs.readFileSync(path.join(tmpCwd, 'AGENTS.md'), 'utf8').includes('项目记忆片段'), '片段并入 AGENTS.md');
+      suite.assert(!fs.existsSync(path.join(tmpCwd, '.omni', 'memory-pending.md')), '片段文件已清除');
+      child.stdin.write('/fork\n');
+      await waitFor(async () => out.includes('还没有可 fork 的消息'), 15000, '/fork 空会话提示');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('端到端：/fork <N> 分叉保留前文（mock 服务）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-fork-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 71;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const sessDir = path.join(xdg, 'omni', 'sessions');
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('fork-me-task\n');
+        await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+        child.stdin.write('/fork 1\n');
+        await waitFor(async () => out.includes('已分叉新会话'), 15000, '/fork 分叉');
+        const files = fs.readdirSync(sessDir).filter((f) => f.endsWith('.jsonl'));
+        suite.assert(files.length === 2, `原会话保留 + 新会话文件（实际 ${files.length} 个）`);
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/send 跨会话消息往返（mock 服务）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-send-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 73;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const sessDir = path.join(xdg, 'omni', 'sessions');
+      const oldestId = (): string | null => {
+        try {
+          const fsx = fs.readdirSync(sessDir).filter((f) => f.endsWith('.jsonl'));
+          if (fsx.length === 0) return null;
+          const first = fsx.map((f) => path.join(sessDir, f)).sort(
+            (a, b) => Number(fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs)
+          )[0]!;
+          return path.basename(first, '.jsonl');
+        } catch {
+          return null;
+        }
+      };
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('send-target-task\n');
+        await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+        child.stdin.write('/new\n');
+        await waitFor(async () => out.includes('已新建会话'), 15000, '/new 开新会话');
+        const id = oldestId();
+        suite.assert(!!id, '目标会话文件存在');
+        child.stdin.write(`/send ${id} 跨会话提问\n`);
+        await waitFor(async () => out.includes('已回复') || out.includes('跨会话响应'), 60000, '/send 跨会话往返');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：管道模式 /delete 拒绝删除（非 TTY 防误触）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-del-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 79;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      const sessDir = path.join(xdg, 'omni', 'sessions');
+      const oldestFile = (): string | null => {
+        // 按 meta.created 排序（finalize 会刷新 mtime，不能用 mtime 判定新旧）
+        try {
+          const fsx = fs.readdirSync(sessDir).filter((f) => f.endsWith('.jsonl'));
+          if (fsx.length === 0) return null;
+          const withCreated = fsx.map((f) => {
+            const fp = path.join(sessDir, f);
+            try {
+              return { fp, created: Number(JSON.parse(fs.readFileSync(fp, 'utf8').split('\n')[0]!).created ?? 0) };
+            } catch {
+              return { fp, created: 0 };
+            }
+          });
+          withCreated.sort((a, b) => a.created - b.created);
+          return withCreated[0]!.fp;
+        } catch {
+          return null;
+        }
+      };
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('delete-me-task\n');
+        await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+        child.stdin.write('/new\n');
+        await waitFor(async () => out.includes('已新建会话'), 15000, '/new 开新会话');
+        const victim = oldestFile();
+        suite.assert(!!victim, '旧会话文件存在');
+        // 管道（非 TTY）无真人确认：/delete 必须拒绝且不删文件（与审批/rewind 同哲学）
+        const victimId = path.basename(victim!, '.jsonl');
+        child.stdin.write(`/delete ${victimId}\n`);
+        await waitFor(async () => out.includes('非交互模式拒绝删除会话'), 15000, '/delete 管道拒绝');
+        suite.assert(fs.existsSync(victim!), '旧会话文件仍在（未被删除）');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/delete y 确认删除旧会话（PTY 真终端）', async () => {
+    // y 确认分支只在 TTY 下可达（管道一律拒绝，见上一个用例）：走 PTY 真终端覆盖
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-delpty-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 83;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'delete-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/delete-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; firstDone?: boolean; newOk?: boolean; confirmAsked?: boolean; deleted?: boolean; fileGone?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.firstDone === true, '首轮任务完成');
+      suite.assert(v.newOk === true, '/new 开新会话');
+      suite.assert(v.confirmAsked === true, '/delete 弹出不可恢复确认');
+      suite.assert(v.deleted === true, '回 y 后打印已删除会话');
+      suite.assert(v.fileGone === true, '旧会话文件已移除');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+    }
+  });
+  suite.test('端到端：未知斜杠命令报错不送模型（codex unknown command）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-unknown-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 19;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      try {
+        await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+        child.stdin.write('/staus xyz\n');
+        await waitFor(async () => out.includes('未知命令'), 15000, '未知命令报错');
+        suite.assert(out.includes('/staus') && out.includes('/status'), '报错带命令头 + 模糊推荐');
+        await sleep(1500);
+        suite.assert(!out.includes('mock 端到端验证通过'), '未送模型（无回答）');
+        child.stdin.write('/quit\n');
+        const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+        suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      mock.kill();
     }
   });
 

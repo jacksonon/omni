@@ -22,6 +22,7 @@ import {
   type ImageAttachment,
 } from './agent/context.js';
 import { doctorReport, lastAssistantText } from './agent/report.js';
+import { pushWarning } from './agent/warnings.js';
 import { resolveCdArg } from './agent/workspace.js';
 import { createSkillTool } from './agent/skill.js';
 import { memorySearchTool, memoryReadTool } from './tools/memory-tools.js';
@@ -234,6 +235,9 @@ export async function resolveWorkspaceTrust(cwd: string, output: Output): Promis
  *   是"仓库注入恶意配置"的载体（防注入，信任目录后全部恢复）；
  * · OS 级沙箱：cfg.sandbox 非 off 时包装 run_command（sandbox-exec / bwrap）。
  */
+/** 进程内未信任降级警告只保留一条（attachRuntime 每次会话都会进） */
+let untrustedWarned = false;
+
 export async function attachRuntime(
   ctx: RunContext,
   output: Output,
@@ -241,6 +245,11 @@ export async function attachRuntime(
 ): Promise<void> {
   const { cfg, client } = ctx;
   const trusted = opts.trust !== false; // 缺省信任（兼容既有调用）
+  // 未信任降级 retained（/warnings 回看）：询问提示只出现一次，滚走即丢
+  if (!trusted && !untrustedWarned) {
+    untrustedWarned = true;
+    pushWarning('trust', '未信任目录：只读运行，已跳过 hooks/MCP 服务器/技能/子代理定义/项目记忆（信任该目录后恢复）');
+  }
   // 未信任目录 → 强制只读档位（fail-safe）；注意不改 cfg（/status 读的是运行时 runOpts.permission）
   const effectiveTier: PermissionTier = trusted ? cfg.permission : 'read';
   // 审批回调缺省 = 拒绝（fail-safe）；Output 实现了 requestApproval 则用它。
@@ -415,7 +424,9 @@ export async function attachRuntime(
         proxy = await startAllowlistProxy(cfg.sandboxNetworkAllow);
         proxyPort = proxy.port;
       } catch (err) {
-        console.error(`⚠️ 网络白名单代理启动失败（${err instanceof Error ? err.message : err}）——本次运行保持全禁网。`);
+        const msg = `网络白名单代理启动失败（${err instanceof Error ? err.message : err}）——本次运行保持全禁网。`;
+        console.error(`⚠️ ${msg}`);
+        pushWarning('network', msg);
       }
     }
     // masking 名单：显式 sandboxMaskEnv=false 关闭；默认自动收集当前环境里的敏感命名
@@ -517,7 +528,15 @@ export async function attachRuntime(
   ctx.runOpts.mcpServers = mergedMcpServers;
   // 发现 MCP 服务器（完整句柄：工具 + 资源 + 提示词 + instructions）；
   // 反向请求处理器（elicitation→askUser；sampling→当前模型）声明 2026-07-28 能力
-  const mcpHandlers = createMcpHandlers({ client, model: cfg.model, askUser });
+  const mcpHandlers = createMcpHandlers({
+    client,
+    model: cfg.model,
+    askUser,
+    // 实时取值：/model 切换重建 client 后，sampling 继续沿用旧端点是 stale——getters 读 modelRuntime
+    getClient: () => ctx.runOpts.modelRuntime?.client ?? client,
+    getModel: () => ctx.runOpts.modelRuntime?.model ?? cfg.model,
+  });
+  ctx.runOpts.mcpHandlers = mcpHandlers;
   const mcpHandles = trusted ? await discoverMcpServers(mergedMcpServers, mcpHandlers) : [];
   // 组装 MCP 工具链（server 工具 + Resources/Prompts 辅助工具）
   const mcpTools = buildMcpTools(mcpHandles);

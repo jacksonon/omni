@@ -43,9 +43,14 @@ import {
   doctorReport,
   exportSession,
   fullStatusReport,
+  sumSessionUsage,
   memoryFilesFromMessages,
   lastAssistantText,
+  lastUserText,
 } from '../agent/report.js';
+import { sessionWarnings } from '../agent/warnings.js';
+import { loadInputHistory, saveInputHistory } from './history.js';
+import { HOOK_EVENTS } from '../hooks/index.js';
 import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, deleteSessionFile, sessionIdFromPath, updateSessionTitle, updateSessionMeta, resolveSessionTarget } from '../agent/session.js';
 import { resolveCdArg } from '../agent/workspace.js';
 import {
@@ -70,7 +75,7 @@ import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
 import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
-import { applyMentionInsert, completeMiniLine, formatModePrompt, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
+import { applyMentionInsert, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
 
 /** `/stop` 精确匹配（codex /stop：轮内前置拦截与空闲提示共用；`/stop xxx` 带参不认，避免误吞普通消息） */
@@ -89,7 +94,7 @@ export async function runInteractive(
   opts: {
     intro?: boolean;
     prompt?: string;
-    onRl?: (rl: { pause(): void; resume(): void; write(data: string): void; line: string; prompt(preserveCursor?: boolean): void }) => void;
+    onRl?: (rl: { pause(): void; resume(): void; write(data: string | null, key?: { ctrl?: boolean; name?: string }): void; line: string; prompt(preserveCursor?: boolean): void }) => void;
   } = {}
 ): Promise<void> {
   // Tab 补全（readline 原生 completer，只读行缓冲不提交）：`/mo`→命令名、
@@ -141,9 +146,13 @@ export async function runInteractive(
       variantIds: Object.keys(ep?.variants ?? {}),
     }, {
       secondWords: {
-        '/mcp': ['reconnect', 'resources', 'prompts'],
+        '/mcp': ['reconnect', 'resources', 'prompts', 'verbose', 'login', 'logout', 'add', 'remove'],
         '/skill': ['find', 'add', 'show', 'create', 'delete'],
+        '/skills': ['find', 'add', 'show', 'create', 'delete'],
         '/permission': ['只读', '请求批准', '帮我批准', '完全访问', 'read', 'safe', 'ask', 'full'],
+        '/plugin': ['install', 'list', 'enable', 'disable', 'remove'],
+        '/plugins': ['install', 'list', 'enable', 'disable', 'remove'],
+        '/diff': ['--stat', '--full'],
       },
       dirs,
     });
@@ -194,6 +203,18 @@ export async function runInteractive(
     prompt: opts.prompt ?? cyan('omni> '),
     completer: input.isTTY ? completer : undefined,
   });
+  if (input.isTTY) {
+    // 输入历史跨会话（codex composer history 对等）：落盘 oldest→newest，
+    // rl.history newest-first——反转 unshift 到行首预置；管道模式不碰
+    try {
+      const prev = loadInputHistory();
+      if (prev.length > 0) {
+        (rl as unknown as { history: string[] }).history.unshift(...prev.slice().reverse());
+      }
+    } catch {
+      /* 历史预置失败忽略（本轮照常用） */
+    }
+  }
   opts.onRl?.(rl);
   // 空闲提示符下的打 / 联想面板（纯显示被动监听；轮内 inTurn 一律不渲染不擦除）
   let inTurn = false;
@@ -285,6 +306,18 @@ export async function runInteractive(
           bangPrompt = false;
           applyPrompt();
           redrawBangPrompt();
+          return;
+        }
+        // 空行 Esc 取回上一条输入继续改（codex Esc edit-previous 对等；轮内不触发，
+        // 续行累积中不动，模态选择器/审批提问期间本监听器被摘掉不会误触）。
+        // 行缓冲单行：多行消息换行压空格（重排版由用户回车前完成）。
+        if (key?.name === 'escape' && cur === '' && contBuf.length === 0) {
+          const prev = lastUserText(messages);
+          if (prev) {
+            const flat = prev.replace(/\r?\n/g, ' ').trim();
+            if (flat) setRlText(flat, flat.length);
+            redrawInput();
+          }
           return;
         }
         const want = isBangShellCommand(cur);
@@ -530,6 +563,12 @@ export async function runInteractive(
   for await (const line of rl) {
     // `/exit` 永远是退出：续行积累中也不被吞成消息正文（先清累积再走正常流程）
     if (line.trim() === '/exit') contBuf = [];
+    // 问答消费行吞没（审批/提问的答案字节会同时进主 rl 行缓冲；命中渲染层记录即跳过，
+    // 否则下一轮被当成用户消息误发给模型——双 readline 实锤教训）
+    if ((out as unknown as { swallowQaLine?: (l: string) => boolean }).swallowQaLine?.(line)) {
+      safePrompt();
+      continue;
+    }
     // 反斜杠续行（codex 多行 composer 的行式终端版）：行尾 `\` 累积去斜杠行，
     // 提示符切 `… `；完整块拼成一条消息一次提交（`!`/`/` 判定走拼好后的全文）
     if (hasLineContinuation(line)) {
@@ -545,6 +584,10 @@ export async function runInteractive(
     // bang（`!`）保留反斜杠交 sh 原生续行；其余去标记拼接（见 joinContinued）
     const full = joinContinued(rawParts, isBangShellCommand(rawParts.join('\n')));
     const cmd = full.trim();
+    if (input.isTTY && cmd !== '') {
+      // 提交即落盘（crash/强杀不丢；空行不收；readline 本轮 history 由原生维护）
+      saveInputHistory((rl as unknown as { history?: readonly string[] }).history ?? []);
+    }
     if (isShortcutsHelpRequest(cmd)) {
       // 单行 `?`：快捷键帮助（codex `?` 覆盖层；问句照常进模型，不建检查点不调 LLM）
       for (const l of formatShortcutsHelp()) console.log(dim(`  ${l}`));
@@ -561,10 +604,38 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/clear') {
+    // 开新会话（/new 与 /clear 共用；codex 对等：两者都是 start_fresh_session——
+    // 旧文件定稿保留 + 新文件 + 上下文/事件/撤销/审批记住全重置）。
+    // /clear 复用同一套：同文件清空会在 resume 时复活已清内容（实锤 bug），必须换文件。
+    const rotateFreshSession = async (): Promise<boolean> => {
+      if (runOpts.sessionPath) {
+        await finalizeSession(runOpts.sessionPath).catch(() => {});
+        await removeEmptySession(runOpts.sessionPath).catch(() => {});
+      }
+      const file = await createSession({ project: process.cwd(), model: currentModel }).catch(() => null);
+      if (!file) {
+        console.log(dim('（创建会话失败，无法写入会话目录）'));
+        return false;
+      }
       messages.length = 0;
+      contBuf.length = 0;
+      runOpts.sessionPath = file;
       savedCount = 0;
-      runOpts.hooks?.resetSessionStart(); // 新一轮会话：SessionStart hook 重新触发
+      const oldEvents = runOpts.events;
+      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
+      runOpts.sessionHookNote = undefined;
+      runOpts.hooks?.resetSessionStart();
+      runOpts.undoStack?.clear();
+      // 会话记住的审批跟会话文件走（codex allow-for-session 是会话级）：换文件即清掉
+      if (out instanceof MiniOutput) out.clearSessionApprovals();
+      return true;
+    };
+    if (cmd === '/clear') {
+      // 清空即开新会话文件（codex ClearUi → start_fresh_session 对等；旧文件保留可找回）
+      if (!(await rotateFreshSession())) {
+        safePrompt();
+        continue;
+      }
       console.log(dim('（已清空上下文，开始新一轮对话）'));
       safePrompt();
       continue;
@@ -588,29 +659,11 @@ export async function runInteractive(
       continue;
     }
     if (cmd === '/new') {
-      // 新建会话并回到初始状态（旧会话文件保留，可 --continue/-r 找回）；
-      // 与 /clear 的区别：新会话文件 + 统计/撤销栈/hook note 全重置
-      if (runOpts.sessionPath) {
-        await finalizeSession(runOpts.sessionPath).catch(() => {});
-        await removeEmptySession(runOpts.sessionPath).catch(() => {});
-      }
-      const file = await createSession({ project: process.cwd(), model: currentModel }).catch(() => null);
-      if (!file) {
-        console.log(dim('（创建会话失败，无法写入会话目录）'));
+      // 新建会话并回到初始状态（旧会话文件保留，可 --continue/-r 找回）
+      if (!(await rotateFreshSession())) {
         safePrompt();
         continue;
       }
-      messages.length = 0;
-      runOpts.sessionPath = file;
-      savedCount = 0;
-      const oldEvents = runOpts.events;
-      runOpts.events = await EventRecorder.open(file).catch(() => oldEvents);
-      runOpts.sessionHookNote = undefined;
-      runOpts.hooks?.resetSessionStart();
-      runOpts.undoStack?.clear();
-      // 会话记住的审批跟会话文件走（codex allow-for-session 是会话级）：新会话清掉，
-      // /clear不清（同会话文件，只是上下文重置）
-      if (out instanceof MiniOutput) out.clearSessionApprovals();
       console.log(dim('（已新建会话，回到初始状态）'));
       safePrompt();
       continue;
@@ -730,9 +783,10 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/skill' || cmd.startsWith('/skill ')) {
-      // /skill：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装（本会话即时生效）；show 查看内容
-      const args = cmd.slice('/skill'.length).trim();
+    if (cmd === '/skill' || cmd === '/skills' || cmd.startsWith('/skill ') || cmd.startsWith('/skills ')) {
+      // /skill（复数 /skills 对等上游）：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装（本会话即时生效）；show 查看内容
+      const used = cmd.startsWith('/skills') ? '/skills' : '/skill';
+      const args = cmd.slice(used.length).trim();
       // 查看整套（/skill show <name> 与无参 picker 确认共用）
       const showSkillByName = async (name: string): Promise<void> => {
         const content = await loadSkillContent(name);
@@ -1282,6 +1336,7 @@ export async function runInteractive(
       for (const line of fullStatusReport({
         model: currentModel,
         permission: runOpts.permission ?? permission,
+        tokens: sumSessionUsage(messages),
         planMode: runOpts.planMode ?? false,
         reasoningEffort: runOpts.reasoningEffort,
         sessionPath: runOpts.sessionPath,
@@ -1296,6 +1351,19 @@ export async function runInteractive(
         summarizeAt: runOpts.cfg?.summarizeAt ?? 40,
         compressRatio: runOpts.cfg?.contextCompressRatio,
       })) console.log(dim(line));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/warnings') {
+      // /warnings：查看本会话 retained 警告（codex /warnings + F2 对等）——
+      // MCP 建连失败/未信任降级/代理失败等只打印一次，滚走后在此回看
+      const kept = sessionWarnings();
+      if (kept.length === 0) {
+        console.log(dim('（本会话暂无警告：MCP/信任/网络降级会保留在这里）'));
+      } else {
+        console.log(dim(`会话警告（${kept.length} 条）：`));
+        for (const w of kept) console.log(dim(`· [${w.source}] ${w.message}`));
+      }
       safePrompt();
       continue;
     }
@@ -1355,12 +1423,60 @@ export async function runInteractive(
       if (sub === 'reconnect') {
         console.log(dim('正在重连 MCP 服务器…'));
         closeMcpClients();
-        const newHandles = await discoverMcpServers(runOpts.mcpServers);
+        const newHandles = await discoverMcpServers(runOpts.mcpServers, runOpts.mcpHandlers);
         runOpts.mcpHandles = newHandles;
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
         console.log(green(`已重连（工具链已更新，当前 ${runOpts.tools.length} 个工具）`));
         safePrompt();
         continue;
+      }
+      if (sub === 'verbose') {
+        // /mcp verbose：逐服务器状态详情（codex /mcp verbose 对等）——
+        // 连接状态（已连接 N 工具 / 启动失败 / 未信任跳过）+ 认证态 + 资源/提示词。
+        // 无参；带参按上游口径报用法。
+        if (arg.split(/\s+/).filter(Boolean).length > 1) {
+          console.log(red('用法：/mcp [verbose]'));
+          safePrompt(); continue;
+        }
+        if (names.length === 0) {
+          console.log(red('未配置 MCP 服务器（配置文件 mcpServers 字段；/mcp add 添加）'));
+          safePrompt(); continue;
+        }
+        const { loadMcpToken } = await import('../tools/mcp-oauth.js');
+        console.log(dim(`MCP 服务器（${names.length} 个）：`));
+        for (const n of names) {
+          const cfg = servers[n]!;
+          const h = handles.find((x) => x.name === n);
+          const transport = cfg.command ? `stdio: ${cfg.command}` : cfg.url ? `http: ${cfg.url}` : '（未配置传输）';
+          let status: string;
+          if (h) {
+            status = `已连接（${h.tools.length} 工具）`;
+          } else if (runOpts.trusted === false) {
+            status = '未信任跳过';
+          } else {
+            status = '启动失败（/warnings 看详情）';
+          }
+          let auth: string;
+          if (cfg.command) {
+            auth = '本地命令（无需登录）';
+          } else if (cfg.headers?.Authorization) {
+            auth = 'Bearer 已配置';
+          } else if (cfg.url && (await loadMcpToken(cfg.url).catch(() => null))) {
+            auth = 'OAuth 已登录';
+          } else {
+            auth = `未登录（/mcp login ${n}）`;
+          }
+          const bits = [`认证：${auth}`];
+          if (h) {
+            if (h.tools.length > 0) bits.push(`工具：${h.tools.map((t) => t.name).join('、')}`);
+            if (h.resources.length > 0) bits.push(`资源 ${h.resources.length} 个`);
+            if (h.prompts.length > 0) bits.push(`提示词 ${h.prompts.length} 个`);
+            if (h.instructions) bits.push('instructions ✓');
+          }
+          console.log(dim(`· ${n} — ${status} · ${transport}`));
+          for (const b of bits) console.log(dim(`    · ${b}`));
+        }
+        safePrompt(); continue;
       }
       if (sub === 'resources') {
         if (names.length === 0) { console.log(red('未配置 MCP 服务器')); safePrompt(); continue; }
@@ -1391,7 +1507,7 @@ export async function runInteractive(
       if (sub === 'add' || sub === 'remove' || sub === 'login' || sub === 'logout') {
         // 变更类透传顶层同实现（codex mcp 对等；空闲态串行，无读写竞态）
         const { runMcpCommand } = await import('./mcp.js');
-        await runMcpCommand([sub, ...arg.split(/\s+/).slice(1).filter(Boolean)]);
+        await runMcpCommand([sub, ...arg.split(/\s+/).slice(1).filter(Boolean)], {}, { fromInteractive: true });
         safePrompt(); continue;
       }
       if (names.length === 0) {
@@ -1419,7 +1535,7 @@ export async function runInteractive(
       const stat = /(?:^|\s)--stat(?=\s|$)/.test(arg);
       const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       console.log(dim('正在收集 git diff…'));
-      const d = await collectDiff({ stat, full });
+      const d = await collectDiff({ stat, full, includeUntracked: true });
       if (!d.ok) {
         console.log(red(`无法获取 git diff：${d.output.slice(0, 200)}`));
       } else if (d.output === '（无改动）') {
@@ -1917,10 +2033,43 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/plugin' || cmd.startsWith('/plugin ')) {
-      // /plugin：插件管理透传（codex Plugins 对等；install/list/enable/disable/remove 走顶层同实现）
+    if (cmd === '/plugin' || cmd === '/plugins' || cmd.startsWith('/plugin ') || cmd.startsWith('/plugins ')) {
+      // /plugin（复数 /plugins 对等上游）：插件管理透传（codex Plugins 对等；install/list/enable/disable/remove 走顶层同实现）
       const { runPluginCommand } = await import('./plugin.js');
-      await runPluginCommand(cmd.slice('/plugin'.length).trim().split(/\s+/).filter(Boolean));
+      const pused = cmd.startsWith('/plugins') ? '/plugins' : '/plugin';
+      await runPluginCommand(cmd.slice(pused.length).trim().split(/\s+/).filter(Boolean));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/hooks') {
+      // /hooks：查看生效中的 lifecycle hooks（codex Hooks 对等；用户配置 + 插件合并视图，只读）。
+      // 管理走配置文件 hooks 字段（改后重启会话生效）；未信任目录 runner 不存在即整体跳过。
+      const defs = runOpts.hooks?.list?.() ?? {};
+      const events = HOOK_EVENTS.filter((e) => (defs[e] ?? []).length > 0);
+      if (events.length === 0) {
+        console.log(dim('未配置 hooks（配置文件 hooks 字段按事件配 command，见 omni.example.jsonc；改后重启会话生效）'));
+      } else {
+        console.log(dim(`hooks（${events.length} 个事件有配置，改配置文件后重启会话生效）：`));
+        for (const e of events) {
+          const list = defs[e] ?? [];
+          console.log(dim(`· ${e}（${list.length}）：`));
+          for (const d of list.slice(0, 8)) {
+            const what = d.command ?? d.url ?? '（空定义）';
+            console.log(dim(`  · ${d.matcher ? `[${d.matcher}] ` : ''}${what}${d.timeoutMs ? `（${d.timeoutMs}ms）` : ''}`));
+          }
+          if (list.length > 8) console.log(dim(`  · …还有 ${list.length - 8} 条`));
+        }
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/rollout') {
+      // /rollout：打印当前会话文件路径（codex rollout 对等；调试/外挂分析用）
+      console.log(
+        runOpts.sessionPath
+          ? dim(`当前会话文件：${runOpts.sessionPath}`)
+          : dim('当前无会话文件（ephemeral 或尚未落盘）')
+      );
       safePrompt();
       continue;
     }
@@ -1981,6 +2130,22 @@ export async function runInteractive(
         bangPrompt = false;
         if (input.isTTY) applyPrompt();
       }
+      safePrompt();
+      continue;
+    }
+    if (cmd.startsWith('/')) {
+      // 未命中任何斜杠命令：报错而非送模型烧一轮（codex unknown command 对等；
+      // 位置在全部命令分支之后、消息提交之前——续行拼好后的全文同样受检）。
+      // 附模糊推荐（与联想面板同算法；无命中才提示 Tab 列表）
+      const head = cmd.split(/\s/)[0] ?? cmd;
+      const guesses = fuzzySlashMatch(head.startsWith('/') ? head.slice(1) : head).slice(0, 3);
+      console.log(
+        red(
+          guesses.length > 0
+            ? `未知命令「${head}」（是不是想输入：${guesses.join(' / ')}？）`
+            : `未知命令「${head}」（输入 / 后 Tab 查看可用命令）`
+        )
+      );
       safePrompt();
       continue;
     }

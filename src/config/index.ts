@@ -347,6 +347,8 @@ export interface ConfigOverrides {
   images?: string[];
   /** --approve-for-me：AI 自动审批（codex 同款；置 cfg.autoReview，不放宽权限/沙箱） */
   approveForMe?: boolean;
+  /** -a/--ask-for-approval <策略>：审批策略覆盖（codex -a 对等；最高优先级） */
+  askForApproval?: string;
   /** --strict-config：配置文件含未知顶层字段时报错（codex 同款；防拼写错误与已移除的旧字段） */
   strictConfig?: boolean;
 }
@@ -785,6 +787,13 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
           headers: raw.headers && typeof raw.headers === 'object'
             ? (raw.headers as Record<string, string>)
             : undefined,
+          // clientId 曾被 allowlist 漏掉：add 落盘后重载即丢，OAuth 登录永远走回退
+          clientId: typeof raw.clientId === 'string' ? raw.clientId : undefined,
+          oauthResource: typeof raw.oauthResource === 'string' ? raw.oauthResource : undefined,
+          oauthClientRegistration:
+            raw.oauthClientRegistration === 'cimd' || raw.oauthClientRegistration === 'dcr' || raw.oauthClientRegistration === 'auto'
+              ? raw.oauthClientRegistration
+              : undefined,
           enabledTools: Array.isArray(raw.enabledTools)
             ? (raw.enabledTools as string[]).filter((s) => typeof s === 'string')
             : undefined,
@@ -936,6 +945,22 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
     // --approve-for-me：AI 自动审批总开关（codex 同款；审阅器在 attachRuntime 装配，失败回退人工）
     cfg.autoReview = true;
     addSource(sources, 'CLI --approve-for-me');
+  }
+  if (overrides.askForApproval !== undefined) {
+    // -a/--ask-for-approval（codex -a 对等）：codex 值映射进原生四档
+    //（never=从不询问≈full 直通；on-request=模型决定≈safe 危险询问）+ 原生档位直通；
+    // 非法值直接抛错（fail-closed：权限档位猜错方向就是安全事故，不静默回退）
+    const v = overrides.askForApproval.trim().toLowerCase();
+    const mapped =
+      v === 'never' ? 'full'
+      : v === 'on-request' || v === 'onrequest' ? 'safe'
+      : v === 'full' || v === 'safe' || v === 'ask' || v === 'read' ? v
+      : null;
+    if (!mapped) {
+      throw new Error(`-a/--ask-for-approval 非法（never | on-request | full | safe | ask | read）：${overrides.askForApproval}`);
+    }
+    cfg.permission = mapped as PermissionTier;
+    addSource(sources, 'CLI -a/--ask-for-approval');
   }
   if (overrides.addDirs?.length) {
     // --add-dir 追加（codex --add-dir 对等）：相对路径按当前目录展开；去重（下游 normalize 只要绝对路径）

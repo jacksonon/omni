@@ -69,6 +69,13 @@ export function parseArgs(args: string[]): ParsedArgs {
         // AI 自动审批（codex 同款；全模式生效， mini 单次/交互/headless 均走 cfg.autoReview）
         overrides.approveForMe = true;
         break;
+      case '-a':
+      case '--ask-for-approval': {
+        // 审批策略覆盖（codex -a 对等；codex 值映射 + 原生档位直通，映射见 config）
+        const v = takeValue();
+        if (v !== undefined) overrides.askForApproval = v;
+        break;
+      }
       case '--strict-config':
         // 严格配置校验（codex 同款；未知顶层字段报错，防拼写错误与静默失效的旧字段）
         overrides.strictConfig = true;
@@ -180,7 +187,7 @@ export function printHelp(lang: 'zh' | 'en' = 'en'): void {
 function printHelpEn(): void {
   console.log(`Usage:
   omni "<task>"    Run a single task
-  omni                Interactive mode (/exit or /quit to quit; /stop stop the running turn; /init [--global] generate memory; /import import config from Claude Code; /recap summarize the conversation (read-only); /undo undo; /redo redo; /rewind session checkpoints (three modes: /rewind <N> preview · /rewind <N> --code|--chat|--both [--yes]); /model switch/add models (/model <name> switch · /model add <name> [--base-url] [--api-key] add & persist); /variants reasoning effort; /permission permission; /plan plan mode; /agents subagent; /memory-apply apply pending memory config (model routing/nesting depth/defined subagents); /orchestrate parallel pipeline or dynamic workflow (fan-out+combine+review; --pipeline forces fixed); /goal goal mechanism (alias /loop) (derive criteria and loop until met, /goal <goal> [--accept criteria] [--max N]); /team shared task board; /tasks running subagents; /compact compact context; /clear clear context; /new new session (old file kept); /status status; /trace full trace ledger (incl. context usage); /context set context window (256/400/512/750/1000K · default); /session session management (list/continue history in cwd; archived list); /pin pin session; /fork fork session; /rename rename session; /send message another session; /archive archive session; /unarchive unarchive session; /delete delete a session (permanent); /resume resume session; /cd change working directory; /pwd print working directory; /export export; /diff view changes (--stat summary only · --full untruncated); /review review; /spec spec workflow; /btw side question (--keep keeps it in context; read-only tools, answer stays out of history); /mcp MCP management; /plugin plugins; /preset browser automation preset; /skill skills; /auto AI auto-approval; /vim Vim keybindings; /doctor diagnose; /copy copy last assistant reply to clipboard; /settings settings (help · models snapshot))
+  omni                Interactive mode (/exit or /quit to quit; /stop stop the running turn; /init [--global] generate memory; /import import config from Claude Code; /recap summarize the conversation (read-only); /undo undo; /redo redo; /rewind session checkpoints (three modes: /rewind <N> preview · /rewind <N> --code|--chat|--both [--yes]); /model switch/add models (/model <name> switch · /model add <name> [--base-url] [--api-key] add & persist); /variants reasoning effort; /permission permission; /plan plan mode; /agents subagent; /memory-apply apply pending memory config (model routing/nesting depth/defined subagents); /orchestrate parallel pipeline or dynamic workflow (fan-out+combine+review; --pipeline forces fixed); /goal goal mechanism (alias /loop) (derive criteria and loop until met, /goal <goal> [--accept criteria] [--max N]); /team shared task board; /tasks running subagents; /compact compact context; /clear clear context; /new new session (old file kept); /status status; /trace full trace ledger (incl. context usage); /context set context window (256/400/512/750/1000K · default); /session session management (list/continue history in cwd; archived list); /pin pin session; /fork fork session; /rename rename session; /send message another session; /archive archive session; /unarchive unarchive session; /delete delete a session (permanent); /resume resume session; /cd change working directory; /pwd print working directory; /export export; /diff view changes (--stat summary only · --full untruncated); /review review; /spec spec workflow; /btw side question (--keep keeps it in context; read-only tools, answer stays out of history); /mcp MCP management (/mcp verbose per-server status); /rollout print session file path; /plugin (/plugins) plugins; /hooks lifecycle hooks (view effective hooks); /preset browser automation preset; /skill (/skills) skills; /auto AI auto-approval; /vim Vim keybindings; /doctor diagnose; /copy copy last assistant reply to clipboard; /warnings retained session warnings; /settings settings (help · models snapshot))
 
 Headless (compose omni as a Unix command, like codex exec / claude -p):
   omni exec "<task>" (alias e)         Non-interactive run: stdout = final result only, progress goes to stderr
@@ -195,7 +202,7 @@ Headless (compose omni as a Unix command, like codex exec / claude -p):
   omni exec resume <session-id> "<follow-up>"   Resume a headless session (session_id from json output)
   omni exec resume --last "<follow-up>"   Resume the most recent session in cwd (like codex exec resume --last; --all disables cwd filtering)
   omni exec fork <session-id> "<follow-up>"   Fork into a new session, then continue (no prompt = fork only, prints new id)
-  omni exec review ["<focus>"]          Non-interactive code review (typecheck + git diff, like codex exec review)
+  omni exec review ["<focus>"] [--title <title>]   Non-interactive code review (typecheck + git diff, like codex exec review)
   omni exec -i img.png "<task>"      Attach image(s), repeatable (like codex exec -i; merges with @img.png mentions)
   omni exec "<task>" -m <model>      Model override (same as global -m)
   omni exec "<task>" --color never   Plain output without ANSI colors (like codex exec --color)
@@ -219,7 +226,7 @@ Web service (local backend + web UI: CLI and browser share the same backend):
   omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
   omni watch                     Watch mode: trigger agent on AI!/AI? comment markers (Aider-style; Ctrl+C to quit)
   omni doctor                    Diagnose installation, config, auth, and runtime health (like codex doctor)
-  omni review ["<focus>"] [--base <branch> | --commit <SHA>]   Non-interactive code review (like codex exec review; default: uncommitted changes)
+  omni review ["<focus>"] [--base <branch> | --commit <SHA>] [--title <title>]   Non-interactive code review (like codex exec review; default: uncommitted changes)
   omni completion <bash|zsh|fish|powershell>   Print shell completion script (eval "$(omni completion bash)")
   omni acp                       ACP endpoint (Agent Client Protocol, stdio JSON-RPC; Zed editor integration)
   omni web --port 4000           Custom port
@@ -239,6 +246,7 @@ Options:
   -m, --model <name>    Select model (overrides config file)
   -i, --image <file>    Attach image(s), repeatable (like codex -i; first interactive turn / one-shot)
       --approve-for-me  AI auto-approval for all modes (like codex --approve-for-me)
+  -a, --ask-for-approval <policy>   Approval policy override: never (=full) | on-request (=safe) | full | safe | ask | read (like codex -a)
   -c, --continue        Resume the latest session in current project (-c no longer means --config; use -C for config)
   -C, --config <path>   Use a specific config file (overrides auto-discovery)
       --cd <dir>        Run with the directory as working root (like codex exec --cd)
@@ -276,7 +284,7 @@ Example: cp omni.example.jsonc omni.json then edit as needed.`);
 function printHelpZh(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
-  omni                进入交互模式（/exit 或 /quit 退出；/stop 停止当前任务；/init [--global] 生成记忆；/import 从 Claude Code 迁移配置；/recap 总结当前对话（只读）；/undo 撤销；/redo 重做；/rewind 会话检查点（三模式：/rewind <N> 预览 · /rewind <N> --code|--chat|--both [--yes]）；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理；/memory-apply 应用待定记忆配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排或动态工作流（fan-out+汇总+对抗审查；--pipeline 强制固定管线）；/goal 目标机制（别名 /loop）（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/team 共享任务看板；/tasks 运行中子代理；/compact 压缩上下文；/clear 清空上下文；/new 新建会话（旧文件保留）；/status 状态；/trace 完整轨迹账本（含上下文用量）；/context 调整上下文窗口（256/400/512/750/1000K · 默认）；/session 会话管理（列出/继续当前目录历史会话；archived 查看归档）；/pin 置顶会话；/fork 分叉会话；/rename 重命名会话；/send 给其它会话发消息；/archive 归档会话；/unarchive 取消归档；/delete 删除会话（永久）；/resume 恢复会话；/cd 切换工作目录；/pwd 显示工作目录；/export 导出；/diff 查看改动（--stat 只看统计 · --full 不截断）；/review 审查；/spec 规格工作流；/btw 旁问（--keep 留在上下文；只读工具查证，答案不进对话历史）；/mcp MCP 管理；/plugin 插件管理；/preset 浏览器自动化预设；/skill 技能；/auto AI 自动审批；/vim Vim 键位；/doctor 诊断；/copy 复制上一条回复到剪贴板；/settings 设置（help 帮助 · models 模型能力快照））
+  omni                进入交互模式（/exit 或 /quit 退出；/stop 停止当前任务；/init [--global] 生成记忆；/import 从 Claude Code 迁移配置；/recap 总结当前对话（只读）；/undo 撤销；/redo 重做；/rewind 会话检查点（三模式：/rewind <N> 预览 · /rewind <N> --code|--chat|--both [--yes]）；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理；/memory-apply 应用待定记忆配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排或动态工作流（fan-out+汇总+对抗审查；--pipeline 强制固定管线）；/goal 目标机制（别名 /loop）（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/team 共享任务看板；/tasks 运行中子代理；/compact 压缩上下文；/clear 清空上下文；/new 新建会话（旧文件保留）；/status 状态；/trace 完整轨迹账本（含上下文用量）；/context 调整上下文窗口（256/400/512/750/1000K · 默认）；/session 会话管理（列出/继续当前目录历史会话；archived 查看归档）；/pin 置顶会话；/fork 分叉会话；/rename 重命名会话；/send 给其它会话发消息；/archive 归档会话；/unarchive 取消归档；/delete 删除会话（永久）；/resume 恢复会话；/cd 切换工作目录；/pwd 显示工作目录；/export 导出；/diff 查看改动（--stat 只看统计 · --full 不截断）；/review 审查；/spec 规格工作流；/btw 旁问（--keep 留在上下文；只读工具查证，答案不进对话历史）；/mcp MCP 管理（/mcp verbose 逐服务器状态）；/rollout 打印会话文件路径；/plugin（/plugins）插件管理；/hooks 查看生效中的 hooks；/preset 浏览器自动化预设；/skill（/skills）技能；/auto AI 自动审批；/vim Vim 键位；/doctor 诊断；/copy 复制上一条回复到剪贴板；/warnings 查看会话 retained 警告；/settings 设置（help 帮助 · models 模型能力快照））
 
 Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p）：
   omni exec "<任务>"（别名 e）      非交互执行：stdout 只输出最终结果，进度走 stderr
@@ -291,7 +299,7 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   omni exec resume <会话id> "<继续任务>"   恢复 headless 会话继续（json 输出带 session_id）
   omni exec resume --last "<继续任务>"   恢复当前目录最近一次会话（对标 codex exec resume --last；--all 取消目录过滤）
   omni exec fork <会话id> "<继续任务>"   分叉出新会话再跑（无后续任务 = 仅分叉，输出新 id）
-  omni exec review ["<侧重>"]          非交互代码审查（typecheck + git diff，对标 codex exec review）
+  omni exec review ["<侧重>"] [--title <标题>]   非交互代码审查（typecheck + git diff，对标 codex exec review）
   omni exec -i 图.png "<任务>"      图片附件，可重复（对标 codex exec -i；与 @图.png 提及合并）
   omni exec "<任务>" -m <模型>      模型覆盖（与全局 -m 同效）
   omni exec "<任务>" --color never   纯文本输出（无 ANSI 颜色，对标 codex exec --color）
@@ -315,7 +323,7 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
   omni watch                     Watch 模式：监听 AI!/AI? 注释标记触发 agent 执行（Aider 同款；Ctrl+C 退出）
   omni doctor                    环境诊断（安装/配置/鉴权/运行时健康，对标 codex doctor）
-  omni review ["<侧重>"] [--base <分支> | --commit <SHA>]   非交互代码审查（对标 codex review；缺省审未提交改动）
+  omni review ["<侧重>"] [--base <分支> | --commit <SHA>] [--title <标题>]   非交互代码审查（对标 codex review；缺省审未提交改动）
   omni completion <bash|zsh|fish|powershell>   打印 shell 补全脚本（eval "$(omni completion bash)"）
   omni acp                       ACP 端点（Agent Client Protocol，stdio JSON-RPC；Zed 等编辑器生态集成）
   omni web --port 4000           指定端口
@@ -335,6 +343,7 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   -m, --model <名称>    指定模型（覆盖配置文件）
   -i, --image <文件>    图片附件，可重复（对标 codex -i；交互首轮/单次生效）
       --approve-for-me  AI 自动审批（对标 codex，全模式生效）
+  -a, --ask-for-approval <策略>   审批策略覆盖：never（=full）| on-request（=safe）| full | safe | ask | read（对标 codex -a）
   -c, --continue        恢复当前项目最近一次会话（-c 已从 --config 让位；config 用 -C）
   -C, --config <路径>   指定配置文件（覆盖自动发现）
       --cd <目录>       以指定目录为工作根运行（对标 codex exec --cd）

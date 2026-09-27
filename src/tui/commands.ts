@@ -1362,7 +1362,7 @@ export const TUI_COMMANDS: TuiCommand[] = [
       const full = /(?:^|\s)--full(?=\s|$)/.test(arg);
       pushCmdLine(ctx.state, { kind: 'meta', text: '正在收集 git diff…' });
       await ctx.session.paint().catch(() => {});
-      const d = await collectDiff({ stat, full });
+      const d = await collectDiff({ stat, full, includeUntracked: true });
       if (!d.ok) {
         pushCmdLine(ctx.state, { kind: 'warn', text: `无法获取 git diff：${d.output.slice(0, 200)}` });
         return;

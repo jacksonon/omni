@@ -382,6 +382,23 @@ export function codeLineChunks(line: string, codeLang: string): MdChunk[] {
   return [{ text: line, fg: CODE_FG }];
 }
 
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 空列表项保留 marker（codex #48623：空 `-` / `8.` / `> -` 不丢失 marker；
+ * 流式中裸 marker 后续 chunk 还可能补内容，渲染成 marker 行即正确过渡）。
+ * 返回 null = 非空 marker 行（走常规分支）。
+ */
+function bareListMarkerChunks(text: string): MdChunk[] | null {
+  const t = text.trim();
+  const task = /^[-*+]\s+\[([ xX])\]$/.exec(t);
+  if (task) return [{ text: task[1].toLowerCase() === 'x' ? '☑ ' : '☐ ', fg: 'cyan' }];
+  if (/^[-*+]$/.test(t)) return [{ text: '• ', fg: 'cyan' }];
+  const ordered = /^(\d+\.)$/.exec(t);
+  if (ordered) return [{ text: `${ordered[1]} ` }];
+  return null;
+}
+
 /**
  * 单行块级解析（非围栏、非表格）：标题 / 引用 / 水平线 / 任务清单 /
  * 无序列表 / 有序列表 / 普通行 → 样式片段。markdownToRows 的同名分支与
@@ -394,27 +411,32 @@ export function parseMarkdownLine(line: string): MdChunk[] {
   if (heading) {
     return scanInlineChunks(heading[2]).map((c) => ({ ...c, bold: true, fg: 'cyan' }));
   }
-  // 引用：> 文本（支持嵌套 >> 与行内样式，浅色）
+  // 引用：> 文本（支持嵌套 >> 与行内样式，浅色；`> -` 这类空 marker 行保留 marker）
   const quote = /^>+\s?(.*)$/.exec(trimmed);
   if (quote) {
+    const bare = bareListMarkerChunks(quote[1]);
+    if (bare) return bare.map((c) => ({ ...c, dim: true }));
     return scanInlineChunks(quote[1]).map((c) => ({ ...c, dim: true, fg: QUOTE_FG }));
   }
   // 水平线：--- / *** / ___（浅色虚线）
   if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
     return [{ text: '──────', dim: true }];
   }
-  // 任务清单：- [x] / - [ ]（☑/☐）
-  const task = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
+  // 任务清单：- [x] / - [ ]（☑/☐；`- [ ]` 空项保留 marker）
+  const task = /^[-*+]\s+\[([ xX])\](?:\s+(.*))?$/.exec(trimmed);
   if (task) {
     const done = task[1].toLowerCase() === 'x';
-    return [{ text: done ? '☑ ' : '☐ ', fg: 'cyan' }, ...scanInlineChunks(task[2])];
+    const rest = task[2] ?? '';
+    return [{ text: done ? '☑ ' : '☐ ', fg: 'cyan' }, ...scanInlineChunks(rest)];
   }
-  // 无序列表：- / * / +（•）
+  // 无序列表：- / * / +（•；裸 `-` 空项保留 marker）
   const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
   if (bullet) {
     return [{ text: '• ', fg: 'cyan' }, ...scanInlineChunks(bullet[1])];
   }
-  // 有序列表：1. 2. …（保留序号，行内样式生效）
+  const bareBullet = bareListMarkerChunks(trimmed);
+  if (bareBullet) return bareBullet;
+  // 有序列表：1. 2. …（保留序号，行内样式生效；裸 `8.` 空项保留 marker）
   const ordered = /^(\d+\.)\s+(.*)$/.exec(trimmed);
   if (ordered) {
     return [{ text: `${ordered[1]} ` }, ...scanInlineChunks(ordered[2])];

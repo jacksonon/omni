@@ -21,6 +21,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 import { loadMcpToken, oauthLogin, type McpOAuthToken } from './mcp-oauth.js';
+import { pushWarning } from '../agent/warnings.js';
 import type { Tool } from './types.js';
 import type { ToolApprovalMode } from './types.js';
 
@@ -40,6 +41,16 @@ export interface McpServerConfig {
    * 预注册 client_id；缺省则登录时尝试 RFC 7591 动态注册，失败回退 'omni'。
    */
   clientId?: string;
+  /**
+   * OAuth RFC 8707 resource 指示（codex mcp add --oauth-resource 对等）：
+   * 授权与换 token 时携带；缺省不发。
+   */
+  oauthResource?: string;
+  /**
+   * OAuth 客户端注册策略（codex mcp add --oauth-client-registration 对等）：
+   * auto（缺省）/ cimd（必须显式 clientId）/ dcr（强制动态注册）。
+   */
+  oauthClientRegistration?: 'auto' | 'cimd' | 'dcr';
   /** 工具白名单：只暴露这些工具（缺省 = 全部） */
   enabledTools?: string[];
   /** 工具黑名单：排除这些工具 */
@@ -475,6 +486,8 @@ class HttpTransport implements McpTransport {
     if (!this.cfg.url) return false;
     const tok = await oauthLogin(this.cfg.url, 'mcp', {
       ...(this.cfg.clientId ? { clientId: this.cfg.clientId } : {}),
+      ...(this.cfg.oauthResource ? { resource: this.cfg.oauthResource } : {}),
+      ...(this.cfg.oauthClientRegistration ? { clientRegistration: this.cfg.oauthClientRegistration } : {}),
       clientName: `omni (${this.serverNameHint()})`,
     });
     if (tok) {
@@ -800,9 +813,9 @@ export async function discoverMcpServers(
         instructions: client.instructions,
       };
     } catch (err) {
-      console.error(
-        `⚠️ MCP 服务器「${name}」启动失败：${err instanceof Error ? err.message : err}（已跳过该服务器）`
-      );
+      const msg = `MCP 服务器「${name}」启动失败：${err instanceof Error ? err.message : err}（已跳过该服务器）`;
+      console.error(`⚠️ ${msg}`);
+      pushWarning('mcp', msg);
       return null;
     }
   }));
@@ -836,6 +849,12 @@ export function createMcpHandlers(opts: {
   client: { chat: { completions: { create: (p: any, o?: any) => Promise<any> } } };
   model: string;
   askUser?: import('./ask.js').AskUserFn;
+  /**
+   * 实时取值器（长会话 /model 切换后 sampling 继续沿用旧端点是实锤 stale——
+   * 传了 getters 则每次 sampling 现取 client/model；直值仅作回退）。
+   */
+  getClient?: () => { chat: { completions: { create: (p: any, o?: any) => Promise<any> } } };
+  getModel?: () => string;
 }): McpServerRequestHandlers {
   return {
     elicit: async (serverName, params) => {
@@ -873,13 +892,15 @@ export function createMcpHandlers(opts: {
       }
       if (msgs.length === 0) throw new Error('sampling 请求没有可用文本消息');
       const maxTokens = typeof params.maxTokens === 'number' ? Math.max(1, Math.min(2048, Math.floor(params.maxTokens))) : 512;
-      const resp = await opts.client.chat.completions.create(
-        { model: opts.model, messages: msgs, max_tokens: maxTokens, stream: false },
+      const liveClient = opts.getClient?.() ?? opts.client;
+      const liveModel = opts.getModel?.() ?? opts.model;
+      const resp = await liveClient.chat.completions.create(
+        { model: liveModel, messages: msgs, max_tokens: maxTokens, stream: false },
         { signal: AbortSignal.timeout(60_000) }
       );
       const text = typeof resp?.choices?.[0]?.message?.content === 'string' ? resp.choices[0].message.content : '';
       const stopReason = resp?.choices?.[0]?.finish_reason === 'length' ? 'maxTokens' : 'endTurn';
-      return { model: opts.model, role: 'assistant', content: { type: 'text', text }, stopReason };
+      return { model: liveModel, role: 'assistant', content: { type: 'text', text }, stopReason };
     },
   };
 }

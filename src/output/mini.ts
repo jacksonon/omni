@@ -25,6 +25,7 @@ import { printHelp } from '../cli/args.js';
 import type { HookEventName } from '../hooks/index.js';
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
+import { composeInEditor, resolveEditorCommand } from '../cli/external-editor.js';
 import { truncateMiddle } from '../tui/layout.js';
 import { inlineMathToText } from '../tui/markdown.js';
 import { visualWidth } from '../tui/width.js';
@@ -279,6 +280,8 @@ export function shouldShowTurnTip(s: { turn: number; shown: number; lastShownTur
 export interface MiniBannerInfo {
   directory: string;
   permission: string;
+  /** OS 级沙箱档位（YOLO 行判定用；缺省当 off） */
+  sandbox?: string;
 }
 
 /** 终端可见列数（未协商/管道为 0 时按 80 兜底） */
@@ -306,12 +309,44 @@ function clockNow(d = new Date()): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** 耗时（codex separators.rs 格式：12s / 1m 05s / 1h 02m 03s） */
+/** 耗时（codex separators.rs 格式：12s / 1m 5s / 1h 2m 3s，不补零） */
 export function fmtElapsed(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
-  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
+}
+
+/** lap 耗时（codex format_duration_ms：≥1s 保留一位小数，否则毫秒整数） */
+export function fmtLapDuration(ms: number): string {
+  const v = Math.max(0, Math.round(ms));
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}s`;
+  return `${v}ms`;
+}
+
+/** 本轮统计（codex RuntimeMetricsSummary 子集：工具调用 + 推理调用；0 次不展示） */
+export interface TurnStats {
+  toolCalls: number;
+  toolMs: number;
+  llmCalls: number;
+  llmMs: number;
+}
+
+/** 分隔行统计段（codex runtime_metrics_label：`Local tools: 3 calls (1.2s)` 形态；零调用省略） */
+export function turnStatSegments(stats: TurnStats): string[] {
+  const parts: string[] = [];
+  if (stats.toolCalls > 0) {
+    parts.push(`Local tools: ${stats.toolCalls} ${stats.toolCalls === 1 ? 'call' : 'calls'} (${fmtLapDuration(stats.toolMs)})`);
+  }
+  if (stats.llmCalls > 0) {
+    parts.push(`Inference: ${stats.llmCalls} ${stats.llmCalls === 1 ? 'call' : 'calls'} (${fmtLapDuration(stats.llmMs)})`);
+  }
+  return parts;
+}
+
+/** 分隔行统计后缀（· 连接；折行时按段拆，见 renderTurnSeparator） */
+export function renderTurnStats(stats: TurnStats): string {
+  return turnStatSegments(stats).join(' · ');
 }
 
 /**
@@ -339,20 +374,41 @@ export function renderMiniBanner(info: MiniBannerInfo, width: number, greeting: 
   out.push(`  ${cyan('>_ ')}${bold('Omni')} ${dim(`(v${VERSION})`)}`);
   const dirShown = truncateMiddle(homify(info.directory), Math.max(1, width - 5));
   out.push(`     ${dim(dirShown)}`);
-  const isYolo = (PERM_LABEL[info.permission]?.yolo ?? false) || info.permission === 'full';
+  // YOLO 行（codex has_yolo_permissions：审批 Never + 沙箱近乎关闭才算；
+  // full 配 read-only/workspace-write 沙箱时命令仍被 OS 层拦截，不配叫 YOLO）
+  const sandboxOff = info.sandbox === undefined || info.sandbox === 'off' || info.sandbox === 'danger-full-access';
+  const isYolo = ((PERM_LABEL[info.permission]?.yolo ?? false) || info.permission === 'full') && sandboxOff;
   if (isYolo) out.push(`  ${dim('permissions:')} ${bold(magenta('YOLO mode'))}`);
   out.push('');
   if (greeting != null) out.push(`  ${cyan(greeting)}`);
   return out;
 }
 
-/** 回合分隔行（codex separators.rs：耗时 >60s 才写 "Worked for Xs"，始终带本地时间；dim + 2 空格缩进） */
-export function renderTurnSeparator(elapsedMs: number, date = new Date()): string {
+/** 回合分隔行（codex separators.rs：耗时 >60s 才写 "Worked for Xs"，始终带本地时间，
+ * 有统计时追加 `Local tools / Inference` 段；dim + 2 空格缩进）。
+ * width 传入时超宽按 `· ` 边界折行（续行同缩进；上游 textwrap 对等）——统计段拉长后窄终端不溢出；
+ * 缺省不折（旧调用与单测保持单行断言）。
+ */
+export function renderTurnSeparator(elapsedMs: number, date = new Date(), stats?: TurnStats, width?: number): string {
   const parts: string[] = [];
   const secs = Math.round(elapsedMs / 1000);
   if (secs > 60) parts.push(`Worked for ${fmtElapsed(elapsedMs)}`);
   parts.push(clockNow(date));
-  return dim(`${PREFIX}${parts.join(' · ')}`);
+  if (stats) parts.push(...turnStatSegments(stats));
+  if (width === undefined) return dim(`${PREFIX}${parts.join(' · ')}`);
+  const lines: string[] = [];
+  let cur = '';
+  for (const p of parts) {
+    const candidate = cur ? `${cur} · ${p}` : p;
+    if (!cur || visualWidth(`${PREFIX}${candidate}`) <= width) {
+      cur = candidate;
+    } else {
+      lines.push(cur);
+      cur = p;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.map((l) => dim(`${PREFIX}${l}`)).join('\n');
 }
 
 /**
@@ -749,7 +805,7 @@ export class MiniOutput implements Output {
   private rl: {
     pause(): void;
     resume(): void;
-    write(data: string): void;
+    write(data: string | null, key?: { ctrl?: boolean; name?: string }): void;
     line: string;
     /** preserveCursor=true 时不要把光标重置为 0（否则轮内打的字会被推到行首） */
     prompt(preserveCursor?: boolean): void;
@@ -850,17 +906,52 @@ export class MiniOutput implements Output {
   attachInput(rl: {
     pause(): void;
     resume(): void;
-    write(data: string): void;
+    write(data: string | null, key?: { ctrl?: boolean; name?: string }): void;
     line: string;
     prompt(preserveCursor?: boolean): void;
   }): void {
     this.rl = rl;
   }
 
+  /**
+   * 外部编辑器组稿（codex Ctrl+G 对等）：空闲提示符下把当前行当种子
+   * 丢进 `$VISUAL`/`$EDITOR`，存盘后回填行缓冲（回车才提交）。
+   * 返回：'done' 已回填 / 'empty' 存空（行清空）/ 'no-editor' 未配置 /
+   * 'failed' 失败（已打印原因）/ 'busy' 轮内或非交互（调用方忽略）。
+   */
+  openExternalEditor(): 'done' | 'empty' | 'no-editor' | 'failed' | 'busy' {
+    // 空闲门控用 turnStart（轮内 true，含审批/提问；live.active 只是 live 渲染总开关，恒为 true，不能当空闲判据）
+    if (!this.interactive || !this.rl || !process.stdin.isTTY || this.turnStart != null) return 'busy';
+    const cmd = resolveEditorCommand();
+    if (!cmd) return 'no-editor';
+    const initial = this.rl.line;
+    this.live.clear();
+    this.print('');
+    this.print(dim('正在打开外部编辑器组稿（存盘退出回填 `:wq`，放弃用 `:q!`）…'));
+    const res = composeInEditor(initial, cmd);
+    if (!res.ok) {
+      this.print(dim(`外部编辑器：${res.error}`));
+      this.rl.prompt();
+      return 'failed';
+    }
+    // Ctrl+U 清行再回填（write(null, key) 走 readline 按键模拟，非显示层擦除）
+    this.rl.write(null, { ctrl: true, name: 'u' });
+    if (res.text) this.rl.write(res.text);
+    this.rl.prompt();
+    return res.text ? 'done' : 'empty';
+  }
+
+  /** 通知打印后把 `› ` 输入行重画回来（readline 下次按键也会自重画，这里立即恢复） */
+  repaintInput(): void {
+    this.rl?.prompt(true);
+  }
+
   markInteractive(): void {
     this.interactive = true;
     if (this.opts.stream) {
-      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · /stop 停止 · Ctrl+C 中断 · /exit 退出 · Ctrl+T 轨迹')}`);
+      // 双行（上游 footer hint rows 对等）：单行超 80 列会被终端原生折行（续行顶格难看），按功能拆两行
+      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · /stop 停止 · Ctrl+C 中断 · /exit 退出')}`);
+      this.print(`${PREFIX}${dim('Ctrl+T 轨迹 · Ctrl+G 编辑器 · 空行 Esc 取回 · ? 帮助')}`);
       this.print('');
     }
   }
@@ -936,6 +1027,7 @@ export class MiniOutput implements Output {
     const info: MiniBannerInfo = {
       directory: process.cwd(),
       permission: cfg.permission ?? 'safe',
+      sandbox: cfg.sandbox,
     };
     for (const line of renderMiniBanner(info, cols(), pickMiniGreeting())) this.print(line);
     this.print('');
@@ -1011,8 +1103,23 @@ export class MiniOutput implements Output {
 
   onUsage(_usage: TokenUsage): void {}
 
+  /** LLM 单轮耗时折入本轮统计（分隔行 Inference 段数据源；调用次数同步累加） */
+  onLlmLap(llmMs: number): void {
+    this.turnStats.llmCalls += 1;
+    this.turnStats.llmMs += Math.max(0, llmMs);
+  }
+
+  /** 工具执行耗时折入本轮统计（分隔行 Local tools 段时长数据源；次数按结果计数） */
+  onToolsLap(toolsMs: number): void {
+    this.turnStats.toolMs += Math.max(0, toolsMs);
+  }
+
+  /** 本轮统计累积（separators.rs RuntimeMetricsSummary 子集；onTurnStart 清零） */
+  private turnStats: TurnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 };
+
   onTurnStart(): void {
     this.turnStart = Date.now();
+    this.turnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 };
     this.answerEnded = false; // `!` 直跑回合无正文：防沿用上一轮标记误发 tip
     this.beginInputCapture();
   }
@@ -1081,6 +1188,7 @@ export class MiniOutput implements Output {
     toolSeq?: number,
     totalLines?: number
   ): void {
+    this.turnStats.toolCalls += 1;
     if (!this.opts.stream) return;
     const t = this.tool;
     this.tool = null;
@@ -1159,7 +1267,7 @@ export class MiniOutput implements Output {
     this.turnStart = null;
     if (start != null) {
       this.ensureGap();
-      this.print(renderTurnSeparator(Date.now() - start));
+      this.print(renderTurnSeparator(Date.now() - start, new Date(), { ...this.turnStats }, termWidth()));
       this.gapOpen = false;
     }
     if (
@@ -1225,6 +1333,32 @@ export class MiniOutput implements Output {
   }
 
   // ── 审批 / 提问（readline，写 stderr 不污染 stdout） ────────────
+  /**
+   * 问答消费行吞没队列（双 readline 实锤两连 bug 之二：审批/提问的答案字节会同时进主 rl
+   * 行缓冲，下一轮被当成用户消息误发给模型；其一是次 readline close() 会 pause 共享
+   * stdin 致主循环饿死，见 input.resume() 处注释）。
+   * 只记非空原文（trimmed，与主循环比对口径一致）；FIFO 队首命中；上限 10 防堆积。
+   */
+  private swallowedQa: string[] = [];
+  private recordSwallowedQa(ans: string): void {
+    const t = ans.trim();
+    if (!t) return;
+    this.swallowedQa.push(t);
+    while (this.swallowedQa.length > 10) this.swallowedQa.shift();
+  }
+
+  /**
+   * 主循环调用：行文本命中队首消费记录则返回 true（调用方跳过本行）。
+   * 不命中不清理（乱序到达的消费行仍在队首等后面的轮次）。
+   */
+  swallowQaLine(line: string): boolean {
+    if (this.swallowedQa.length > 0 && this.swallowedQa[0] === line.trim()) {
+      this.swallowedQa.shift();
+      return true;
+    }
+    return false;
+  }
+
   private approvalTail: Promise<void> = Promise.resolve();
   /** 本会话记住的审批（codex "allow for session"）：键 = 工具 + 精确摘要，同命令才自动放行 */
   private sessionApprovals = new Set<string>();
@@ -1272,10 +1406,15 @@ export class MiniOutput implements Output {
     const rl = readline.createInterface({ input, output: errOut });
     try {
       const ans = await rl.question(formatApprovalPrompt(req));
+      // 答案字节同时进了主 rl 行缓冲：记下来给主循环吞掉，否则下一轮误发给模型
+      this.recordSwallowedQa(ans);
       return parseApprovalAnswer(ans);
     } finally {
       rl.close();
       this.resumeInput();
+      // 次 readline 的 close() 会 pause 共享 stdin，主循环自此饿死（PTY 实证：
+      // 审批后一切输入无响应、退出码却是“干净”的假象）——显式恢复流动
+      input.resume();
     }
   }
 
@@ -1305,10 +1444,12 @@ export class MiniOutput implements Output {
       const ans = await rl.question(
         `${PREFIX}${dim('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n${PREFIX}${dim('自定义：直接输入内容')}\n${PREFIX}输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
       );
+      this.recordSwallowedQa(ans);
       return parseAskAnswer(ans, options);
     } finally {
       rl.close();
       this.resumeInput();
+      input.resume();
     }
   }
 }

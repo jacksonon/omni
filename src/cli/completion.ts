@@ -32,6 +32,7 @@ const GLOBAL_FLAGS = [
   '-m', '--model',
   '-i', '--image',
   '--approve-for-me',
+  '-a', '--ask-for-approval',
   '--strict-config',
   '-c', '--continue',
   '-C', '--config',
@@ -50,10 +51,10 @@ const GLOBAL_FLAGS = [
 
 /** 分命令 flags（常用子集；exec/mini/web 为补全重点） */
 const COMMAND_FLAGS: Record<string, string[]> = {
-  exec: ['--output-format', '--json', '--max-turns', '--allowed-tools', '--output-schema', '--quiet', '--approve-for-me', '-o', '--output-last-message', '-m', '--model', '-i', '--image', '--resume', '--last', '--all', '--color', '--ephemeral', '--add-dir', 'resume', 'fork', 'review'],
-  review: ['-i', '--image', '-m', '--model', '-o', '--output-last-message', '--quiet', '--color', '--approve-for-me'],
+  exec: ['--output-format', '--json', '--max-turns', '--allowed-tools', '--output-schema', '--quiet', '--approve-for-me', '-o', '--output-last-message', '-m', '--model', '-i', '--image', '--resume', '--last', '--all', '--color', '--ephemeral', '--add-dir', '--base', '--commit', '--uncommitted', '--title', 'resume', 'fork', 'review'],
+  review: ['-i', '--image', '-m', '--model', '-o', '--output-last-message', '--quiet', '--color', '--approve-for-me', '--base', '--commit', '--uncommitted', '--title'],
   resume: ['--last', '--all'],
-  mcp: ['list', 'get', 'login', 'logout', 'add', 'remove'],
+  mcp: ['list', 'get', 'login', 'logout', 'add', 'remove', '--url', '--env', '--bearer-token-env-var', '--oauth-client-id', '--oauth-resource', '--oauth-client-registration', '--no-browser', '--scopes'],
   fork: ['--last', '--all'],
   delete: ['--yes'],
   mini: ['-o', '--output-last-message', '--approve-for-me', '-i', '--image', '-c', '-s', '--cd'],

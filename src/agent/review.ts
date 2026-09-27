@@ -63,18 +63,52 @@ export function detectCheckCommand(cwd = process.cwd()): string | null {
 }
 
 /**
+ * 未跟踪新文件内容块（collectDiff includeUntracked 用；无新文件回 ''）。
+ * 上限：最多 20 个文件 × 各前 200 行 × 单文件 100KB（超限/二进制注明跳过）；
+ * 只读拼接（git ls-files --others + fs 读），不碰索引。
+ */
+async function collectUntrackedContents(): Promise<string> {
+  const ls = await captureCommand('git ls-files --others --exclude-standard -z -- .');
+  if (!ls.ok || ls.output === '（无输出）') return '';
+  const files = ls.output.split('\0').map((f) => f.trim()).filter(Boolean).slice(0, 20);
+  if (files.length === 0) return '';
+  const { readFileSync, statSync } = await import('node:fs');
+  const blocks: string[] = [`未跟踪新文件（${files.length} 个）：`];
+  for (const f of files) {
+    try {
+      const st = statSync(f);
+      if (!st.isFile() || st.size > 100 * 1024) {
+        blocks.push(`--- ${f}（${st.isFile() ? '超 100KB 跳过' : '非普通文件跳过'}）`);
+        continue;
+      }
+      const buf = readFileSync(f);
+      if (buf.includes(0)) {
+        blocks.push(`--- ${f}（二进制跳过内容）`);
+        continue;
+      }
+      const lines = buf.toString('utf8').split('\n').slice(0, 200);
+      blocks.push(`--- ${f}（新文件）\n${lines.join('\n')}`);
+    } catch {
+      blocks.push(`--- ${f}（读取失败跳过）`);
+    }
+  }
+  return blocks.join('\n');
+}
+
+/**
  * 收集工作区改动：git diff HEAD（含暂存）+ git status 未跟踪文件。
  *
  * options：
  *   · stat —— 只输出统计摘要（git diff --stat + 状态行；/diff --stat 用）
  *   · full —— 不截断（缺省整体 50KB 上限保留；/diff --full 用）
+ *   · includeUntracked —— 附未跟踪新文件内容（codex /diff 对等；只读拼接不碰索引；review 等模型输入缺省关闭）
  *
  * 修复：非 git 目录下 `git diff` 失败但 `git status` 也失败时才报错；
  * 此前 diff 失败（如非 git 仓库输出「不是 git 仓库」）而 status 成功时，
  * 错误文本会混进 ok 结果里被当成 diff 内容展示。
  */
 export async function collectDiff(
-  options: { stat?: boolean; full?: boolean; base?: string } = {}
+  options: { stat?: boolean; full?: boolean; base?: string; includeUntracked?: boolean } = {}
 ): Promise<{ ok: boolean; output: string }> {
   // base 由调用方清洗后传入（分支名字符集限定，防 shell 注入；见 runExecReview）
   const ref = options.base ?? 'HEAD';
@@ -91,6 +125,10 @@ export async function collectDiff(
     diffPart,
     status.output !== '（无输出）' ? `git status:\n${status.output}` : '',
   ].filter(Boolean);
+  if (options.includeUntracked) {
+    const extra = await collectUntrackedContents();
+    if (extra) parts.push(extra);
+  }
   if (parts.length === 0) return { ok: true, output: '（无改动）' };
   const joined = parts.join('\n\n');
   return { ok: true, output: options.full ? joined : joined.slice(0, 50_000) };
@@ -118,9 +156,11 @@ export async function reviewCode(
   diff: string,
   check: { command: string | null; output: string },
   extra?: string,
-  images?: ImageAttachment[]
+  images?: ImageAttachment[],
+  title?: string
 ): Promise<string | null> {
-  const input = buildReviewInput(diff, check) + (extra?.trim() ? `\n\n[额外审查要求]\n${extra.trim()}` : '');
+  const titlePart = title?.trim() ? `\n\n## 审查对象标题\n${title.trim()}` : '';
+  const input = buildReviewInput(diff, check) + titlePart + (extra?.trim() ? `\n\n[额外审查要求]\n${extra.trim()}` : '');
   const transcript: ChatCompletionMessageParam[] = [
     { role: 'system', content: REVIEW_SYSTEM_PROMPT },
     userMessageWithImages(input, images ?? []),

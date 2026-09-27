@@ -67,6 +67,8 @@ export interface ExecParseResult {
   reviewBase?: string;
   /** `exec review --commit <SHA>`：审查某提交引入的改动（codex --commit 对等；与 --base 互斥） */
   reviewCommit?: string;
+  /** `exec review --title <标题>`：审查对象标题（codex --title 对等；展示进审查摘要上下文） */
+  reviewTitle?: string;
   outputFormat: ExecOutputFormat;
   /** --max-turns：步数上限（超出 → 非零退出） */
   maxTurns?: number;
@@ -96,7 +98,8 @@ export interface ExecParseResult {
  * 此处扫原始参数先拦截，否则 exec 专属用法永远不可达；`--` 之后一律当任务文本）。
  * 命中则打印专属帮助返回 true，调用方直接 return。 */
 export function handleExecHelp(argv: string[], lang?: string | null): boolean {
-  if (argv[0] !== 'exec' && argv[0] !== 'e') return false;
+  // exec/e 全套 + 顶层 review 直达（codex review --help 对等；review 即 exec review）
+  if (argv[0] !== 'exec' && argv[0] !== 'e' && argv[0] !== 'review') return false;
   const rest = argv.slice(1);
   const dash = rest.indexOf('--');
   const flagPart = dash < 0 ? rest : rest.slice(0, dash);
@@ -114,7 +117,7 @@ export function execHelpText(lang?: string | null): string {
     '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <文件>] [--resume <id>] [--last] [--all] [-m <模型>] [-i <图片> …] [--color always|never|auto] [--ephemeral] [--add-dir <目录> …]\n' +
             '  exec resume <id|--last> [后续任务]：恢复会话续跑（--last = 当前目录最近一次，无 id 时亦可用 exec --last；--all 取消目录过滤）。\n' +
             '  exec fork <id|--last> [--all] [后续任务]：分叉出新会话再跑（无后续任务 = 仅分叉，stdout 新会话 id）。\n' +
-            '  exec review [额外要求] [--base <分支> | --commit <SHA> | --uncommitted]：非交互代码审查（typecheck + 改动 → 单次 LLM 审查，不建会话；缺省审未提交改动）。\n' +
+            '  exec review [额外要求] [--base <分支> | --commit <SHA> | --uncommitted] [--title <标题>]：非交互代码审查（typecheck + 改动 → 单次 LLM 审查，不建会话；缺省审未提交改动）。\n' +
             '  --ephemeral：不落盘会话文件（json 的 session_id 为 null；与 resume/fork 互斥）。\n' +
             '  --add-dir <目录>（可重复）：沙箱额外可写目录。\n' +
             '  --json：事件 JSONL（codex --json 对等；即 stream-json：逐行轨迹事件，末行结果）。\n' +
@@ -129,7 +132,7 @@ function execHelpTextEn(): string {
     'Usage: omni exec "<task>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <file>] [--resume <id>] [--last] [--all] [-m <model>] [-i <image> ...] [--color always|never|auto] [--ephemeral] [--add-dir <dir> ...]\n' +
             '  exec resume <id|--last> [follow-up]: resume a session (--last = most recent in cwd; also usable as exec --last; --all disables cwd filtering).\n' +
             '  exec fork <id|--last> [--all] [follow-up]: fork into a new session, then continue (no follow-up = fork only, prints new id).\n' +
-            '  exec review [focus] [--base <branch> | --commit <SHA> | --uncommitted]: non-interactive code review (typecheck + changes, single LLM call, no session; default: uncommitted changes).\n' +
+            '  exec review [focus] [--base <branch> | --commit <SHA> | --uncommitted] [--title <title>]: non-interactive code review (typecheck + changes, single LLM call, no session; default: uncommitted changes).\n' +
             '  --ephemeral: no session files (json session_id is null; mutually exclusive with resume/fork).\n' +
             '  --add-dir <dir> (repeatable): extra writable dirs for the sandbox.\n' +
             '  --json: event JSONL (like codex --json; i.e. stream-json: one trace event per line, last line is the result).\n' +
@@ -149,6 +152,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   let reviewMode = false;
   let reviewBase: string | undefined;
   let reviewCommit: string | undefined;
+  let reviewTitle: string | undefined;
   let reviewUncommitted = false;
   let outputFormat: ExecOutputFormat = 'text';
   let maxTurns: number | undefined;
@@ -285,6 +289,12 @@ export function parseExecArgs(args: string[]): ExecParseResult {
         // 审查指定提交（codex exec review --commit 对等；仅 review 生效）
         reviewCommit = takeValue();
         break;
+      case '--title': {
+        // 审查对象标题（codex exec review --title 对等；仅 review 生效）
+        const v = takeValue();
+        if (v !== undefined) reviewTitle = v;
+        break;
+      }
       case '--uncommitted':
         // 显式缺省（codex --uncommitted 对等：本来就只审未提交改动；接受以兼容脚本，不改变行为）
         reviewUncommitted = true;
@@ -337,8 +347,8 @@ export function parseExecArgs(args: string[]): ExecParseResult {
     throw new Error('exec review 不支持 --allowed-tools/--max-turns/--output-schema（无 agent 循环，直接单次审查）');
   }
   if (!promptRaw && !forkId && !forkLast && !reviewMode) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
-  if ((reviewBase || reviewCommit || reviewUncommitted) && !reviewMode) {
-    throw new Error('--base/--commit/--uncommitted 仅 exec review 可用（审查范围，非 agent 循环参数）');
+  if ((reviewBase || reviewCommit || reviewUncommitted || reviewTitle) && !reviewMode) {
+    throw new Error('--base/--commit/--uncommitted/--title 仅 exec review 可用（审查范围，非 agent 循环参数）');
   }
   if (reviewBase && reviewCommit) {
     throw new Error('--base 与 --commit 互斥（基准分支还是指定提交，只能选其一）');
@@ -346,7 +356,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   if (reviewUncommitted && (reviewBase || reviewCommit)) {
     throw new Error('--uncommitted 与 --base/--commit 互斥（缺省即审未提交，二选一）');
   }
-  return { promptRaw, resumeId, resumeLast, resumeAll, forkId, forkLast, reviewMode, reviewBase, reviewCommit, ephemeral, addDirs, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe, outputLastMessage, images, color };
+  return { promptRaw, resumeId, resumeLast, resumeAll, forkId, forkLast, reviewMode, reviewBase, reviewCommit, reviewTitle, ephemeral, addDirs, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe, outputLastMessage, images, color };
 }
 
 /* ─────────────────────────────── Exec 输出（stdout 干净） ─────────────────────────────── */
@@ -757,7 +767,7 @@ export function resultJson(res: HeadlessResult, extra: Record<string, unknown> =
 export async function runExecReview(
   ctx: RunContext,
   extra: string,
-  opts: Pick<ExecParseResult, 'outputFormat' | 'outputLastMessage' | 'quiet' | 'images' | 'reviewBase' | 'reviewCommit'>
+  opts: Pick<ExecParseResult, 'outputFormat' | 'outputLastMessage' | 'quiet' | 'images' | 'reviewBase' | 'reviewCommit' | 'reviewTitle'>
 ): Promise<number> {
   const { cfg, client } = ctx;
   const output = new ExecOutput(opts.quiet === true, false);
@@ -834,7 +844,7 @@ export async function runExecReview(
   if (attachments.length > 0) {
     output.log(dim(`（已附加 ${attachments.length} 张图片：${attachments.map((a) => a.path).join('、')}）`));
   }
-  const review = await reviewCode(client, cfg.model, diff.output, { command: check.command, output: check.output }, extra || undefined, attachments);
+  const review = await reviewCode(client, cfg.model, diff.output, { command: check.command, output: check.output }, extra || undefined, attachments, opts.reviewTitle);
   if (!review) {
     output.log(red('审查失败（网络 / API 问题），请重试'));
     return 1;

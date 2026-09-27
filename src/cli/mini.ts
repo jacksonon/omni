@@ -27,6 +27,27 @@ interface KeypressStream {
 }
 
 /**
+ * 安装 Ctrl+G 外部编辑器组稿（codex open_external_editor 对等；返回卸载函数）。
+ * 只挂在 TTY 上；空闲提示符才开编辑器（轮内/审批中按了也只是响铃，不吞字）。
+ */
+function installExternalEditor(getOut: () => unknown): () => void {
+  const stdin = process.stdin as unknown as KeypressStream;
+  if (!stdin.isTTY) return () => {};
+  const onKey: KeypressHandler = (_str, key) => {
+    if (!key?.ctrl || key.name !== 'g') return;
+    const out = getOut();
+    if (!(out instanceof MiniOutput)) return;
+    const st = out.openExternalEditor();
+    if (st === 'no-editor') {
+      process.stdout.write(`\n${dim('未配置外部编辑器：export VISUAL 或 EDITOR（如: export EDITOR="code --wait"），再按 Ctrl+G 组稿')}\n`);
+      out.repaintInput();
+    }
+  };
+  stdin.on('keypress', onKey);
+  return () => stdin.off('keypress', onKey);
+}
+
+/**
  * 安装 Ctrl+T 轨迹账本快捷键（返回卸载函数）。
  * 只挂在 TTY 上：readline.createInterface 会激活 keypress 解码器，这里只订阅。
  * 打印时机可能落在用户正在输入的行上，readline 在下一次按键时会重绘该行。
@@ -72,6 +93,7 @@ export async function runMiniInteractive(
   out: Output
 ): Promise<void> {
   const uninstall = installTranscriptViewer(runOpts, out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined);
+  const uninstallEditor = installExternalEditor(() => out);
   // 交互模式：渲染层据此擦掉 readline 回显的输入行（避免输入显示两遍）
   if (out instanceof MiniOutput) out.markInteractive();
   try {
@@ -86,6 +108,7 @@ export async function runMiniInteractive(
     });
   } finally {
     uninstall();
+    uninstallEditor();
   }
 }
 

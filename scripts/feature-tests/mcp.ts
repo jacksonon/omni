@@ -255,6 +255,206 @@ export function mcpSuite(): TestSuite {
     }
   });
 
+  suite.test('mcp add --oauth-resource/--oauth-client-registration（codex 对等）', async () => {
+    const { parseMcpAddArgs } = await import('../../src/cli/mcp.js');
+    const r1 = parseMcpAddArgs(['s', '--url', 'https://m.example.com', '--oauth-client-id', 'cid', '--oauth-resource', 'https://api.example.com', '--oauth-client-registration', 'dcr']);
+    suite.assert(r1.entry?.oauthResource === 'https://api.example.com', 'resource 进 entry');
+    suite.assert(r1.entry?.oauthClientRegistration === 'dcr', 'registration 进 entry');
+    suite.assert(r1.entry?.clientId === 'cid', 'clientId 照常保留');
+    const r2 = parseMcpAddArgs(['s', '--url', 'https://m.example.com', '--oauth-client-registration', 'auto']);
+    suite.assert(r2.error === undefined && r2.entry?.oauthClientRegistration === undefined, 'auto 不落盘（即缺省）');
+    suite.assert(parseMcpAddArgs(['s', '--url', 'https://m.example.com', '--oauth-client-registration', 'bogus']).error !== undefined, '非法策略拒绝');
+    suite.assert(parseMcpAddArgs(['s', '--oauth-resource', 'R', '--', 'cmd']).error !== undefined, 'stdio 下 resource 拒绝');
+    suite.assert(parseMcpAddArgs(['s', '--oauth-client-registration', 'dcr', '--', 'cmd']).error !== undefined, 'stdio 下 registration 拒绝');
+    // 落盘 → loadConfig 回读：clientId 曾被 allowlist 漏丢，此处锁定三字段全存活
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-oauthcfg-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-oauthcwd-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmpCwd);
+    try {
+      fs.mkdirSync(path.join(tmpXdg, 'omni'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpXdg, 'omni', 'omni.json'),
+        JSON.stringify({ mcpServers: { s: {
+          url: 'https://m.example.com', clientId: 'cid-9',
+          oauthResource: 'https://api.example.com', oauthClientRegistration: 'cimd',
+        } } })
+      );
+      const { loadConfig } = await import('../../src/config/index.js');
+      const got = (loadConfig().mcpServers as Record<string, Record<string, unknown>>)['s'] ?? {};
+      suite.assert(got['clientId'] === 'cid-9', 'clientId 重载存活（drop bug 回归锁）');
+      suite.assert(got['oauthResource'] === 'https://api.example.com', 'oauthResource 重载存活');
+      suite.assert(got['oauthClientRegistration'] === 'cimd', 'oauthClientRegistration 重载存活');
+      // 非法策略值落盘也被清洗（fail-closed）
+      fs.writeFileSync(
+        path.join(tmpXdg, 'omni', 'omni.json'),
+        JSON.stringify({ mcpServers: { s: { url: 'https://m.example.com', oauthClientRegistration: 'bogus' } } })
+      );
+      const got2 = (loadConfig().mcpServers as Record<string, Record<string, unknown>>)['s'] ?? {};
+      suite.assert(got2['oauthClientRegistration'] === undefined, '非法策略重载清洗');
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('OAuth 纯函数：scope 归一/授权地址/回调解析', async () => {
+    const { normalizeScopes, buildAuthorizeUrl, parseCallbackParams } = await import('../../src/tools/mcp-oauth.js');
+    suite.assert(normalizeScopes('a,b , c') === 'a b c', '逗号形态归一为空格');
+    suite.assert(normalizeScopes('a  b') === 'a b', '空格形态压缩');
+    suite.assert(normalizeScopes('') === undefined && normalizeScopes() === undefined, '空回 undefined');
+    const u = buildAuthorizeUrl('https://auth.example.com/authorize', {
+      clientId: 'cid', redirectUri: 'http://127.0.0.1:1/cb', challenge: 'ch', state: 'st',
+      scope: 'a b', resource: 'https://api.example.com',
+    });
+    const q = new URL(u).searchParams;
+    suite.assert(q.get('client_id') === 'cid' && q.get('scope') === 'a b' && q.get('resource') === 'https://api.example.com', 'scope/resource 进地址');
+    suite.assert(q.get('code_challenge_method') === 'S256' && q.get('state') === 'st', 'PKCE/state 齐全');
+    const u2 = buildAuthorizeUrl('https://auth.example.com/authorize', {
+      clientId: 'c', redirectUri: 'http://127.0.0.1:1/cb', challenge: 'x', state: 's',
+    });
+    suite.assert(!new URL(u2).searchParams.has('scope') && !new URL(u2).searchParams.has('resource'), '缺省不发 scope/resource');
+    suite.assert(parseCallbackParams(new URLSearchParams('code=abc&state=s'), 's') === 'abc', '回调取 code');
+    for (const [ps, st, why] of [
+      ['code=abc&state=x', 's', 'state 不一致抛错'],
+      ['state=s', 's', '无 code 抛错'],
+    ] as [string, string, string][]) {
+      let threw = '';
+      try { parseCallbackParams(new URLSearchParams(ps), st); } catch (e) { threw = (e as Error).message; }
+      suite.assert(threw !== '', why);
+    }
+  });
+
+  suite.test('mcp login --no-browser 离线端到端（桩 OAuth 端点 + token 落盘）', async () => {
+    const { createServer } = await import('node:http');
+    const seen: { authQuery: string; tokenBody: string } = { authQuery: '', tokenBody: '' };
+    const srv = createServer((req, res) => {
+      const u = new URL(req.url ?? '/', 'http://x/');
+      if (u.pathname === '/.well-known/oauth-authorization-server') {
+        const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ authorization_endpoint: `${base}/auth`, token_endpoint: `${base}/token` }));
+      } else if (u.pathname === '/token' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (d) => (body += d));
+        req.on('end', () => {
+          seen.tokenBody = body;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ access_token: 'tok-123', token_type: 'Bearer', expires_in: 3600 }));
+        });
+      } else {
+        res.writeHead(404); res.end();
+      }
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as { port: number }).port;
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-nobrowser-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    // 打印的授权地址：桩回调按 state 组地址回填（promptCallback 拿 state 即为此设计）
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
+    try {
+      const { oauthLogin, loadMcpToken } = await import('../../src/tools/mcp-oauth.js');
+      const tok = await oauthLogin(`http://127.0.0.1:${port}`, 'mcp', {
+        noBrowser: true,
+        scopes: 'read,write',
+        resource: 'https://api.example.com',
+        promptCallback: async (info: { state: string }) =>
+          `http://127.0.0.1:${port}/cb?code=authcode1&state=${info.state}`,
+      });
+      suite.assert(tok?.accessToken === 'tok-123', '换 token 成功并返回');
+      const printed = logs.join('\n');
+      const aq = new URL(printed.slice(printed.indexOf('http')).trim().split(/\s/)[0] ?? '').searchParams;
+      seen.authQuery = aq.toString();
+      suite.assert(aq.get('scope') === 'read write', 'scopes 归一进授权地址');
+      suite.assert(aq.get('resource') === 'https://api.example.com', 'resource 进授权地址');
+      suite.assert(new URLSearchParams(seen.tokenBody).get('resource') === 'https://api.example.com', 'resource 进换 token 请求');
+      suite.assert(new URLSearchParams(seen.tokenBody).get('code') === 'authcode1', 'code 正确传递');
+      const saved = await loadMcpToken(`http://127.0.0.1:${port}`);
+      suite.assert(saved?.accessToken === 'tok-123', 'token 持久化可读回');
+    } finally {
+      console.log = origLog;
+      srv.close();
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('mcp login 参数校验（未知旗/非法策略/交互内 no-browser 指路）', async () => {
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-loginflg-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-logincwd-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmpCwd);
+    try {
+      fs.mkdirSync(path.join(tmpXdg, 'omni'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpXdg, 'omni', 'omni.json'),
+        JSON.stringify({ mcpServers: { r: { url: 'https://mcp.example.com' } } })
+      );
+      suite.assert((await runMcpCommand(['login', 'r', '--bogus'])) === 1, '未知 flag 拒绝');
+      suite.assert((await runMcpCommand(['login', 'r', '--oauth-client-registration', 'x'])) === 1, '非法策略拒绝');
+      suite.assert((await runMcpCommand(['login'])) === 1, 'login 缺名拒绝');
+      // 交互内 no-browser：不等 stdin，直接指路顶层（双 readline 饿死教训）
+      suite.assert((await runMcpCommand(['login', 'r', '--no-browser'], {}, { fromInteractive: true })) === 1, '交互内 no-browser 指路顶层');
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('sampling 跟随当前模型运行时（/model 切换不 stale）', async () => {
+    const { createMcpHandlers } = await import('../../src/tools/mcp.js');
+    const seen: string[] = [];
+    const stubClient = { chat: { completions: { create: async (p: { model: string }) => {
+      seen.push(p.model);
+      return { choices: [{ message: { content: 'sampled' }, finish_reason: 'stop' }] };
+    } } } };
+    let current = 'm-old';
+    const h = createMcpHandlers({
+      client: stubClient as never,
+      model: 'm-old',
+      getClient: () => stubClient as never,
+      getModel: () => current,
+    });
+    const msg = [{ role: 'user', content: { type: 'text', text: 'hi' } }];
+    const r1 = await h.sample('s', { messages: msg });
+    current = 'm-new';
+    const r2 = await h.sample('s', { messages: msg });
+    suite.assert(seen.join(',') === 'm-old,m-new', '每次 sampling 现取模型（非创建时快照）');
+    suite.assert(r2.model === 'm-new' && r1.model === 'm-old', '返回体模型同步');
+  });
+
+  suite.test('OAuth 注册策略解析（cimd/dcr/auto，无网络路径）', async () => {
+    const { resolveOAuthClientId } = await import('../../src/tools/mcp-oauth.js');
+    const r1 = await resolveOAuthClientId({}, 'http://127.0.0.1:1/cb', { clientId: 'https://id.example.com/meta' });
+    suite.assert(r1.clientId === 'https://id.example.com/meta', 'auto 显式优先（CIMD URL）');
+    const r2 = await resolveOAuthClientId({}, 'http://127.0.0.1:1/cb');
+    suite.assert(r2.clientId === 'omni', 'auto 无端点回退 omni');
+    let e1 = '';
+    try { await resolveOAuthClientId({}, 'http://127.0.0.1:1/cb', { clientRegistration: 'cimd' }); }
+    catch (e) { e1 = (e as Error).message; }
+    suite.assert(e1.includes('CIMD'), 'cimd 缺 clientId 抛错');
+    const r3 = await resolveOAuthClientId({}, 'http://127.0.0.1:1/cb', { clientId: 'https://id.example.com/m', clientRegistration: 'cimd' });
+    suite.assert(r3.clientId === 'https://id.example.com/m', 'cimd 显式 URL 通过');
+    let e2 = '';
+    try { await resolveOAuthClientId({}, 'http://127.0.0.1:1/cb', { clientRegistration: 'dcr' }); }
+    catch (e) { e2 = (e as Error).message; }
+    suite.assert(e2.includes('registration_endpoint'), 'dcr 无端点抛错（不静默回退）');
+  });
+
   suite.test('顶层 mcp list/get 只读查看（codex mcp 对等；密钥脱敏）', async () => {
     const savedXdg = process.env.XDG_CONFIG_HOME;
     const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mcp-cli-'));

@@ -206,6 +206,12 @@ src/
                         #   + Ctrl+T 完整轨迹账本（dumpLedger 先清 live 块：轮内 Working/流式不与账本抢区域）；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
                         #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C/轮内 /stop 中断（回车 KP 只发给建接口前挂载的监听，发射前置，pty 实证）、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
                         #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
+                        #   审批问答 PTY e2e（MOCK_DANGEROUS 危险命令→提示→y 放行→回合完成；空目录 fast-fail 无副作用；写 pty 字节必 try 包 transcripts 必落盘 finally）；
+                        #   ask_user 提问 PTY e2e（MOCK_ASK 选项→序号→回合完成；答案不泄漏+stdin 存活同覆盖；计数口径用单发 marker）；
+                        #   审批处 Ctrl+C PTY e2e（取消即 deny fail-safe，模型收尾，会话存活可继续）；
+                        #   console 模式审批 PTY e2e（同双 readline 修复覆盖 mini/console 两路）；
+                        #   /delete 双覆盖（管道非 TTY 拒绝防误触 + PTY 真终端 y 确认删旧会话）；
+                        #   审批双 readline 实锤两 bug（次 close() 会 pause 共享 stdin 致主循环饿死→input.resume()；答案字节同时进主 rl→swallowedQa 队列主循环命中吞掉；PTY 证 pwd 存活+无幽灵轮）；
                         #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
                         #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
                         #   开场问候语（codex greeting 全量复刻：全会话 compact 头+随机问候，信息框已随上游删除）；
@@ -229,6 +235,22 @@ src/
                         #   回合 tip 双轨（codex ca41ed3：working 持续 30s 状态行下方随机一条，同轮跳过 completion tip；completion 带最终回答/3 轮起/间隔 3/全会话 2 条）；
                         #   自动压缩可见反馈（codex compact 单元格：以本轮新增 compact 事件为准打印 dim 提示）；
                         #   写/改文件单元格带 hunk diff 预览（codex patch cell：变更±2 ctx、add 绿/rem 红，超 10 行截断）；
+                        #   空 marker 保号（codex #48623：裸 -/8./> -/空任务项渲染成 • /8. /• /☐☑；嵌套去缩进与非空一致）；
+                        #   /status 会话累计 token（assistant 落盘 usage 求和；无用量文案；web /status 同口径）；
+                        #   Ctrl+G 外部编辑器组稿（codex open_external_editor：$VISUAL/$EDITOR 接管→回填行缓冲；空闲门控 turnStart；未配置给 hint；doctor 报编辑器环境）；
+                        #   /warnings retained 警告（codex /warnings：MCP 建连失败/未信任降级/代理失败保留，上限 50）；
+                        #   review --title（codex exec review --title：标题进审查输入；help 双语+补全同步）；
+                        #   MCP OAuth 加齐（add --oauth-resource/--oauth-client-registration；login --no-browser/--scopes/单次 registration；config loader 补 clientId 透传；交互会话内 no-browser 指路顶层）；
+                        #   -a/--ask-for-approval（codex -a：never→full/on-request→safe+原生直通；非法抛错 fail-closed；最高优先级；补全同步）；
+                        #   空行 Esc 取回上一条（codex edit-previous：lastUserText+单行压平；轮内/续行/模态不触发；pty e2e）；
+                        #   未知斜杠报错不送模型 + 模糊推荐（联想面板同算法子序列：/ac→/compact；did-you-mean 前 3）；
+                        #   Tab 补全对齐 popup（首词模糊兜底：唯一命中直插；/plugin·/diff 第二词表）；
+                        #   复数别名 /skills→/skill、/plugins→/plugin + /hooks 生效视图（HookRunner.list；改配置重启生效）；
+                        #   /mcp verbose 逐服务器状态（codex 对等：连接/失败/跳过+认证+工具名；带参报用法）+ /rollout 打印会话路径；
+                        #   分隔行对齐 separators.rs（耗时不补零 2m 5s；Local tools/Inference 后缀走 lap 累积，零调用省略；超宽按段折行）；
+                        #   YOLO 行双条件（codex has_yolo_permissions：full + 沙箱 off/danger 才算）；
+                        #   /clear 开新会话文件（codex ClearUi→start_fresh_session：与 /new 共用 rotateFreshSession；同文件清空会在 resume 复活）；
+                        #   输入历史跨会话（codex composer history：XDG input-history.json 上限 200，TTY 独占，Up/Ctrl+R 跨进程可用；pty 双进程 e2e）；
                         #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）
   agent/
     loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
@@ -284,7 +306,7 @@ src/
   lsp.ts              # **LSP 导航工具（2026-09）**：definition/hover/references/documentSymbol（手写最小 LSP 客户端；typescript-language-server / pyright-langserver 按需启动）
   team-tools.ts       # **Team 工具（2026-09）**：task_board（共享看板 add/update/claim/list）+ send_message（异步消息）
     delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
-    mcp.ts              # MCP 客户端：stdio/streamable-HTTP 双传输 + JSON-RPC + 运行时发现注册（tools/resources/prompts/instructions、工具白黑名单、审批模式烘焙、OAuth 登录）
+    mcp.ts              # MCP 客户端：stdio/streamable-HTTP 双传输 + JSON-RPC + 运行时发现注册（tools/resources/prompts/instructions、工具白黑名单、审批模式烘焙、OAuth 登录）；反向处理器经 runOpts.mcpHandlers 复用（reconnect 不丢 elicitation/sampling；sampling 经 getters 读当前模型运行时，/model 切换不 stale）
     mcp-oauth.ts        # MCP OAuth 登录：RFC 8414 discovery + 授权码 PKCE + token 持久化
   config/
     index.ts            # 配置加载：分层合并（含权限/审计/上下文/子代理/MCP 字段）

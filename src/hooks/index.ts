@@ -254,6 +254,11 @@ function echoOutput(opts: HookRunnerOptions | undefined, event: HookEventName, l
 export class HookRunner {
   constructor(private opts: HookRunnerOptions) {}
 
+  /** 全部事件定义（/hooks 查看用；插件合并后的生效视图） */
+  list(): HooksConfig {
+    return this.opts.hooks ?? {};
+  }
+
   /** 是否配置了该事件（loop / 交互层据此跳过空调用） */
   has(event: HookEventName): boolean {
     const defs = this.opts.hooks?.[event];

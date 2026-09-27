@@ -290,7 +290,7 @@ export async function runTuiInteractive(
         pushCmdLine(state, { kind: 'meta', text: '正在重连 MCP 服务器…' }, '/mcp');
         await session.paint();
         closeMcpClients();
-        const handles = await discoverMcpServers(runOpts.mcpServers);
+        const handles = await discoverMcpServers(runOpts.mcpServers, runOpts.mcpHandlers);
         runOpts.mcpHandles = handles;
         runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
         const instrContent = mcpInstructionsMessage(handles);
@@ -859,7 +859,7 @@ export async function runTuiInteractive(
         // /mcp reconnect：关旧客户端 → 重新 discover → 重建工具链 + 更新 handles + 替换 instructions
         onReconnectMcp: async () => {
           closeMcpClients();
-          const handles = await discoverMcpServers(runOpts.mcpServers);
+          const handles = await discoverMcpServers(runOpts.mcpServers, runOpts.mcpHandlers);
           runOpts.mcpHandles = handles;
           runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(handles)];
           const instrContent = mcpInstructionsMessage(handles);
@@ -876,7 +876,7 @@ export async function runTuiInteractive(
         // /mcp add：连接新服务器 → 注入工具链 + 更新 handles + 替换 instructions（不关旧服务器）
         onAddMcp: async (name: string, cfg: McpServerConfig) => {
           try {
-            const handles = await discoverMcpServers({ [name]: cfg });
+            const handles = await discoverMcpServers({ [name]: cfg }, runOpts.mcpHandlers);
             if (handles.length === 0) return '服务器连接失败（见上方警告）';
             runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [name]: cfg };
             runOpts.mcpHandles = [...(runOpts.mcpHandles ?? []), ...handles];

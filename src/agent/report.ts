@@ -19,7 +19,7 @@ export interface StatusInput {
   permission: string;
   planMode: boolean;
   reasoningEffort?: string;
-  /** token 用量（console 模式不跟踪可不传） */
+  /** token 用量（无用量时不传，显示暂无文案） */
   tokens?: TokenUsage;
   /** 会话文件路径（无会话持久化 = null） */
   sessionPath?: string | null;
@@ -70,6 +70,51 @@ export function lastAssistantText(messages: ChatCompletionMessageParam[]): strin
   return '';
 }
 
+/**
+ * 取最近一条 user 消息的纯文本（codex Esc edit-previous 数据源；数组 content 取 text 拼接）。
+ * 无用户消息返回 ''（调用方忽略 Esc）。行缓冲单行：换行压成空格由调用方处理。
+ */
+export function lastUserText(messages: ChatCompletionMessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== 'user' || m.content == null) continue;
+    if (typeof m.content === 'string') {
+      if (m.content.trim() !== '') return m.content;
+      continue;
+    }
+    const text = m.content
+      .map((p) => (p.type === 'text' ? (p as { text?: string }).text ?? '' : ''))
+      .join('');
+    if (text.trim() !== '') return text;
+  }
+  return '';
+}
+
+/** 会话累计 token 用量：assistant 消息上持久化的 usage 求和（loop 每轮 LLM 调用落盘一次；
+ * 恢复会话同样带 usage，回放即有数）。全 0/无用量 → undefined（调用方保留「不跟踪」文案）。
+ * 对标 codex /status「token usage」：mini 之前恒显示不跟踪，实际用量早已落盘。 */
+export function sumSessionUsage(messages: ChatCompletionMessageParam[]): TokenUsage | undefined {
+  let prompt = 0;
+  let completion = 0;
+  let total = 0;
+  let cached = 0;
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue;
+    const u = (m as unknown as Record<string, unknown>).usage as
+      | { prompt?: unknown; completion?: unknown; total?: unknown; cached?: unknown }
+      | undefined;
+    if (!u) continue;
+    const pn = typeof u.prompt === 'number' ? u.prompt : 0;
+    const cn = typeof u.completion === 'number' ? u.completion : 0;
+    prompt += pn;
+    completion += cn;
+    total += typeof u.total === 'number' ? u.total : pn + cn;
+    if (typeof u.cached === 'number') cached += u.cached;
+  }
+  if (total <= 0 && prompt <= 0 && completion <= 0) return undefined;
+  return cached > 0 ? { prompt, completion, total, cached } : { prompt, completion, total };
+}
+
 /** /status：一行汇总当前会话状态 */
 export function statusReport(s: StatusInput): string[] {
   const lines = [
@@ -80,7 +125,7 @@ export function statusReport(s: StatusInput): string[] {
     ...(s.contextWindow ? [`· 上下文窗口：${formatTokenCount(s.contextWindow.value)} tokens（${s.contextWindow.label}）`] : []),
     s.tokens
       ? `· token 用量：${s.tokens.total}（prompt ${s.tokens.prompt} + completion ${s.tokens.completion}）`
-      : '· token 用量：（console 模式不跟踪，TUI 底部显示）',
+      : '· token 用量：（暂无：完成一轮对话后显示累计）',
   ];
   if (s.sandbox && s.sandbox !== 'off') lines.push(`· 沙箱：${s.sandbox}`);
   if (s.sessionPath) lines.push(`· 会话文件：${path.basename(s.sessionPath)}`);
@@ -302,6 +347,16 @@ export async function doctorReport(cfg: OmniConfig): Promise<string[]> {
     }
   } catch {
     lines.push('· Git：检测失败（git 不可用？）');
+  }
+  // 外部编辑器（codex doctor environment 节：VISUAL/EDITOR；Ctrl+G 组稿依赖，缺失即不可用）
+  {
+    const visual = (process.env.VISUAL ?? '').trim();
+    const editor = (process.env.EDITOR ?? '').trim();
+    lines.push(
+      visual || editor
+        ? `· 外部编辑器：${[visual ? `VISUAL=${visual}` : null, editor ? `EDITOR=${editor}` : null].filter(Boolean).join(' / ')}（Ctrl+G 组稿）`
+        : '· 外部编辑器：VISUAL/EDITOR 均未设（Ctrl+G 不可用；如 export EDITOR="code --wait"）'
+    );
   }
   // 终端状态（codex doctor terminal 节：mini 渲染/颜色/交互排障用；只读快照）
   try {

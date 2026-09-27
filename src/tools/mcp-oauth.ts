@@ -39,10 +39,40 @@ interface OAuthMetadata {
   scopes_supported?: string[];
 }
 
+/** OAuth 客户端注册策略（codex mcp add --oauth-client-registration 对等） */
+export type OAuthClientRegistration = 'auto' | 'cimd' | 'dcr';
+
 /** OAuth 客户端选项：clientId 传 HTTPS URL 即 CIMD 模式；缺省尝试 DCR → 回退 'omni' */
 export interface OAuthClientOptions {
   clientId?: string;
   clientName?: string;
+  /**
+   * RFC 8707 resource 指示（codex mcp add --oauth-resource 对等）：部分网关要求
+   * 授权与换 token 时携带目标资源；缺省不发（保持旧行为）。
+   */
+  resource?: string;
+  /**
+   * 注册策略覆盖（codex --oauth-client-registration 对等）：
+   * cimd = 必须显式 clientId（HTTPS URL），否则抛错；dcr = 强制动态注册，
+   * 无 registration_endpoint 时抛错而不静默回退；auto/缺省 = 旧行为。
+   */
+  clientRegistration?: OAuthClientRegistration;
+  /**
+   * 请求的 OAuth scope（codex mcp login --scopes 对等）：逗号/空格分隔，
+   * 归一为空格连接后发 scope 参数；缺省用位置 scope（内部默认 'mcp'）。
+   */
+  scopes?: string;
+  /**
+   * 无浏览器模式（codex mcp login --no-browser 对等）：打印授权地址，
+   * 由 promptCallback/标准输入粘贴回调地址完成；不拉本地回调服务器。
+   * 交互会话内 stdin 被主 readline 独占——调用方负责改走顶层命令。
+   */
+  noBrowser?: boolean;
+  /**
+   * no-browser 回调地址提供器（缺省 stdin readline 问一句；单测注入桩）。
+   * 入参带本次 state（桩按 state 组回调地址）；返回 null/空 = 用户取消。
+   */
+  promptCallback?: (info: { authUrl: string; state: string; redirectUri: string }) => Promise<string | null>;
 }
 
 function oauthFilePath(): string {
@@ -128,13 +158,25 @@ const pkce = () => {
  *  1. 显式 clientId（HTTPS URL = CIMD 元数据文档；普通字符串 = 预注册 client_id）；
  *  2. 服务器声明 registration_endpoint → RFC 7591 动态注册（PKCE public client）；
  *  3. 回退旧行为 'omni'。
+ * 策略覆盖：cimd 要求显式 clientId（缺失/非 HTTPS URL 直接抛错，不猜）；
+ * dcr 跳过显式直用、强制走 registration_endpoint（缺失/失败抛错，不静默回退）。
  */
 export async function resolveOAuthClientId(
   meta: OAuthMetadata,
   redirectUri: string,
   opts?: OAuthClientOptions
 ): Promise<{ clientId: string; clientSecret?: string }> {
-  if (opts?.clientId) return { clientId: opts.clientId };
+  const strategy = opts?.clientRegistration ?? 'auto';
+  if (strategy === 'cimd') {
+    if (!opts?.clientId || !opts.clientId.startsWith('https://')) {
+      throw new Error('CIMD 注册策略要求显式 --oauth-client-id（HTTPS URL 元数据文档）');
+    }
+    return { clientId: opts.clientId };
+  }
+  if (strategy !== 'dcr' && opts?.clientId) return { clientId: opts.clientId };
+  if (strategy === 'dcr' && !meta.registration_endpoint) {
+    throw new Error('DCR 注册策略要求服务器提供 registration_endpoint（元数据缺失）');
+  }
   if (meta.registration_endpoint) {
     try {
       const resp = await fetch(meta.registration_endpoint, {
@@ -158,11 +200,73 @@ export async function resolveOAuthClientId(
           };
         }
       }
-    } catch {
-      // 注册失败 → 回退预注册 'omni'
+    } catch (err) {
+      // 注册失败 → auto 回退预注册 'omni'；dcr 显式策略不吞错
+      if (strategy === 'dcr') {
+        throw new Error(`动态客户端注册失败：${(err as Error)?.message ?? err}`);
+      }
     }
   }
+  if (strategy === 'dcr') {
+    throw new Error('动态客户端注册失败（服务器未返回可用 client_id）');
+  }
   return { clientId: 'omni' };
+}
+
+/**
+ * scope 归一（codex --scopes 逗号形态兼容）：逗号/空白切分去空 → 空格连接；
+ * 空输入回 undefined（调用方用默认 scope）。
+ */
+export function normalizeScopes(input?: string): string | undefined {
+  const parts = `${input ?? ''}`.split(/[,\s]+/).map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
+/** 拼授权地址（纯函数：PKCE/state/scope/resource 组装可单测） */
+export function buildAuthorizeUrl(
+  authorizationEndpoint: string,
+  parts: {
+    clientId: string;
+    redirectUri: string;
+    challenge: string;
+    state: string;
+    scope?: string;
+    resource?: string;
+  }
+): string {
+  const authUrl = new URL(authorizationEndpoint);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', parts.clientId);
+  authUrl.searchParams.set('redirect_uri', parts.redirectUri);
+  authUrl.searchParams.set('code_challenge', parts.challenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('state', parts.state);
+  if (parts.scope) authUrl.searchParams.set('scope', parts.scope);
+  if (parts.resource) authUrl.searchParams.set('resource', parts.resource);
+  return authUrl.toString();
+}
+
+/** 解析回调参数（纯函数）：state 校验 + 取 code，失败抛错（CSRF/拒绝） */
+export function parseCallbackParams(params: URLSearchParams, expectedState: string): string {
+  const state = params.get('state');
+  if (state !== expectedState) throw new Error('OAuth state 校验失败（CSRF 防护）');
+  const authCode = params.get('code');
+  if (!authCode) throw new Error('OAuth 授权被拒绝（无 code）');
+  return authCode;
+}
+
+/** 缺省回调地址提问（顶层命令独占 stdin 时用；交互会话内禁用见 noBrowser 注释） */
+async function askCallbackUrl(): Promise<string | null> {
+  const rl = (await import('node:readline/promises')).createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const ans = await rl.question('粘贴授权后跳回的完整地址（空回车取消）：');
+    return ans.trim() || null;
+  } finally {
+    rl.close();
+  }
 }
 
 /**
@@ -182,49 +286,62 @@ export async function oauthLogin(baseUrl: string, scope = 'mcp', opts?: OAuthCli
   // client_id：显式（CIMD URL）→ DCR 动态注册 → 'omni' 回退
   const { clientId, clientSecret } = await resolveOAuthClientId(meta, redirectUri, opts);
 
-  const authUrl = new URL(meta.authorization_endpoint);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('client_id', clientId);
-  authUrl.searchParams.set('redirect_uri', redirectUri);
-  authUrl.searchParams.set('code_challenge', challenge);
-  authUrl.searchParams.set('code_challenge_method', 'S256');
-  authUrl.searchParams.set('state', code);
-  if (scope) authUrl.searchParams.set('scope', scope);
-
-  // 打开默认浏览器
-  const open = (await import('node:child_process')).spawn;
-  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', authUrl.toString()] : [authUrl.toString()];
-  const child = open(opener, args, { stdio: 'ignore', detached: true });
-  child.unref();
-
-  // 本地回调服务器：接收 code 后关闭
-  const received = await new Promise<URLSearchParams | null>((resolve) => {
-    const server = createServer((req, res) => {
-      const u = new URL(req.url ?? '/', redirectUri);
-      if (u.pathname === '/callback') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end('<html><body><h2>Omni 已收到授权，可关闭此页面</h2></body></html>');
-        server.close();
-        resolve(u.searchParams);
-      } else {
-        res.writeHead(404);
-        res.end('not found');
-      }
-    });
-    server.listen(redirectPort, '127.0.0.1', () => {});
-    // 超时兜底：60s 未回调 → 取消
-    setTimeout(() => {
-      server.close();
-      resolve(null);
-    }, 60_000);
+  const scopeText = normalizeScopes(opts?.scopes) ?? scope;
+  const authUrlText = buildAuthorizeUrl(meta.authorization_endpoint, {
+    clientId,
+    redirectUri,
+    challenge,
+    state: code,
+    ...(scopeText ? { scope: scopeText } : {}),
+    ...(opts?.resource ? { resource: opts.resource } : {}),
   });
 
-  if (!received) return null;
-  const authCode = received.get('code');
-  const state = received.get('state');
-  if (state !== code) throw new Error('OAuth state 校验失败（CSRF 防护）');
-  if (!authCode) throw new Error('OAuth 授权被拒绝（无 code）');
+  let authCode: string;
+  if (opts?.noBrowser) {
+    // 无浏览器模式（codex --no-browser 对等）：打印地址 + 粘贴回调地址
+    console.log(`在浏览器打开以下地址完成授权，再把跳回的完整地址粘贴回来：\n${authUrlText}`);
+    const pasted = await (opts.promptCallback ?? (() => askCallbackUrl()))({ authUrl: authUrlText, state: code, redirectUri });
+    if (!pasted) return null;
+    let cb: URL;
+    try {
+      cb = new URL(pasted.trim());
+    } catch {
+      throw new Error('回调地址非法（需要完整 URL）');
+    }
+    authCode = parseCallbackParams(cb.searchParams, code);
+  } else {
+    // 打开默认浏览器
+    const open = (await import('node:child_process')).spawn;
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+    const args = process.platform === 'win32' ? ['/c', 'start', '', authUrlText] : [authUrlText];
+    const child = open(opener, args, { stdio: 'ignore', detached: true });
+    child.unref();
+
+    // 本地回调服务器：接收 code 后关闭
+    const received = await new Promise<URLSearchParams | null>((resolve) => {
+      const server = createServer((req, res) => {
+        const u = new URL(req.url ?? '/', redirectUri);
+        if (u.pathname === '/callback') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<html><body><h2>Omni 已收到授权，可关闭此页面</h2></body></html>');
+          server.close();
+          resolve(u.searchParams);
+        } else {
+          res.writeHead(404);
+          res.end('not found');
+        }
+      });
+      server.listen(redirectPort, '127.0.0.1', () => {});
+      // 超时兜底：60s 未回调 → 取消
+      setTimeout(() => {
+        server.close();
+        resolve(null);
+      }, 60_000);
+    });
+
+    if (!received) return null;
+    authCode = parseCallbackParams(received, code);
+  }
 
   // 换 token
   const tokenBody: Record<string, string> = {
@@ -235,6 +352,7 @@ export async function oauthLogin(baseUrl: string, scope = 'mcp', opts?: OAuthCli
     code_verifier: verifier,
   };
   if (clientSecret) tokenBody.client_secret = clientSecret;
+  if (opts?.resource) tokenBody.resource = opts.resource;
   const tokenResp = await fetch(meta.token_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
