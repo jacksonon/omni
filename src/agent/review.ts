@@ -10,10 +10,12 @@
  * （命令层提示，不打断对话）。
  */
 import { exec } from 'node:child_process';
+import { userMessageWithImages } from './context.js';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type OpenAI from 'openai';
+import type { ImageAttachment } from './context.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 const execAsync = promisify(exec);
@@ -72,9 +74,11 @@ export function detectCheckCommand(cwd = process.cwd()): string | null {
  * 错误文本会混进 ok 结果里被当成 diff 内容展示。
  */
 export async function collectDiff(
-  options: { stat?: boolean; full?: boolean } = {}
+  options: { stat?: boolean; full?: boolean; base?: string } = {}
 ): Promise<{ ok: boolean; output: string }> {
-  const diffCmd = options.stat ? 'git diff HEAD --stat -- .' : 'git diff HEAD -- .';
+  // base 由调用方清洗后传入（分支名字符集限定，防 shell 注入；见 runExecReview）
+  const ref = options.base ?? 'HEAD';
+  const diffCmd = options.stat ? `git diff ${ref} --stat -- .` : `git diff ${ref} -- .`;
   const diff = await captureCommand(diffCmd);
   const status = await captureCommand('git status --short');
   // 两个都失败 → 大概率非 git 目录，如实报错（调用方提示）
@@ -112,11 +116,14 @@ export async function reviewCode(
   client: OpenAI,
   model: string,
   diff: string,
-  check: { command: string | null; output: string }
+  check: { command: string | null; output: string },
+  extra?: string,
+  images?: ImageAttachment[]
 ): Promise<string | null> {
+  const input = buildReviewInput(diff, check) + (extra?.trim() ? `\n\n[额外审查要求]\n${extra.trim()}` : '');
   const transcript: ChatCompletionMessageParam[] = [
     { role: 'system', content: REVIEW_SYSTEM_PROMPT },
-    { role: 'user', content: buildReviewInput(diff, check) },
+    userMessageWithImages(input, images ?? []),
   ];
   try {
     const stream = await client.chat.completions.create({

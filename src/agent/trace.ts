@@ -101,6 +101,44 @@ function eventText(e: TrajEvent): string {
  * 事件序列 → 轨迹行（纯函数，无副作用）。
  * 工具步按 callId 配对：call 开步（result 未到 = durMs null）、result 填耗时/字数。
  */
+/** 运行中子代理（`/tasks` 数据源）：start 未被同 id end 关闭的即运行中。
+ * 按首次出现保序；step 事件刷新进度。纯折叠，可单测。 */
+export interface OpenSubagent {
+  id: string;
+  name: string;
+  task: string;
+  depth: number;
+  step: number;
+  maxSteps: number;
+}
+export function openSubagents(events: TrajEvent[]): OpenSubagent[] {
+  const open = new Map<string, OpenSubagent>();
+  for (const e of events) {
+    if (e.k === 'subagent/start') {
+      if (!open.has(e.id)) {
+        open.set(e.id, { id: e.id, name: e.name, task: e.task, depth: e.depth, step: 0, maxSteps: 0 });
+      }
+    } else if (e.k === 'subagent/step') {
+      const o = open.get(e.id);
+      if (o) {
+        o.step = e.step;
+        o.maxSteps = e.maxSteps;
+      }
+    } else if (e.k === 'subagent/end') {
+      open.delete(e.id);
+    }
+  }
+  return [...open.values()];
+}
+
+/** 运行中子代理展示行（`/tasks` 输出体；空列表由调用方打空提示） */
+export function formatOpenSubagents(running: OpenSubagent[]): string[] {
+  return running.map((s) => {
+    const prog = s.maxSteps > 0 ? `（${s.step}/${s.maxSteps} 步）` : '';
+    return `${'  '.repeat(s.depth)}· ${s.name}${prog}：${s.task.slice(0, 80)}`;
+  });
+}
+
 export function foldTrace(events: TrajEvent[]): TraceRow[] {
   const rows: TraceRow[] = [];
   let curTurn = 0;

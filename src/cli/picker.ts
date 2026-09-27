@@ -28,8 +28,8 @@ export const MINI_SLASH_COMMANDS = [
   '/btw', '/variants', '/settings', '/model', '/status', '/context', '/export',
   '/mcp', '/diff', '/rewind', '/rename', '/memory-apply', '/fork', '/send',
   '/resume', '/cd', '/pin', '/archive', '/unarchive', '/auto', '/vim',
-  '/team', '/session', '/redo', '/doctor', '/trace', '/init',
-  '/copy', '/pwd', '/quit', '/delete',
+  '/team', '/session', '/redo', '/doctor', '/trace', '/init', '/import', '/recap',
+  '/copy', '/pwd', '/quit', '/stop', '/delete', '/tasks', '/plugin',
 ];
 
 export interface CompleteContext {
@@ -224,7 +224,7 @@ export function formatShortcutsHelp(): string[] {
     '! 开头直跑 shell（bash mode，不进模型）',
     '@ 提及文件/图片（Tab 补全），/ 斜杠命令（Tab 补全）',
     'Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）',
-    'Esc 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹',
+    'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹',
     'Ctrl+D 退出（与 /exit 同一收尾） · /quit 也是退出',
   ];
 }

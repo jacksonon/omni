@@ -2,6 +2,7 @@
  * 功能测试：配置分层 / JSONC 解析 / 字段解析。
  * 纯函数断言（import 源文件），无需网络。
  */
+import { spawn } from 'node:child_process';
 import { TestSuite } from './framework.js';
 import { parseJsonc } from '../../src/config/jsonc.js';
 import { loadConfig } from '../../src/config/index.js';
@@ -10,6 +11,10 @@ import { findProjectConfig } from '../../src/config/discover.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export function configSuite(): TestSuite {
   const suite = new TestSuite('配置系统（分层 / JSONC / 字段解析）');
@@ -83,6 +88,146 @@ export function configSuite(): TestSuite {
       rmSync(tmp, { recursive: true, force: true });
       rmSync(tmpXdg, { recursive: true, force: true });
     }
+  });
+
+  suite.test('--add-dir 沙箱额外可写目录（codex --add-dir，可重复追加）', () => {
+    const r1 = parseArgs(['mini', '--add-dir', '/tmp/a', 'task']);
+    suite.assert((r1.overrides.addDirs ?? []).join(',') === '/tmp/a' && r1.taskArgs.join(' ') === 'mini task', '--add-dir 剥离不污染任务');
+    const r2 = parseArgs(['exec', '--add-dir=/tmp/a', '--add-dir', '/tmp/b']);
+    suite.assert((r2.overrides.addDirs ?? []).join(',') === '/tmp/a,/tmp/b', '--add-dir= 形态 + 可重复');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgad-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgad-w-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      const c0 = loadConfig();
+      suite.assert(!c0.sandboxWritePaths?.length, '缺省无额外可写目录');
+      const c1 = loadConfig({ addDirs: ['/tmp/a', '/tmp/a', 'rel/sub'] });
+      suite.assert(
+        // macOS /tmp→/private/tmp 符号链接：相对展开以后置 resolve 为准，不拼 tmp 前缀
+        (c1.sandboxWritePaths ?? []).join(',') === `/tmp/a,${path.resolve('rel/sub')}`,
+        '合并+去重+相对展开，配置文件项保留'
+      );
+      writeFileSync(path.join(tmp, 'omni.json'), JSON.stringify({ sandboxWritePaths: ['/cfg/one'] }));
+      const c2 = loadConfig({ addDirs: ['/cli/two'] });
+      suite.assert(
+        (c2.sandboxWritePaths ?? []).join(',') === '/cfg/one,/cli/two',
+        '配置文件项 + CLI 追加共存'
+      );
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('中英 --help 关键行（多轮 slash/flag 增补回归锁）', async () => {
+    const runHelp = (args: string[]) =>
+      new Promise<{ code: number | null; out: string }>((resolve) => {
+        const child = spawn('npx', ['tsx', 'src/index.ts', ...args], {
+          cwd: ROOT,
+          env: { ...process.env },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        child.stdout.on('data', (d) => (acc += d));
+        child.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+    const en = await runHelp(['--help']);
+    suite.assert(en.code === 0, '英文帮助退出码 0');
+    for (const s of ['/stop stop the running turn', '/import import config from Claude Code', '/recap summarize', 'exec fork', 'exec review', '--ephemeral', '--add-dir', '--color', '/clear clear context', '/trace full trace ledger', '/spec spec workflow', '--strict-config']) {
+      suite.assert(en.out.includes(s), `英文帮助含 ${s}`);
+    }
+    const zh = await runHelp(['--help', '--lang', 'zh']);
+    suite.assert(zh.code === 0, '中文帮助退出码 0');
+    for (const s of ['/stop 停止当前任务', '/import 从 Claude Code 迁移配置', '/recap 总结当前对话', '分叉出新会话', '非交互代码审查', '不落盘会话文件', '沙箱额外可写目录', '--color', '/clear 清空上下文', '/trace 完整轨迹账本', '/spec 规格工作流', '严格配置校验']) {
+      suite.assert(zh.out.includes(s), `中文帮助含 ${s}`);
+    }
+  });
+
+  suite.test('全局 -i/--image + --approve-for-me（codex 顶层同款）', () => {
+    const r1 = parseArgs(['mini', '-i', 'a.png', '--image=b.png', 'task']);
+    suite.assert((r1.overrides.images ?? []).join(',') === 'a.png,b.png', '-i 可重复 + = 形态');
+    suite.assert(r1.taskArgs.join(' ') === 'mini task', '图片参数不污染任务文本');
+    const r2 = parseArgs(['--approve-for-me', 'exec', 'task']);
+    suite.assert(r2.overrides.approveForMe === true && r2.taskArgs.join(' ') === 'exec task', '--approve-for-me 全局剥离');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgafm-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    try {
+      suite.assert(loadConfig().autoReview !== true, '缺省非自动审批');
+      suite.assert(loadConfig({ approveForMe: true }).autoReview === true, 'overrides 置 cfg.autoReview');
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('--strict-config 未知顶层字段报错（codex 同款，防拼写/静默失效）', () => {
+    const r = parseArgs(['--strict-config', 'task']);
+    suite.assert(r.overrides.strictConfig === true && r.taskArgs.join(' ') === 'task', '--strict-config 剥离');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgstrict-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgstrict-w-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      writeFileSync(path.join(tmp, 'omni.json'), JSON.stringify({ model: 'x', modle: 'typo', apiKey: 'sk-should-not-be-here', $schema: './config.schema.json' }));
+      let threw = '';
+      try {
+        loadConfig({ strictConfig: true });
+      } catch (e) {
+        threw = (e as Error).message;
+      }
+      suite.assert(threw.includes('modle') && threw.includes('apiKey'), '拼写错误 + 文件层静默失效字段都被点名');
+      suite.assert(threw.includes('omni.json'), '报错带文件路径');
+      const ok = loadConfig({ strictConfig: false });
+      suite.assert(ok.model === 'x', '非 strict 下静默兼容（行为不变）');
+      writeFileSync(path.join(tmp, 'omni.json'), JSON.stringify({ model: 'x' }));
+      suite.assert(loadConfig({ strictConfig: true }).model === 'x', '干净配置 strict 通过');
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('-V 版本别名（codex 双层 -V 对等；此前会污染成任务文本）', async () => {
+    suite.assert(parseArgs(['-V']).version === true, '-V 置 version');
+    suite.assert(parseArgs(['-V']).taskArgs.length === 0, '-V 不进任务参数');
+    const out = await new Promise<{ code: number | null; text: string }>((resolve) => {
+      const child = spawn('npx', ['tsx', 'src/index.ts', '-V'], {
+        cwd: ROOT,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let acc = '';
+      child.stdout.on('data', (d) => (acc += d));
+      const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+      child.on('close', (c) => {
+        clearTimeout(timer);
+        resolve({ code: c, text: acc });
+      });
+    });
+    suite.assert(out.code === 0 && out.text.includes('omni v'), '-V 打印版本退出码 0');
+  });
+
+  suite.test('-p profile 别名（codex -p 对等；此前会污染成任务文本）', () => {
+    const r = parseArgs(['-p', 'work', 'task']);
+    suite.assert(r.overrides.profile === 'work' && r.taskArgs.join(' ') === 'task', '-p 置 profile 且不污染任务');
   });
 
   suite.test('CLI 参数覆盖模型（overrides 优先级最高）', () => {

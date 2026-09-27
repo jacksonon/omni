@@ -240,14 +240,33 @@ const TIPS = [
   '行首 ! 直跑 shell（如 !git status），不经过模型（codex bash mode）。',
   '用 @ 提及文件：打字过滤，Tab 选择（单候选直插，多候选 ↑↓+Enter）。',
   '用 @图片.png 把截图直接发给模型看（vision 模型可用，无 vision 模型会明确报错）。',
-  '/exit 退出，Ctrl+C 中断当前任务。',
+  '用 /status 查看模型/上下文用量，/compact 手动压缩上下文。',
+  '用 /copy 复制上一条模型回复，/export 导出整个会话。',
+  '用 /fork 从当前会话分叉，/permission 切换权限档位。',
+  '/exit 退出，/stop 或 Ctrl+C 中断当前任务。',
 ];
 
 /**
  * 回合完成 tip 节奏（codex ca41ed3 的 mini 版：成功回合带最终回答、3 轮起、
- * 间隔 ≥3 轮、全会话 ≤2 条；working 中 tip 不做——mini live 块是单行设计）。
+ * 间隔 ≥3 轮、全会话 ≤2 条；同轮出过 working tip 则跳过 completion tip）。
  * 中断识别近似：以正文收尾（onAnswerEnd）为"带最终回答"信号。
  */
+
+/** working 中 tip（codex ca41ed3：working 状态持续 30s 后在状态行下方随机一条；每轮最多一条） */
+export const WORKING_TIP_AFTER_SECS = 30;
+export function shouldShowWorkingTip(secs: number, shownThisTurn: boolean): boolean {
+  return !shownThisTurn && secs >= WORKING_TIP_AFTER_SECS;
+}
+
+/** working tip 行（completion tip 同文案体例，`Tip: ` 前缀 + dim） */
+export function renderWorkingTip(tip: string): string {
+  return `${PREFIX}${dim(`Tip: ${tip}`)}`;
+}
+
+/** working live 块内容组装（状态行；出过 tip 则下方附一条，LiveBlock 按行数伸缩） */
+export function workingLines(line: string, tip: string | null): string[] {
+  return tip ? [line, renderWorkingTip(tip)] : [line];
+}
 export function shouldShowTurnTip(s: { turn: number; shown: number; lastShownTurn: number; hasAnswer: boolean }): boolean {
   if (!s.hasAnswer) return false;
   if (s.turn < 3) return false;
@@ -687,7 +706,9 @@ export class MiniOutput implements Output {
   /** 思考流式单元格（dim + italic，首次出现时才建立——没思考就不该有 `• ` 空行） */
   private reasoning: StreamingCell | null = null;
   /** 运行中状态行（onRound → 首个 chunk / 工具调用 / 回合结束） */
-  private working: { started: number; timer: NodeJS.Timeout } | null = null;
+  private working: { timer: NodeJS.Timeout } | null = null;
+  /** 本轮是否已出过 working tip（出过则跳过同轮 completion tip，codex ca41ed3 同规则） */
+  private workingTipShown = false;
   /** 当前工具的 live 单元格状态（bullet 标题 + 已流出的输出行） */
   private tool: {
     id: number;
@@ -763,6 +784,21 @@ export class MiniOutput implements Output {
     }
   };
 
+  /**
+   * Ctrl+T 账本落盘（codex 6a39914 mini 版）：先清 live 块再打印——
+   * 轮内（Working/流式/双行 tip）按 Ctrl+T 时，不与 live 重绘抢同一区域；
+   * 清掉后 live 下次 update 从光标新位置起画，旧状态行不残留不重影。
+   * 调用方传已组装好的 header/lines（含缩进与着色），这里只管落盘顺序。
+   */
+  dumpLedger(header: string, lines: string[]): void {
+    this.live.clear();
+    this.print('');
+    this.print('');
+    this.print(header);
+    for (const l of lines) this.print(l);
+    this.print('');
+  }
+
   private beginInputCapture(): void {
     if (this.capturing || this.yieldedInput) return;
     if (!this.rl || !this.live.active) return;
@@ -824,7 +860,7 @@ export class MiniOutput implements Output {
   markInteractive(): void {
     this.interactive = true;
     if (this.opts.stream) {
-      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · Ctrl+C 中断 · /exit 退出 · Ctrl+T 轨迹')}`);
+      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · /stop 停止 · Ctrl+C 中断 · /exit 退出 · Ctrl+T 轨迹')}`);
       this.print('');
     }
   }
@@ -927,14 +963,26 @@ export class MiniOutput implements Output {
 
   private startWorking(hint = 'esc to interrupt'): void {
     if (!this.live.active || this.working) return;
-    const started = Date.now();
+    // turn 级计时（onTurnStart 置位；多 LLM round 共用同一 working 语义，30s 阈值按整轮算）
+    const started = this.turnStart ?? Date.now();
     let i = 0;
     const tick = (): void => {
       const secs = Math.floor((Date.now() - started) / 1000);
-      this.live.update([renderWorkingLine(secs, ACTIVITY_FRAMES[i++ % ACTIVITY_FRAMES.length]!, hint)]);
+      const line = renderWorkingLine(secs, ACTIVITY_FRAMES[i++ % ACTIVITY_FRAMES.length]!, hint);
+      if (shouldShowWorkingTip(secs, this.workingTipShown)) this.workingTipShown = true;
+      this.live.update(workingLines(line, this.workingTipShown ? this.workingTipText() : null));
     };
     tick();
-    this.working = { started, timer: setInterval(tick, 100) };
+    this.working = { timer: setInterval(tick, 100) };
+  }
+
+  /** 本轮 working tip 文案（首现时随机定稿，同轮后续 tick 沿用同一条，不闪变） */
+  private workingTipMemo: string | null = null;
+  private workingTipText(): string {
+    if (!this.workingTipMemo) {
+      this.workingTipMemo = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
+    }
+    return this.workingTipMemo;
   }
 
   private stopWorking(): void {
@@ -1103,6 +1151,9 @@ export class MiniOutput implements Output {
 
   /** 回合结束：dim 的 `Worked for Xs · 16:41` 分隔行（codex separators.rs） */
   onTurnEnd(): void {
+    const skipCompletionTip = this.workingTipShown;
+    this.workingTipShown = false;
+    this.workingTipMemo = null;
     this.stopWorking();
     const start = this.turnStart;
     this.turnStart = null;
@@ -1113,6 +1164,7 @@ export class MiniOutput implements Output {
     }
     if (
       this.opts.stream &&
+      !skipCompletionTip &&
       shouldShowTurnTip({ turn: this.turnCount, shown: this.turnTipsShown, lastShownTurn: this.lastTipTurn, hasAnswer: this.answerEnded })
     ) {
       const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
@@ -1260,6 +1312,3 @@ export class MiniOutput implements Output {
     }
   }
 }
-
-/** 供探针/测试使用：是否启用颜色（与渲染层同源） */
-export const miniUsesColor = useColor;

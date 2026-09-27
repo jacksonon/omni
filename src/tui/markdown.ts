@@ -70,7 +70,7 @@ const LATEX_UNICODE: Record<string, string> = {
   otimes: '⊗', oslash: '⊘', odot: '⊙', cap: '∩', cup: '∪', sqcap: '⊓', sqcup: '⊔',
   vee: '∨', lor: '∨', wedge: '∧', land: '∧', setminus: '∖',
   sum: '∑', prod: '∏', coprod: '∐', int: '∫', iint: '∬', iiint: '∭', oint: '∮',
-  bigcup: '⋃', bigcap: '⋂', bigoplus: '⨁', mid: '∣', shortmid: '∣',
+  bigcup: '⋃', bigcap: '⋂', bigoplus: '⨁', bigwedge: '⋀', mid: '∣', shortmid: '∣',
   // 其它数学符号
   infty: '∞', partial: '∂', nabla: '∇', exists: '∃', nexists: '∄', forall: '∀',
   emptyset: '∅', varnothing: '∅', aleph: 'ℵ', hbar: 'ℏ', ell: 'ℓ', wp: '℘',
@@ -125,11 +125,13 @@ export function inlineMathToText(input: string): string {
 /**
  * 成对 `$…$` 内容是否按数学处理（防误伤价格文本）：
  * · 含 `\`（LaTeX 命令）→ 数学（`$\gg$`、`$\rightarrow$`）
+ * · 恰为 `0` → 数学（codex #48551 同款：`$0$` 渲染为 0；`$5`/`$0.5` 等仍按价格保留）
  * · 无空格、≤40 字符且含字母 → 数学（`$x^2$`、`$a+b$`）
  * · 其余（含空格 / 纯数字如 `$5-$10`）→ 普通文本原样保留
  */
 function isMathContent(c: string): boolean {
   if (c.includes('\\')) return true;
+  if (c === '0') return true;
   if (/\s/.test(c) || c.length > 40) return false;
   return /[A-Za-z]/.test(c);
 }

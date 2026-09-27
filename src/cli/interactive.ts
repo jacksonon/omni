@@ -12,7 +12,7 @@ import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatToken
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { collectImageAttachments, prepareContext, userMessageWithImages } from '../agent/context.js';
+import { collectImageAttachments, loadImageAttachment, MAX_IMAGE_FILES, prepareContext, recapConversation, userMessageWithImages, type ImageAttachment } from '../agent/context.js';
 import {
   generateAgentsFile,
   generateGlobalAgentsFile,
@@ -72,6 +72,11 @@ import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yel
 import { printHelp } from './args.js';
 import { applyMentionInsert, completeMiniLine, formatModePrompt, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
+
+/** `/stop` 精确匹配（codex /stop：轮内前置拦截与空闲提示共用；`/stop xxx` 带参不认，避免误吞普通消息） */
+export function isStopCommand(text: string): boolean {
+  return text.trim() === '/stop';
+}
 
 export async function runInteractive(
   client: OpenAI,
@@ -153,6 +158,36 @@ export async function runInteractive(
     }
     return [hits, word];
   };
+  // keypress 发射前置 + /stop 轮内拦截（codex /stop 命令）：
+  // Node readline 把回车 keypress 只发给接口创建前挂载的监听器（后挂的收不到
+  // return/enter，pty 实证），而 keypress 事件需要发射装置先就位——此处提前开启
+  // 发射（幂等标记，后方原调用自动跳过），顺序与实证一致：emit → 监听 → 建接口。
+  // 轮内提交 `/stop` 时吞掉该行（置空→主循环空行分支跳过）并 abort 本轮；
+  // 中断槽为空 = 取消语义，loop 优雅结束本轮（与 Esc 同机制）。
+  let stopHook: {
+    isActive: () => boolean;
+    line: () => string;
+    swallow: () => void;
+    abort: () => void;
+  } | null = null;
+  if (input.isTTY) {
+    const pre = input as unknown as { __omniKeypressOn?: boolean };
+    if (!pre.__omniKeypressOn) {
+      classicReadline.emitKeypressEvents(input);
+      pre.__omniKeypressOn = true;
+    }
+    input.on('keypress', ((_ch: unknown, key?: { name?: string }) => {
+      try {
+        if (!stopHook || !stopHook.isActive()) return;
+        if (key?.name !== 'return' && key?.name !== 'enter') return;
+        if (!isStopCommand(stopHook.line())) return;
+        stopHook.swallow();
+        stopHook.abort();
+      } catch {
+        /* 拦截器永不打断输入 */
+      }
+    }) as (...args: unknown[]) => void);
+  }
   const rl = readline.createInterface({
     input,
     output,
@@ -184,6 +219,19 @@ export async function runInteractive(
     rearmTurnAbort();
   };
   rearmTurnAbort();
+  // /stop 拦截器接线（rl/contBuf 就绪后；触发时清续行累积防旧文本混入空行提交）
+  stopHook = {
+    isActive: () => inTurn && !!turnAbort && !turnAbort.signal.aborted,
+    line: () => rl.line ?? '',
+    swallow: () => {
+      contBuf.length = 0;
+      (rl as unknown as { line: string }).line = '';
+      (rl as unknown as { cursor: number }).cursor = 0;
+    },
+    abort: () => {
+      turnAbort?.abort();
+    },
+  };
   if (input.isTTY) {
     const flagged = input as unknown as { __omniKeypressOn?: boolean };
     if (!flagged.__omniKeypressOn) {
@@ -507,6 +555,12 @@ export async function runInteractive(
       await finishSession();
       break;
     }
+    if (isStopCommand(cmd)) {
+      // /stop：空闲时没有正在执行的任务（轮内提交走前置拦截 abort，不会落到这里）
+      console.log(dim('（当前没有正在执行的任务）'));
+      safePrompt();
+      continue;
+    }
     if (cmd === '/clear') {
       messages.length = 0;
       savedCount = 0;
@@ -669,6 +723,13 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
+    if (cmd === '/import') {
+      // /import：从 Claude Code 迁移配置（codex Import 对等；与顶层 omni import 同报告）
+      const { importFromClaudeCode, reportImportResult } = await import('./import-claude.js');
+      reportImportResult(importFromClaudeCode(process.cwd()));
+      safePrompt();
+      continue;
+    }
     if (cmd === '/skill' || cmd.startsWith('/skill ')) {
       // /skill：列出已发现技能（SKILL.md）；find <词> 网络检索；add 安装（本会话即时生效）；show 查看内容
       const args = cmd.slice('/skill'.length).trim();
@@ -787,6 +848,20 @@ export async function runInteractive(
         console.log(dim('上下文还很短或无可压缩内容（/compact 在长对话中才有明显效果）'));
       } else {
         console.log(green(`已压缩 ${before - after} 条旧消息为摘要（保留最近 8 条原文）`));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/recap') {
+      // /recap：按需总结当前对话（codex Recap 对等；只读打印，不压缩、不改历史）
+      console.log(dim('正在生成会话摘要…'));
+      const summary = await recapConversation(currentClient, currentModel, messages).catch(() => null);
+      if (!summary) {
+        console.log(dim('（暂无可总结的对话内容）'));
+      } else {
+        // 走正文单元格（`• ` + Markdown 渲染，与 /review 同理）
+        out.onAnswer(summary);
+        out.onAnswerEnd();
       }
       safePrompt();
       continue;
@@ -1313,8 +1388,10 @@ export async function runInteractive(
         }
         safePrompt(); continue;
       }
-      if (sub === 'add' || sub === 'remove' || sub === 'login') {
-        console.log(red('CLI 交互模式不支持 /mcp add / remove / login（请用 TUI 或直接编辑配置文件）'));
+      if (sub === 'add' || sub === 'remove' || sub === 'login' || sub === 'logout') {
+        // 变更类透传顶层同实现（codex mcp 对等；空闲态串行，无读写竞态）
+        const { runMcpCommand } = await import('./mcp.js');
+        await runMcpCommand([sub, ...arg.split(/\s+/).slice(1).filter(Boolean)]);
         safePrompt(); continue;
       }
       if (names.length === 0) {
@@ -1827,6 +1904,26 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
+    if (cmd === '/tasks') {
+      // /tasks：运行中子代理（轨迹事件折叠 start/step/end；无运行项给空提示）
+      const { openSubagents, formatOpenSubagents } = await import('../agent/trace.js');
+      const running = openSubagents(runOpts.events?.events ?? []);
+      if (running.length === 0) {
+        console.log(dim('（当前没有运行中的子代理）'));
+      } else {
+        console.log(dim(`运行中子代理（${running.length} 个）：`));
+        for (const l of formatOpenSubagents(running)) console.log(dim(l));
+      }
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/plugin' || cmd.startsWith('/plugin ')) {
+      // /plugin：插件管理透传（codex Plugins 对等；install/list/enable/disable/remove 走顶层同实现）
+      const { runPluginCommand } = await import('./plugin.js');
+      await runPluginCommand(cmd.slice('/plugin'.length).trim().split(/\s+/).filter(Boolean));
+      safePrompt();
+      continue;
+    }
     if (cmd === '/trace') {
       // /trace：本次会话的轨迹账本（每轮请求/工具/消息/压缩的事件序列折叠投影）。
       // 数据源 = 事件记录器内存全量事件；console 端文本账本，TUI 端右侧面板。
@@ -1937,7 +2034,21 @@ export async function runInteractive(
     }
     // 图片提及（codex composer 图片附件）：`@图.png` 转 vision parts 随本轮发出
     //（无 vision 模型由 loop modalities 校验明确报错；文本 @引用 照常回显）
-    const images = await collectImageAttachments(userText, process.cwd()).catch(() => []);
+    const images: ImageAttachment[] = await collectImageAttachments(userText, process.cwd()).catch(() => []);
+    // 全局 -i/--image 初始附件：首个用户回合合并（@提及合并去重；消费即清，不污染后续轮）
+    const initial = runOpts.initialImages;
+    runOpts.initialImages = undefined;
+    if (initial?.length) {
+      const seen = new Set(images.map((a) => path.resolve(process.cwd(), a.path)));
+      for (const f of initial) {
+        if (images.length >= MAX_IMAGE_FILES) break;
+        const abs = path.resolve(process.cwd(), f);
+        if (seen.has(abs)) continue;
+        seen.add(abs);
+        const att = await loadImageAttachment(abs, f).catch(() => null);
+        if (att) images.push(att);
+      }
+    }
     if (images.length > 0) {
       console.log(dim(`（已附加 ${images.length} 张图片：${images.map((i) => i.path).join('、')}）`));
     }

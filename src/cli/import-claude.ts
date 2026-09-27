@@ -14,6 +14,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import path from 'node:path';
+import { dim, green, red, yellow } from '../ui.js';
 
 export interface ImportResult {
   /** 迁移成功的条目 */
@@ -151,4 +152,17 @@ export function importFromClaudeCode(cwd = process.cwd()): ImportResult & { hint
   }
 
   return result;
+}
+
+/**
+ * 迁移报告打印（顶层 `omni import` 与交互 `/import` 共用；调用方定退出码/后续流程）。
+ * 输出与此前顶层行为一致：标题 + ✓/-/✗/⚠ 行 + 收尾提示（重启会话生效）。
+ */
+export function reportImportResult(r: ImportResult & { hints: string[] }): void {
+  console.log('从 Claude Code 迁移到 omni：');
+  for (const d of r.done) console.log(green(`  ✓ ${d}`));
+  for (const x of r.skipped) console.log(dim(`  - 跳过 ${x}`));
+  for (const f of r.failed) console.log(red(`  ✗ ${f}`));
+  for (const h of r.hints) console.log(yellow(`  ⚠ ${h}`));
+  console.log(dim(r.done.length > 0 ? `完成（${r.done.length} 项迁移）。重启会话生效。` : '没有可迁移的内容。'));
 }

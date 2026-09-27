@@ -31,21 +31,33 @@ interface KeypressStream {
  * 只挂在 TTY 上：readline.createInterface 会激活 keypress 解码器，这里只订阅。
  * 打印时机可能落在用户正在输入的行上，readline 在下一次按键时会重绘该行。
  */
-function installTranscriptViewer(runOpts: RunOptions): () => void {
+function installTranscriptViewer(
+  runOpts: RunOptions,
+  dump?: (header: string, lines: string[]) => void
+): () => void {
   const stdin = process.stdin as unknown as KeypressStream;
   if (!stdin.isTTY) return () => {};
   const onKey: KeypressHandler = (_str, key) => {
     if (!key?.ctrl || key.name !== 't') return;
     const events = runOpts.events?.events ?? [];
-    const stream = process.stdout;
-    stream.write('\n\n'); // 与上一单元格留空行（弹在当前输入行下方）
+    // 与上一单元格留空行（弹在当前输入行下方）；MiniOutput 走 dumpLedger
+    //（先清 live 块，轮内 Working/流式不与账本抢同一区域），其它输出沿旧直写
     if (events.length === 0) {
-      stream.write(`  ${dim('暂无轨迹——开始对话后这里会记录每一轮请求/工具/消息')}\n`);
+      const header = `  ${dim('暂无轨迹——开始对话后这里会记录每一轮请求/工具/消息')}`;
+      if (dump) dump(header, []);
+      else process.stdout.write(`\n\n${header}\n`);
       return;
     }
-    stream.write(`  ${dim(`完整轨迹（${events.length} 条事件 · ${TRANSCRIPT_HINT} 对应此处）：`)}\n`);
-    for (const line of buildTraceTextLines(events, { full: true })) stream.write(`  ${dim(line)}\n`);
-    stream.write('\n');
+    const header = `  ${dim(`完整轨迹（${events.length} 条事件 · ${TRANSCRIPT_HINT} 对应此处）：`)}`;
+    const lines = buildTraceTextLines(events, { full: true }).map((line) => `  ${dim(line)}`);
+    if (dump) dump(header, lines);
+    else {
+      const stream = process.stdout;
+      stream.write('\n\n');
+      stream.write(`${header}\n`);
+      for (const line of lines) stream.write(`${line}\n`);
+      stream.write('\n');
+    }
   };
   stdin.on('keypress', onKey);
   return () => stdin.off('keypress', onKey);
@@ -59,7 +71,7 @@ export async function runMiniInteractive(
   runOpts: RunOptions,
   out: Output
 ): Promise<void> {
-  const uninstall = installTranscriptViewer(runOpts);
+  const uninstall = installTranscriptViewer(runOpts, out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined);
   // 交互模式：渲染层据此擦掉 readline 回显的输入行（避免输入显示两遍）
   if (out instanceof MiniOutput) out.markInteractive();
   try {
@@ -79,7 +91,8 @@ export async function runMiniInteractive(
 
 /**
  * mini 单次任务 flags 解析（codex exec 对等子集）：`-o/--output-last-message <文件>`
- * 落盘最终回答（codex 同款）；其余原样当任务文本。`--flag=value` 与 `--flag value`
+ * 落盘最终回答（codex 同款）；`-i/--image <图片>` 可重复显式附件（codex exec -i
+ * 对等，与 @图.png 提及合并）；其余原样当任务文本。`--flag=value` 与 `--flag value`
  * 两形态；缺值忽略（不吞下一词之外的东西）。
  */
 export function splitMiniOneShotFlags(args: string[]): {
@@ -87,10 +100,12 @@ export function splitMiniOneShotFlags(args: string[]): {
   task: string;
   outputLastMessage: string | null;
   approveForMe: boolean;
+  images: string[];
 } {
   const rest: string[] = [];
   let outputLastMessage: string | null = null;
   let approveForMe = false;
+  const images: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '-o' || a === '--output-last-message') {
@@ -102,11 +117,17 @@ export function splitMiniOneShotFlags(args: string[]): {
     } else if (a === '--approve-for-me') {
       // AI 自动审批（codex exec 同款；审阅失败回退人工，不改变权限/沙箱边界）
       approveForMe = true;
+    } else if (a === '-i' || a === '--image') {
+      const v = args[++i];
+      if (v !== undefined) images.push(v);
+    } else if (a.startsWith('--image=')) {
+      const v = a.slice('--image='.length);
+      if (v) images.push(v);
     } else {
       rest.push(a);
     }
   }
-  return { taskArgs: rest, task: rest.join(' ').trim(), outputLastMessage, approveForMe };
+  return { taskArgs: rest, task: rest.join(' ').trim(), outputLastMessage, approveForMe, images };
 }
 
 /** 单次任务（`omni mini "<任务>"`）：回显输入 + 同一渲染层 + 回合耗时线，跑完即退出 */

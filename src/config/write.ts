@@ -1001,6 +1001,42 @@ export function persistMcpServerToConfig(name: string, cfg: McpServerConfig, omn
 }
 
 /**
+ * 向配置文件的 mcpServers 字段新增一个服务器（omni mcp add；与 remove 同落盘口径：
+ * loadConfigObject 决定的最高优先级文件）。同名已存在返回失败（调用方先查）。
+ */
+export function addMcpServerToConfig(
+  name: string,
+  entry: McpServerConfig,
+  omniCfg: OmniConfig
+): PersistModelResult {
+  const res = loadConfigObject(omniCfg);
+  if (!res.ok) {
+    return {
+      ok: false,
+      file: null,
+      message: `${res.message}（请手动在配置文件 mcpServers 字段添加 "${name}"）`,
+    };
+  }
+  const servers = res.obj.mcpServers;
+  const table: Record<string, unknown> =
+    servers && typeof servers === 'object' && !Array.isArray(servers)
+      ? { ...(servers as Record<string, unknown>) }
+      : {};
+  table[name] = { ...entry };
+  res.obj.mcpServers = table;
+  try {
+    writeFileSync(res.file, `${JSON.stringify(res.obj, null, 2)}\n`);
+  } catch (err) {
+    return {
+      ok: false,
+      file: null,
+      message: `写入配置失败：${(err as Error)?.message ?? err}（可手动在配置文件 mcpServers 字段添加）`,
+    };
+  }
+  return { ok: true, file: res.file, message: `已保存 MCP 服务器「${name}」→ ${res.file}（下次会话自动加载）` };
+}
+
+/**
  * 从配置文件的 mcpServers 字段移除一个服务器（/mcp remove 持久化）。
  * 运行时已断开连接并移除工具，这里只落盘供下次会话不加载。
  */

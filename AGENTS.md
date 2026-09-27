@@ -135,7 +135,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 ```
 src/
-  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web；另有 doctor 顶层诊断、completion 补全，均对标 codex 同名命令）
+  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web；另有 doctor 顶层诊断、completion 补全、review 非交互审查、resume 会话恢复、fork 分叉进交互、archive/unarchive/delete 会话归档管理、mcp list/get/login/logout/add/remove（add/remove 落盘与 /mcp remove 同口径），均对标 codex 同名命令）
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用（主循环/子代理）
   version.ts            # 版本号常量
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
@@ -144,7 +144,7 @@ src/
                         #   （`-` 整段 prompt / prompt+stdin 注入上下文）· --max-turns · --allowed-tools（纯工具过滤）·
                         #   --output-schema（JSON Schema 子集校验，不符 → 非零退出）· exit code 0/1 管道分支 ·
                         #   `-o/--output-last-message` 最终回答落盘（codex exec 同款；写失败非零退出）·
-                        #   exec resume <id> 会话续跑（复用 session JSONL）· MCP server 暴露 omni_exec/omni_reply
+                        #   exec resume <id> 会话续跑（复用 session JSONL）· `resume --last`/`--last` 恢复当前目录最近会话（codex 对等，无会话报错不新建）· `--all` 取消目录过滤（codex resume --all）· `--ephemeral` 不落盘会话（codex 对等，json session_id null，与 resume/fork 互斥）· `--json` 事件 JSONL（codex 对等，即 stream-json）· `--add-dir` 沙箱额外可写目录（全局+exec 级合并进 sandboxWritePaths）· 全局 `-i/--image`（交互首轮消费，单次/headless 走显式通道）· 全局 `--approve-for-me`（全模式 cfg.autoReview）· `--strict-config`（未知顶层字段报错；顶层 apiKey 等静默失效字段会被点名）· `exec --help` 打专属帮助（handleExecHelp 双入口共用：扫原始 argv 先拦截，绕过全局 --help 短路；`--` 之后不当 flag）· `exec fork <id|--last>` 分叉全量消息成新会话再跑（无 prompt 仅分叉，stdout 新 id）· `exec --color always|never|auto`（ui setColorOverride，wrap 闭包运行时读绑定）· `exec review [额外要求]`/顶层 `review` 非交互审查（与 /review 同数据源，单请求不建会话；loop 系 flags 互斥报错；-i/@图 vision 随审查发出；--base/--commit 定审查范围，ref 字符集限定防注入）· MCP server 暴露 omni_exec/omni_reply
                         #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
   web/
     index.ts            # **Web 服务入口（`omni web`）**：解析 web 参数（--port/--host/--no-open）→ prepareRun +
@@ -195,7 +195,7 @@ src/
                         #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
   cli/
     plugin.ts           # omni plugin CLI：install/list/enable/disable/remove（2026-09）
-    completion.ts       # omni completion <bash|zsh>：shell 补全脚本（codex completion 对等；bash -n/zsh -n 校验）
+    completion.ts       # omni completion <bash|zsh|fish|powershell>：shell 补全脚本（codex 对等 4/5，elvish 无解释器可验暂缺；bash -n/zsh -n 校验，fish/ps 内容断言）
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
@@ -203,8 +203,8 @@ src/
                         #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：无框会话头（标题/目录/YOLO/问候） / `› ` 用户行 /
                         #   `• ` 正文（MiniMarkdownRenderer：复用 tui/markdown 解析输出 ANSI，围栏隐藏/表格框线）+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
                         #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
-                        #   + Ctrl+T 完整轨迹账本；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
-                        #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C 轮内中断、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
+                        #   + Ctrl+T 完整轨迹账本（dumpLedger 先清 live 块：轮内 Working/流式不与账本抢区域）；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
+                        #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C/轮内 /stop 中断（回车 KP 只发给建接口前挂载的监听，发射前置，pty 实证）、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
                         #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
                         #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
                         #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
@@ -219,11 +219,14 @@ src/
                         #   粘贴突发跟踪（bracketed-paste 标记计数，多行按行提交后在空闲提示符处教 `\` 续行；合并不了是 readline 限制）；
                         #   mini 单次 `-o` 落盘最终回答（codex exec --output-last-message；单次本就不落会话≈--ephemeral）；
                         #   mini 单次 `--approve-for-me`（codex exec 同款；置 cfg.autoReview 实时开关）；
+                        #   exec `--model/-m` 生效（合入 overrides 再建客户端；此前解析后丢弃）；
+                        #   exec `--help` 同步新旗标（-m/-i）；
                         #   mini 单次 stdin 两形态（codex exec：`-` 即全文/`[stdin 输入]` 上下文块；e2e 注意 DEBUG 切片与 npx 解析）；
                         #   图片提及（codex composer 图片附件：`@图.png` 转 vision parts；无 vision 模型由 modalities 校验报错）；
+                        #   图片显式附件（codex exec -i：`exec/mini -i 图.png` 可重复，与 @提及 合并去重；headless 同样组装 vision parts）；
                         #   反斜杠续行（codex 多行 composer 行式版：行尾 `\` 拼多行，`… ` 续行提示）；
                         #   续行组装分 shell/普通两路（`!` 保留反斜杠交 sh 原生续行）；
-                        #   回合完成 tip（codex turn tips：带最终回答/3 轮起/间隔 3/全会话 2 条，working 中 tip 略）；
+                        #   回合 tip 双轨（codex ca41ed3：working 持续 30s 状态行下方随机一条，同轮跳过 completion tip；completion 带最终回答/3 轮起/间隔 3/全会话 2 条）；
                         #   自动压缩可见反馈（codex compact 单元格：以本轮新增 compact 事件为准打印 dim 提示）；
                         #   写/改文件单元格带 hunk diff 预览（codex patch cell：变更±2 ctx、add 绿/rem 红，超 10 行截断）；
                         #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）

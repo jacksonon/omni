@@ -40,7 +40,8 @@ function usage(): void {
 安装后新会话生效；hooks/MCP 会执行命令，请只安装可信来源。`);
 }
 
-async function confirm(question: string): Promise<boolean> {
+/** y/N 确认（顶层 delete 复用；非 TTY 直接 false，调用方给指引） */
+export async function confirm(question: string): Promise<boolean> {
   if (!stdin.isTTY) return false;
   const rl = readline.createInterface({ input: stdin, output: stdout });
   try {

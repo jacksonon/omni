@@ -145,6 +145,28 @@ export interface ImageAttachment {
 }
 
 /**
+ * 单个图片文件 → vision 附件（存在 + 是文件 + 大小内；不符返回 null 静默跳过）。
+ * -i/--image 显式路径与 @提及 共用（codex exec -i 对等）。
+ */
+export async function loadImageAttachment(
+  absPath: string,
+  displayPath: string,
+  maxBytes = MAX_IMAGE_BYTES
+): Promise<ImageAttachment | null> {
+  try {
+    const st = await stat(absPath);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    const buf = await readFile(absPath);
+    const m = /\.([A-Za-z0-9]+)$/.exec(displayPath.trim());
+    const mime = m ? IMAGE_MIME[m[1]!.toLowerCase()] : undefined;
+    if (!mime) return null;
+    return { path: displayPath, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 从任务文本收集 @提及 的图片附件：存在 + 是文件 + 大小内 + 去重 + 上限。
  * 不存在/超限/非图片一律跳过（静默；文本 @引用 本身仍回显）。
  */
@@ -164,15 +186,8 @@ export async function collectImageAttachments(
     const abs = path.resolve(cwd, clean);
     if (seen.has(abs)) continue;
     seen.add(abs);
-    try {
-      const st = await stat(abs);
-      if (!st.isFile() || st.size > maxBytes) continue;
-      const buf = await readFile(abs);
-      const ext = clean.split('.').pop()!.toLowerCase();
-      out.push({ path: clean, dataUrl: `data:${IMAGE_MIME[ext]};base64,${buf.toString('base64')}` });
-    } catch {
-      /* 不存在 / 不可读 → 跳过 */
-    }
+    const att = await loadImageAttachment(abs, clean, maxBytes);
+    if (att) out.push(att);
   }
   return out;
 }
@@ -326,6 +341,22 @@ export async function summarizeContext(
   messages.splice(headStart, split - headStart, { role: 'system', content: `[历史对话摘要]\n${summary}` });
   recorder?.compact(split - headStart); // 轨迹：压缩移除 N 条
   opts.hooks?.postCompact(summary.length); // PostCompact（1.0 P1-1）：fire-and-forget
+}
+
+/** `/recap` 按需会话摘要（codex Recap 对等）：只读——打印用，不压缩、不改历史。
+ * 复用压缩同款独立 LLM 调用（mock 识别同前缀，离线可测）；无实质对话内容返回 null。 */
+export async function recapConversation(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[]
+): Promise<string | null> {
+  const convo = messages.filter((m) => {
+    if (m.role !== 'user' && m.role !== 'assistant') return false;
+    const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+    return t.trim().length > 0;
+  });
+  if (convo.length === 0) return null;
+  return summarizeMessages(client, model, convo);
 }
 
 /** 独立轻量 LLM 调用（流式与主循环一致，兼容各家网关）；失败返回 null */

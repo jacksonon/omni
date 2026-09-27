@@ -21,6 +21,8 @@ export interface RunOptions {
   permission?: PermissionTier;
   /** 工作区信任（attachRuntime 设置；false = 未信任目录，只读降级 + 跳过项目级配置） */
   trusted?: boolean;
+  /** 全局 -i/--image 初始附件（codex -i 对等；交互循环首个用户回合消费，单次/headless 走各自显式通道） */
+  initialImages?: string[];
   /** TodoWrite 任务清单（P1：模型维护结构化 todo；todo_write 工具更新，/status 查看） */
   todoList?: { content: string; status: 'in_progress' | 'completed' | 'pending' }[];
   /** todo 清单更新回调（todo_write 工具执行后触发；TUI 镜像进 state.todoList 渲染输入区上方小视图） */

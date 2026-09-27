@@ -24,6 +24,10 @@ import {
   approvalSessionKey,
   diffPreviewBody,
   shouldShowTurnTip,
+  shouldShowWorkingTip,
+  renderWorkingTip,
+  WORKING_TIP_AFTER_SECS,
+  workingLines,
   formatApprovalPrompt,
   parseApprovalAnswer,
   fmtElapsed,
@@ -35,7 +39,7 @@ import {
   verbForTool,
 } from '../../src/output/mini.js';
 import { MiniMarkdownRenderer, chunksToAnsi } from '../../src/output/markdown-ansi.js';
-import { completeMention } from '../../src/cli/picker.js';
+import { completeMention, MINI_SLASH_COMMANDS } from '../../src/cli/picker.js';
 import { applyMentionInsert } from '../../src/cli/picker.js';
 import { isBangShellCommand, stripBangPrefix } from '../../src/cli/picker.js';
 import { formatModePrompt } from '../../src/cli/picker.js';
@@ -57,6 +61,11 @@ import { lastAssistantText } from '../../src/agent/report.js';
 import { deleteSessionFile, sessionsDir } from '../../src/agent/session.js';
 import { compactedSince } from '../../src/agent/events.js';
 import { splitMiniOneShotFlags } from '../../src/cli/mini.js';
+import { importFromClaudeCode } from '../../src/cli/import-claude.js';
+import { runPluginCommand } from '../../src/cli/plugin.js';
+import { recapConversation } from '../../src/agent/context.js';
+import type OpenAI from 'openai';
+import { isStopCommand } from '../../src/cli/interactive.js';
 import { parseArgs } from '../../src/cli/args.js';
 import { collectImageAttachments, isImagePath, userMessageWithImages } from '../../src/agent/context.js';
 import type { TrajEvent } from '../../src/agent/events.js';
@@ -208,6 +217,23 @@ export function miniSuite(): TestSuite {
     const plain = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     const tips = plain.split('\n').filter((l) => l.includes('Tip:'));
     suite.assert(tips.length === 1, `仅第 3 轮末出现一次 tip（实际 ${tips.length} 条）`);
+  });
+
+  suite.test('working 中 tip（codex ca41ed3：30s 后状态行下方一条，同轮跳过 completion）', () => {
+    suite.assert(WORKING_TIP_AFTER_SECS === 30, '阈值 30s（codex 同值）');
+    suite.assert(shouldShowWorkingTip(29, false) === false, '29s 不出');
+    suite.assert(shouldShowWorkingTip(30, false) === true, '30s 首现');
+    suite.assert(shouldShowWorkingTip(120, false) === true, '超时持续可出');
+    suite.assert(shouldShowWorkingTip(30, true) === false, '同轮只出一条');
+    suite.assert(shouldShowWorkingTip(120, true) === false, '出过不再出');
+    const line = renderWorkingTip('用 /model 切换模型。');
+    suite.assert(line.includes('Tip: 用 /model 切换模型。'), '行文案 `Tip: ` 前缀');
+  });
+  suite.test('working live 块组装：状态行 / 出 tip 附第二行（LiveBlock 伸缩）', () => {
+    const one = workingLines('W', null);
+    suite.assert(one.length === 1 && one[0] === 'W', '未出 tip 单行');
+    const two = workingLines('W', '用 /model 切换模型。');
+    suite.assert(two.length === 2 && two[0] === 'W' && two[1]!.includes('Tip: 用 /model 切换模型。'), '出 tip 附第二行同文案');
   });
 
   suite.test('`!` shell：判定/剥前缀 + `• You ran` 标题（codex bash mode）', () => {
@@ -366,6 +392,89 @@ export function miniSuite(): TestSuite {
     const r5 = splitMiniOneShotFlags(['验证', '--approve-for-me']);
     suite.assert(r5.task === '验证' && r5.approveForMe === true, '--approve-for-me 剥离并置位');
     suite.assert(splitMiniOneShotFlags(['a']).approveForMe === false, '缺省关闭');
+    const r6 = splitMiniOneShotFlags(['-i', 'a.png', '验证', '--image=b.png']);
+    suite.assert(r6.task === '验证' && r6.images.join(',') === 'a.png,b.png', '-i 可重复 + --image= 剥离');
+    suite.assert(splitMiniOneShotFlags(['验证']).images.length === 0, '缺省无图片');
+  });
+
+  suite.test('/stop 精确匹配（codex /stop：轮内拦截与空闲提示共用）', () => {
+    suite.assert(isStopCommand('/stop') === true, '精确命中');
+    suite.assert(isStopCommand('  /stop  ') === true, '首尾空白容忍');
+    suite.assert(isStopCommand('/stop xxx') === false, '带参不认（普通消息）');
+    suite.assert(isStopCommand('/stop1') === false, '前缀不误判');
+    suite.assert(isStopCommand('') === false, '空行不认');
+    suite.assert(MINI_SLASH_COMMANDS.includes('/stop'), '补全表含 /stop');
+    suite.assert(formatShortcutsHelp().join('\n').includes('/stop'), '? 帮助提及 /stop');
+  });
+
+  suite.test('/import 从 Claude Code 迁移（codex Import slash，纯函数）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-import-'));
+    try {
+      // 空目录：全部跳过
+      const r0 = importFromClaudeCode(dir);
+      suite.assert(r0.done.length === 0 && r0.skipped.length > 0, '空目录全跳过');
+      // CLAUDE.md → AGENTS.md（不存在才写）
+      fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# rules');
+      const r1 = importFromClaudeCode(dir);
+      suite.assert(r1.done.some((d) => d.includes('CLAUDE.md')), 'CLAUDE.md 迁移');
+      suite.assert(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8') === '# rules', '内容原样复制');
+      // 已有 AGENTS.md 不覆盖
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# mine');
+      const r2 = importFromClaudeCode(dir);
+      suite.assert(r2.done.length === 0 && r2.skipped.some((x) => x.includes('已存在')), 'AGENTS.md 已存在不覆盖');
+      // skills 目录复制
+      fs.mkdirSync(path.join(dir, '.claude', 'skills', 's1'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.claude', 'skills', 's1', 'SKILL.md'), '# s1');
+      const r3 = importFromClaudeCode(dir);
+      suite.assert(r3.done.some((d) => d.includes('s1')), 'skills 目录复制');
+      suite.assert(fs.existsSync(path.join(dir, '.agents', 'skills', 's1', 'SKILL.md')), '技能落到 .agents');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('/recap 按需会话摘要（codex Recap：只读，不改历史）', async () => {
+    const stub = {
+      chat: {
+        completions: {
+          create: async () => {
+            async function* gen() {
+              yield { choices: [{ delta: { content: '摘要正文' } }] };
+            }
+            return gen();
+          },
+        },
+      },
+    } as unknown as OpenAI;
+    const r0 = await recapConversation(stub, 'm', []);
+    suite.assert(r0 === null, '空历史返回 null');
+    const r1 = await recapConversation(stub, 'm', [
+      { role: 'system', content: '脚手架' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ]);
+    suite.assert(r1 === '摘要正文', '有对话走独立 LLM 调用');
+    const before = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ] as { role: 'user' | 'assistant'; content: string }[];
+    await recapConversation(stub, 'm', before);
+    suite.assert(before.length === 2, '只读：不修改消息数组');
+    suite.assert(MINI_SLASH_COMMANDS.includes('/recap'), '补全表含 /recap');
+  });
+
+  suite.test('/plugin 透传顶层实现（codex Plugins：空目录 list 只读）', async () => {
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-plugin-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    try {
+      const code = await runPluginCommand(['list']);
+      suite.assert(code === 0, '空插件目录 list 退出码 0');
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
   });
 
   suite.test('/delete：会话文件删除（目录内才删/外部拒绝/缺失报错）', async () => {
@@ -416,6 +525,18 @@ export function miniSuite(): TestSuite {
     const bullets = plain.split('\n').filter((l) => l.startsWith('• '));
     suite.assert(bullets.length === 2, `两段各起一个 • 单元格（实际 ${bullets.length} 个）`);
     suite.assert(bullets[1]!.includes('第二段'), '第二段挂在第二个 • 下');
+  });
+
+  suite.test('Ctrl+T 账本落盘格式（先清 live 块再打印，轮内不抢区域）', () => {
+    const out = new MiniOutput({ showThinking: false, stream: true });
+    const text = renderAt(80, () => {
+      out.dumpLedger('  头部', ['  行一', '  行二']);
+    });
+    const plain = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const idxH = plain.indexOf('头部');
+    const idx1 = plain.indexOf('行一');
+    const idx2 = plain.indexOf('行二');
+    suite.assert(idxH >= 0 && idx1 > idxH && idx2 > idx1, '头部→行依次落盘');
   });
 
   suite.test('粘贴突发跟踪：多行粘贴计数 + 取走清零', () => {
@@ -492,8 +613,35 @@ export function miniSuite(): TestSuite {
     const bash = completionScript('bash');
     const zsh = completionScript('zsh');
     suite.assert(typeof bash === 'string' && bash.includes('mini') && bash.includes('--approve-for-me'), 'bash 含子命令与 mini flags');
+    suite.assert(bash!.includes(' doctor ') && bash!.includes('review) COMPREPLY'), 'bash 含顶层 doctor 与 review 专属补全');
     suite.assert(typeof zsh === 'string' && zsh.includes('#compdef omni') && zsh.includes('mini'), 'zsh 含 compdef 与 mini');
-    suite.assert(completionScript('fish') === null, '不支持的 shell 返回 null');
+    const fish = completionScript('fish');
+    const ps = completionScript('powershell');
+    // 真机 fish 校验（若本机有 fish）：语法 + 子命令/flag 功能补全；缺解释器则跳过
+    const fishBin = spawnSyncCheck('which', ['fish']);
+    if (fishBin.status === 0) {
+      const fdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-comp-fish-'));
+      try {
+        const ff = path.join(fdir, 'omni.fish');
+        fs.writeFileSync(ff, fish!);
+        suite.assert(spawnSyncCheck('fish', ['-n', ff]).status === 0, 'fish -n 语法通过');
+        const sub = spawnSyncCheck('fish', ['-c', `source ${ff}; complete -C'omni '`]);
+        const subOut = String(sub.stdout ?? '');
+        suite.assert(subOut.includes('exec') && subOut.includes('doctor'), 'fish 子命令补全');
+        const eflags = spawnSyncCheck('fish', ['-c', `source ${ff}; complete -C'omni exec --'`]);
+        const efOut = String(eflags.stdout ?? '');
+        suite.assert(efOut.includes('--ephemeral') && efOut.includes('--json'), 'fish exec flag 补全');
+      } finally {
+        fs.rmSync(fdir, { recursive: true, force: true });
+      }
+    }
+    suite.assert(typeof fish === 'string' && fish.includes('__fish_seen_subcommand_from exec'), 'fish 含子命令条件补全');
+    suite.assert(fish!.includes('--ephemeral') && fish!.split('\n').every((l) => !l.includes('\\')), 'fish 行无杂散转义');
+    suite.assert(typeof ps === 'string' && ps.includes('Register-ArgumentCompleter') && ps.includes('-Native'), 'ps 原生补全注册');
+    suite.assert(ps!.includes('ParameterName') && ps!.includes('StartsWith'), 'ps flag/子命令结果类型区分（codex 同款 ParameterName）');
+    suite.assert(ps!.includes('@("exec","review"') && ps!.includes("'--ephemeral'") === false, 'ps 候选表 JSON 双引号');
+    suite.assert(ps!.includes("'\\s+'"), 'ps 分词正则未被转义吃掉');
+    suite.assert(completionScript('elvish') === null, 'elvish 暂不支持返回 null');
     suite.assert(completionScript('BASH') !== null, '大小写不敏感');
     // 真解释器校验（bash -n / zsh -n；以 tmp 文件为载体）
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-comp-'));
@@ -507,7 +655,7 @@ export function miniSuite(): TestSuite {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-    suite.assert(runCompletionCommand(['powershell']) === 1, '非法 shell 非零退出');
+    suite.assert(runCompletionCommand(['elvish']) === 1, '不支持的 shell 非零退出');
   });
 
   suite.test('输入区 hint 含续行反斜杠（TS 未知转义会吞 `\\`，回归锁定）', () => {
@@ -969,6 +1117,182 @@ export function miniSuite(): TestSuite {
       suite.assert(code === 0 || code === null, `退出码 0（实际 ${code}）`);
     } finally {
       mock.kill();
+    }
+  });
+
+  suite.test('端到端：轮内 /stop 中断 + 空闲提示/? 帮助/开场 hint（PTY 真终端）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-stop-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 11;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      // MOCK_STREAM=1 + MOCK_SLOW_FIRST=1：流式逐字 20ms + 首 chunk 延迟 2s
+      //（slow 只在 stream 下生效）——turn 约 4s+，/stop 在 +1s 落在窗口内确定性 abort
+      env: { ...process.env, PORT: String(port), MOCK_STREAM: '1', MOCK_SLOW_FIRST: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'stop-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/stop-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 120_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; swallowed?: boolean; aborted?: boolean; alive?: boolean; exitCode?: number | null; idleHint?: boolean; helpStop?: boolean; introStop?: boolean; ledgerDumped?: boolean } = {};
+      try {
+        v = JSON.parse(lastLine);
+      } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符（主循环就绪）');
+      suite.assert(v.swallowed === true, '/stop 被轮内拦截吞掉（hint 全场恰好一条，来自空闲 /stop）');
+      suite.assert(v.aborted === true, 'slow-first 窗口内 abort（无模型最终回答）');
+      suite.assert(v.alive === true, `中断后循环存活且干净退出（exit ${v.exitCode}，/pwd 生效）`);
+      suite.assert(v.idleHint === true, '空闲 /stop 提示无执行中任务');
+      suite.assert(v.helpStop === true, '? 帮助含 /stop 中断行');
+      suite.assert(v.introStop === true, '开场 hint 含 /stop 停止');
+      suite.assert(v.ledgerDumped === true, '轮内 Ctrl+T 账本落盘（live.clear 后打印）');
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：mini -i 交互首轮图片附件（codex -i，全局通道）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-gi-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const shot = path.join(xdg, 'shot.png');
+    fs.writeFileSync(
+      shot,
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64'
+      )
+    );
+    const port = MOCK_PORT + 15;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const child = spawn('npx', ['tsx', 'src/index.ts', 'mini', '-i', shot], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: xdg,
+          OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          OMNI_API_KEY: 'sk-mock',
+          OMNI_MODEL: 'mock-model',
+          OMNI_PERMISSION: 'full',
+          OMNI_SHOW_THINKING: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      const closed = new Promise<number | null>((r) => child.on('close', r));
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('看看这张图\n');
+      await waitFor(async () => out.includes('已附加 1 张图片'), 30000, '首轮全局 -i 附件');
+      await waitFor(async () => out.includes('mock 端到端验证通过'), 30000, '首轮回答');
+      suite.assert(out.includes('› 看看这张图'), '任务文本无 -i 残留');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+      // 首轮消费即清：第二轮不再重复附加
+      suite.assert(out.split('已附加 1 张图片').length - 1 === 1, '附件只附加一次（消费即清）');
+      // console 单次同样吃全局 -i（此前只认 mini 通道）：单任务 + 退出码
+      const single = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const c2 = spawn('npx', ['tsx', 'src/index.ts', '-i', shot, '看图单次任务'], {
+          cwd: ROOT,
+          env: {
+            ...process.env,
+            XDG_CONFIG_HOME: xdg,
+            OMNI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+            OMNI_API_KEY: 'sk-mock',
+            OMNI_MODEL: 'mock-model',
+            OMNI_PERMISSION: 'full',
+            OMNI_SHOW_THINKING: '0',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc2 = '';
+        c2.stdout.on('data', (d) => (acc2 += d));
+        c2.stderr.on('data', (d) => (acc2 += d));
+        const t2 = setTimeout(() => c2.kill('SIGKILL'), 60_000);
+        c2.on('close', (cc) => {
+          clearTimeout(t2);
+          resolve({ code: cc, out: acc2 });
+        });
+      });
+      suite.assert(single.code === 0, `console 单次退出码 0（实际 ${single.code}）`);
+      suite.assert(single.out.includes('已附加 1 张图片'), 'console 单次全局 -i 生效');
+      suite.assert(single.out.includes('mock 端到端验证通过'), 'console 单次拿到回答');
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/mcp logout 透传顶层实现（交互内免跳出）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-mcplogout-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    // 空目录隔离 cwd：避开仓库 omni.json 的项目层替换（信任名单同步加新目录，免信任询问卡住）
+    const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-mcpcwd-'));
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT, tmpCwd] }));
+    // 本地 stdio mock：启动期建连即时完成（logout 本就不建连，但启动发现要快）；
+    // remote 纯 http 端口（127.0.0.1:9 必然拒绝，启动发现瞬间失败不拖慢首提示符；logout 走 token 路径）
+    fs.writeFileSync(
+      path.join(xdg, 'omni', 'omni.json'),
+      JSON.stringify({
+        mcpServers: {
+          demo: { command: 'node', args: [path.join(ROOT, 'scripts/mock-mcp.mjs')] },
+          remote: { url: 'https://127.0.0.1:9/' },
+        },
+      })
+    );
+    // cwd=空目录时必须用绝对入口：相对 src/index.ts 会被解析到 cwd 下导致子进程秒退、无提示符
+    const child = spawn('npx', ['tsx', path.join(ROOT, 'src/index.ts'), 'mini'], {
+      cwd: tmpCwd,
+      env: { ...process.env, XDG_CONFIG_HOME: xdg, OMNI_API_KEY: 'sk-test', OMNI_PERMISSION: 'full', OMNI_SHOW_THINKING: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const closed = new Promise<number | null>((r) => child.on('close', r));
+    try {
+      await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
+      child.stdin.write('/mcp logout remote\n');
+      await waitFor(async () => out.includes('本来就没有登录态'), 15000, '/mcp logout 透传');
+      child.stdin.write('/mcp logout demo\n');
+      await waitFor(async () => out.includes('无需 OAuth 登录'), 15000, '/mcp logout stdio 分支透传');
+      child.stdin.write('/quit\n');
+      const code = await Promise.race([closed, sleep(15000).then(() => child.kill('SIGKILL')).then(() => null)]);
+      suite.assert(code === 0, `退出码 0（实际 ${code}）`);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(tmpCwd, { recursive: true, force: true });
     }
   });
 

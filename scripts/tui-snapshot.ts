@@ -388,6 +388,15 @@ async function main(): Promise<void> {
     console.error('✗ 场景 6 显式定界/短变量数学未转换');
     process.exit(1);
   }
+  // codex #48551 同款：`$0$` 渲染（`$5`/`$0.5` 等价格仍保留），`\\bigwedge`→⋀，`\\bigl`/`\\bigr` 剥除
+  if (inlineMathToText('Inline math: $0$; inline operator: $\\bigwedge_{j=0}^{n}$') !== 'Inline math: 0; inline operator: ⋀_{j=0}^{n}') {
+    console.error(`✗ 场景 6 零值/bigwedge 数学未转换: ${JSON.stringify(inlineMathToText('Inline math: $0$; inline operator: $\\bigwedge_{j=0}^{n}$'))}`);
+    process.exit(1);
+  }
+  if (inlineMathToText('价格 $5 和 $0.5 不动，分隔符 $\\bigl(R \\bigr)$ 剥除') !== '价格 $5 和 $0.5 不动，分隔符 (R ) 剥除') {
+    console.error('✗ 场景 6 价格守卫/big 分隔符回归');
+    process.exit(1);
+  }
   console.log('✓ 场景 6 通过：加粗/行内代码/斜体/代码块/标题/引用样式正确，snake_case 不误伤');
 
   // 场景 7：溢出后上滚回看历史（scrollTop 指向历史窗口 + 底部滚动提示行）
@@ -5703,7 +5712,7 @@ async function main(): Promise<void> {
   console.log('✓ 场景 43 通过：/settings language 语言切换（菜单/确认/持久化/footer/面板/联想/tokens/状态栏/鼠标点击）');
 
   // 场景 44：轨迹账本投影（foldTrace/detail/账本文本；TUI 右侧面板已删除，面板相关断言移除）
-  const { foldTrace, buildTraceTextLines, fmtMs } = await import('../src/agent/trace.js');
+  const { foldTrace, buildTraceTextLines, fmtMs, openSubagents, formatOpenSubagents } = await import('../src/agent/trace.js');
   // 两回合事件序列（turn/start → user → request → tool 配对 → assistant → turn/end；轮 2 interrupt 中止）
   const evs44: TrajEvent[] = [
     { s: 1, time: 1000, k: 'turn/start', turn: 1 },
@@ -5780,6 +5789,27 @@ async function main(): Promise<void> {
   }
   if (!led44.some((l) => l.includes('{"path":"."}'))) {
     console.error(`✗ 场景 44 账本 full 应包含 tool 完整 args: ${JSON.stringify(led44)}`);
+    process.exit(1);
+  }
+  // c) openSubagents（/tasks 数据源）：start 未被 end 关闭的即运行中，step 刷新进度
+  const evs44s: TrajEvent[] = [
+    { s: 1, time: 1000, k: 'subagent/start', id: 'a1', parentId: null, depth: 0, name: 'researcher', task: '查文档' },
+    { s: 2, time: 1100, k: 'subagent/start', id: 'b2', parentId: 'a1', depth: 1, name: 'reader', task: '读文件' },
+    { s: 3, time: 1200, k: 'subagent/step', id: 'a1', depth: 0, step: 3, maxSteps: 10 },
+    { s: 4, time: 1300, k: 'subagent/end', id: 'b2', depth: 1, ok: true, summary: '读完', steps: 2, durationMs: 200 },
+  ];
+  const open44 = openSubagents(evs44s);
+  if (open44.length !== 1 || open44[0]!.id !== 'a1' || open44[0]!.step !== 3 || open44[0]!.maxSteps !== 10) {
+    console.error(`✗ 场景 44 运行中子代理折叠错误: ${JSON.stringify(open44)}`);
+    process.exit(1);
+  }
+  if (openSubagents(evs44).length !== 0) {
+    console.error('✗ 场景 44 无子代理事件应为空');
+    process.exit(1);
+  }
+  const fmt44 = formatOpenSubagents(openSubagents(evs44s));
+  if (fmt44.length !== 1 || !fmt44[0]!.includes('researcher') || !fmt44[0]!.includes('3/10 步') || !fmt44[0]!.includes('查文档')) {
+    console.error(`✗ 场景 44 运行中子代理展示行错误: ${JSON.stringify(fmt44)}`);
     process.exit(1);
   }
   console.log('✓ 场景 44 通过：轨迹账本投影（foldTrace 折叠/detail/账本文本；TUI 右侧面板已删除）');

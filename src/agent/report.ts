@@ -243,6 +243,20 @@ export function openInEditor(file: string): boolean {
 }
 
 /** /doctor：环境诊断（node/bun/API Key/端点连通性/配置/MCP/技能/会话） */
+/** 搜索后端（codex doctor search 节：search_code 优先 rg，缺失退回内置扫描） */
+async function doctorSearchLine(): Promise<string> {
+  try {
+    const rg = spawnSync('rg', ['--version'], { timeout: 5000, encoding: 'utf8' });
+    if (!rg.error && rg.status === 0) {
+      const ver = ((rg.stdout || '').split('\n')[0] || '').replace(/^ripgrep\s+/, '').trim().split(' ')[0] || '未知版本';
+      return `· 搜索：ripgrep ${ver}（search_code 优先用它）`;
+    }
+  } catch {
+    /* 掉到兜底行 */
+  }
+  return '· 搜索：未找到 rg（search_code 用内置扫描兜底；brew install ripgrep 提速）';
+}
+
 export async function doctorReport(cfg: OmniConfig): Promise<string[]> {
   const lines = [`环境诊断：`];
   lines.push(`· Node：${process.version}${process.execPath}`);
@@ -264,6 +278,7 @@ export async function doctorReport(cfg: OmniConfig): Promise<string[]> {
   lines.push(
     `· 配置来源：${cfg.sources.length > 0 ? cfg.sources.join(' → ') : '（仅默认值）'}`,
     `· MCP 服务器：${cfg.mcpServers ? Object.keys(cfg.mcpServers).length : 0} 个配置`,
+    await doctorSearchLine(),
     `· 权限档位：${cfg.permission} · 子代理：${cfg.allowSubagents ? `启用（步数上限 ${cfg.maxSubagentSteps}）` : '关闭'}`,
     `· 思考级别：${cfg.reasoningEffort || '（未设置）'} · 支持选项：${
       cfg.reasoningEffortOptions?.length
@@ -272,5 +287,33 @@ export async function doctorReport(cfg: OmniConfig): Promise<string[]> {
     }`,
     `· 模型：${cfg.model}${cfg.models ? ` + 配置端点 ${Object.keys(cfg.models).length} 个` : ''}`
   );
+  // Git 仓库（codex doctor git 节：agent 工作上下文；失败静默为“非 git 仓库”）
+  try {
+    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { timeout: 5000, encoding: 'utf8' });
+    if (top.status === 0 && top.stdout.trim()) {
+      const branch = spawnSync('git', ['branch', '--show-current'], { timeout: 5000, encoding: 'utf8' });
+      const dirty = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], { timeout: 8000, encoding: 'utf8' });
+      const dirtyCount = dirty.status === 0 ? dirty.stdout.split('\n').filter((l) => l.trim()).length : -1;
+      lines.push(
+        `· Git：${top.stdout.trim()}${branch.status === 0 && branch.stdout.trim() ? `（${branch.stdout.trim()}${dirtyCount >= 0 ? `，${dirtyCount} 个已跟踪改动` : ''}）` : ''}`
+      );
+    } else {
+      lines.push('· Git：非 git 仓库（/init、/review 等项目功能受限）');
+    }
+  } catch {
+    lines.push('· Git：检测失败（git 不可用？）');
+  }
+  // 终端状态（codex doctor terminal 节：mini 渲染/颜色/交互排障用；只读快照）
+  try {
+    const cols = process.stdout.columns ?? 0;
+    const rows = process.stdout.rows ?? 0;
+    const tty = (s: unknown) => ((s as { isTTY?: boolean }).isTTY === true ? 'TTY' : '管道');
+    const colorWhy = process.env.FORCE_COLOR === '1' ? 'FORCE_COLOR=1 强制开' : process.env.NO_COLOR === '1' ? 'NO_COLOR=1 强制关' : '跟随终端';
+    lines.push(
+      `· 终端：stdin ${tty(process.stdin)} / stdout ${tty(process.stdout)} / stderr ${tty(process.stderr)}；${cols > 0 ? `${cols}×${rows} 列行` : '尺寸未知'}；颜色：${colorWhy}；TERM_PROGRAM=${process.env.TERM_PROGRAM ?? '（未设）'}`
+    );
+  } catch {
+    /* 终端探测永不打断诊断 */
+  }
   return lines;
 }

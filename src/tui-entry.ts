@@ -19,7 +19,8 @@
 import { parseArgs, printHelp } from './cli/args.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
-import { attachRuntime, main, prepareRun, prepareSessionPersistence, printSessions, resolveWorkspaceTrust } from './main.js';
+import { attachRuntime, isConsoleCommand, main, prepareRun, prepareSessionPersistence, printSessions, resolveWorkspaceTrust } from './main.js';
+import { handleExecHelp } from './exec.js';
 import { ConsoleOutput } from './output/console.js';
 import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
@@ -55,6 +56,8 @@ process.on('exit', (code) => {
 async function run(): Promise<void> {
   logLifecycle('start', `omni v${VERSION} pid=${process.pid} args=${JSON.stringify(process.argv.slice(2))}`);
   const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
+  // `omni exec --help` 打专属帮助（与 index 入口一致；本入口自带 --help 短路，需先拦截）
+  if (handleExecHelp(process.argv.slice(2), lang)) return;
   if (help) {
     printHelp(lang ?? 'en');
     return;
@@ -68,10 +71,9 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Headless / 终端子命令（exec / mcp-server / web / mini）恒走 console 路径——TUI 全屏没有机器可读输出、
-  // web 是服务模式、mini 本身就是纯终端模式（不能又被全屏 TUI 接管）
-  const headlessCmd = taskArgs[0] === 'exec' || taskArgs[0] === 'mcp-server' || taskArgs[0] === 'web' || taskArgs[0] === 'mini';
-  const useTui = !headlessCmd && isBun && isTTY && !flags.noTui;
+  // 非交互子命令恒走 console 路径（与 main 分发同表；TUI 全屏没有机器可读输出、
+  // web 是服务模式、mini 本身就是纯终端模式——此前仅 exec 等四个在此列，doctor 等会被 TUI 吞掉）
+  const useTui = !isConsoleCommand(taskArgs) && isBun && isTTY && !flags.noTui;
   if (!useTui) {
     await main((cfg) => new ConsoleOutput({ stream: true, showThinking: cfg.showThinking }));
     return;

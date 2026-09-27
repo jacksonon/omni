@@ -29,7 +29,25 @@ export function useColorFor(env: { FORCE_COLOR?: string; NO_COLOR?: string }, st
   return stdoutIsTTY;
 }
 
-export const useColor: boolean = useColorFor(process.env, isTTY);
+export let useColor: boolean = useColorFor(process.env, isTTY);
+
+/**
+ * 颜色显式覆盖（codex exec --color 对等）：'always' 强制开 / 'never' 强制关 /
+ * null 回到默认（环境变量 + TTY 判定）。wrap 系列闭包运行时读本绑定，
+ * 置位后所有输出层（mini/console/markdown）即时生效，无需重建对象。
+ */
+export function setColorOverride(mode: 'always' | 'never' | null): void {
+  if (mode === 'always') useColor = true;
+  else if (mode === 'never') useColor = false;
+  else useColor = useColorFor(process.env, isTTY);
+}
+
+/** exec --color 取值校验（always = 恒有颜色 / never = 纯文本 / auto = 跟随终端与环境变量） */
+export type ColorMode = 'always' | 'never' | 'auto';
+export function parseColorMode(raw: string): ColorMode {
+  if (raw === 'always' || raw === 'never' || raw === 'auto') return raw;
+  throw new Error(`--color 仅支持 always | never | auto（收到「${raw}」）`);
+}
 
 const wrap =
   (code: string) =>

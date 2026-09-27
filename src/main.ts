@@ -13,7 +13,14 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, type ModelEndpoint } from './client.js';
-import { collectImageAttachments, prepareContext, userMessageWithImages } from './agent/context.js';
+import {
+  collectImageAttachments,
+  loadImageAttachment,
+  MAX_IMAGE_FILES,
+  prepareContext,
+  userMessageWithImages,
+  type ImageAttachment,
+} from './agent/context.js';
 import { doctorReport, lastAssistantText } from './agent/report.js';
 import { resolveCdArg } from './agent/workspace.js';
 import { createSkillTool } from './agent/skill.js';
@@ -23,12 +30,12 @@ import { createWebFetchTool } from './tools/web-fetch.js';
 import { createWebSearchTool } from './tools/web-search.js';
 import { createDiagnoseTool } from './tools/diagnose.js';
 import { runAgent } from './agent/loop.js';
-import { createSession, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession } from './agent/session.js';
+import { createSession, deleteSessionFile, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession, persistableMessages, resolveSessionTarget, sessionIdFromPath, updateSessionMeta } from './agent/session.js';
 import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { runMiniInteractive, runMiniOneShot, splitMiniOneShotFlags } from './cli/mini.js';
-import { parseArgs, printHelp } from './cli/args.js';
+import { parseArgs, parseResumeArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
 import { HookRunner, type HooksConfig } from './hooks/index.js';
@@ -45,7 +52,8 @@ import { createAutoReviewer } from './safety/auto-review.js';
 import { isTrustedWorkspace, addTrustedWorkspace } from './safety/trust.js';
 import { wrapSandboxCommand, touchesSandboxPolicy, type SandboxMode, type SandboxOptions } from './safety/sandbox.js';
 import type { Tool } from './tools/types.js';
-import { readStdinIfPiped, runExec, runMcpServer } from './exec.js';
+import { handleExecHelp, readStdinIfPiped, runExec, runMcpServer } from './exec.js';
+import { forkSession } from './agent/session-fork.js';
 import { runWeb } from './web/index.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
@@ -56,7 +64,7 @@ import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { countDiffLines } from './output/format.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { dim, green, red, yellow } from './ui.js';
+import { dim, green, red, setTerminalTitle, yellow } from './ui.js';
 import { VERSION } from './version.js';
 import type { AllowlistProxy } from './safety/netproxy.js';
 
@@ -602,8 +610,59 @@ export async function prepareSessionPersistence(
   return true;
 }
 
+/** 顶层 resume/fork 共用 picker（无 id 无 --last 时）：空列表提示/非 TTY 指引/TTY 箭头选择。
+ * --all 显示全目录（project 后缀区分同名会话）。返回选中的会话信息；null = 已处理直接返回。
+ * 非 TTY 无 id 时置退出码 1（调用方直接 return）；空列表/Esc 取消不置码。 */
+async function pickSessionId(
+  all: boolean,
+  emptyHint: string,
+  nonTtyHint: string
+): Promise<import('./agent/session.js').SessionInfo | null> {
+  const list = all ? await listSessions() : await listSessions(process.cwd());
+  if (list.length === 0) {
+    console.log(dim(emptyHint));
+    return null;
+  }
+  if (!process.stdin.isTTY) {
+    console.error(red(nonTtyHint));
+    process.exitCode = 1;
+    return null;
+  }
+  const { pickFromList } = await import('./cli/picker.js');
+  const items = list.map((sv) => ({
+    label: `${sv.pinned ? '★ ' : ''}${sv.title || '（无标题）'}（${sv.messages} 条）${all ? ` · ${sv.project}` : ''}`,
+    value: sv.id,
+  }));
+  const idx = await pickFromList(process.stdin, items, { selected: 0 });
+  if (idx < 0) return null;
+  return list[idx]!;
+}
+
+/**
+ * 非交互子命令表（tui-entry 共用：命中则恒走 console 路径，不被全屏 TUI 接管）。
+ * 与下方 main 分发保持同步；`doctor` 仅裸调用算子命令（带参是任务文本）。
+ */
+export const CONSOLE_COMMANDS: ReadonlySet<string> = new Set([
+  'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
+  'mcp-server', 'acp', 'web', 'mcp', 'plugin', 'completion', 'preset',
+  'import', 'watch', 'mini',
+]);
+
+/** tui-entry 路由判定：子命令恒 console；其余（空/任务文本）按 TTY 进 TUI */
+export function isConsoleCommand(args: string[]): boolean {
+  const [head, ...rest] = args;
+  if (head === undefined) return false;
+  if (head === 'doctor') return rest.length === 0;
+  if (head === 'e') return true; // exec 别名（main 侧归一化；此处直接认，避免 TUI 吞掉）
+  return CONSOLE_COMMANDS.has(head);
+}
+
 export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<void> {
   const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
+  // `e` = `exec` 别名（codex aliases: e；归一化后全链路按 exec 走，含帮助与 TUI 路由）
+  if (taskArgs[0] === 'e') taskArgs[0] = 'exec';
+  // `omni exec --help` 打专属帮助（codex exec --help 对等；与 tui-entry 共用预检）
+  if (handleExecHelp(process.argv.slice(2), lang)) return;
   if (help) {
     printHelp(lang ?? 'en');
     return;
@@ -637,6 +696,118 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     process.exitCode = await runExec(taskArgs.slice(1), overrides);
     return;
   }
+  // omni review：顶层非交互审查（codex review 对等；即 exec review，不建会话；
+  // 注意：首词 review 即走审查，想让模型聊 review 话题请换说法或加前置词）
+  if (taskArgs[0] === 'review') {
+    process.exitCode = await runExec(['review', ...taskArgs.slice(1)], overrides);
+    return;
+  }
+  // omni resume [id|--last] [--all] [后续任务]：恢复会话进交互模式（codex resume 对等）。
+  // picker：无 id 无 --last 且 TTY → 箭头选择（缺省当前目录，--all 全目录）；
+  // 非 TTY 指路 --last/-l；prompt 词拼回 taskArgs 即单任务直跑（与 -c "follow-up" 同机制）
+  let resumeIdEff: string | null = null;
+  if (taskArgs[0] === 'resume') {
+    const r = parseResumeArgs(taskArgs.slice(1));
+    if (r.id) {
+      // 精确 id 优先、前缀匹配次之（与 /resume 同 resolver；歧义列候选不静默选）
+      const t = await resolveSessionTarget(r.id);
+      if (!t.ok) {
+        console.error(red(t.error + (t.candidates?.length ? `：${t.candidates.map((c) => c.id).join('、')}` : '（-l 查看可用会话）')));
+        process.exitCode = 1;
+        return;
+      }
+      resumeIdEff = sessionIdFromPath(t.file);
+    } else if (r.last) {
+      if (r.all) {
+        const latest = (await listSessions(undefined, { includeArchived: false }))[0] ?? null;
+        if (!latest) {
+          console.error(red('暂无可恢复的会话（-l 查看全部）'));
+          process.exitCode = 1;
+          return;
+        }
+        resumeIdEff = latest.id;
+      } else {
+        flags.continueSession = true;
+      }
+    } else {
+      const picked = await pickSessionId(
+        r.all,
+        '没有已保存的会话（交互模式退出时自动落盘；-l 查看，或 resume --last）',
+        '非交互下请指定会话 id（-l 查看）或 --last 恢复最近'
+      );
+      if (!picked) return;
+      resumeIdEff = picked.id;
+    }
+    taskArgs.splice(0, taskArgs.length, ...r.promptWords);
+  }
+  // omni archive/unarchive/delete <id>：会话归档管理（codex 同名命令对等；id 支持前缀匹配，歧义列候选）。
+  // delete 永久删除：TTY 下 y/N 确认，非交互必须 --yes（否则拒绝执行防误删）。
+  if (taskArgs[0] === 'archive' || taskArgs[0] === 'unarchive' || taskArgs[0] === 'delete') {
+    const sub = taskArgs[0];
+    const rest = taskArgs.slice(1);
+    const yes = rest.includes('--yes');
+    const idArg = rest.find((a) => a !== '--yes');
+    if (!idArg || idArg.startsWith('-')) {
+      console.error(red(`缺少会话 id：omni ${sub} <id>（-l 查看可用会话${sub === 'delete' ? '；非交互加 --yes' : ''}）`));
+      process.exitCode = 1;
+      return;
+    }
+    const t = await resolveSessionTarget(idArg);
+    if (!t.ok) {
+      console.error(red(t.error + (t.candidates?.length ? `：${t.candidates.map((c) => c.id).join('、')}` : '（-l 查看可用会话）')));
+      process.exitCode = 1;
+      return;
+    }
+    const sid = sessionIdFromPath(t.file);
+    if (sub === 'delete') {
+      if (!yes) {
+        if (!process.stdin.isTTY) {
+          console.error(red('非交互下删除会话必须加 --yes（永久删除，不可恢复）'));
+          process.exitCode = 1;
+          return;
+        }
+        const { confirm } = await import('./cli/plugin.js');
+        if (!(await confirm(`永久删除会话 ${sid}？不可恢复`))) {
+          console.log(dim('已取消'));
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const d = await deleteSessionFile(t.file);
+      if (!d.ok) {
+        console.error(red(d.error));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(dim(`已永久删除会话 ${d.id}`));
+      return;
+    }
+    const wantArchived = sub === 'archive';
+    const loaded = await loadSession(t.file);
+    if (loaded && (loaded.meta.archived ?? false) === wantArchived) {
+      console.log(dim(`会话 ${sid}已${wantArchived ? '归档' : '取消归档'}（无变化）`));
+      return;
+    }
+    if (!(await updateSessionMeta(t.file, { archived: wantArchived }))) {
+      console.error(red(`会话 ${sid} 更新失败（文件写入异常）`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(dim(`${wantArchived ? '已归档' : '已取消归档'}会话 ${sid}`));
+    return;
+  }
+  // omni fork [id|--last] [--all] [后续任务]：分叉出新会话，进交互模式继续（codex fork 对等）。
+  // picker 与 resume 共用；分叉执行在 prepareRun 之后（新会话 meta.model 取当前模型）
+  let forkSpec: { kind: 'id'; id: string } | { kind: 'last'; all: boolean } | { kind: 'pick'; all: boolean } | null = null;
+  let forkPrompt: string[] = [];
+  if (taskArgs[0] === 'fork') {
+    const r = parseResumeArgs(taskArgs.slice(1), 'fork');
+    if (r.id) forkSpec = { kind: 'id', id: r.id };
+    else if (r.last) forkSpec = { kind: 'last', all: r.all };
+    else forkSpec = { kind: 'pick', all: r.all };
+    forkPrompt = r.promptWords;
+    taskArgs.splice(0, taskArgs.length, ...forkPrompt);
+  }
   if (taskArgs[0] === 'mcp-server') {
     await runMcpServer(overrides);
     return;
@@ -651,6 +822,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
   if (taskArgs[0] === 'web') {
     await runWeb(taskArgs.slice(1), overrides);
+    return;
+  }
+  // omni mcp：MCP 服务器只读查看（codex mcp list/get 对等；写操作走 TUI/配置文件）
+  if (taskArgs[0] === 'mcp') {
+    const { runMcpCommand } = await import('./cli/mcp.js');
+    process.exitCode = await runMcpCommand(taskArgs.slice(1), overrides);
     return;
   }
   // omni plugin：插件安装/卸载/启用清单管理（2026-09 PLG）
@@ -675,14 +852,9 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   }
   // omni import：从 Claude Code 迁移配置（CLAUDE.md/skills/agents → omni 格式）
   if (taskArgs[0] === 'import') {
-    const { importFromClaudeCode } = await import('./cli/import-claude.js');
+    const { importFromClaudeCode, reportImportResult } = await import('./cli/import-claude.js');
     const r = importFromClaudeCode();
-    console.log('从 Claude Code 迁移到 omni：');
-    for (const d of r.done) console.log(green(`  ✓ ${d}`));
-    for (const s of r.skipped) console.log(dim(`  - 跳过 ${s}`));
-    for (const f of r.failed) console.log(red(`  ✗ ${f}`));
-    for (const h of r.hints) console.log(yellow(`  ⚠ ${h}`));
-    console.log(dim(r.done.length > 0 ? `完成（${r.done.length} 项迁移）。重启会话生效。` : '没有可迁移的内容。'));
+    reportImportResult(r);
     process.exitCode = r.failed.length > 0 ? 1 : 0;
     return;
   }
@@ -713,6 +885,57 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
 
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
+  // 全局 -i/--image：交互循环首个用户回合消费（单次/headless 走各自显式通道，此处只喂交互）
+  if (overrides.images?.length) runOpts.initialImages = [...overrides.images];
+  // 顶层 fork 执行：源会话全量消息 fork 成新会话，预载进上下文（落盘计数天然对齐：savedCount 按预载算）
+  if (forkSpec) {
+    let srcFile: string | null = null;
+    if (forkSpec.kind === 'id') {
+      const t = await resolveSessionTarget(forkSpec.id);
+      if (!t.ok) {
+        console.error(red(t.error + (t.candidates?.length ? `：${t.candidates.map((c) => c.id).join('、')}` : '（-l 查看可用会话）')));
+        process.exitCode = 1;
+        return;
+      }
+      srcFile = t.file;
+    } else if (forkSpec.kind === 'last') {
+      const latest = forkSpec.all
+        ? ((await listSessions(undefined, { includeArchived: false }))[0] ?? null)
+        : await latestSession(process.cwd());
+      if (!latest) {
+        console.error(red('暂无可分叉的会话（先跑一次交互，或用 -l 查看全部）'));
+        process.exitCode = 1;
+        return;
+      }
+      srcFile = latest.path;
+    } else {
+      const picked = await pickSessionId(
+        forkSpec.all,
+        '没有已保存的会话（交互模式退出时自动落盘；-l 查看，或 fork --last）',
+        '非交互下请指定会话 id（-l 查看）或 --last 分叉最近'
+      );
+      if (!picked) return;
+      srcFile = picked.path;
+    }
+    const loaded0 = await loadSession(srcFile);
+    const count = loaded0 ? persistableMessages(loaded0.messages).length : 0;
+    if (count === 0) {
+      console.error(red('源会话无可 fork 的消息（空会话无法分叉）'));
+      process.exitCode = 1;
+      return;
+    }
+    const forkFile = await forkSession(srcFile, count, process.cwd(), cfg.model);
+    const forked = forkFile ? await loadSession(forkFile) : null;
+    if (!forked) {
+      console.error(red('fork 失败（读会话或写文件出错）'));
+      process.exitCode = 1;
+      return;
+    }
+    messages.push(...forked.messages);
+    runOpts.sessionPath = forkFile!;
+    console.log(green(`已分叉新会话 ${forked.meta.id}（${forked.messages.length} 条消息 · 原会话保留）`));
+    if (forked.meta.title) setTerminalTitle(forked.meta.title);
+  }
   // omni doctor：环境诊断（codex doctor 对等；此前会被当成任务文本发给模型）
   if (taskArgs[0] === 'doctor' && taskArgs.length === 1) {
     for (const l of await doctorReport(cfg)) console.log(l);
@@ -728,18 +951,25 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
 
   // mini 单次 flags：在 taskArgs 里剥离（只认 mini 分支）：
   // `-o/--output-last-message` 落盘最终回答；`--approve-for-me` 开 AI 自动审批
-  //（codex exec 同款；审阅器读 cfg.autoReview 实时开关，此处置位即对本轮生效）
+  //（codex exec 同款；审阅器读 cfg.autoReview 实时开关，此处置位即对本轮生效）；
+  // `-i/--image` 显式图片附件（codex exec -i 对等，与 @图.png 提及合并）
   let outputLastMessage: string | null = null;
+  let miniImages: string[] = [];
   if (miniMode) {
     const split = splitMiniOneShotFlags(taskArgs);
     taskArgs.splice(0, taskArgs.length, ...split.taskArgs);
     outputLastMessage = split.outputLastMessage;
+    miniImages = split.images;
     if (split.approveForMe && cfg) cfg.autoReview = true;
   }
   let singleTask = taskArgs.join(' ').trim();
   // 会话持久化：--continue / -r 恢复历史；交互模式自动创建会话文件
-  const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
-  if (!ok) return;
+  const ok = await prepareSessionPersistence(flags, resumeId ?? resumeIdEff, cfg, messages, runOpts, Boolean(singleTask));
+  if (!ok) {
+    // 会话恢复失败（id 不存在等）：非零退出（此前静默 0，曾让 `resume 坏id` 看似成功）
+    process.exitCode = 1;
+    return;
+  }
   if (singleTask) {
     // 单次任务模式：Ctrl+C 清掉 spinner 行后退出（交互模式保留 readline 默认的清行行为）
     // TUI 模式由渲染器自行处理 Ctrl+C（output.exitOnCtrlC），这里跳过避免打断全屏退出清理
@@ -769,7 +999,26 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     }
     const piped = readStdinIfPiped();
     if (piped) userPrompt = `${userPrompt}\n\n[stdin 输入]\n${piped}`;
-    const singleImages = await collectImageAttachments(userPrompt, process.cwd()).catch(() => []);
+    const singleImages: ImageAttachment[] = await collectImageAttachments(userPrompt, process.cwd()).catch(() => []);
+    {
+      // 显式图片附件（codex -i 对等）：mini 单次 flags + 全局 -i，双通道合并（互斥，不重复）；
+      // console 单次同理（此前只认 mini 通道，全局 -i 会被静默丢弃）
+      const extra = [...(miniMode ? miniImages : []), ...(overrides.images ?? [])];
+      if (extra.length > 0) {
+        const seen = new Set(singleImages.map((a) => path.resolve(process.cwd(), a.path)));
+        for (const p of extra) {
+          if (singleImages.length >= MAX_IMAGE_FILES) break;
+          const abs = path.resolve(process.cwd(), p);
+          if (seen.has(abs)) continue;
+          seen.add(abs);
+          const att = await loadImageAttachment(abs, p).catch(() => null);
+          if (att) singleImages.push(att);
+        }
+      }
+    }
+    if (singleImages.length > 0) {
+      console.log(dim(`（已附加 ${singleImages.length} 张图片：${singleImages.map((i) => i.path).join('、')}）`));
+    }
     messages.push(userMessageWithImages(userPrompt, singleImages));
     await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
     if (miniMode) {

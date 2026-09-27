@@ -3,6 +3,7 @@
  * 把 omni 变成可组合的 Unix 命令（对标 `codex exec` / `claude -p`）。
  *
  * `omni exec "<任务>"`：
+ *   · --json：事件 JSONL（codex --json 对等；即 stream-json）。
  *   · stdout 只输出最终结果；进度（思考/工具调用/错误）走 stderr —— 可 `| jq` / `> file` 安全重定向
  *   · --output-format text|json|stream-json：
  *       text        —— 最终回答纯文本
@@ -20,17 +21,27 @@
  * 让 Claude Code / opencode 等外部 harness 把 omni 当子代理用（协议与 tools/mcp.ts 客户端对称）。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { prepareContext } from './agent/context.js';
+import {
+  collectImageAttachments,
+  loadImageAttachment,
+  MAX_IMAGE_FILES,
+  prepareContext,
+  userMessageWithImages,
+  type ImageAttachment,
+} from './agent/context.js';
 import { runAgent } from './agent/loop.js';
 import { EventRecorder, type TrajEvent } from './agent/events.js';
-import { appendSessionMessages, createSession, finalizeSession, findSessionById, loadSession, persistableMessages } from './agent/session.js';
+import { appendSessionMessages, createSession, finalizeSession, findSessionById, latestSession, listSessions, loadSession, persistableMessages } from './agent/session.js';
+import { forkSession } from './agent/session-fork.js';
+import { captureCommand, collectDiff, detectCheckCommand, reviewCode } from './agent/review.js';
 import type { RunOptions, ThinkingDisplay } from './agent/types.js';
 import type { ConfigOverrides } from './config/index.js';
 import { attachRuntime, prepareRun, type RunContext } from './main.js';
 import type { Output, TokenUsage } from './output/types.js';
-import { dim, red, yellow } from './ui.js';
+import { dim, parseColorMode, red, setColorOverride, yellow, type ColorMode } from './ui.js';
 import { VERSION } from './version.js';
 
 /* ─────────────────────────────── 参数解析 ─────────────────────────────── */
@@ -42,6 +53,20 @@ export interface ExecParseResult {
   promptRaw: string;
   /** `exec resume <id>` 或 `--resume <id>`：恢复的会话 id */
   resumeId: string | null;
+  /** `--last`：恢复当前目录最近一次会话（codex exec resume --last 对等；无会话时报错） */
+  resumeLast: boolean;
+  /** `--all`：最近会话取消目录过滤（codex resume --all 对等；配 --last 用） */
+  resumeAll: boolean;
+  /** `exec fork <id>`：分叉源会话 id（codex exec fork 对等） */
+  forkId: string | null;
+  /** `exec fork --last`：分叉当前目录最近一次会话 */
+  forkLast: boolean;
+  /** `exec review [额外要求]`：非交互代码审查（codex exec review 对等；轻量单请求，不建会话） */
+  reviewMode: boolean;
+  /** `exec review --base <分支>`：相对该分支审查工作区改动（codex --base 对等） */
+  reviewBase?: string;
+  /** `exec review --commit <SHA>`：审查某提交引入的改动（codex --commit 对等；与 --base 互斥） */
+  reviewCommit?: string;
   outputFormat: ExecOutputFormat;
   /** --max-turns：步数上限（超出 → 非零退出） */
   maxTurns?: number;
@@ -49,20 +74,82 @@ export interface ExecParseResult {
   allowedTools?: string[];
   /** --output-schema：最终回答须符合的 JSON Schema（内联 JSON 或文件路径） */
   outputSchema?: Record<string, unknown>;
-  /** --model：模型覆盖（走既有 overrides，这里只透传展示用） */
+  /** --model/-m：模型覆盖（runExec 合并进 overrides 再 prepareRun，与全局 -m 同效） */
   model?: string;
+  /** -i/--image <文件>（可重复）：显式图片附件（codex exec -i 对等；与 @图.png 提及合并去重） */
+  images: string[];
   /** --quiet/-q：静默 stderr 进度（只留 stdout 结果） */
   quiet?: boolean;
   /** --approve-for-me：AI 自动审批（模型审阅需要审批的操作；失败回退拒绝） */
   approveForMe?: boolean;
   /** -o/--output-last-message <文件>：最终回答落盘（codex exec 同款；写失败非零退出） */
   outputLastMessage?: string | null;
+  /** --color <always|never|auto>：颜色开关（codex exec --color 对等；缺省 auto 跟随终端/环境变量） */
+  color?: ColorMode;
+  /** --ephemeral：不落盘会话文件（codex exec --ephemeral 对等；json 的 session_id 为 null） */
+  ephemeral: boolean;
+  /** --add-dir <目录>（可重复）：沙箱额外可写目录（codex --add-dir 对等；runExec 合并进 overrides） */
+  addDirs: string[];
 }
 
-/** 解析 exec 子命令参数（exec 专属 flag；--model/--config 已被 parseArgs 收进 overrides） */
+/** argv 级 `exec --help/-h` 预检（双入口共用：全局 parseArgs 把 --help/-h 吞成标记，
+ * 此处扫原始参数先拦截，否则 exec 专属用法永远不可达；`--` 之后一律当任务文本）。
+ * 命中则打印专属帮助返回 true，调用方直接 return。 */
+export function handleExecHelp(argv: string[], lang?: string | null): boolean {
+  if (argv[0] !== 'exec' && argv[0] !== 'e') return false;
+  const rest = argv.slice(1);
+  const dash = rest.indexOf('--');
+  const flagPart = dash < 0 ? rest : rest.slice(0, dash);
+  if (!flagPart.some((a) => a === '--help' || a === '-h')) return false;
+  console.log(execHelpText(lang));
+  return true;
+}
+
+/** `omni exec --help` 文本（parseExecArgs --help 抛出同文；main 层 exec 分支优先打印，绕过全局 --help 短路）；
+ * `--lang en` 出英文版（缺省中文，与 cfg 默认语言一致） */
+export function execHelpText(lang?: string | null): string {
+  if (lang === 'en') return execHelpTextEn();
+
+  return (
+    '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <文件>] [--resume <id>] [--last] [--all] [-m <模型>] [-i <图片> …] [--color always|never|auto] [--ephemeral] [--add-dir <目录> …]\n' +
+            '  exec resume <id|--last> [后续任务]：恢复会话续跑（--last = 当前目录最近一次，无 id 时亦可用 exec --last；--all 取消目录过滤）。\n' +
+            '  exec fork <id|--last> [--all] [后续任务]：分叉出新会话再跑（无后续任务 = 仅分叉，stdout 新会话 id）。\n' +
+            '  exec review [额外要求] [--base <分支> | --commit <SHA> | --uncommitted]：非交互代码审查（typecheck + 改动 → 单次 LLM 审查，不建会话；缺省审未提交改动）。\n' +
+            '  --ephemeral：不落盘会话文件（json 的 session_id 为 null；与 resume/fork 互斥）。\n' +
+            '  --add-dir <目录>（可重复）：沙箱额外可写目录。\n' +
+            '  --json：事件 JSONL（codex --json 对等；即 stream-json：逐行轨迹事件，末行结果）。\n' +
+            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。\n' +
+            '  --approve-for-me：需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），不改变沙箱与权限边界。'
+  );
+}
+
+/** exec 专属帮助英文版（--lang en；行数与中文版一一对应） */
+function execHelpTextEn(): string {
+  return (
+    'Usage: omni exec "<task>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <file>] [--resume <id>] [--last] [--all] [-m <model>] [-i <image> ...] [--color always|never|auto] [--ephemeral] [--add-dir <dir> ...]\n' +
+            '  exec resume <id|--last> [follow-up]: resume a session (--last = most recent in cwd; also usable as exec --last; --all disables cwd filtering).\n' +
+            '  exec fork <id|--last> [--all] [follow-up]: fork into a new session, then continue (no follow-up = fork only, prints new id).\n' +
+            '  exec review [focus] [--base <branch> | --commit <SHA> | --uncommitted]: non-interactive code review (typecheck + changes, single LLM call, no session; default: uncommitted changes).\n' +
+            '  --ephemeral: no session files (json session_id is null; mutually exclusive with resume/fork).\n' +
+            '  --add-dir <dir> (repeatable): extra writable dirs for the sandbox.\n' +
+            '  --json: event JSONL (like codex --json; i.e. stream-json: one trace event per line, last line is the result).\n' +
+            '  stdout carries only the final result (text / single json object / stream-json); progress goes to stderr; --quiet silences stderr.\n' +
+            '  --approve-for-me: review approval requests with the model first (never widens sandbox/permissions).'
+  );
+}
+
+/** 解析 exec 子命令参数（exec 专属 flag；--model/-m/-i/--add-dir/--approve-for-me 已被 parseArgs 收进 overrides，此处解析供直接调用；子命令互斥 fail-fast） */
 export function parseExecArgs(args: string[]): ExecParseResult {
   let promptRaw = '';
   let resumeId: string | null = null;
+  let resumeLast = false;
+  let resumeAll = false;
+  let forkId: string | null = null;
+  let forkLast = false;
+  let reviewMode = false;
+  let reviewBase: string | undefined;
+  let reviewCommit: string | undefined;
+  let reviewUncommitted = false;
   let outputFormat: ExecOutputFormat = 'text';
   let maxTurns: number | undefined;
   let allowedTools: string[] | undefined;
@@ -71,12 +158,43 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   let quiet = false;
   let approveForMe = false;
   let outputLastMessage: string | null = null;
+  let color: ColorMode | undefined;
+  const addDirs: string[] = [];
+  let ephemeral = false;
+  const images: string[] = [];
   const positionals: string[] = [];
 
-  // 子命令形态：`omni exec resume <id> [prompt]`
+  // 子命令形态：`omni exec resume <id> [prompt]` / `omni exec resume --last [prompt]`
   if (args[0] === 'resume') {
-    resumeId = args[1] ?? null;
-    args = args.slice(2);
+    if (args[1] === '--last') {
+      resumeLast = true;
+      args = args.slice(2);
+    } else {
+      // `--` 开头的残留不是 id（如裸 --all）：按缺失处理，进下方显式报错
+      resumeId = args[1] && !args[1].startsWith('-') ? args[1] : null;
+      args = args.slice(args[1] && !args[1].startsWith('-') ? 2 : 1);
+    }
+    // 裸 `exec resume`（无 id/--last）：显式报错而非吞成新任务（与 fork 同口径）
+    if (!resumeId && !resumeLast) throw new Error('缺少会话 id：omni exec resume <id|--last> [后续任务]');
+  }
+  // 子命令形态：`omni exec fork <id|--last> [--all] [prompt]`（codex exec fork 对等；
+  // 无 prompt = 仅分叉，stdout 新会话 id，可管道组合）
+  if (args[0] === 'fork') {
+    if (args[1] === '--last') {
+      forkLast = true;
+      args = args.slice(2);
+    } else {
+      // 同 resume：`--` 开头不是 id，按缺失处理
+      forkId = args[1] && !args[1].startsWith('-') ? args[1] : null;
+      args = args.slice(forkId ? 2 : 1);
+    }
+    if (!forkId && !forkLast) throw new Error('缺少会话 id：omni exec fork <id|--last> [后续任务]');
+  }
+  // 子命令形态：`omni exec review [额外审查要求]`（codex exec review 对等；
+  // 剩余位置参数拼成额外要求，`-` 从 stdin 读）
+  if (args[0] === 'review') {
+    reviewMode = true;
+    args = args.slice(1);
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -125,8 +243,51 @@ export function parseExecArgs(args: string[]): ExecParseResult {
       case '--resume':
         resumeId = takeValue();
         break;
+      case '--last':
+        // 最近一次会话（codex exec resume --last 对等；当前目录范围）
+        resumeLast = true;
+        break;
+      case '--all':
+        // 取消目录过滤（codex resume --all 对等；配 --last 用，不配则忽略）
+        resumeAll = true;
+        break;
       case '--model':
+      case '-m':
         model = takeValue();
+        break;
+      case '-i':
+      case '--image': {
+        const v = takeValue();
+        if (v) images.push(v);
+        break;
+      }
+      case '--json':
+        // 事件 JSONL（codex --json 对等；即 --output-format stream-json：逐行轨迹事件，末行结果）
+        outputFormat = 'stream-json';
+        break;
+      case '--color':
+        color = parseColorMode(takeValue());
+        break;
+      case '--ephemeral':
+        // 不持久化会话文件（codex exec --ephemeral 对等；mini 单次默认如此）
+        ephemeral = true;
+        break;
+      case '--add-dir': {
+        const v = takeValue();
+        if (v) addDirs.push(v);
+        break;
+      }
+      case '--base':
+        // 审查基准分支（codex exec review --base 对等；仅 review 生效，见下方互斥校验）
+        reviewBase = takeValue();
+        break;
+      case '--commit':
+        // 审查指定提交（codex exec review --commit 对等；仅 review 生效）
+        reviewCommit = takeValue();
+        break;
+      case '--uncommitted':
+        // 显式缺省（codex --uncommitted 对等：本来就只审未提交改动；接受以兼容脚本，不改变行为）
+        reviewUncommitted = true;
         break;
       case '--quiet':
       case '-q':
@@ -143,11 +304,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
       }
       case '--help':
       case '-h':
-        throw new Error(
-          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <文件>] [--resume <id>]\n' +
-            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。\n' +
-            '  --approve-for-me：需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），不改变沙箱与权限边界。'
-        );
+        throw new Error(execHelpText());
       case '--':
         positionals.push(...args.slice(i + 1));
         i = args.length;
@@ -158,12 +315,38 @@ export function parseExecArgs(args: string[]): ExecParseResult {
     }
   }
   promptRaw = positionals.join(' ').trim();
-  if (!promptRaw && resumeId) {
-    // `exec resume <id>` 无后续 prompt：续跑原任务（不再提交新消息）
+  if (!promptRaw && (resumeId || resumeLast) && !forkId && !forkLast && !reviewMode) {
+    // `exec resume <id|--last>` 无后续 prompt：续跑原任务（不再提交新消息）
     promptRaw = '[继续上次任务]';
   }
-  if (!promptRaw) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
-  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe, outputLastMessage };
+  if (ephemeral && (resumeId || resumeLast || forkId || forkLast)) {
+    throw new Error('--ephemeral 与 resume/fork 互斥（不落盘的会话无法续跑或分叉）');
+  }
+  // 子命令互斥（同轮只能续跑/分叉/审查其一；混写如 fork A --resume B 不猜意图，直接报错）
+  if (reviewMode && (resumeId || resumeLast || forkId || forkLast)) {
+    throw new Error('exec review 不支持 resume/fork（审查是单次请求，不进会话）');
+  }
+  if ((forkId || forkLast) && (resumeId || resumeLast)) {
+    throw new Error('fork 与 resume 互斥（一次只能分叉或续跑其一）');
+  }
+  if (resumeId && resumeLast) {
+    throw new Error('resume <id> 与 --last 互斥（指定会话还是最近会话，只能选其一）');
+  }
+  if (reviewMode && (allowedTools?.length || maxTurns !== undefined || outputSchema)) {
+    // review 是单次审查（无 agent 循环）：loop 系 flags 在此无意义，显式拒绝而非静默吞掉
+    throw new Error('exec review 不支持 --allowed-tools/--max-turns/--output-schema（无 agent 循环，直接单次审查）');
+  }
+  if (!promptRaw && !forkId && !forkLast && !reviewMode) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
+  if ((reviewBase || reviewCommit || reviewUncommitted) && !reviewMode) {
+    throw new Error('--base/--commit/--uncommitted 仅 exec review 可用（审查范围，非 agent 循环参数）');
+  }
+  if (reviewBase && reviewCommit) {
+    throw new Error('--base 与 --commit 互斥（基准分支还是指定提交，只能选其一）');
+  }
+  if (reviewUncommitted && (reviewBase || reviewCommit)) {
+    throw new Error('--uncommitted 与 --base/--commit 互斥（缺省即审未提交，二选一）');
+  }
+  return { promptRaw, resumeId, resumeLast, resumeAll, forkId, forkLast, reviewMode, reviewBase, reviewCommit, ephemeral, addDirs, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe, outputLastMessage, images, color };
 }
 
 /* ─────────────────────────────── Exec 输出（stdout 干净） ─────────────────────────────── */
@@ -401,6 +584,12 @@ export interface HeadlessOptions {
   onEvent?: (e: TrajEvent) => void;
   /** 是否把管道 stdin 注入为上下文（exec CLI；MCP server 的 stdin 是 JSON-RPC 通道，必须关） */
   injectStdin?: boolean;
+  /** 显式图片附件路径（-i/--image；与 @提及 合并去重后随用户消息发出） */
+  images?: string[];
+  /** 不落盘会话文件（--ephemeral；事件仅内存 + 实时回调，json 的 session_id 为 null） */
+  ephemeral?: boolean;
+  /** resume 载入播报开关（缺省开；fork 续跑传 false——fork 行已说明来源，避免重复播报） */
+  announceResume?: boolean;
 }
 
 export interface HeadlessResult {
@@ -429,18 +618,29 @@ const OUTPUT_PRICE_PER_M = Number(process.env.OMNI_OUTPUT_PRICE_PER_M ?? 2);
  */
 export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: HeadlessOptions): Promise<HeadlessResult> {
   const { cfg, client, messages, runOpts } = ctx;
-  // 会话：resume → 复用原文件；否则新建（json 输出的 session_id + exec resume 续跑）
-  const sessionPath = opts.resumeId ? await findSessionById(opts.resumeId) : await createSession({ project: process.cwd(), model: cfg.model });
+  // 会话：resume → 复用原文件；否则新建（json 输出的 session_id + exec resume 续跑）；
+  // --ephemeral → 不建文件（内存轨迹 + stdout 结果，无法续跑/分叉，解析层已互斥）
+  const sessionPath = opts.ephemeral ? null : opts.resumeId ? await findSessionById(opts.resumeId) : await createSession({ project: process.cwd(), model: cfg.model });
   if (opts.resumeId && !sessionPath) {
     throw new Error(`会话「${opts.resumeId}」不存在（json 输出的 session_id 或 -l 列表查看）`);
   }
   runOpts.sessionPath = sessionPath ?? undefined;
   // 轨迹记录器：stream-json 时每个事件实时输出（落盘与实时互不冲突）
   runOpts.events = await EventRecorder.open(sessionPath ?? null, opts.onEvent);
-  // resume：载入历史消息（后续追加只写新增，不重复落盘）
+  // 会话播报（stderr；quiet/MCP 下静默；codex exec 运行头对等：模型 + 会话 id 可观测）：
+  // resume → 载入历史消息（后续追加只写新增，不重复落盘）+ 已恢复播报；
+  // 新建 → 新会话播报；--ephemeral → 临时会话播报（fork 续跑传 announceResume:false 抑制重复）。
   if (opts.resumeId && sessionPath) {
     const loaded = await loadSession(sessionPath);
     if (loaded) messages.push(...loaded.messages);
+    if (opts.announceResume !== false) {
+      output.log(dim(`已恢复会话 ${opts.resumeId}（${loaded ? loaded.messages.length : 0} 条历史消息）· 模型 ${cfg.model}`));
+    }
+  } else if (opts.ephemeral) {
+    output.log(dim(`exec 临时会话（--ephemeral 不落盘）· 模型 ${cfg.model}`));
+  } else {
+    const sid = sessionIdOf(sessionPath);
+    output.log(dim(sid ? `exec 新会话 ${sid} · 模型 ${cfg.model}` : `exec 会话文件创建失败（仅内存轨迹）· 模型 ${cfg.model}`));
   }
   const basePersist = persistableMessages(messages).length; // 历史中已落盘的消息数（新增只写之后的部分）
 
@@ -453,7 +653,24 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
   // 仅 exec CLI 开启（MCP server 的 stdin 是 JSON-RPC 通道，不能当上下文读）
   const injected = opts.injectStdin ? readStdinIfPiped() : null;
   const finalPrompt = injected ? `${userPrompt}\n\n[stdin 输入]\n${injected}` : userPrompt;
-  messages.push({ role: 'user', content: finalPrompt });
+  // 图片附件（codex exec -i 对等 + @图.png 提及）：vision parts 随用户消息发出；
+  // 无 vision 模型由 loop modalities 校验明确报错；不存在/超限静默跳过。
+  const attachments: ImageAttachment[] = await collectImageAttachments(finalPrompt, process.cwd()).catch(() => []);
+  if (opts.images?.length) {
+    const seen = new Set(attachments.map((a) => path.resolve(process.cwd(), a.path)));
+    for (const p of opts.images) {
+      if (attachments.length >= MAX_IMAGE_FILES) break;
+      const abs = path.resolve(process.cwd(), p);
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      const att = await loadImageAttachment(abs, p).catch(() => null);
+      if (att) attachments.push(att);
+    }
+  }
+  if (attachments.length > 0) {
+    output.log(dim(`（已附加 ${attachments.length} 张图片：${attachments.map((a) => a.path).join('、')}）`));
+  }
+  messages.push(userMessageWithImages(finalPrompt, attachments));
   await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
 
   // --output-schema：要求模型以 JSON 输出（systemNote 拼进每个 system 提示，不污染消息历史）
@@ -532,6 +749,123 @@ export function resultJson(res: HeadlessResult, extra: Record<string, unknown> =
   };
 }
 
+/**
+ * `omni exec review [额外要求]`：收集改动 → 跑校验 → 单次 LLM 审查。
+ * stdout 干净（text = 审查正文；json = 结果对象，可 | jq）；进度走 stderr（--quiet 静默）。
+ * 返回进程退出码（0 完成 / 1 失败；无改动按 0 处理，stderr 说明）。
+ */
+export async function runExecReview(
+  ctx: RunContext,
+  extra: string,
+  opts: Pick<ExecParseResult, 'outputFormat' | 'outputLastMessage' | 'quiet' | 'images' | 'reviewBase' | 'reviewCommit'>
+): Promise<number> {
+  const { cfg, client } = ctx;
+  const output = new ExecOutput(opts.quiet === true, false);
+  const t0 = Date.now();
+  output.log(dim('正在收集改动并运行 typecheck…'));
+  const checkCmd = detectCheckCommand();
+  const check = checkCmd
+    ? { command: checkCmd, output: (await captureCommand(checkCmd, 120_000)).output }
+    : { command: null as string | null, output: '（无脚本）' };
+  // 审查范围（codex exec review --base/--commit 对等；缺省=未提交改动）：
+  // ref 拼进 shell 前先做字符集限定（防命令注入；起始禁 `-` 防 git 选项注入）
+  let diff: { ok: boolean; output: string };
+  if (opts.reviewCommit) {
+    const sha = opts.reviewCommit.trim();
+    if (!/^[0-9a-fA-F]{4,64}$/.test(sha)) {
+      output.log(red(`--commit 非法（须为 4-64 位十六进制 SHA）：${sha.slice(0, 40)}`));
+      return 1;
+    }
+    const exists = await captureCommand(`git cat-file -e ${sha}^{commit}`);
+    if (!exists.ok) {
+      output.log(red(`commit ${sha} 不存在（git cat-file 校验失败）`));
+      return 1;
+    }
+    const shown = await captureCommand(`git show ${sha} -- .`);
+    diff = { ok: shown.ok, output: shown.ok && shown.output ? shown.output : '（无改动）' };
+    if (!diff.ok) {
+      output.log(red(`读取 commit ${sha} 失败：${shown.output.slice(0, 200)}`));
+      return 1;
+    }
+  } else if (opts.reviewBase) {
+    const base = opts.reviewBase.trim();
+    // rev 表达式字符集限定（分支名 + HEAD~1 / HEAD^ 等常见写法；禁 shell 元字符与起始 `-`）
+    if (base.length > 128 || !/^[A-Za-z0-9_][A-Za-z0-9_.\/~^-]*$/.test(base)) {
+      output.log(red(`--base 非法（限字母数字/_.\\/~^-, 不以 - 开头）：${base.slice(0, 40)}`));
+      return 1;
+    }
+    // 存在性前置校验（collectDiff 对坏分支宽容：diff 失败但 status 成功仍 ok，
+    // 会把拼写错误的基准静默审成 status——此处必须先验明正身）
+    const verify = await captureCommand(`git rev-parse --verify ${base}`);
+    if (!verify.ok) {
+      output.log(red(`基准「${base}」不存在（git rev-parse 校验失败）`));
+      return 1;
+    }
+    const d = await collectDiff({ base });
+    if (!d.ok) {
+      output.log(red(`基准分支「${base}」diff 失败：${d.output.slice(0, 200)}`));
+      return 1;
+    }
+    diff = d;
+  } else {
+    diff = await collectDiff();
+    if (!diff.ok) {
+      output.log(red(`无法获取 git diff：${diff.output.slice(0, 200)}`));
+      return 1;
+    }
+  }
+  if (diff.output === '（无改动）') {
+    output.log(dim('工作区没有改动可审查（git diff 为空）'));
+    return 0;
+  }
+  // 图片附件（-i 显式 + 额外要求里的 @图.png 提及；与 headless 同口径组装 vision parts）
+  const attachments: ImageAttachment[] = await collectImageAttachments(extra, process.cwd()).catch(() => []);
+  if (opts.images?.length) {
+    const seen = new Set(attachments.map((a) => path.resolve(process.cwd(), a.path)));
+    for (const f of opts.images) {
+      if (attachments.length >= MAX_IMAGE_FILES) break;
+      const abs = path.resolve(process.cwd(), f);
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      const att = await loadImageAttachment(abs, f).catch(() => null);
+      if (att) attachments.push(att);
+    }
+  }
+  if (attachments.length > 0) {
+    output.log(dim(`（已附加 ${attachments.length} 张图片：${attachments.map((a) => a.path).join('、')}）`));
+  }
+  const review = await reviewCode(client, cfg.model, diff.output, { command: check.command, output: check.output }, extra || undefined, attachments);
+  if (!review) {
+    output.log(red('审查失败（网络 / API 问题），请重试'));
+    return 1;
+  }
+  const durationMs = Date.now() - t0;
+  if (opts.outputFormat === 'text') {
+    process.stdout.write(review.endsWith('\n') ? review : review + '\n');
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        result: review,
+        cost_usd: 0,
+        duration_ms: durationMs,
+        num_turns: 0,
+        session_id: null,
+        exit_code: 0,
+        ...(opts.outputFormat === 'stream-json' ? { t: 'result' } : {}),
+      }) + '\n'
+    );
+  }
+  if (opts.outputLastMessage) {
+    try {
+      writeFileSync(opts.outputLastMessage, review);
+    } catch (err) {
+      process.stderr.write(`审查结果落盘失败（${opts.outputLastMessage}）：${(err as Error)?.message ?? err}\n`);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /* ─────────────────────────────── CLI 入口：omni exec ─────────────────────────────── */
 
 /** 应用 exec 专属运行选项（工具过滤 / 步数上限） */
@@ -545,9 +879,28 @@ function applyExecOpts(runOpts: RunOptions, opts: ExecParseResult): void {
   }
 }
 
+/**
+ * 最近会话解析：缺省当前目录范围；`--all` 取消目录过滤（codex resume --all 对等）。
+ * verb 仅用于无会话报错文案（恢复/分叉）。
+ */
+async function resolveLatestSession(scopeAll: boolean, verb: '恢复' | '分叉') {
+  const latest = scopeAll
+    ? ((await listSessions(undefined, { includeArchived: false }))[0] ?? null)
+    : await latestSession(process.cwd());
+  if (!latest) {
+    throw new Error(
+      scopeAll ? `暂无可${verb}的会话（先 omni exec 跑一次，或用 -l 查看全部）` : `当前目录暂无可${verb}的会话（先 omni exec 跑一次，或用 -l 查看全部，或加 --all 跨目录）`
+    );
+  }
+  return latest;
+}
+
 /** `omni exec ...` 入口：返回进程退出码（0 成功 / 1 失败） */
 export async function runExec(args: string[], overrides: ConfigOverrides): Promise<number> {
   const opts = parseExecArgs(args);
+  // --color：显式颜色开关（always/never 覆盖环境变量与 TTY 判定；auto/缺省归一化回默认，
+  // 同进程复用 runExec 时不把上次覆盖泄漏给下次调用）
+  setColorOverride(opts.color === 'always' ? 'always' : opts.color === 'never' ? 'never' : null);
   // `-` = 整段 stdin 即 prompt；TTY 下读不到 → 报错
   let prompt = opts.promptRaw;
   if (prompt === '-') {
@@ -555,19 +908,76 @@ export async function runExec(args: string[], overrides: ConfigOverrides): Promi
     if (!s) throw new Error('任务为 `-` 但 stdin 无输入（echo "任务" | omni exec -）');
     prompt = s;
   }
-  const ctx = prepareRun(overrides);
+  // exec 级 --model/-m 与 --add-dir：先于 prepareRun 合并进 overrides 副本
+  //（客户端按覆盖后模型建；沙箱装配时展开额外可写目录；不碰调用方原对象）
+  const effective: ConfigOverrides = { ...overrides };
+  if (opts.model && !effective.model) effective.model = opts.model;
+  if (opts.addDirs.length) effective.addDirs = [...(effective.addDirs ?? []), ...opts.addDirs];
+  // exec 级 -i/--image：全局 -i 先被 parseArgs 收走，此处合并（互斥通道，不重复）
+  const mergedImages = [...(effective.images ?? []), ...opts.images];
+  const ctx = prepareRun(effective);
   const { cfg } = ctx;
+  // exec review：非交互审查（与 /review 同数据源；轻量单请求，不建会话/不跑 agent 循环）
+  if (opts.reviewMode) {
+    return runExecReview(ctx, prompt, { ...opts, images: mergedImages });
+  }
   // --approve-for-me：启用 AI 自动审批（attachRuntime 读取 cfg.autoReview 构建审阅器）
   if (opts.approveForMe) cfg.autoReview = true;
   const output = new ExecOutput(opts.quiet === true, cfg.showThinking !== false);
   await attachRuntime(ctx, output);
   applyExecOpts(ctx.runOpts, opts);
+  // --last：解析为当前目录最近一次会话 id（无会话 → 明确报错而非新建，避免续跑语义丢失）
+  let resumeId = opts.resumeId;
+  if (opts.resumeLast && !resumeId) {
+    const latest = await resolveLatestSession(opts.resumeAll, '恢复');
+    resumeId = latest.id;
+  }
+  // fork：全量复制源会话可保留消息成新会话（codex exec fork 对等；原会话保留）。
+  // 无 prompt = 仅分叉：stdout 新会话 id（可 `| xargs` 组合），json 形态同样给 session_id。
+  if (opts.forkId || opts.forkLast) {
+    let srcId = opts.forkId;
+    if (!srcId) {
+      srcId = (await resolveLatestSession(opts.resumeAll, '分叉')).id;
+    }
+    const srcPath = await findSessionById(srcId);
+    if (!srcPath) throw new Error(`会话「${srcId}」不存在（json 输出的 session_id 或 -l 列表查看）`);
+    const loaded = await loadSession(srcPath);
+    const count = loaded ? persistableMessages(loaded.messages).length : 0;
+    if (count === 0) throw new Error(`会话「${srcId}」无可 fork 的消息（空会话无法分叉）`);
+    const forkFile = await forkSession(srcPath, count, process.cwd(), cfg.model);
+    if (!forkFile) throw new Error(`fork 会话「${srcId}」失败`);
+    const forkedId = path.basename(forkFile, '.jsonl');
+    output.log(dim(`已从会话 ${srcId} fork 新会话 ${forkedId}（${count} 条消息）`));
+    if (!prompt) {
+      if (opts.outputFormat === 'text') {
+        process.stdout.write(forkedId + '\n');
+      } else {
+        process.stdout.write(
+          JSON.stringify({
+            result: '',
+            cost_usd: 0,
+            duration_ms: 0,
+            num_turns: 0,
+            session_id: forkedId,
+            exit_code: 0,
+            ...(opts.outputFormat === 'stream-json' ? { t: 'result' } : {}),
+          }) + '\n'
+        );
+      }
+      return 0;
+    }
+    resumeId = forkedId;
+  }
+  const isForkedContinue = Boolean(opts.forkId || opts.forkLast) && Boolean(resumeId);
   const res = await runHeadless(ctx, output, {
     prompt,
-    resumeId: opts.resumeId,
+    resumeId,
+    announceResume: isForkedContinue ? false : undefined,
     outputFormat: opts.outputFormat,
     outputSchema: opts.outputSchema,
     injectStdin: true,
+    images: mergedImages,
+    ephemeral: opts.ephemeral || undefined,
     onEvent: opts.outputFormat === 'stream-json' ? (e) => process.stdout.write(JSON.stringify({ t: 'ev', e }) + '\n') : undefined,
   });
   // 结果输出（text 纯文本；json / stream-json 均为单行 JSON，可 | jq / tail -1）

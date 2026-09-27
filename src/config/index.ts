@@ -341,6 +341,14 @@ export interface ConfigOverrides {
   profile?: string;
   /** --sandbox <档位>：OS 级沙箱覆盖（codex -s 对等；注意 omni 的 -s 是 resume，此处只认 --sandbox） */
   sandbox?: string;
+  /** --add-dir <目录>（可重复）：沙箱额外可写目录（codex --add-dir 对等；追加到 sandboxWritePaths） */
+  addDirs?: string[];
+  /** -i/--image <文件>（可重复）：初始图片附件（codex -i 对等；交互首轮/单次拼进 vision parts） */
+  images?: string[];
+  /** --approve-for-me：AI 自动审批（codex 同款；置 cfg.autoReview，不放宽权限/沙箱） */
+  approveForMe?: boolean;
+  /** --strict-config：配置文件含未知顶层字段时报错（codex 同款；防拼写错误与已移除的旧字段） */
+  strictConfig?: boolean;
 }
 
 /**
@@ -810,25 +818,65 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
 }
 
 /** 加载并合并全部配置层，返回最终配置 */
+/** 配置文件合法顶层字段（--strict-config 校验用；$schema 是编辑器提示，恒放行）。
+ * 注意：顶层 baseURL/apiKey/userAgent/models 不在此列——文件层已不再解析它们
+ * （只认 providers 分组/环境变量），strict 下点名正是为了抓住这类静默失效。 */
+const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  '$schema',
+  'agentsFile', 'allowSubagents', 'architect', 'auditLog', 'autoCommit', 'autoMemory',
+  'autoReview', 'compatibility', 'contextCompressRatio', 'contextLimit', 'dangerousPatterns',
+  'diagnoseAfterEdit', 'editor', 'fallbackModels', 'globalAgentsFile', 'hooks', 'language',
+  'maxConcurrentSubagents', 'maxSteps', 'maxSubagentDepth', 'maxSubagentSteps', 'mcpServers',
+  'model', 'permission', 'plugins', 'preloadFiles', 'preloadMaxBytes', 'preloadMaxFiles',
+  'profiles', 'providers', 'reasoningEffort', 'reasoningEffortOptions', 'redactSecrets',
+  'repoMap', 'repoMapMaxSymbols', 'sandbox', 'sandboxFailClosed', 'sandboxMaskEnv',
+  'sandboxNetworkAllow', 'sandboxWritePaths', 'showThinking', 'skills', 'statusline',
+  'statuslineAlign', 'summarizeAt', 'summarizeWindow', 'telemetry', 'vimMode',
+  'webConcurrency', 'webFetchDomains', 'webSearchApiKey', 'webTheme', 'webWorkspace',
+  'webWorkspaces',
+]);
+
+/** --strict-config：未知顶层字段直接报错（文件路径 + 字段名 + 处置建议） */
+function checkStrictKeys(data: Record<string, unknown> | null, file: string): void {
+  if (!data) return;
+  const unknown = Object.keys(data).filter((k) => !KNOWN_CONFIG_KEYS.has(k));
+  if (unknown.length > 0) {
+    throw new Error(
+      `配置文件 ${file} 含未知字段：${unknown.join('、')}（--strict-config 校验；删除/改名后重试，合法字段见 omni.example.jsonc）`
+    );
+  }
+}
+
 export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   const cfg: OmniConfig = { ...DEFAULTS, sources: [] };
   const sources = cfg.sources;
 
   // 1) 全局配置：$XDG_CONFIG_HOME/omni/ 或 ~/.config/omni/
   const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const strict = overrides.strictConfig === true;
   const globalFile = findInDir(path.join(configHome, 'omni'));
-  if (globalFile) apply(cfg, readJson(globalFile), globalFile, sources);
+  if (globalFile) {
+    const data = readJson(globalFile);
+    if (strict) checkStrictKeys(data, globalFile);
+    apply(cfg, data, globalFile, sources);
+  }
 
   // 2) 项目配置：cwd 向上找
   const projectFile = findProjectConfig(process.cwd());
-  if (projectFile) apply(cfg, readJson(projectFile), projectFile, sources);
+  if (projectFile) {
+    const data = readJson(projectFile);
+    if (strict) checkStrictKeys(data, projectFile);
+    apply(cfg, data, projectFile, sources);
+  }
 
   // 3) 自定义配置：--config 优先于 OMNI_CONFIG
   const customFile = overrides.configPath || process.env.OMNI_CONFIG;
   if (customFile) {
     const p = path.resolve(customFile);
     if (existsSync(p)) {
-      apply(cfg, readJson(p), p, sources);
+      const data = readJson(p);
+      if (strict) checkStrictKeys(data, p);
+      apply(cfg, data, p, sources);
     } else {
       console.error(`⚠️ 自定义配置文件不存在：${p}`);
     }
@@ -884,6 +932,21 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
       addSource(sources, 'CLI --sandbox');
     }
   }
+  if (overrides.approveForMe) {
+    // --approve-for-me：AI 自动审批总开关（codex 同款；审阅器在 attachRuntime 装配，失败回退人工）
+    cfg.autoReview = true;
+    addSource(sources, 'CLI --approve-for-me');
+  }
+  if (overrides.addDirs?.length) {
+    // --add-dir 追加（codex --add-dir 对等）：相对路径按当前目录展开；去重（下游 normalize 只要绝对路径）
+    const extra = overrides.addDirs.map((d) => d.trim()).filter(Boolean).map((d) => path.resolve(d));
+    const merged = [...(cfg.sandboxWritePaths ?? [])];
+    for (const d of extra) if (!merged.includes(d)) merged.push(d);
+    if (merged.length > (cfg.sandboxWritePaths ?? []).length) {
+      cfg.sandboxWritePaths = merged;
+      addSource(sources, 'CLI --add-dir');
+    }
+  }
 
   // 兼容：未设置 OMNI_API_KEY 时读 OPENAI_API_KEY
   if (!cfg.apiKey && process.env.OPENAI_API_KEY) {
@@ -923,6 +986,34 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
       }
     }
     if (Object.keys(models).length > 0) cfg.models = models;
+  }
+
+  // MCP headers 的 `{env:VAR}` 引用替换（密钥不进配置文件；
+  // `mcp add --bearer-token-env-var` 即写 `Authorization: Bearer {env:VAR}` 落盘形态）。
+  // 与 apiKey 整值引用不同：header 值里引用是子串，需逐个替换；任一缺失则删键（fail-closed）。
+  // （resolveEnvRef 只处理整值，此处不用它）
+  if (cfg.mcpServers) {
+    for (const srv of Object.values(cfg.mcpServers)) {
+      if (!srv.headers) continue;
+      for (const [k, v] of Object.entries(srv.headers)) {
+        if (typeof v !== 'string' || !v.includes('{env:')) continue;
+        let missing = false;
+        const replaced = v.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => {
+          const real = process.env[name as string];
+          if (!real) {
+            missing = true;
+            return m;
+          }
+          return real;
+        });
+        if (missing) {
+          console.error(`⚠️ MCP headers 引用环境变量未设置——已移除 ${k}（回退请设置对应环境变量）。`);
+          delete srv.headers[k];
+        } else {
+          srv.headers[k] = replaced;
+        }
+      }
+    }
   }
 
   // 密钥脱敏开关（2026-09 补课）：默认开；显式 false 关闭
