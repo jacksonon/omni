@@ -18,7 +18,7 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, findEndpointByName, getClient, resolveModelRoute, withRequestSession, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
-import { formatToolCall, previewOutput, countDiffLines, isExitCodeZeroLine } from '../output/format.js';
+import { formatToolCall, previewOutput, isExitCodeZeroLine, approvalDiffText } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
@@ -411,9 +411,7 @@ async function runAgentInner(
       const content = String(args.content ?? '');
       const original = snap ? (snap.existed ? snap.content : null) : null;
       try {
-        if (original === null) return `新增文件 · 全文 ${content.split('\n').length} 行`;
-        const st = countDiffLines(original, content);
-        return st.add === 0 && st.rem === 0 ? null : `变更统计 · +${st.add} −${st.rem} 行`;
+        return approvalDiffText(original, content);
       } catch {
         return null;
       }

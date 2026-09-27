@@ -56,11 +56,10 @@ import {
   parseColor,
 } from '@opentui/core';
 import type { RenderContext } from '@opentui/core';
-import { execFileSync } from 'node:child_process';
 import { openInEditor } from '../agent/report.js';
 import { commandSuggestions, confirmMenu, findCommand, scheduleCmdPanelAutoClose } from './commands.js';
 import { logCrash } from './crashlog.js';
-import { dim } from '../ui.js';
+import { copyTextToClipboard, dim } from '../ui.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
 import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, formatCompact, formatContextUsage, formatMiniBar, sessionAvgRate, truncatePathHead } from './layout.js';
@@ -1919,35 +1918,6 @@ function selecRow(rows: Row[], i: number, sel: TuiSelection, theme: TuiTheme): R
   const aCol = i === s.row ? s.col : 0;
   const bCol = i === e.row ? e.col : row.text.length * 4; // 中间行取到底（超宽可被 colToChar 截断）
   return markRowSelected(row, aCol, bCol, theme);
-}
-
-/**
- * 把文本写进系统剪贴板：先尝试 OSC52（写 `\x1b]52;c;<base64>\x07`，主流终端都支持，
- * 零外部依赖），再回退到平台剪贴板工具（macOS pbcopy / Linux xclip·wl-copy；
- * Windows 用 PowerShell Set-Clipboard）。任一成功即可；全部失败静默（拖选不打断）。
- */
-function copyTextToClipboard(text: string): void {
-  if (!text) return;
-  try {
-    process.stdout.write(`\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`);
-  } catch {
-    // OSC52 失败（非 TTY/被吞）→ 回退子进程
-  }
-  try {
-    if (process.platform === 'darwin') execFileSync('pbcopy', [], { input: text });
-    else if (process.platform === 'linux') {
-      // 优先 wl-copy（Wayland），没有再用 xclip
-      try {
-        execFileSync('wl-copy', [], { input: text });
-      } catch {
-        execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
-      }
-    } else if (process.platform === 'win32') {
-      execFileSync('powershell', ['-NoProfile', '-Command', 'Set-Clipboard'], { input: text });
-    }
-  } catch {
-    // 无剪贴板工具（如最小容器）→ 拖选功能不中断，仅复制失效
-  }
 }
 
 /** OpenTUI 鼠标事件的结构化子集（滚轮滚动 + 点击展开卡片用） */

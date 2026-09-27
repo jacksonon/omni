@@ -50,6 +50,26 @@ export function memoryFilesFromMessages(messages: ChatCompletionMessageParam[]):
     .filter((x): x is string => !!x);
 }
 
+/**
+ * 取最近一条 assistant 回复的纯文本（codex `/copy` 数据源；content 数组取各 part 文本拼接）。
+ * 无回复返回 ''（调用方提示"无可复制内容"）。
+ */
+export function lastAssistantText(messages: ChatCompletionMessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== 'assistant' || m.content == null) continue;
+    if (typeof m.content === 'string') {
+      if (m.content.trim() !== '') return m.content;
+      continue;
+    }
+    const text = m.content
+      .map((p) => (p.type === 'text' ? (p as { text?: string }).text ?? '' : ''))
+      .join('');
+    if (text.trim() !== '') return text;
+  }
+  return '';
+}
+
 /** /status：一行汇总当前会话状态 */
 export function statusReport(s: StatusInput): string[] {
   const lines = [

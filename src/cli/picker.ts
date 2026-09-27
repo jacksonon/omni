@@ -3,7 +3,7 @@
  * 调用方拼好 items（label 为已着色成品行，不含序号），picker 只负责导航渲染。
  */
 import readline from 'node:readline';
-import { bold, cyan, dim } from '../ui.js';
+import { bold, cyan, dim, magenta, red } from '../ui.js';
 import { detectMention, listMentionCandidates } from '../tui/mention.js';
 
 export interface PickerItem {
@@ -29,6 +29,7 @@ export const MINI_SLASH_COMMANDS = [
   '/mcp', '/diff', '/rewind', '/rename', '/memory-apply', '/fork', '/send',
   '/resume', '/cd', '/pin', '/archive', '/unarchive', '/auto', '/vim',
   '/team', '/session', '/redo', '/doctor', '/trace', '/init',
+  '/copy', '/pwd', '/quit', '/delete',
 ];
 
 export interface CompleteContext {
@@ -40,6 +41,32 @@ export interface CompleteContext {
   effortOptions: string[];
   /** 当前模型的命名 variants id */
   variantIds: string[];
+}
+
+/**
+ * /model 选择器行文案（codex 模型面板对等）：有多少字段拼多少——
+ * 名称 · provider · 上下文k/输出k · 思考级别 · 当前✓（缺字段跳过，不断言）。
+ */
+export function formatModelPickLabel(
+  m: {
+    name: string;
+    displayName?: string;
+    provider?: string;
+    limit?: { context?: number; output?: number };
+    reasoningEffort?: string;
+  },
+  isCurrent: boolean
+): string {
+  const fmtK = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`);
+  const segs = [m.displayName ?? m.name];
+  if (m.provider) segs.push(m.provider);
+  const k = [m.limit?.context ? fmtK(m.limit.context) : '', m.limit?.output ? fmtK(m.limit.output) : '']
+    .filter(Boolean)
+    .join('/');
+  if (k) segs.push(k);
+  if (m.reasoningEffort) segs.push(m.reasoningEffort);
+  if (isCurrent) segs.push('✓');
+  return segs.join(' · ');
 }
 
 /** completeMiniLine 可选扩展（data-driven 第二词补全；fs 只在调用方侧） */
@@ -126,6 +153,112 @@ export function isBangShellCommand(text: string): boolean {
   return text.trimStart().startsWith('!');
 }
 
+/**
+ * 模式提示符（codex footer 模式指示的 mini 版：Plan 显示品红 `plan` 前缀，
+ * bash mode 显示红 `!`；优先级 bang > plan > normal——shell 直跑不受 plan 约束）。
+ * 管道下为纯文本，TTY 上色。
+ */
+export function formatModePrompt(mode: 'normal' | 'plan' | 'bang', base: string): string {
+  if (mode === 'bang') return red(bold('! '));
+  if (mode === 'plan') return `${magenta('plan')} ${base}`;
+  return base;
+}
+
+/**
+ * 续行判定：行尾单个 `\`（`\\` 转义不算；codex 多行 composer 的行式终端版）。
+ * readline 无法可靠拦截 Ctrl+J（0x0A 照样提交且内部监听先行），改走 shell 式续行。
+ */
+export function hasLineContinuation(line: string): boolean {
+  const m = /\\+$/.exec(line);
+  return !!m && m[0].length % 2 === 1;
+}
+
+/** 去掉续行反斜杠（`abc\` → `abc`；调用方把后续行以 `\n` 拼进同一条消息） */
+export function stripLineContinuation(line: string): string {
+  return line.slice(0, -1);
+}
+
+/**
+ * 续行块组装：forShell 时保留反斜杠（sh 自带 `\` 续行语义，剥掉反而会把换行当命令分隔）；
+ * 其余去标记后换行拼接。parts[0..n-2] 恒带标记，末行按实际判定。
+ */
+export function joinContinued(parts: string[], forShell: boolean): string {
+  if (forShell) return parts.join('\n');
+  return parts.map((p) => (hasLineContinuation(p) ? stripLineContinuation(p) : p)).join('\n');
+}
+
+/** 续行提示符（积累中输入行的缩进指示，codex composer 续行同款省略号） */
+export function contPrompt(): string {
+  return dim('… ');
+}
+
+/**
+ * 历史搜索条目（codex history-search Ctrl+R 的 mini 版）：去空去重保序、上限 50。
+ * 输入为 rl.history（readline 最新在前）；value 保留原文（回填整行），label 去首尾空格。
+ */
+export function historySearchItems(history: readonly string[], limit = 50): PickerItem[] {
+  const seen = new Set<string>();
+  const out: PickerItem[] = [];
+  for (const h of history) {
+    const label = h.trim();
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    out.push({ label, value: h });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * 单行 `?` 判定（codex `?` 快捷键覆盖层的行式版）：整行恰好一个问号才是帮助，
+ * 问句（`xxx?`）照常发给模型。
+ */
+export function isShortcutsHelpRequest(text: string): boolean {
+  return text.trim() === '?';
+}
+
+/** 快捷键帮助行（codex shortcut overlay 的 mini 版：只列本终端实际生效的键） */
+export function formatShortcutsHelp(): string[] {
+  return [
+    'Enter 发送 · \\ 续行（行尾反斜杠拼多行）',
+    '! 开头直跑 shell（bash mode，不进模型）',
+    '@ 提及文件/图片（Tab 补全），/ 斜杠命令（Tab 补全）',
+    'Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）',
+    'Esc 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹',
+    'Ctrl+D 退出（与 /exit 同一收尾） · /quit 也是退出',
+  ];
+}
+
+/**
+ * 粘贴突发跟踪（codex 粘贴启发式的 mini 版；readline 层面拦不住按行提交，
+ * 只能事后提示）。
+ * 终端 bracketed-paste 把粘贴包在 paste-start/paste-end 按键里送达（readline 原生解码，
+ * 无需本侧开启）；突发内每 1 个换行 = 多 1 次提交。takePending 取走待提示行数。
+ */
+export class PasteBurstTracker {
+  private enters = -1;
+  private pendingLines = 0;
+  /** 喂一次按键名（调用方只传 key?.name） */
+  key(name: string | undefined): void {
+    if (name === 'paste-start') {
+      this.enters = 0;
+      return;
+    }
+    if (name === 'paste-end') {
+      if (this.enters >= 1) this.pendingLines += this.enters + 1;
+      this.enters = -1;
+      return;
+    }
+    if (this.enters >= 0 && (name === 'enter' || name === 'return')) this.enters += 1;
+  }
+  /** 取走待提示行数并清零（safePrompt 处打印） */
+  takePending(): number {
+    const n = this.pendingLines;
+    this.pendingLines = 0;
+    return n;
+  }
+}
+
 /** 剥掉 `!` 前缀取 shell 命令体（`!git status` → `git status`；裸 `!` → ''） */
 export function stripBangPrefix(text: string): string {
   return text.trimStart().slice(1).trim();
@@ -198,7 +331,8 @@ export async function pickFromList(
         repaint();
         return;
       }
-      if (name === 'return') {
+      // 回车确认见 isPickerConfirmKey（两键都接受）
+      if (isPickerConfirmKey(name)) {
         done(sel);
         return;
       }
@@ -216,6 +350,11 @@ export async function pickFromList(
     stdin.on('keypress', onKey as (...args: unknown[]) => void);
     for (const fn of saved) stdin.removeListener('keypress', fn as (...args: unknown[]) => void);
   });
+}
+
+/** picker 确认键：Enter（`return`，0x0D）与换行（`enter`，0x0A，如 Ctrl+J/粘贴）都确认，与 readline 一致 */
+export function isPickerConfirmKey(name: string): boolean {
+  return name === 'return' || name === 'enter';
 }
 
 /** installSlashSuggest 配置（纯显示联想面板；按键只观察不消费） */

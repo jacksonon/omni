@@ -135,7 +135,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 ```
 src/
-  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web）
+  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web；另有 doctor 顶层诊断、completion 补全，均对标 codex 同名命令）
   client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用（主循环/子代理）
   version.ts            # 版本号常量
   ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
@@ -143,6 +143,7 @@ src/
                         #   --output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）· stdin 两形态
                         #   （`-` 整段 prompt / prompt+stdin 注入上下文）· --max-turns · --allowed-tools（纯工具过滤）·
                         #   --output-schema（JSON Schema 子集校验，不符 → 非零退出）· exit code 0/1 管道分支 ·
+                        #   `-o/--output-last-message` 最终回答落盘（codex exec 同款；写失败非零退出）·
                         #   exec resume <id> 会话续跑（复用 session JSONL）· MCP server 暴露 omni_exec/omni_reply
                         #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
   web/
@@ -194,17 +195,37 @@ src/
                         #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
   cli/
     plugin.ts           # omni plugin CLI：install/list/enable/disable/remove（2026-09）
+    completion.ts       # omni completion <bash|zsh>：shell 补全脚本（codex completion 对等；bash -n/zsh -n 校验）
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
     interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
     mini.ts             # **纯终端 CLI 模式（`omni mini`）**：复用 runInteractive（全部斜杠命令/审批/会话/撤销栈），
-                        #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：内容自适应圆角框 / `› ` 用户行 /
+                        #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：无框会话头（标题/目录/YOLO/问候） / `› ` 用户行 /
                         #   `• ` 正文（MiniMarkdownRenderer：复用 tui/markdown 解析输出 ANSI，围栏隐藏/表格框线）+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
                         #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
                         #   + Ctrl+T 完整轨迹账本；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
                         #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C 轮内中断、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
                         #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
                         #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
+                        #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
+                        #   开场问候语（codex greeting 全量复刻：全会话 compact 头+随机问候，信息框已随上游删除）；
+                        #   模式提示符（codex footer 模式指示：plan 品红前缀，bang 红 `!` 优先）；
+                        #   Ctrl+R 历史搜索（codex history-search：modal 回填不提交）；picker 回车确认兼容 0x0A；
+                        #   提问回答解析纯函数化（空取消/序号多选去重/越界回落自定义）；
+                        #   斜杠小件（codex 对等）：/copy 上一条回复进剪贴板（OSC52+平台工具同源）/pwd 显示目录/quit 退出别名；
+                        #   /delete 永久删会话（codex 对等：会话目录内才删/当前会话与非 TTY 拒绝/y 确认）；
+                        #   EOF（Ctrl+D）与 /exit 同一收尾（记忆落盘/flush/定稿/空占位清理，幂等）；
+                        #   单行 `?` 快捷键帮助（codex `?` 覆盖层；问句照常进模型）；
+                        #   粘贴突发跟踪（bracketed-paste 标记计数，多行按行提交后在空闲提示符处教 `\` 续行；合并不了是 readline 限制）；
+                        #   mini 单次 `-o` 落盘最终回答（codex exec --output-last-message；单次本就不落会话≈--ephemeral）；
+                        #   mini 单次 `--approve-for-me`（codex exec 同款；置 cfg.autoReview 实时开关）；
+                        #   mini 单次 stdin 两形态（codex exec：`-` 即全文/`[stdin 输入]` 上下文块；e2e 注意 DEBUG 切片与 npx 解析）；
+                        #   图片提及（codex composer 图片附件：`@图.png` 转 vision parts；无 vision 模型由 modalities 校验报错）；
+                        #   反斜杠续行（codex 多行 composer 行式版：行尾 `\` 拼多行，`… ` 续行提示）；
+                        #   续行组装分 shell/普通两路（`!` 保留反斜杠交 sh 原生续行）；
+                        #   回合完成 tip（codex turn tips：带最终回答/3 轮起/间隔 3/全会话 2 条，working 中 tip 略）；
+                        #   自动压缩可见反馈（codex compact 单元格：以本轮新增 compact 事件为准打印 dim 提示）；
+                        #   写/改文件单元格带 hunk diff 预览（codex patch cell：变更±2 ctx、add 绿/rem 红，超 10 行截断）；
                         #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）
   agent/
     loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
@@ -232,10 +253,10 @@ src/
     trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console/web 账本）
     types.ts            # RunOptions / ThinkingDisplay 共享类型
   safety/
-    index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用）
+    index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用；write_file 审批 reason 带统计+有界 diff 正文）
     policy.ts           # 权限分级（full/safe/ask/read）+ 危险命令检测（内置 + 扩展正则）+ per-tool 审批模式
     audit.ts            # 审计日志落盘（~/.config/omni/audit.log）
-    trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删；未信任 = 只读 + 跳过 hooks/MCP/技能/子代理/项目记忆（能执行或注入的一律不加载）
+    trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删（路径规范化消解符号链接，不存在逐级向上找祖先）；未信任 = 只读 + 跳过 hooks/MCP/技能/子代理/项目记忆（能执行或注入的一律不加载）
     sandbox.ts          # **OS 级沙箱**：read-only / workspace-write（macOS sandbox-exec / Linux bwrap 包裹 run_command）；Windows（2026-09）显式不支持（AppContainer 需原生模块）+ fail-closed 语义
     auto-review.ts      # **AI 自动审批（2026-09）**：createAutoReviewer（模型审阅 approve/deny，失败回退人工）+ parseAutoReviewVerdict
   hooks/

@@ -44,7 +44,7 @@
 - **遥测（P1-11）**：opt-in OTLP/HTTP JSON 导出（零依赖），prompt 默认脱敏，fire-and-forget——config `telemetry`
 - **LSP 反馈闭环（P1-3）**：`diagnoseAfterEdit` 在 write_file 后跑快速 typecheck/lint 并回传诊断，模型即时自修复；外加热手写最小 LSP 客户端的 `lsp` 导航工具（definition/hover/references/documentSymbol）
 - **2026-09 市场对齐批次**：动态工作流编排 + Team 共享看板/消息 + 后台子代理（`/orchestrate` `/tasks` `/team`）· 插件系统（`plugin.json` 打包技能/子代理/hooks/MCP，`/plugin` + `omni plugin`）· 会话 pin/archive + `/cd` 切换工作目录 · AI 自动审批（`/auto`，不改权限/沙箱边界）· MCP elicitation/sampling 反向请求 + 分页发现 + DCR/CIMD · 密钥脱敏（会话落盘/回放）· TUI Vim 键位
-- **纯终端 CLI 模式（`omni mini`）**：Codex CLI 形态的终端会话（圆角信息框 · `• Ran` 项目符号 · `  └ ` 输出预览 + `+N lines (ctrl+t to view transcript)` 折叠提示 · 每轮 `Worked for` 耗时线）——运行时/会话/斜杠命令与 `omni` 完全一致，只输出普通滚动行（无光标控制、可管道可回滚）
+- **纯终端 CLI 模式（`omni mini`）**：Codex CLI 形态的终端会话（无框会话头 · `• Ran` 项目符号 · `  └ ` 输出预览 + `+N lines (ctrl+t to view transcript)` 折叠提示 · 每轮 `Worked for` 耗时线）——运行时/会话/斜杠命令与 `omni` 完全一致，只输出普通滚动行（无光标控制、可管道可回滚）
 - **Web 模式（`omni web`）**：本地后端服务（REST + SSE，零新增依赖）+ 浏览器界面——多会话侧栏、思考/工具/回答实时流式、审批与提问卡片、模型/权限/思考级别设置、取消、每轮 token 统计；浏览器与 Electron 桌面应用均可使用
 - **Electron 桌面应用**（macOS / Windows / Linux）：独立桌面应用，内置 web 后端（走 Electron 自带的 Node，无需系统安装 Node）；GitHub Actions 打 tag 自动构建（mac arm64/x64 zip、win x64 exe、linux x64 AppImage）并附到 GitHub Release
 - **分层配置**：默认值 → 全局配置 → 项目配置 → 自定义配置 → 环境变量 → CLI 参数（JSONC 支持注释）
@@ -316,7 +316,7 @@ omni mcp-server     # stdio JSON-RPC：initialize / tools/list / tools/call
 ### 纯终端 CLI 模式（`omni mini`）
 
 Codex CLI 形态的**纯终端模式**：与 `omni` 共用同一套 Agent 运行时、会话持久化、安全闸门、斜杠命令
-与交互循环，只换渲染层——圆角信息框、`• Ran <命令>` 项目符号 + `└` 输出预览、`› ` 用户行、`• ` 起头的正文、
+与交互循环，只换渲染层——无框会话头（标题/目录/YOLO/问候）、`• Ran <命令>` 项目符号 + `└` 输出预览、`› ` 用户行、`• ` 起头的正文、
 耗时线。所有内容都是普通滚动行：不做光标控制、不进备用屏，可安全重定向、可回滚查看。
 
 ```bash

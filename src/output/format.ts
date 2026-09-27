@@ -469,6 +469,48 @@ export function unifiedDiff(original: string | null, content: string): UnifiedDi
 }
 
 /**
+ * 审批用 diff 文本（纯文本，供 Safety.writeDiffSummary 组装进审批 reason，各端原样展示）：
+ * 首行统计（`变更统计 · +A −R 行` / `新增文件 · 全文 N 行`），随后最多 maxLines 行
+ * unified diff 正文（行号 + 符号 + 内容，无 ANSI，各端按既有 reason 样式渲染）。
+ * 无实质变更返回 null（调用方不附加）。超限截断并注记行数。
+ */
+export function approvalDiffText(
+  original: string | null,
+  content: string,
+  maxLines = 12
+): string | null {
+  const text = String(content ?? '');
+  if (original === null) {
+    const rows = text.split('\n');
+    const nonEmpty = rows.filter((l) => l !== '');
+    if (nonEmpty.length === 0) return null;
+    const head = rows.slice(0, maxLines).map((l, i) => `${String(i + 1).padStart(3, ' ')} +  ${l}`);
+    if (rows.length > maxLines) head.push(`…（新建文件共 ${rows.length} 行，仅显示前 ${maxLines} 行）`);
+    return [`新增文件 · 全文 ${rows.length} 行`, ...head].join('\n');
+  }
+  const counts = countDiffLines(original, text);
+  if (counts.add === 0 && counts.rem === 0) return null;
+  const ud = unifiedDiff(original, text);
+  const maxNo = ud.lines.reduce((m, l) => Math.max(m, l.oldNo ?? 0, l.newNo ?? 0), 0);
+  const digits = Math.max(2, String(maxNo).length);
+  const head = ud.lines
+    .slice(0, maxLines)
+    .map((dl) => formatUnifiedDiffLine(dl, digits));
+  if (ud.lines.length > maxLines || ud.truncated) head.push(`…（仅显示前 ${maxLines} 行）`);
+  return [`变更统计 · +${counts.add} −${counts.rem} 行`, ...head].join('\n');
+}
+
+/**
+ * 多行文本逐行挂前缀（审批 reason 这类多行块在行式终端对齐用；纯文本拼接，不碰样式）。
+ */
+export function prefixLines(text: string, prefix: string): string {
+  return String(text ?? '')
+    .split('\n')
+    .map((l) => `${prefix}${l}`)
+    .join('\n');
+}
+
+/**
  * 左右对比 diff（write_file 修改展示，兼容旧接口）：LCS 行对齐——未改动行左右同列、
  * 删除行在左、新增行在右，**紧邻的删除+新增块按行配对成「替换」**。
  * 每半列按列宽截断（省略号），行数超 DIFF_MAX_ROWS 截断（truncated=true）。

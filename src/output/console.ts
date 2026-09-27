@@ -19,7 +19,7 @@ import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { bold, createSpinner, cyan, dim, green, isTTY, red, useColor, yellow, type Spinner } from '../ui.js';
 import { inlineMathToText } from '../tui/markdown.js';
-import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, editToUnifiedDiff, isExitCodeZeroLine, unifiedDiff, wrapText } from './format.js';
+import { cardBottomLine, cardContentLine, cardSepLine, countDiffLines, editToUnifiedDiff, isExitCodeZeroLine, prefixLines, unifiedDiff, wrapText } from './format.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
 export interface ConsoleOutputOptions {
@@ -375,7 +375,7 @@ export class ConsoleOutput implements Output {
     const rl = readline.createInterface({ input, output: errOut });
     try {
       const ans = await rl.question(
-        `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n  ${dim(req.reason)}\n  批准执行？[y/N] `
+        `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n${dim(prefixLines(req.reason, '  '))}\n  批准执行？[y/N] `
       );
       return /^y/i.test(ans.trim());
     } finally {

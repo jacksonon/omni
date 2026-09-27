@@ -12,7 +12,7 @@ import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatToken
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { prepareContext } from '../agent/context.js';
+import { collectImageAttachments, prepareContext, userMessageWithImages } from '../agent/context.js';
 import {
   generateAgentsFile,
   generateGlobalAgentsFile,
@@ -35,7 +35,7 @@ import {
   runSkillsCli,
 } from '../agent/skill.js';
 import { summarizeContext } from '../agent/context.js';
-import { EventRecorder } from '../agent/events.js';
+import { EventRecorder, compactedSince } from '../agent/events.js';
 import { buildTraceTextLines } from '../agent/trace.js';
 import { captureCommand, collectDiff, detectCheckCommand, reviewCode } from '../agent/review.js';
 import {
@@ -44,8 +44,9 @@ import {
   exportSession,
   fullStatusReport,
   memoryFilesFromMessages,
+  lastAssistantText,
 } from '../agent/report.js';
-import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, sessionIdFromPath, updateSessionTitle, updateSessionMeta, resolveSessionTarget } from '../agent/session.js';
+import { findSessionCandidates, listSessions, loadSession, createSession, removeEmptySession, deleteSessionFile, sessionIdFromPath, updateSessionTitle, updateSessionMeta, resolveSessionTarget } from '../agent/session.js';
 import { resolveCdArg } from '../agent/workspace.js';
 import {
   autoGitCommit,
@@ -67,9 +68,9 @@ import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp
 import { createClient, discoverModels } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
-import { bold, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
+import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
-import { applyMentionInsert, completeMiniLine, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix } from './picker.js';
+import { applyMentionInsert, completeMiniLine, formatModePrompt, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
 
 export async function runInteractive(
@@ -164,6 +165,13 @@ export async function runInteractive(
   // `!` shell 模式提示符态（codex composer bash mode）：函数作用域——TTY 监听器与主循环共用
   let bangPrompt = false;
   const basePrompt = opts.prompt ?? cyan('omni> ');
+  /** 反斜杠续行累积（codex 多行 composer 的行式终端版：行尾 `\` 把后续行拼进同一条消息） */
+  let contBuf: string[] = [];
+  /** 当前提示符：bang > plan > normal（codex footer 模式指示；planMode 在下方声明，闭包运行时已就绪） */
+  const applyPrompt = (): void => {
+    const mode = bangPrompt ? 'bang' : planMode ? 'plan' : 'normal';
+    (rl as unknown as { setPrompt(s: string): void }).setPrompt(formatModePrompt(mode, basePrompt));
+  };
   // Esc 中断当前回合（codex `esc to interrupt`）：每轮独立 AbortController，
   // runAgent 经 runOpts.abortSignal 感知取消（loop 内首 chunk/工具边界检查）；
   // rearmAbort 由 loop 在 abort 消费后调用换新信号（与 TUI cancelRun 同机制）。
@@ -200,8 +208,9 @@ export async function runInteractive(
         else {
           (rl as unknown as { line: string }).line = '';
           (rl as unknown as { cursor: number }).cursor = 0;
-          (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
           bangPrompt = false;
+          contBuf = [];
+          applyPrompt();
           redrawBangPrompt();
         }
       } catch {
@@ -225,16 +234,40 @@ export async function runInteractive(
         if (key?.name === 'escape' && isBangShellCommand(cur) && stripBangPrefix(cur) === '') {
           (rl as unknown as { line: string }).line = '';
           (rl as unknown as { cursor: number }).cursor = 0;
-          (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
           bangPrompt = false;
+          applyPrompt();
           redrawBangPrompt();
           return;
         }
         const want = isBangShellCommand(cur);
-        if (want !== bangPrompt) {
+        // 续行积累中不动提示符（`… ` 指示优先；提交或空行后按键自然恢复）
+        if (want !== bangPrompt && contBuf.length === 0) {
           bangPrompt = want;
-          (rl as unknown as { setPrompt(p: string): void }).setPrompt(want ? red(bold('! ')) : basePrompt);
+          applyPrompt();
           redrawBangPrompt();
+        }
+        // Ctrl+R 历史搜索（codex history-search）：modal 选一条回填到输入行（不提交）；
+        // Tab @ 选择同款 pickFromList；空历史直接放行
+        if (key?.ctrl && key?.name === 'r') {
+          const items = historySearchItems((rl as unknown as { history?: readonly string[] }).history ?? [], 50);
+          if (items.length > 0) {
+            void (async () => {
+              try {
+                const idx = await pickFromList(input, items, {
+                  selected: 0,
+                  hint: '↑↓ 选择 · Enter 回填 · Esc 取消',
+                });
+                if (idx >= 0) {
+                  const v = items[idx]!.value;
+                  setRlText(v, v.length);
+                }
+              } catch {
+                /* 选择器异常：保留原行 */
+              }
+              mentionPanel?.close();
+              redrawInput();
+            })();
+          }
         }
       } catch {
         /* 提示符维护永不打断输入 */
@@ -282,8 +315,22 @@ export async function runInteractive(
     },
   });
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
+  // 粘贴突发跟踪（独立监听，不看 inTurn——突发横跨多轮提交；只计数不消费按键）
+  const pasteTracker = new PasteBurstTracker();
+  if (input.isTTY) {
+    input.on('keypress', (_ch: unknown, key?: { name?: string }) => {
+      try {
+        pasteTracker.key(key?.name);
+      } catch {
+        /* 计数永不打断输入 */
+      }
+    });
+  }
   const safePrompt = () => {
     try {
+      // 粘贴多行刚被按行提交过：在空闲提示符处提示一次（轮内不打断流式输出）
+      const pasted = pasteTracker.takePending();
+      if (pasted > 0) console.log(dim(`（检测到粘贴 ${pasted} 行被分成多次提交；多行单消息请用 \\ 续行）`));
       // mini 轮末停放：输入行已有回填文字，用 prompt(true) 把光标留在末尾
       //（无参 prompt 会把光标重置为 0，退格删不掉；takeParked 消费一次，
       // console 等渲染层没有该方法，可选链回退 false，原行为不变）
@@ -412,22 +459,52 @@ export async function runInteractive(
   };
   if (opts.intro !== false) console.log('输入任务开始；/exit 退出，/settings help 查看帮助。');
   safePrompt();
+  // 会话收尾（/exit 与 EOF/Ctrl+D 共用：偏好落盘 + 事件 flush + 会话定稿 + 空占位清理）；
+  // 幂等：EOF 紧跟 /exit 等重复路径只做一次
+  let finished = false;
+  const finishSession = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
+    if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
+      await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+      // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
+      await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
+    }
+    // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底退出边界）
+    await runOpts.events?.flush().catch(() => {});
+    if (runOpts.sessionPath) {
+      await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
+      // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
+      await removeEmptySession(runOpts.sessionPath).catch(() => {});
+    }
+  };
   for await (const line of rl) {
-    const cmd = line.trim();
-    if (cmd === '/exit') {
-      // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
-      if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
-        await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
-        // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
-        await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
-      }
-      // 轨迹事件最终落盘（persistTurn 已逐轮 flush，这里兜底退出边界）
-      await runOpts.events?.flush().catch(() => {});
-      if (runOpts.sessionPath) {
-        await finalizeSession(runOpts.sessionPath).catch(() => {}); // 刷新会话更新时间
-        // 仅命令（无真实对话）的会话文件是空占位 → 退出时删除，避免污染会话列表
-        await removeEmptySession(runOpts.sessionPath).catch(() => {});
-      }
+    // `/exit` 永远是退出：续行积累中也不被吞成消息正文（先清累积再走正常流程）
+    if (line.trim() === '/exit') contBuf = [];
+    // 反斜杠续行（codex 多行 composer 的行式终端版）：行尾 `\` 累积去斜杠行，
+    // 提示符切 `… `；完整块拼成一条消息一次提交（`!`/`/` 判定走拼好后的全文）
+    if (hasLineContinuation(line)) {
+      contBuf.push(line);
+      if (input.isTTY) (rl as unknown as { setPrompt(s: string): void }).setPrompt(contPrompt());
+      safePrompt();
+      continue;
+    }
+    const wasCont = contBuf.length > 0;
+    const rawParts = wasCont ? [...contBuf, line] : [line];
+    contBuf = [];
+    if (wasCont && input.isTTY) applyPrompt();
+    // bang（`!`）保留反斜杠交 sh 原生续行；其余去标记拼接（见 joinContinued）
+    const full = joinContinued(rawParts, isBangShellCommand(rawParts.join('\n')));
+    const cmd = full.trim();
+    if (isShortcutsHelpRequest(cmd)) {
+      // 单行 `?`：快捷键帮助（codex `?` 覆盖层；问句照常进模型，不建检查点不调 LLM）
+      for (const l of formatShortcutsHelp()) console.log(dim(`  ${l}`));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/exit' || cmd === '/quit') {
+      await finishSession();
       break;
     }
     if (cmd === '/clear') {
@@ -435,6 +512,24 @@ export async function runInteractive(
       savedCount = 0;
       runOpts.hooks?.resetSessionStart(); // 新一轮会话：SessionStart hook 重新触发
       console.log(dim('（已清空上下文，开始新一轮对话）'));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/pwd') {
+      // /pwd：显示当前工作目录（codex 同款；配合 /cd 使用）
+      console.log(process.cwd());
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/copy') {
+      // /copy：复制上一条 assistant 回复进系统剪贴板（codex 同款；OSC52 + 平台工具）
+      const text = lastAssistantText(messages);
+      if (!text) {
+        console.log(dim('（暂无可复制的模型回复）'));
+      } else {
+        copyTextToClipboard(text);
+        console.log(green(`已复制上一条回复（${text.length} 字符）到剪贴板`));
+      }
       safePrompt();
       continue;
     }
@@ -470,6 +565,7 @@ export async function runInteractive(
       // 计划模式开关：只读调研（read_file/list_directory/search_code），不修改文件
       planMode = !planMode;
       runOpts.planMode = planMode;
+      if (input.isTTY && !bangPrompt) applyPrompt();
       console.log(
         planMode
           ? dim('已进入计划模式（只读调研，不会修改文件；/plan 退出）')
@@ -830,7 +926,9 @@ export async function runInteractive(
           console.log(red('审查失败（网络 / API 问题），请重试'));
         } else {
           console.log(green(`审查结果（${diff.output.length} 字符改动）：`));
-          console.log(review);
+          // 走正文单元格（`• ` + Markdown 渲染，各渲染端一致；裸 console.log 会丢版式）
+          out.onAnswer(review);
+          out.onAnswerEnd();
         }
       }
       safePrompt();
@@ -850,8 +948,12 @@ export async function runInteractive(
         });
         if (!r.ok) {
           console.log(red(`旁问失败：${r.error ?? '未知错误'}`));
+        } else if (r.answer) {
+          // 走正文单元格（`• ` + Markdown 渲染，与 /review 同理）
+          out.onAnswer(r.answer);
+          out.onAnswerEnd();
         } else {
-          console.log(r.answer || '（没有回答）');
+          console.log('（没有回答）');
           console.log(dim(`—— 旁问结束（${r.toolCalls} 次只读工具调用，未进入对话历史${keep ? '' : '；加 --keep 可留在上下文'}）`));
           if (keep) {
             messages.push({ role: 'system', content: formatBtwNote(question, r.answer) });
@@ -1010,17 +1112,11 @@ export async function runInteractive(
       };
       if (!want) {
         if (input.isTTY && models.length > 0) {
-          // TTY 箭头选择器：有多少字段拼多少（名称 · provider · 上下文k/输出k · 当前✓）
-          const fmtK = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`);
-          const items = models.map((m) => {
-            const segs = [m.displayName ?? m.name];
-            if (m.provider) segs.push(m.provider);
-            const k = [m.limit?.context ? fmtK(m.limit.context) : '', m.limit?.output ? fmtK(m.limit.output) : '']
-              .filter(Boolean).join('/');
-            if (k) segs.push(k);
-            if (m.name === currentModel) segs.push('✓');
-            return { label: segs.join(' · '), value: m.name };
-          });
+          // TTY 箭头选择器（文案见 formatModelPickLabel：名称 · provider · 上下文k/输出k · 思考级别 · 当前✓）
+          const items = models.map((m) => ({
+            label: formatModelPickLabel(m, m.name === currentModel),
+            value: m.name,
+          }));
           const curIdx = models.findIndex((m) => m.name === currentModel);
           const idx = await pickFromList(input, items, { selected: curIdx >= 0 ? curIdx : 0 });
           if (idx < 0) {
@@ -1564,6 +1660,30 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
+    if (cmd === '/delete' || cmd.startsWith('/delete ')) {
+      // /delete [会话id]：永久删除会话文件（codex 同款；不可恢复，需输入 y 确认；
+      // 当前会话拒绝删除——先 /new 或切换后再删；非 TTY 一律拒绝）
+      const target = await resolveSessionTarget(cmd.slice('/delete'.length).trim(), runOpts.sessionPath);
+      if (!target.ok) {
+        console.log(red(target.error));
+        for (const c of target.candidates ?? []) console.log(dim(`· ${c.id} — ${c.title || '（无标题）'}`));
+      } else if (runOpts.sessionPath && path.resolve(target.file) === path.resolve(runOpts.sessionPath)) {
+        console.log(red('不能删除当前会话（先 /new 或切换会话后再删）'));
+      } else if (!input.isTTY) {
+        console.log(red('非交互模式拒绝删除会话（防误触）'));
+      } else {
+        const loaded = await loadSession(target.file);
+        const ans = (await rl.question(dim(`永久删除会话 ${loaded?.meta.id ?? target.file}？不可恢复。[y/N] `))).trim().toLowerCase();
+        if (ans !== 'y' && ans !== 'yes') {
+          console.log(dim('已取消'));
+        } else {
+          const r = await deleteSessionFile(target.file);
+          console.log(r.ok ? green(`已删除会话 ${r.id}`) : red(r.error));
+        }
+      }
+      safePrompt();
+      continue;
+    }
     if (cmd === '/auto' || cmd.startsWith('/auto ')) {
       // /auto [on|off]：AI 自动审批开关（需要审批的操作先经模型审阅；审阅失败回退人工）
       const cfg = runOpts.cfg;
@@ -1762,7 +1882,7 @@ export async function runInteractive(
       // 空行提交：shell 模式提示符可能还停在 `!` 态，回到正常（行已空，不可能是 bang）
       if (bangPrompt) {
         bangPrompt = false;
-        (rl as unknown as { setPrompt(p: string): void }).setPrompt(basePrompt);
+        if (input.isTTY) applyPrompt();
       }
       safePrompt();
       continue;
@@ -1815,15 +1935,26 @@ export async function runInteractive(
     if (runOpts.hooks?.has('UserPromptSubmit')) {
       userText = (await runOpts.hooks.userPromptSubmit(cmd)).prompt;
     }
-    messages.push({ role: 'user', content: userText });
+    // 图片提及（codex composer 图片附件）：`@图.png` 转 vision parts 随本轮发出
+    //（无 vision 模型由 loop modalities 校验明确报错；文本 @引用 照常回显）
+    const images = await collectImageAttachments(userText, process.cwd()).catch(() => []);
+    if (images.length > 0) {
+      console.log(dim(`（已附加 ${images.length} 张图片：${images.map((i) => i.path).join('、')}）`));
+    }
+    messages.push(userMessageWithImages(userText, images));
     out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
     runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
     // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
     // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
     await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
     // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
-    // recorder 传下去——压缩成功时记 compact 轨迹事件）
+    // recorder 传下去——压缩成功时记 compact 轨迹事件）。
+    // 自动压缩可见反馈（codex compact 单元格对等；与手动 /compact 文案同口径）：
+    // 以本轮新增 compact 事件为准（prepareContext 本身不返回值）。
+    const evCount = runOpts.events?.events.length ?? 0;
     await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
+    const autoCompacted = compactedSince(runOpts.events?.events ?? [], evCount);
+    if (autoCompacted > 0) console.log(dim(`（上下文已自动压缩：${autoCompacted} 条旧消息收拢为摘要）`));
     runOpts.planMode = planMode; // 每轮同步计划模式（/plan 切换即时生效）
     runOpts.permission = permission; // 每轮同步权限档位（/permission 切换即时生效）
     runOpts.safetyGate?.setTier(permission); // 共用闸门（子代理）同步，与 TUI 路径一致
@@ -1845,6 +1976,7 @@ export async function runInteractive(
     out.onTurnEnd();
     safePrompt();
   }
+  await finishSession(); // EOF（Ctrl+D）同样收尾（与 /exit 同一流程，幂等）
   suggest?.dispose();
   rl.close();
 }

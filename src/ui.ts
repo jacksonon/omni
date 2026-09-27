@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+
 /**
  * 终端 UI 工具：ANSI 颜色、TTY 检测、spinner、运行时检测。
  *
@@ -49,6 +51,49 @@ export const red = wrap('31');
  */
 export function terminalTitleSequence(title: string): string {
   return `\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`;
+}
+
+/**
+ * 把文本写进系统剪贴板（codex `/copy` 对等；TUI 拖选复制同源）：
+ * 先尝试 OSC52（主流终端支持，零外部依赖），再回退平台工具
+ * （macOS pbcopy / Linux wl-copy→xclip / Windows PowerShell Set-Clipboard）。
+ * 任一成功即可；全部失败静默（复制失败不打断流程，调用方自行提示）。
+ * runner 可注入（测试用假执行器断言调用；缺省真执行）。
+ */
+/** OSC52 剪贴板序列（纯函数；调用方只在 TTY 下发送，管道里是垃圾字节） */
+export function osc52Sequence(text: string): string {
+  return `\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}\x07`;
+}
+
+export function copyTextToClipboard(
+  text: string,
+  runner: (cmd: string, args: string[], input: string) => void = (cmd, args, input) => {
+    execFileSync(cmd, args, { input });
+  }
+): void {
+  if (!text) return;
+  // OSC52 只发给真终端（setTerminalTitle 同理；管道/文件里是垃圾字节）
+  if (isTTY) {
+    try {
+      process.stdout.write(osc52Sequence(text));
+    } catch {
+      /* 发送失败 → 回退子进程 */
+    }
+  }
+  try {
+    if (process.platform === 'darwin') runner('pbcopy', [], text);
+    else if (process.platform === 'linux') {
+      try {
+        runner('wl-copy', [], text);
+      } catch {
+        runner('xclip', ['-selection', 'clipboard'], text);
+      }
+    } else if (process.platform === 'win32') {
+      runner('powershell', ['-NoProfile', '-Command', 'Set-Clipboard'], text);
+    }
+  } catch {
+    /* 无剪贴板工具（如最小容器）→ 静默，调用方提示 */
+  }
 }
 
 /** 设置终端窗口/标签页标题（仅 TTY 下发送——非 TTY 无窗口可设置，写了也是垃圾字节） */

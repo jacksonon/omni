@@ -175,6 +175,7 @@ export class EventRecorder {
     this.push({ k: 'compact', removed });
   }
 
+
   /** 子代理开始（delegate 委托；parentId = 父代理 id，null = 主代理直接委托） */
   subagentStart(id: string, parentId: string | null, depth: number, name: string, task: string): void {
     this.push({ k: 'subagent/start', id, parentId, depth, name, task: task.slice(0, 300) });
@@ -201,4 +202,16 @@ export class EventRecorder {
       // 静默失败（不打扰对话）
     }
   }
+}
+
+/**
+ * 自 since 起新增 compact 事件的移除总数（交互层自动压缩可见反馈用，
+ * codex compact 单元格对等；无新增返回 0）。
+ */
+export function compactedSince(events: TrajEvent[], since: number): number {
+  let n = 0;
+  for (const ev of events.slice(Math.max(0, since))) {
+    if (ev.k === 'compact') n += ev.removed;
+  }
+  return n;
 }

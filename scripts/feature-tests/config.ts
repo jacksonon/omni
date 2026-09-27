@@ -5,6 +5,7 @@
 import { TestSuite } from './framework.js';
 import { parseJsonc } from '../../src/config/jsonc.js';
 import { loadConfig } from '../../src/config/index.js';
+import { parseArgs } from '../../src/cli/args.js';
 import { findProjectConfig } from '../../src/config/discover.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
@@ -57,6 +58,28 @@ export function configSuite(): TestSuite {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  suite.test('--sandbox 沙箱覆盖（codex -s 对等）', () => {
+    const r1 = parseArgs(['mini', '--sandbox', 'read-only', 'task']);
+    suite.assert(r1.flags.cd === null && r1.taskArgs.join(' ') === 'mini task', '--sandbox 不污染任务参数');
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgsb-'));
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'ft-cfgsb-w-'));
+    const oldCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      suite.assert(loadConfig().sandbox === 'off', '缺省 off');
+      suite.assert(loadConfig({ sandbox: 'read-only' }).sandbox === 'read-only', 'overrides 生效');
+      suite.assert(loadConfig({ sandbox: 'nonsense' }).sandbox === 'off', '非法值回退');
+    } finally {
+      process.chdir(oldCwd);
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
       rmSync(tmp, { recursive: true, force: true });
       rmSync(tmpXdg, { recursive: true, force: true });
     }

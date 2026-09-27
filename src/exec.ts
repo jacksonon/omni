@@ -19,7 +19,7 @@
  * `omni mcp-server`：stdio JSON-RPC 暴露 `omni_exec` / `omni_reply` 两个工具，
  * 让 Claude Code / opencode 等外部 harness 把 omni 当子代理用（协议与 tools/mcp.ts 客户端对称）。
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import readline from 'node:readline';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { prepareContext } from './agent/context.js';
@@ -55,6 +55,8 @@ export interface ExecParseResult {
   quiet?: boolean;
   /** --approve-for-me：AI 自动审批（模型审阅需要审批的操作；失败回退拒绝） */
   approveForMe?: boolean;
+  /** -o/--output-last-message <文件>：最终回答落盘（codex exec 同款；写失败非零退出） */
+  outputLastMessage?: string | null;
 }
 
 /** 解析 exec 子命令参数（exec 专属 flag；--model/--config 已被 parseArgs 收进 overrides） */
@@ -68,6 +70,7 @@ export function parseExecArgs(args: string[]): ExecParseResult {
   let model: string | undefined;
   let quiet = false;
   let approveForMe = false;
+  let outputLastMessage: string | null = null;
   const positionals: string[] = [];
 
   // 子命令形态：`omni exec resume <id> [prompt]`
@@ -132,10 +135,16 @@ export function parseExecArgs(args: string[]): ExecParseResult {
       case '--approve-for-me':
         approveForMe = true;
         break;
+      case '-o':
+      case '--output-last-message': {
+        const v = takeValue();
+        if (v !== undefined) outputLastMessage = v;
+        break;
+      }
       case '--help':
       case '-h':
         throw new Error(
-          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [--resume <id>]\n' +
+          '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <文件>] [--resume <id>]\n' +
             '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。\n' +
             '  --approve-for-me：需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），不改变沙箱与权限边界。'
         );
@@ -154,13 +163,13 @@ export function parseExecArgs(args: string[]): ExecParseResult {
     promptRaw = '[继续上次任务]';
   }
   if (!promptRaw) throw new Error('缺少任务描述：omni exec "<任务>"（或用 - 从 stdin 读取）');
-  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe };
+  return { promptRaw, resumeId, outputFormat, maxTurns, allowedTools, outputSchema, model, quiet, approveForMe, outputLastMessage };
 }
 
 /* ─────────────────────────────── Exec 输出（stdout 干净） ─────────────────────────────── */
 
-/** 从管道读 stdin（TTY 下不阻塞）；无数据/读取失败 → null */
-function readStdinIfPiped(): string | null {
+/** 从管道读 stdin（TTY 下不阻塞）；无数据/读取失败 → null（mini 单次复用，保持两端同语义） */
+export function readStdinIfPiped(): string | null {
   if (process.stdin.isTTY) return null;
   try {
     const s = readFileSync(0, 'utf8');
@@ -566,6 +575,15 @@ export async function runExec(args: string[], overrides: ConfigOverrides): Promi
     process.stdout.write(res.result ? res.result + '\n' : '');
   } else {
     process.stdout.write(JSON.stringify(resultJson(res, opts.outputFormat === 'stream-json' ? { t: 'result' } : {})) + '\n');
+  }
+  // -o：最终回答落盘（codex --output-last-message 对等；写失败非零退出）
+  if (opts.outputLastMessage) {
+    try {
+      writeFileSync(opts.outputLastMessage, res.result);
+    } catch (err) {
+      process.stderr.write(`最终回答落盘失败（${opts.outputLastMessage}）：${(err as Error)?.message ?? err}\n`);
+      return 1;
+    }
   }
   return res.exitCode;
 }

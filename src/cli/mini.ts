@@ -77,6 +77,38 @@ export async function runMiniInteractive(
   }
 }
 
+/**
+ * mini 单次任务 flags 解析（codex exec 对等子集）：`-o/--output-last-message <文件>`
+ * 落盘最终回答（codex 同款）；其余原样当任务文本。`--flag=value` 与 `--flag value`
+ * 两形态；缺值忽略（不吞下一词之外的东西）。
+ */
+export function splitMiniOneShotFlags(args: string[]): {
+  taskArgs: string[];
+  task: string;
+  outputLastMessage: string | null;
+  approveForMe: boolean;
+} {
+  const rest: string[] = [];
+  let outputLastMessage: string | null = null;
+  let approveForMe = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '-o' || a === '--output-last-message') {
+      const v = args[++i];
+      if (v !== undefined) outputLastMessage = v;
+    } else if (a.startsWith('--output-last-message=')) {
+      const v = a.slice('--output-last-message='.length);
+      if (v) outputLastMessage = v;
+    } else if (a === '--approve-for-me') {
+      // AI 自动审批（codex exec 同款；审阅失败回退人工，不改变权限/沙箱边界）
+      approveForMe = true;
+    } else {
+      rest.push(a);
+    }
+  }
+  return { taskArgs: rest, task: rest.join(' ').trim(), outputLastMessage, approveForMe };
+}
+
 /** 单次任务（`omni mini "<任务>"`）：回显输入 + 同一渲染层 + 回合耗时线，跑完即退出 */
 export async function runMiniOneShot(
   client: OpenAI,

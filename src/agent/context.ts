@@ -110,6 +110,85 @@ export async function selectRelevantFiles(
   return out;
 }
 
+/**
+ * 图片提及（codex composer 图片附件的 mini 版）：`@photo.png` 这类文本引用本身对模型
+ * 是死引用（FILE_RE 文本白名单不会预载；read_file 读二进制也是乱码），这里转成
+ * vision parts 随用户消息发出。无 vision 模型的报错由 loop 的 modalities 前置校验负责。
+ */
+const IMAGE_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+};
+
+/** 图片路径判定（扩展名，大小写不敏感；svg 按文本走，不在此列） */
+export function isImagePath(p: string): boolean {
+  const m = /\.([A-Za-z0-9]+)$/.exec(p.trim());
+  return !!m && m[1]!.toLowerCase() in IMAGE_MIME;
+}
+
+/** @ 提及捕获（`@` 前不能是词字符——排除 `a@b.com` 这类邮箱；到空白或下一个 @ 为止） */
+const MENTION_RE = /(?<![\w@])@([^\s@]+)/g;
+
+/** 单张图片上限 8MB（base64 膨胀约 1/3）；单条消息最多 4 张 */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_IMAGE_FILES = 4;
+
+export interface ImageAttachment {
+  /** 提及原文里的相对路径（展示/回显用） */
+  path: string;
+  /** vision part 用 data URL */
+  dataUrl: string;
+}
+
+/**
+ * 从任务文本收集 @提及 的图片附件：存在 + 是文件 + 大小内 + 去重 + 上限。
+ * 不存在/超限/非图片一律跳过（静默；文本 @引用 本身仍回显）。
+ */
+export async function collectImageAttachments(
+  task: string,
+  cwd = process.cwd(),
+  maxFiles = MAX_IMAGE_FILES,
+  maxBytes = MAX_IMAGE_BYTES
+): Promise<ImageAttachment[]> {
+  const out: ImageAttachment[] = [];
+  const seen = new Set<string>();
+  for (const m of task.matchAll(MENTION_RE)) {
+    if (out.length >= maxFiles) break;
+    // 去引号/包裹符与结尾标点（与 selectRelevantFiles 同口径）
+    const clean = (m[1] ?? '').replace(/^['"`(]+/, '').replace(/['"`),.;:!?，。）」]+$/, '').replace(/^\.\//, '');
+    if (!clean || !isImagePath(clean)) continue;
+    const abs = path.resolve(cwd, clean);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    try {
+      const st = await stat(abs);
+      if (!st.isFile() || st.size > maxBytes) continue;
+      const buf = await readFile(abs);
+      const ext = clean.split('.').pop()!.toLowerCase();
+      out.push({ path: clean, dataUrl: `data:${IMAGE_MIME[ext]};base64,${buf.toString('base64')}` });
+    } catch {
+      /* 不存在 / 不可读 → 跳过 */
+    }
+  }
+  return out;
+}
+
+/** 用户消息（含 vision parts 组装；无图片时保持纯文本，避免改变原有形状） */
+export function userMessageWithImages(text: string, images: ImageAttachment[]): ChatCompletionMessageParam {
+  if (images.length === 0) return { role: 'user', content: text };
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text },
+      ...images.map((img) => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } })),
+    ],
+  };
+}
+
 /** 预载文件 → 注入消息（系统消息；循环会把自己的 SYSTEM_PROMPT 放在最前） */
 function preloadMessage(files: { path: string; content: string }[]): ChatCompletionMessageParam {
   const body = files

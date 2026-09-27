@@ -6,7 +6,7 @@ import type { ConfigOverrides } from '../config/index.js';
 export interface ParsedArgs {
   taskArgs: string[];
   overrides: ConfigOverrides;
-  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean; listAll: boolean };
+  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean; listAll: boolean; cd: string | null };
   /** --resume/-r <id>：要恢复的会话 id（null = 未指定） */
   resumeId: string | null;
   help: boolean;
@@ -19,7 +19,7 @@ export interface ParsedArgs {
 export function parseArgs(args: string[]): ParsedArgs {
   const taskArgs: string[] = [];
   const overrides: ConfigOverrides = {};
-  const flags = { noTui: false, listSessions: false, continueSession: false, listAll: false };
+  const flags = { noTui: false, listSessions: false, continueSession: false, listAll: false, cd: null as string | null };
   let resumeId: string | null = null;
   let help = false;
   let version = false;
@@ -51,6 +51,14 @@ export function parseArgs(args: string[]): ParsedArgs {
         break;
       case '--profile':
         overrides.profile = takeValue();
+        break;
+      case '--sandbox':
+        // OS 级沙箱覆盖（codex -s 对等；omni 的 -s 是 resume，只认长式）
+        overrides.sandbox = takeValue();
+        break;
+      case '--cd':
+        // 工作根覆盖（codex -C/--cd 对等；注意 omni 的 -C 是 config，此处只认 --cd）
+        flags.cd = takeValue() ?? null;
         break;
       case '--no-tui':
         flags.noTui = true;
@@ -112,7 +120,7 @@ export function printHelp(lang: 'zh' | 'en' = 'en'): void {
 function printHelpEn(): void {
   console.log(`Usage:
   omni "<task>"    Run a single task
-  omni                Interactive mode (/exit to quit; /init [--global] generate memory; /undo undo; /redo redo; /rewind session checkpoints (three modes: /rewind <N> preview · /rewind <N> --code|--chat|--both [--yes]); /model switch/add models (/model <name> switch · /model add <name> [--base-url] [--api-key] add & persist); /variants reasoning effort; /permission permission; /plan plan mode; /agents subagent config (model routing/nesting depth/defined subagents); /orchestrate parallel pipeline or dynamic workflow (fan-out+combine+review; --pipeline forces fixed); /goal goal mechanism (derive criteria and loop until met, /goal <goal> [--accept criteria] [--max N]); /team shared task board; /tasks running subagents; /compact compact context; /status status (incl. context usage); /context set context window (256/400/512/750/1000K · default); /session session management (list/continue history in cwd; archived list); /pin pin session; /archive archive session; /resume resume session; /cd change working directory; /export export; /diff view changes (--stat summary only · --full untruncated); /review review; /btw side question (--keep keeps it in context; read-only tools, answer stays out of history); /mcp MCP management; /plugin plugins; /skill skills; /auto AI auto-approval; /vim Vim keybindings; /doctor diagnose; /settings settings (help · models snapshot))
+  omni                Interactive mode (/exit or /quit to quit; /init [--global] generate memory; /undo undo; /redo redo; /rewind session checkpoints (three modes: /rewind <N> preview · /rewind <N> --code|--chat|--both [--yes]); /model switch/add models (/model <name> switch · /model add <name> [--base-url] [--api-key] add & persist); /variants reasoning effort; /permission permission; /plan plan mode; /agents subagent config (model routing/nesting depth/defined subagents); /orchestrate parallel pipeline or dynamic workflow (fan-out+combine+review; --pipeline forces fixed); /goal goal mechanism (derive criteria and loop until met, /goal <goal> [--accept criteria] [--max N]); /team shared task board; /tasks running subagents; /compact compact context; /status status (incl. context usage); /context set context window (256/400/512/750/1000K · default); /session session management (list/continue history in cwd; archived list); /pin pin session; /archive archive session; /delete delete a session (permanent); /resume resume session; /cd change working directory; /pwd print working directory; /export export; /diff view changes (--stat summary only · --full untruncated); /review review; /btw side question (--keep keeps it in context; read-only tools, answer stays out of history); /mcp MCP management; /plugin plugins; /skill skills; /auto AI auto-approval; /vim Vim keybindings; /doctor diagnose; /copy copy last assistant reply to clipboard; /settings settings (help · models snapshot))
 
 Headless (compose omni as a Unix command, like codex exec / claude -p):
   omni exec "<task>"                Non-interactive run: stdout = final result only, progress goes to stderr
@@ -129,8 +137,10 @@ Headless (compose omni as a Unix command, like codex exec / claude -p):
   headless exit code: 0 = done; 1 = request failed / max steps reached / schema mismatch (use &&/|| to branch)
 
 Pure terminal CLI (Codex-style rendering; same runtime and slash commands as interactive mode):
-  omni mini                      Terminal session (rounded info box · • Ran bullets · worked-for rule per turn)
+  omni mini                      Terminal session (borderless header · • Ran bullets · worked-for rule per turn)
   omni mini "<task>"             One-shot task rendered in the same terminal style
+  omni mini "<task>" --approve-for-me  One-shot with AI auto-review of approvals (like codex exec --approve-for-me)
+  omni mini "<task>" -o <file>      One-shot task + write final answer to a file (like codex exec --output-last-message)
   omni mini -c / -s <session-id> Resume a session in mini mode (Ctrl+T prints the full trace ledger)
 
 Web service (local backend + web UI: CLI and browser share the same backend):
@@ -139,6 +149,8 @@ Web service (local backend + web UI: CLI and browser share the same backend):
   omni plugin                    Plugin manager (install/list/enable/disable/remove; plugin.json bundles skills/agents/hooks/MCP)
   omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
   omni watch                     Watch mode: trigger agent on AI!/AI? comment markers (Aider-style; Ctrl+C to quit)
+  omni doctor                    Diagnose installation, config, auth, and runtime health (like codex doctor)
+  omni completion <bash|zsh>        Print shell completion script (eval "$(omni completion bash)")
   omni acp                       ACP endpoint (Agent Client Protocol, stdio JSON-RPC; Zed editor integration)
   omni web --port 4000           Custom port
   omni web --no-open             Do not open browser automatically
@@ -154,7 +166,9 @@ Options:
   -m, --model <name>    Select model (overrides config file)
   -c, --continue        Resume the latest session in current project (-c no longer means --config; use -C for config)
   -C, --config <path>   Use a specific config file (overrides auto-discovery)
+      --cd <dir>        Run with the directory as working root (like codex exec --cd)
       --profile <name>    Apply a config profile (config "profiles" field, e.g. work/personal/offline snapshots)
+      --sandbox <mode>    OS sandbox override: off | read-only | workspace-write | danger-full-access (like codex -s)
   -s, -r, --resume <session-id>   Resume a specific session
   -l, --list-sessions   List saved sessions (cwd only by default; add -f/--full/--all for all)
   -f, --full, --all     With -l: list all sessions (default lists cwd only)
@@ -185,7 +199,7 @@ Example: cp omni.example.jsonc omni.json then edit as needed.`);
 function printHelpZh(): void {
   console.log(`用法：
   omni "<任务描述>"    单次执行一个任务
-  omni                进入交互模式（/exit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/rewind 会话检查点（三模式：/rewind <N> 预览 · /rewind <N> --code|--chat|--both [--yes]）；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排或动态工作流（fan-out+汇总+对抗审查；--pipeline 强制固定管线）；/goal 目标机制（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/team 共享任务看板；/tasks 运行中子代理；/compact 压缩上下文；/status 状态（含上下文用量）；/context 调整上下文窗口（256/400/512/750/1000K · 默认）；/session 会话管理（列出/继续当前目录历史会话；archived 查看归档）；/pin 置顶会话；/archive 归档会话；/resume 恢复会话；/cd 切换工作目录；/export 导出；/diff 查看改动（--stat 只看统计 · --full 不截断）；/review 审查；/btw 旁问（--keep 留在上下文；只读工具查证，答案不进对话历史）；/mcp MCP 管理；/plugin 插件管理；/skill 技能；/auto AI 自动审批；/vim Vim 键位；/doctor 诊断；/settings 设置（help 帮助 · models 模型能力快照））
+  omni                进入交互模式（/exit 或 /quit 退出；/init [--global] 生成记忆；/undo 撤销；/redo 重做；/rewind 会话检查点（三模式：/rewind <N> 预览 · /rewind <N> --code|--chat|--both [--yes]）；/model 切换/添加模型（/model <名称> 切换 · /model add <名称> [--base-url] [--api-key] 添加并持久化）；/variants 思考级别；/permission 权限；/plan 计划模式；/agents 子代理配置（模型路由/嵌套深度/已定义子代理）；/orchestrate 并行编排或动态工作流（fan-out+汇总+对抗审查；--pipeline 强制固定管线）；/goal 目标机制（自动推导验收标准并循环直至达标，/goal <目标> [--accept 标准] [--max N]）；/team 共享任务看板；/tasks 运行中子代理；/compact 压缩上下文；/status 状态（含上下文用量）；/context 调整上下文窗口（256/400/512/750/1000K · 默认）；/session 会话管理（列出/继续当前目录历史会话；archived 查看归档）；/pin 置顶会话；/archive 归档会话；/delete 删除会话（永久）；/resume 恢复会话；/cd 切换工作目录；/pwd 显示工作目录；/export 导出；/diff 查看改动（--stat 只看统计 · --full 不截断）；/review 审查；/btw 旁问（--keep 留在上下文；只读工具查证，答案不进对话历史）；/mcp MCP 管理；/plugin 插件管理；/skill 技能；/auto AI 自动审批；/vim Vim 键位；/doctor 诊断；/copy 复制上一条回复到剪贴板；/settings 设置（help 帮助 · models 模型能力快照））
 
 Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p）：
   omni exec "<任务>"                非交互执行：stdout 只输出最终结果，进度走 stderr
@@ -202,8 +216,10 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）
 
 纯终端 CLI（Codex 形态渲染；运行时与斜杠命令跟交互模式完全一致）：
-  omni mini                      终端会话（圆角信息框 · • Ran 项目符号 · 每轮耗时线）
+  omni mini                      终端会话（无框会话头 · • Ran 项目符号 · 每轮耗时线）
   omni mini "<任务>"             单次任务（同一终端形态）
+  omni mini "<任务>" --approve-for-me  单次任务 + AI 自动审批（对标 codex exec --approve-for-me）
+  omni mini "<任务>" -o <文件>      单次任务 + 最终回答落盘（对标 codex exec --output-last-message）
   omni mini -c / -s <会话id>     恢复会话继续（Ctrl+T 打印完整轨迹账本）
 
 Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访问同一个后端）：
@@ -212,6 +228,8 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   omni plugin                    插件管理（install/list/enable/disable/remove；plugin.json 打包 skills/子代理/hooks/MCP）
   omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
   omni watch                     Watch 模式：监听 AI!/AI? 注释标记触发 agent 执行（Aider 同款；Ctrl+C 退出）
+  omni doctor                    环境诊断（安装/配置/鉴权/运行时健康，对标 codex doctor）
+  omni completion <bash|zsh>        打印 shell 补全脚本（eval "$(omni completion bash)"）
   omni acp                       ACP 端点（Agent Client Protocol，stdio JSON-RPC；Zed 等编辑器生态集成）
   omni web --port 4000           指定端口
   omni web --no-open             不自动打开浏览器
@@ -227,7 +245,9 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   -m, --model <名称>    指定模型（覆盖配置文件）
   -c, --continue        恢复当前项目最近一次会话（-c 已从 --config 让位；config 用 -C）
   -C, --config <路径>   指定配置文件（覆盖自动发现）
+      --cd <目录>       以指定目录为工作根运行（对标 codex exec --cd）
       --profile <名>    套用配置档案（config profiles 字段；如工作/个人/离线多套快照）
+      --sandbox <档位>    OS 沙箱覆盖：off | read-only | workspace-write | danger-full-access（对标 codex -s）
   -s, -r, --resume <会话id>   恢复指定会话
   -l, --list-sessions   列出会话（默认仅当前目录；加 -f/--full/--all 查看全部）
   -f, --full, --all     配合 -l：查看全部会话（默认仅当前目录）

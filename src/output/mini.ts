@@ -30,7 +30,8 @@ import { inlineMathToText } from '../tui/markdown.js';
 import { visualWidth } from '../tui/width.js';
 import { bold, cyan, dim, green, isTTY, italic, magenta, red, useColor, yellow } from '../ui.js';
 import { VERSION } from '../version.js';
-import { countDiffLines, isExitCodeZeroLine, truncateToWidth } from './format.js';
+import { countDiffLines, editToUnifiedDiff, formatUnifiedDiffLine, isExitCodeZeroLine, truncateToWidth, unifiedDiff, prefixLines } from './format.js';
+import type { UnifiedDiffLine } from './format.js';
 import { MiniMarkdownRenderer } from './markdown-ansi.js';
 import type { Output, TokenUsage, ToolResultDetail } from './types.js';
 
@@ -43,8 +44,6 @@ export interface MiniOutputOptions {
   markdown?: boolean;
 }
 
-/** 会话框内宽上限（codex: SESSION_HEADER_MAX_INNER_WIDTH = 56，注释就是 "Just an eyeballed value"） */
-const BOX_MAX_INNER = 56;
 /** 下方单元格左缩进（codex: LIVE_PREFIX_COLS = 2） */
 const PREFIX = '  ';
 /** 工具输出预览行数（codex: tool_output.rs PREVIEW_LINES = 3） */
@@ -59,9 +58,32 @@ export function approvalSessionKey(tool: string, summary: string): string {
   return `${tool}::${summary.trim()}`;
 }
 
-/** 审批提示文案（纯函数：颜色跟随终端，管道下为纯文本） */
+/** 审批提示文案（纯函数：颜色跟随终端，管道下为纯文本）。
+ * reason 可能多行（write_file diff 正文）：逐行挂前缀 + 独立上色，避免只有首行缩进。 */
 export function formatApprovalPrompt(req: ApprovalRequest): string {
-  return `\n${yellow('⚠')} ${bold(req.tool)}\n${PREFIX}${req.summary}\n${PREFIX}${dim(req.reason)}\n${PREFIX}批准执行？[y]本次允许 / [a]本会话记住 / [N]拒绝 `;
+  const reason = prefixLines(req.reason, PREFIX)
+    .split('\n')
+    .map((l) => dim(l))
+    .join('\n');
+  return `\n${yellow('⚠')} ${bold(req.tool)}\n${PREFIX}${req.summary}\n${reason}\n${PREFIX}批准执行？[y]本次允许 / [a]本会话记住 / [N]拒绝 `;
+}
+
+/**
+ * 提问回答解析（纯函数）：空=取消；纯数字/逗号=选项序号（越界整体回落自定义）；
+ * 其余=自定义文本。单选多选同一套（多选用逗号分隔）。
+ */
+export function parseAskAnswer(ans: string, options: string[]): AskResult | null {
+  const t = ans.trim();
+  if (!t) return null;
+  if (/^[\d,\s]+$/.test(t)) {
+    const idxs = [
+      ...new Set(t.split(/[,，\s]+/).map((s) => parseInt(s, 10)).filter((n) => n >= 1 && n <= options.length)),
+    ];
+    if (idxs.length === 0) return { choice: t, custom: true, choices: [t] };
+    const picked = idxs.map((i) => options[i - 1]!);
+    return { choice: picked.join('、'), custom: false, choices: picked };
+  }
+  return { choice: t, custom: true, choices: [t] };
 }
 
 /** 审批回答解析：`a` 开头 = 本会话记住，`y` 开头 = 仅本次允许，其余 = 拒绝 */
@@ -109,6 +131,103 @@ const VERBS: Record<string, string> = {
   lsp: 'Inspected',
 };
 
+/** 开场问候语（codex greetings.rs 全量复刻，PR #10248 起源；新会话 compact 头随机取一条，accent 上色） */
+export const MINI_GREETINGS: readonly string[] = [
+  "Whoa, fancy meeting you here!",
+  "Look who’s at the keyboard.",
+  "Hello, you. Got an idea?",
+  "Nice to see you in these parts.",
+  "Pull up a prompt.",
+  "What brings you to this corner of the terminal?",
+  "Hey there. Big plans or little fixes?",
+  "What are we getting into today?",
+  "Got something you want to try?",
+  "What’s today’s little adventure?",
+  "Anything interesting on the docket?",
+  "Take your time. The cursor can wait.",
+  "A half-formed idea will do.",
+  "Come on in. There’s room for an idea.",
+  "You, me, and a blinking cursor.",
+  "It takes two to tango. What’s our first step?",
+  "You bring the idea. I’ll bring the brackets.",
+  "Your move, teammate.",
+  "What are we cooking up?",
+  "Shall we turn “what if” into something?",
+  "What’s the first thing on our napkin sketch?",
+  "Bring your unfinished thoughts.",
+  "You set the direction. We’ll work out the steps.",
+  "Ah, the terminal. A classic meeting spot.",
+  "Nice place you’ve got here. Very monospace.",
+  "Welcome to our little rectangle of possibility.",
+  "A cursor blinks. The plot thickens.",
+  "The prompt is yours.",
+  "Fancy a little quality terminal time?",
+  "How’s life between the brackets?",
+  "Shall we give this cursor a purpose?",
+  "A fresh prompt. An open question.",
+  "Your keyboard has entered the chat.",
+  "Hello, world. Hello, you.",
+  "Welcome to the blinking edge of possibility.",
+  "Any loose ends? Semicolons count.",
+  "Shall we make this terminal earn its keep?",
+  "Got an itch to fix a thing?",
+  "Show me the bit that’s being weird.",
+  "Greetings, fellow tinkerer.",
+  "Well, well, well. An idea approaches.",
+  "What’s today’s side quest?",
+  "Is this a plan day or a poke-around day?",
+  "Practical, peculiar, or a little of both?",
+  "Rough sketches welcome.",
+  "Shall we see where this goes?",
+  "All right. What have you got?",
+  "Back for another round?",
+  "Same terminal, new possibilities.",
+  "Welcome back. Familiar territory or a fresh adventure?",
+  "Follow the white cursor.",
+  "Welcome to the command line, Neo.",
+  "A glitch in the Matrix, or just a missing semicolon?",
+  "How deep does this codebase go?",
+  "Speak, friend, and enter a prompt.",
+  "One prompt to begin the journey.",
+  "May the source be with you.",
+  "These might be the bugs you’re looking for.",
+  "A new prompt awakens.",
+  "Forty-two is an answer. What’s the question?",
+  "It’s dangerous to code alone. Take a prompt.",
+  "The code must flow.",
+  "You rang? Metaphorically. You typed.",
+  "Hello again, carbon-based collaborator.",
+  "This looks like the start of a perfectly reasonable rabbit hole.",
+  "Shall we turn “huh?” into “aha!”?",
+  "Well, this terminal just got interesting.",
+  "The source is strong with this one.",
+  "There’s a perfectly good prompt with your name on it.",
+  "Here for a quick fix or the extended edition?",
+  "What’s the latest from your side of the keyboard?",
+  "Got a minute and a mildly unreasonable idea?",
+  "A hunch is a perfectly respectable starting point.",
+  "Hello again. What’s the plot this time?",
+  "Shall we make a little something out of nothing?",
+  "Welcome to the neighborhood. Lots of characters here.",
+  "Nice terminal. Does it come in widescreen?",
+  "Your cursor called. It wants a plot.",
+  "Shall we put some verbs after that cursor?",
+  "Welcome. There’s no dress code, just code.",
+  "This terminal has excellent conversational potential.",
+  "Got an idea that won’t stay on the napkin?",
+  "What are we building in this episode?",
+  "Bring a question. Bonus points if it’s a weird one.",
+  "What are we poking with a metaphorical stick?",
+  "Shall we make the thing that makes the other thing easier?",
+  "Welcome to the part where the idea gets interesting.",
+  "A long time ago, in a directory not so far away…"
+];
+
+/** 随机取一条开场问候语（codex Greeting::choose；会话内只取一次，由调用方保持稳定） */
+export function pickMiniGreeting(): string {
+  return MINI_GREETINGS[Math.floor(Math.random() * MINI_GREETINGS.length)] ?? MINI_GREETINGS[0]!;
+}
+
 const TIPS = [
   '用 /model 切换模型、/variants 调整思考级别。',
   '用 /btw 旁问：只读工具查证，答案不进对话历史。',
@@ -120,16 +239,27 @@ const TIPS = [
   '打 / 后按 Tab 看全部命令；/model 与 /variants 支持 ↑↓ 选择。',
   '行首 ! 直跑 shell（如 !git status），不经过模型（codex bash mode）。',
   '用 @ 提及文件：打字过滤，Tab 选择（单候选直插，多候选 ↑↓+Enter）。',
+  '用 @图片.png 把截图直接发给模型看（vision 模型可用，无 vision 模型会明确报错）。',
   '/exit 退出，Ctrl+C 中断当前任务。',
 ];
 
-/** 会话框内容（纯数据，便于探针断言渲染结果） */
+/**
+ * 回合完成 tip 节奏（codex ca41ed3 的 mini 版：成功回合带最终回答、3 轮起、
+ * 间隔 ≥3 轮、全会话 ≤2 条；working 中 tip 不做——mini live 块是单行设计）。
+ * 中断识别近似：以正文收尾（onAnswerEnd）为"带最终回答"信号。
+ */
+export function shouldShowTurnTip(s: { turn: number; shown: number; lastShownTurn: number; hasAnswer: boolean }): boolean {
+  if (!s.hasAnswer) return false;
+  if (s.turn < 3) return false;
+  if (s.shown >= 2) return false;
+  if (s.shown > 0 && s.turn - s.lastShownTurn < 3) return false;
+  return true;
+}
+
+/** 会话头内容（compact 头仅需目录 + 权限；模型行已随 codex 信息框一并移除） */
 export interface MiniBannerInfo {
-  model: string;
-  effort?: string;
   directory: string;
   permission: string;
-  sandbox?: string;
 }
 
 /** 终端可见列数（未协商/管道为 0 时按 80 兜底） */
@@ -180,71 +310,20 @@ function tailToWidth(text: string, width: number): string {
   return `…${out}`;
 }
 
-/** 框内一行：plain 用于算宽，styled 用于输出（ANSI 不参与宽度计算） */
-interface BoxRow {
-  plain: string;
-  styled: string;
-}
-
 /**
- * 渲染会话信息框（纯函数）。
- * codex 版式：`>_ Omni (vX)` / 空行 / `model:` 行（模型 + 思考级别 + 3 空格 + `/model to change`）
- * / `directory:` 行 / `permissions:` 行（YOLO 或显式档位）；框宽 = 最宽内容行（上限 56）。
+ * 渲染会话头（纯函数；codex compact 版式，无框——空行 / `  >_ Omni (vX)` accent 标题 /
+ * 5 空格目录（按 width-5 截断，home 简写 ~）/ YOLO 行（仅） / 空行 / accent 问候语）。
+ * greeting 为 null 时省略问候行（调用方正常总是传一条：banner 内现取）。
  */
-export function renderMiniBanner(info: MiniBannerInfo, width: number): string[] {
-  const inner = Math.max(10, Math.min(width - 4, BOX_MAX_INNER));
-  const rows: BoxRow[] = [];
-
-  const title = `>_ Omni (v${VERSION})`;
-  rows.push({ plain: title, styled: `${dim('>_ ')}${bold('Omni')} ${dim(`(v${VERSION})`)}` });
-  rows.push({ plain: '', styled: '' });
-
-  // model 行（codex session.rs）：`model: <模型>[ <effort>]   /model to change`
-  // - effort 为纯文本（无样式，与 codex `Span::from(reasoning)` 一致）；
-  // - `/model` 为 accent 高亮（codex accent_color，这里面向终端用 cyan 近似）；
-  // - yolo 时三个标签按最宽对齐（codex label_width = max(directory, permissions)）。
+export function renderMiniBanner(info: MiniBannerInfo, width: number, greeting: string | null): string[] {
+  const out: string[] = [''];
+  out.push(`  ${cyan('>_ ')}${bold('Omni')} ${dim(`(v${VERSION})`)}`);
+  const dirShown = truncateMiddle(homify(info.directory), Math.max(1, width - 5));
+  out.push(`     ${dim(dirShown)}`);
   const isYolo = (PERM_LABEL[info.permission]?.yolo ?? false) || info.permission === 'full';
-  const labelW = isYolo ? Math.max('model:'.length, 'directory:'.length, 'permissions:'.length) : 0;
-  const padLabel = (label: string): string =>
-    labelW > 0 ? label.padEnd(labelW, ' ') : label;
-  const modelPlain = `${info.model}${info.effort ? ` ${info.effort}` : ''}`;
-  rows.push({
-    plain: `${padLabel('model:')} ${modelPlain}   /model to change`,
-    styled: `${dim(`${padLabel('model:')} `)}${info.model}${info.effort ? ` ${info.effort}` : ''}${dim('   ')}${cyan('/model')}${dim(' to change')}`,
-  });
-
-  // directory 行（codex format_directory_inner + center_truncate_path）：
-  // home 简写 ~，超 inner 宽时中间截断 `…`（保留首尾），与 codex 行为一致。
-  const dirFull = homify(info.directory);
-  const dirPrefixW = visualWidth(`${padLabel('directory:')} `);
-  const dirMax = Math.max(1, inner - dirPrefixW);
-  const dirShown = visualWidth(dirFull) > dirMax ? truncateMiddle(dirFull, dirMax) : dirFull;
-  rows.push({
-    plain: `${padLabel('directory:')} ${dirShown}`,
-    styled: `${dim(`${padLabel('directory:')} `)}${dirShown}`,
-  });
-  // permissions 行：仅 YOLO 时展示（codex session.rs：`if self.yolo_mode` 才 push）；
-  // 非 YOLO 档位不占行（权限经 /permissions 与 /status 查看，与 codex 一致）。
-  if (isYolo) {
-    rows.push({
-      plain: `${padLabel('permissions:')} YOLO mode`,
-      styled: `${dim(`${padLabel('permissions:')} `)}${bold(magenta('YOLO mode'))}`,
-    });
-  }
-  if (info.sandbox) {
-    rows.push({ plain: `sandbox: ${info.sandbox}`, styled: `${dim('sandbox:')} ${yellow(info.sandbox)}` });
-  }
-
-  // 框宽 = 最宽内容行（codex with_border：content_width = max_line_width）
-  const contentW = Math.max(1, Math.min(inner, Math.max(...rows.map((r) => visualWidth(r.plain)))));
-  const border = (edge: string): string => dim(`${edge}${'─'.repeat(contentW + 2)}${edge === '╭' ? '╮' : '╯'}`);
-  const out = [border('╭')];
-  for (const r of rows) {
-    const plain = visualWidth(r.plain) > contentW ? truncateToWidth(r.plain, contentW) : r.plain;
-    const styled = plain === r.plain ? r.styled : plain; // 超宽（窄终端）时退回纯文本，保证右侧边框对齐
-    out.push(`${dim('│ ')}${styled}${' '.repeat(Math.max(0, contentW - visualWidth(plain)))}${dim(' │')}`);
-  }
-  out.push(border('╰'));
+  if (isYolo) out.push(`  ${dim('permissions:')} ${bold(magenta('YOLO mode'))}`);
+  out.push('');
+  if (greeting != null) out.push(`  ${cyan(greeting)}`);
   return out;
 }
 
@@ -341,6 +420,63 @@ function stripMarkers(text: string): string {
     .trim();
 }
 
+/** diff 预览正文行数上限（codex patch 单元格 hunk 预览的 mini 版；统计行另计） */
+const DIFF_PREVIEW_LINES = 10;
+/** hunk 上下文行数：变更行前后各保留的行数，其余 ctx 折叠为 `…` */
+const DIFF_PREVIEW_CTX = 2;
+
+/**
+ * 写/改文件的 hunk 预览（codex patch cell 对等）：变更行 + 上下各 2 行 ctx，
+ * 其余折叠；add 绿 / rem 红 / ctx 浅色；超上限截断并注记。返回已上色成品行
+ * （不含统计行；调用方在前另起 `└ +A −R` 行）。
+ */
+export function diffPreviewBody(detail: ToolResultDetail | undefined, width: number): { body: string[]; truncated: boolean } {
+  const empty: { body: string[]; truncated: boolean } = { body: [], truncated: false };
+  const ud = detail?.diff
+    ? unifiedDiff(detail.diff.original ?? '', detail.diff.content)
+    : detail?.edit
+      ? editToUnifiedDiff(detail.edit.oldLines, detail.edit.newLines)
+      : null;
+  if (!ud || ud.lines.length === 0) return empty;
+  // 尾部伪空行：内容末 `\n` 切出的空行不是真实变更，去掉（中间空行保留）
+  const rawLines = ud.lines;
+  const last = rawLines[rawLines.length - 1] as UnifiedDiffLine;
+  const lines = last.text === '' ? rawLines.slice(0, -1) : rawLines;
+  if (lines.length === 0) return empty;
+  // hunk 过滤：保留变更行及前后 CTX 行，大段未改 ctx 折叠
+  const keep = new Array<boolean>(lines.length).fill(false);
+  lines.forEach((l, i) => {
+    if (l.kind === 'ctx') return;
+    for (let k = Math.max(0, i - DIFF_PREVIEW_CTX); k <= Math.min(lines.length - 1, i + DIFF_PREVIEW_CTX); k++) keep[k] = true;
+  });
+  if (!keep.some(Boolean)) return empty;
+  const maxNo = lines.reduce((m, l) => Math.max(m, l.oldNo ?? 0, l.newNo ?? 0), 0);
+  const digits = Math.max(2, String(maxNo).length);
+  const rows: string[] = [];
+  let truncated = ud.truncated;
+  let gap = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!keep[i]) {
+      gap = true;
+      continue;
+    }
+    if (gap) {
+      if (rows.length > 0) rows.push(`${' '.repeat(4)}${dim('…')}`);
+      gap = false;
+    }
+    if (rows.length >= DIFF_PREVIEW_LINES) {
+      truncated = true;
+      break;
+    }
+    const dl = lines[i] as UnifiedDiffLine;
+    const avail = Math.max(8, width - 4 - digits - 4);
+    const line = formatUnifiedDiffLine({ ...dl, text: truncateToWidth(dl.text, avail) }, digits);
+    const row = `${' '.repeat(4)}${line}`;
+    rows.push(dl.kind === 'add' ? green(row) : dl.kind === 'rem' ? red(row) : dim(row));
+  }
+  return { body: rows, truncated };
+}
+
 /** 写/改文件的紧凑 diff 统计（`└ +12 −3`）；无 diff 数据返回 null */
 function diffStatLine(detail: ToolResultDetail | undefined): string | null {
   const counts = detail?.diff
@@ -433,6 +569,8 @@ class LiveBlock {
 class StreamingCell {
   private buf = '';
   private started = false;
+  /** end() 后的写视为新单元格（重置 bullet/空行钩子；调用方误复用也不粘连） */
+  private ended = false;
 
   constructor(
     private live: LiveBlock,
@@ -459,6 +597,11 @@ class StreamingCell {
   }
 
   write(chunk: string): void {
+    if (this.ended) {
+      this.ended = false;
+      this.started = false;
+      this.buf = '';
+    }
     this.buf += chunk;
     let idx: number;
     while ((idx = this.buf.indexOf('\n')) >= 0) {
@@ -526,8 +669,12 @@ class StreamingCell {
       pending.push(...this.toRows(line));
     }
     if (this.renderFlush) pending.push(...this.renderFlush(this.avail()));
-    if (pending.length === 0) return;
+    if (pending.length === 0) {
+      this.ended = true;
+      return;
+    }
     this.emitRows(pending);
+    this.ended = true;
     // 注意：本轮没有任何正文（例如只发起了工具调用）时**什么都不打印**——
     // 之前会打印一个孤零零的 `•`（实测肉眼可见的脏输出）
   }
@@ -554,6 +701,11 @@ export class MiniOutput implements Output {
   } | null = null;
   private toolSeq = 0;
   private turnStart: number | null = null;
+  /** turn tip 节奏状态（onUserMessage 计轮，onAnswerEnd 记最终回答） */
+  private turnCount = 0;
+  private answerEnded = false;
+  private turnTipsShown = 0;
+  private lastTipTurn = 0;
   /** 当前光标下方是否已有一行空行（决定单元格间距——codex 相邻单元格之间恰好一行空行） */
   private gapOpen = true;
   /** 交互模式标记（cli/mini.ts 调用）：用于擦掉 readline 已回显的输入行 */
@@ -672,7 +824,7 @@ export class MiniOutput implements Output {
   markInteractive(): void {
     this.interactive = true;
     if (this.opts.stream) {
-      this.print(`${PREFIX}${dim('⏎ 发送 · Ctrl+C 中断 · /exit 退出 · Ctrl+T 轨迹')}`);
+      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · Ctrl+C 中断 · /exit 退出 · Ctrl+T 轨迹')}`);
       this.print('');
     }
   }
@@ -743,16 +895,13 @@ export class MiniOutput implements Output {
     } as ThinkingDisplay;
   }
 
-  /** 会话信息框 + 上手帮助 + Tip 行（codex new_session_info 首事件帮助块） */
+  /** 会话头 + 上手帮助 + Tip 行（codex compact 头 + new_session_info 首事件帮助块；问候语每次启动取一条） */
   banner(cfg: OmniConfig): void {
     const info: MiniBannerInfo = {
-      model: cfg.model,
-      effort: cfg.reasoningEffort,
       directory: process.cwd(),
       permission: cfg.permission ?? 'safe',
-      sandbox: cfg.sandbox && cfg.sandbox !== 'off' ? cfg.sandbox : undefined,
     };
-    for (const line of renderMiniBanner(info, cols())) this.print(line);
+    for (const line of renderMiniBanner(info, cols(), pickMiniGreeting())) this.print(line);
     this.print('');
     this.print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
     this.print('');
@@ -809,12 +958,14 @@ export class MiniOutput implements Output {
   onAnswerEnd(): void {
     if (!this.opts.stream) return;
     this.answer.end();
+    this.answerEnded = true;
   }
 
   onUsage(_usage: TokenUsage): void {}
 
   onTurnStart(): void {
     this.turnStart = Date.now();
+    this.answerEnded = false; // `!` 直跑回合无正文：防沿用上一轮标记误发 tip
     this.beginInputCapture();
   }
 
@@ -898,6 +1049,9 @@ export class MiniOutput implements Output {
     const diff = diffStatLine(detail);
     if (diff) {
       lines.push(diff.replace(new RegExp(`^${PREFIX}`), PREFIX));
+      const prev = diffPreviewBody(detail, width);
+      lines.push(...prev.body);
+      if (prev.truncated) lines.push(`${' '.repeat(4)}${dim('…（diff 较长，仅显示变更附近）')}`);
     } else if (t.name !== 'read_file') {
       const raw = (preview ?? [])
         .filter((l) => !l.includes(OMITTED_MARK) && !isExitCodeZeroLine(l))
@@ -933,6 +1087,8 @@ export class MiniOutput implements Output {
   /** 用户消息：首行 `› ` + 续行 2 空格缩进 + 前后空行 */
   onUserMessage(text: string): void {
     this.answer.end();
+    this.turnCount += 1;
+    this.answerEnded = false;
     // 折行后回显可能多行：先算出折后行数，一次擦掉 readline 回显的整块——
     // 让"输入 → 提交 → 落进对话流"只出现一次（回显与对话流用同一断点，行数一致）。
     const rows = text.split('\n').flatMap((l) => foldRows(l));
@@ -954,6 +1110,17 @@ export class MiniOutput implements Output {
       this.ensureGap();
       this.print(renderTurnSeparator(Date.now() - start));
       this.gapOpen = false;
+    }
+    if (
+      this.opts.stream &&
+      shouldShowTurnTip({ turn: this.turnCount, shown: this.turnTipsShown, lastShownTurn: this.lastTipTurn, hasAnswer: this.answerEnded })
+    ) {
+      const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
+      this.ensureGap();
+      this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
+      this.gapOpen = false;
+      this.turnTipsShown += 1;
+      this.lastTipTurn = this.turnCount;
     }
     this.endInputCapture(); // 轮末：释放输入权 + 把排队内容回填给 readline
   }
@@ -1074,6 +1241,7 @@ export class MiniOutput implements Output {
     return p;
   }
 
+
   private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
     if (!isTTY) return null;
     this.yieldInput();
@@ -1085,17 +1253,7 @@ export class MiniOutput implements Output {
       const ans = await rl.question(
         `${PREFIX}${dim('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n${PREFIX}${dim('自定义：直接输入内容')}\n${PREFIX}输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
       );
-      const t = ans.trim();
-      if (!t) return null;
-      if (/^[\d,\s]+$/.test(t)) {
-        const idxs = [
-          ...new Set(t.split(/[,，\s]+/).map((s) => parseInt(s, 10)).filter((n) => n >= 1 && n <= options.length)),
-        ];
-        if (idxs.length === 0) return { choice: t, custom: true, choices: [t] };
-        const picked = idxs.map((i) => options[i - 1]!);
-        return { choice: picked.join('、'), custom: false, choices: picked };
-      }
-      return { choice: t, custom: true, choices: [t] };
+      return parseAskAnswer(ans, options);
     } finally {
       rl.close();
       this.resumeInput();

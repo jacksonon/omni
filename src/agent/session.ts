@@ -286,6 +286,24 @@ export async function listSessions(
 }
 
 /**
+ * 删除会话文件（`/delete`；codex 同款永久删除，不可恢复）。
+ * 仅允许 sessionsDir() 内的文件（防路径穿越）；不存在按失败返回（调用方提示）。
+ */
+export async function deleteSessionFile(file: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const dir = sessionsDir();
+  const abs = path.resolve(file);
+  if (abs !== dir && !abs.startsWith(dir + path.sep)) return { ok: false, error: '拒绝删除会话目录外的文件' };
+  if (!existsSync(abs)) return { ok: false, error: '会话文件不存在' };
+  const id = sessionIdFromPath(abs);
+  try {
+    await rm(abs, { force: true });
+  } catch (err) {
+    return { ok: false, error: `删除失败：${(err as Error)?.message ?? String(err)}` };
+  }
+  return { ok: true, id };
+}
+
+/**
  * 若会话文件只有 meta 行（0 条消息——通常是进入交互模式时自动创建的占位文件），
  * 删除它。用于 /resume、/session 恢复其它会话后清理被替换的空占位会话，
  * 避免会话列表里残留孤儿。有消息的文件绝不删除。

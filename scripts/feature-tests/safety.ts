@@ -132,6 +132,18 @@ export function safetySuite(): TestSuite {
       suite.assert(loadTrustedWorkspaces().length === 1, '清单含 1 条');
       suite.assert(removeTrustedWorkspace(path.join(fakeXdg, 'proj')) === true, '移除信任');
       suite.assert(!isTrustedWorkspace(work), '移除后不再信任');
+      // 符号链接：清单记物理路径、查询走链接路径（macOS /tmp→/private/tmp 同类场景）
+      try {
+        const target = path.join(fakeXdg, 'real');
+        const link = path.join(fakeXdg, 'link');
+        fs.mkdirSync(target, { recursive: true });
+        fs.symlinkSync(target, link);
+        suite.assert(addTrustedWorkspace(target) === true, '添加物理路径信任');
+        suite.assert(isTrustedWorkspace(link) === true, '链接路径同样命中');
+        suite.assert(isTrustedWorkspace(path.join(link, 'sub')) === true, '链接下子目录继承');
+      } catch {
+        suite.assert(true, '环境不支持符号链接则跳过（Windows 受限）');
+      }
     } finally {
       process.env.XDG_CONFIG_HOME = oldXdg;
       fs.rmSync(fakeXdg, { recursive: true, force: true });

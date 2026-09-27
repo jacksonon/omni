@@ -20,6 +20,7 @@ import { rewindSuite } from './rewind.js';
 import { extras2026Suite } from './extras-2026-09.js';
 import { btwSuite } from './btw.js';
 import { miniSuite } from './mini.js';
+import { execSuite } from './exec.js';
 
 console.log('🧪 Omni 功能回归测试');
 console.log('═══════════════════════════════════════════');
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
     extras2026Suite(),
     btwSuite(),
     miniSuite(),
+    execSuite(),
     coreSuite(),
   ];
 

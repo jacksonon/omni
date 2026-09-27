@@ -13,7 +13,9 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, type ModelEndpoint } from './client.js';
-import { prepareContext } from './agent/context.js';
+import { collectImageAttachments, prepareContext, userMessageWithImages } from './agent/context.js';
+import { doctorReport, lastAssistantText } from './agent/report.js';
+import { resolveCdArg } from './agent/workspace.js';
 import { createSkillTool } from './agent/skill.js';
 import { memorySearchTool, memoryReadTool } from './tools/memory-tools.js';
 import { createTodoWriteTool } from './tools/todo.js';
@@ -25,7 +27,7 @@ import { createSession, findSessionById, formatSessionInfo, latestSession, listS
 import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
-import { runMiniInteractive, runMiniOneShot } from './cli/mini.js';
+import { runMiniInteractive, runMiniOneShot, splitMiniOneShotFlags } from './cli/mini.js';
 import { parseArgs, printHelp } from './cli/args.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
@@ -33,7 +35,7 @@ import { HookRunner, type HooksConfig } from './hooks/index.js';
 import { setEnabledPlugins, pluginHooks, pluginMcpServers } from './agent/plugins.js';
 import { TeamBoard } from './agent/team.js';
 import { createTaskBoardTool, createSendMessageTool } from './tools/team-tools.js';
-import { formatToolCall } from './output/format.js';
+import { formatToolCall, approvalDiffText } from './output/format.js';
 import { MiniOutput } from './output/mini.js';
 import type { Output } from './output/types.js';
 import type { PermissionTier } from './safety/policy.js';
@@ -43,7 +45,7 @@ import { createAutoReviewer } from './safety/auto-review.js';
 import { isTrustedWorkspace, addTrustedWorkspace } from './safety/trust.js';
 import { wrapSandboxCommand, touchesSandboxPolicy, type SandboxMode, type SandboxOptions } from './safety/sandbox.js';
 import type { Tool } from './tools/types.js';
-import { runExec, runMcpServer } from './exec.js';
+import { readStdinIfPiped, runExec, runMcpServer } from './exec.js';
 import { runWeb } from './web/index.js';
 import { createAskUserTool } from './tools/ask.js';
 import { createDelegateTool } from './tools/delegate.js';
@@ -52,7 +54,7 @@ import { tools } from './tools/index.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, createMcpHandlers } from './tools/mcp.js';
 import { UndoStack, withUndoSnapshot } from './tools/undo.js';
 import { countDiffLines } from './output/format.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { dim, green, red, yellow } from './ui.js';
 import { VERSION } from './version.js';
@@ -293,9 +295,7 @@ export async function attachRuntime(
       // 无快照（本会话首写该文件）→ 直接读盘上现状做统计
       const original = snap ? (snap.existed ? snap.content : null) : readIfExists(String(args.path ?? ''));
       try {
-        if (original === null) return `新增文件 · 全文 ${content.split('\n').length} 行`;
-        const st = countDiffLines(original, content);
-        return st.add === 0 && st.rem === 0 ? null : `变更统计 · +${st.add} −${st.rem} 行`;
+        return approvalDiffText(original, content);
       } catch {
         return null;
       }
@@ -616,6 +616,17 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     await printSessions(flags.listAll);
     return;
   }
+  // --cd <目录>：工作根覆盖（codex exec --cd 对等；omni 的 -C 是 config，不冲突）。
+  // 必须在 prepareRun/子命令分发之前 chdir——配置发现/信任/会话/MCP 全跟随新 cwd。
+  if (flags.cd) {
+    const cd = resolveCdArg(flags.cd, process.cwd());
+    if (cd.kind === 'error') {
+      console.error(red(`--cd 失败：${cd.error}`));
+      process.exitCode = 1;
+      return;
+    }
+    if (cd.kind === 'change') process.chdir(cd.dir);
+  }
 
   // Headless 子命令（把 omni 变成可组合 Unix 命令）：
   //   omni exec "<任务>"  —— 非交互执行（stdout 结果 / stderr 进度；--output-format json|stream-json）
@@ -649,6 +660,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     return;
   }
   // omni preset：能力一键预设（1.0 P1-6）——omni preset browser 装浏览器自动化双雄 MCP
+  // omni completion：打印 shell 补全脚本（codex completion 对等；bash/zsh）
+  if (taskArgs[0] === 'completion') {
+    const { runCompletionCommand } = await import('./cli/completion.js');
+    process.exitCode = runCompletionCommand(taskArgs.slice(1));
+    return;
+  }
   if (taskArgs[0] === 'preset') {
     const { runPreset } = await import('./agent/preset.js');
     const r = await runPreset(taskArgs[1] ?? '');
@@ -696,6 +713,11 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
 
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
+  // omni doctor：环境诊断（codex doctor 对等；此前会被当成任务文本发给模型）
+  if (taskArgs[0] === 'doctor' && taskArgs.length === 1) {
+    for (const l of await doctorReport(cfg)) console.log(l);
+    return;
+  }
   const output: Output = miniMode
     ? new MiniOutput({ showThinking: cfg.showThinking, stream: true })
     : makeOutput(cfg);
@@ -704,7 +726,17 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
   output.banner(cfg, runOpts.tools.map((t) => t.name));
 
-  const singleTask = taskArgs.join(' ').trim();
+  // mini 单次 flags：在 taskArgs 里剥离（只认 mini 分支）：
+  // `-o/--output-last-message` 落盘最终回答；`--approve-for-me` 开 AI 自动审批
+  //（codex exec 同款；审阅器读 cfg.autoReview 实时开关，此处置位即对本轮生效）
+  let outputLastMessage: string | null = null;
+  if (miniMode) {
+    const split = splitMiniOneShotFlags(taskArgs);
+    taskArgs.splice(0, taskArgs.length, ...split.taskArgs);
+    outputLastMessage = split.outputLastMessage;
+    if (split.approveForMe && cfg) cfg.autoReview = true;
+  }
+  let singleTask = taskArgs.join(' ').trim();
   // 会话持久化：--continue / -r 恢复历史；交互模式自动创建会话文件
   const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
   if (!ok) return;
@@ -717,16 +749,41 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
         process.exit(130);
       });
     }
+    // stdin 两形态（codex exec 对等，与 exec.ts 同口径；只在单次分支读 stdin，
+    // 交互模式的 stdin 是 readline 通道，绝不能碰）：
+    // · 任务为 `-` → 整段 stdin 即 prompt（无输入报错）；
+    // · 任务非空且 stdin 被管道 → 追加 `[stdin 输入]` 上下文块。
+    if (singleTask === '-') {
+      const s = readStdinIfPiped();
+      if (!s) {
+        console.error(red('任务为 `-` 但 stdin 无输入（echo "任务" | omni mini -）'));
+        process.exitCode = 1;
+        return;
+      }
+      singleTask = s;
+    }
     let userPrompt = singleTask;
     // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
     if (runOpts.hooks?.has('UserPromptSubmit')) {
       userPrompt = (await runOpts.hooks.userPromptSubmit(singleTask)).prompt;
     }
-    messages.push({ role: 'user', content: userPrompt });
+    const piped = readStdinIfPiped();
+    if (piped) userPrompt = `${userPrompt}\n\n[stdin 输入]\n${piped}`;
+    const singleImages = await collectImageAttachments(userPrompt, process.cwd()).catch(() => []);
+    messages.push(userMessageWithImages(userPrompt, singleImages));
     await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
     if (miniMode) {
-      // mini 单次任务：回显输入 + 回合耗时线（与交互模式同一终端形态）
+      // mini 单次任务：回显输入 + 回合耗时线（与交互模式同一终端形态）；
+      // `-o` 把最终回答落盘（codex --output-last-message 对等，写失败非零退出）
       await runMiniOneShot(client, cfg.model, messages, runOpts, output, singleTask);
+      if (outputLastMessage) {
+        try {
+          writeFileSync(outputLastMessage, lastAssistantText(messages));
+        } catch (err) {
+          console.error(red(`最终回答落盘失败（${outputLastMessage}）：${(err as Error)?.message ?? err}`));
+          process.exitCode = 1;
+        }
+      }
       return;
     }
     await runAgent(client, cfg.model, messages, runOpts, output);

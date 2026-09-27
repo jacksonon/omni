@@ -339,6 +339,8 @@ export interface ConfigOverrides {
   model?: string;
   /** --profile <名>：套用配置档案（config profiles 字段；工作/个人/离线多套快照一键切换） */
   profile?: string;
+  /** --sandbox <档位>：OS 级沙箱覆盖（codex -s 对等；注意 omni 的 -s 是 resume，此处只认 --sandbox） */
+  sandbox?: string;
 }
 
 /**
@@ -873,6 +875,14 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
   if (overrides.model) {
     cfg.model = overrides.model;
     addSource(sources, 'CLI --model');
+  }
+  if (typeof overrides.sandbox === 'string') {
+    // --sandbox 覆盖（codex -s 对等）：非法值忽略（回退配置文件值，与 data.sandbox 同规则）
+    const sb = overrides.sandbox.trim();
+    if (['off', 'read-only', 'workspace-write', 'danger-full-access'].includes(sb)) {
+      cfg.sandbox = sb as SandboxMode;
+      addSource(sources, 'CLI --sandbox');
+    }
   }
 
   // 兼容：未设置 OMNI_API_KEY 时读 OPENAI_API_KEY
