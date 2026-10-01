@@ -1266,7 +1266,8 @@ export class MiniOutput implements Output {
     if (this.interactive && this.live.active) {
       process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
     }
-    this.print('');
+    // 轮末已补过输入区间距（gapOpen=true）→ 不再重复补行；否则沿用原「前后空行」行为
+    if (!this.gapOpen) this.print('');
     rows.forEach((l, i) => this.print(l === '' ? '' : `${i === 0 ? `${bold(dim('›'))} ` : CONT_INDENT}${l}`));
     this.print('');
     this.gapOpen = true;
@@ -1280,10 +1281,12 @@ export class MiniOutput implements Output {
     this.stopWorking();
     const start = this.turnStart;
     this.turnStart = null;
+    let printedTail = false;
     if (start != null) {
       this.ensureGap();
       this.print(renderTurnSeparator(Date.now() - start, new Date(), { ...this.turnStats }, termWidth()));
       this.gapOpen = false;
+      printedTail = true;
     }
     if (
       this.opts.stream &&
@@ -1294,8 +1297,15 @@ export class MiniOutput implements Output {
       this.ensureGap();
       this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
       this.gapOpen = false;
+      printedTail = true;
       this.turnTipsShown += 1;
       this.lastTipTurn = this.turnCount;
+    }
+    // 输入区间距（用户实测：分隔行/统计行紧贴 `› ` 太挤）：补一个空行再交给输入行；
+    // gapOpen=true 让下一轮 onUserMessage 不再重复补行（保持恰好一行间距）。
+    if (printedTail && !this.gapOpen) {
+      this.print('');
+      this.gapOpen = true;
     }
     this.endInputCapture(); // 轮末：释放输入权 + 把排队内容回填给 readline
   }
