@@ -24,7 +24,8 @@
  * 防递归：每层 delegate 都从子代理工具列表里剔除自身后再按深度注入新的 delegate
  *（递归深度受 maxSubagentDepth 控制，不是无限）。
  */
-import { runSubagent, nextSubagentId } from '../agent/subagent.js';
+import { runSubagent, resumeSubagent, nextSubagentId } from '../agent/subagent.js';
+import { ensureRegistry, type SubagentRecord } from '../agent/subagent-registry.js';
 import { SubagentSemaphore } from '../agent/semaphore.js';
 import type { SubagentDef } from '../agent/subagent-defs.js';
 import type { ModelRuntime } from '../client.js';
@@ -217,15 +218,19 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
       // 执行体（前台直接 await；后台 fire-and-forget）：
       // 子代理可用工具按深度重建（嵌套）、技能预载、worktree 收尾都在这里。
       const startedAt = Date.now();
-      const runOnce = async (): Promise<string> => {
+      // 思考级别（定义子代理 reasoningEffort 优先，缺省 = 当前会话 reasoningEffort）
+      const effort = def?.reasoningEffort ?? runOpts?.reasoningEffort;
+      // 线程注册表（Agent View）：会话级共享，UI 据此钻取/续跑/停止
+      const registry = ensureRegistry(runOpts);
+      // 运行上下文（首跑与续跑共用）：工具白名单（缺省全部）/ 步数上限 / 技能预载
+      const buildContext = async (): Promise<{ tools: Tool[]; maxSteps: number; skillsText: string }> => {
         // 子代理可用工具：剔除 delegate 后按深度注入新的 delegate（嵌套）——
         // parentId = 本实例 id：嵌套子代理的事件用它关联父级；
         // parentSeq = 本实例 seq：子代理再委托时沿用（嵌套事件归集到根卡片）
         const subTools = buildSubTools(opts, depth, id, toolSeq);
-        // 定义子代理配置：工具白名单（缺省 = 全部）/ 步数上限 / 技能预载 / 权限
         const whitelist = def?.tools ? new Set(def.tools) : null;
         const tools = whitelist ? subTools.filter((t) => whitelist.has(t.name)) : subTools;
-        const maxSteps = def?.maxSteps ?? opts.maxSteps;
+        const maxSteps = def?.maxSteps ?? opts.maxSteps ?? 10;
         // 技能预载：把定义里 skills 字段列的 SKILL.md 全文注入子代理提示词
         //（异步加载；失败静默——技能缺失不阻塞委托）
         let skillsText = '';
@@ -238,6 +243,66 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
           }
           if (parts.length > 0) skillsText = parts.join('\n\n');
         }
+        return { tools, maxSteps, skillsText };
+      };
+      // 线程记录（Agent View / 子代理任务中心）：完整保留 transcript + 明细，
+      // 供 /tasks 面板钻取查看，并对已完成子代理追问续跑。
+      const record: SubagentRecord = {
+        id,
+        parentId,
+        depth,
+        name: def?.name ?? 'delegate',
+        ...(def?.name ? { agent: def.name } : {}),
+        model: routed,
+        ...(effort ? { effort } : {}),
+        task,
+        status: 'running',
+        steps: 0,
+        maxSteps: def?.maxSteps ?? opts.maxSteps ?? 10,
+        startedAt,
+        seq: toolSeq ?? null,
+        ...(wtPath ? { cwd: wtPath } : {}),
+        ...(wtBranch ? { worktreeBranch: wtBranch } : {}),
+        transcript: [],
+        items: [],
+        dropped: 0,
+        controller: subCtrl,
+      };
+      // 续跑闭包（Agent View「追问」）：带原 transcript + 一条 user 追问继续跑；
+      // 工具/白名单/技能/闸门与首跑一致（复用 buildContext），换新的取消控制器。
+      const resume = async (followUp: string): Promise<string> => {
+        const { tools, maxSteps, skillsText } = await buildContext();
+        const ctrl = new AbortController();
+        record.controller = ctrl;
+        return resumeSubagent(opts.modelRuntime.client, routed, record, followUp, {
+          tools,
+          gate: opts.gate,
+          maxSteps,
+          hooks: opts.hooks,
+          permission: def?.permission,
+          auditLog: opts.auditLog,
+          requestApproval: opts.requestApproval,
+          summarize: opts.summarize,
+          skills: skillsText,
+          name: record.name,
+          onEvent,
+          id,
+          parentId,
+          depth,
+          cwd: wtPath ?? undefined,
+          seq: toolSeq ?? null,
+          signal: ctrl.signal,
+          model: routed,
+          ...(effort ? { effort } : {}),
+          ...(def?.name ? { agent: def.name } : {}),
+          registry,
+          ...(opts.runOpts?.autoReview ? { autoReview: opts.runOpts.autoReview } : {}),
+          ...(opts.runOpts?.team ? { team: opts.runOpts.team } : {}),
+        });
+      };
+      registry.register({ record, resume });
+      const runOnce = async (): Promise<string> => {
+        const { tools, maxSteps, skillsText } = await buildContext();
         // per-subagent 取消控制器已在上方注册（toolSeq 决议 + subCtrl）
         try {
           const answer = await runSubagent(opts.modelRuntime.client, routed, task, {
@@ -258,6 +323,11 @@ export function createDelegateTool(opts: DelegateToolOptions): Tool {
             cwd: wtPath ?? undefined,
             seq: toolSeq ?? null,
             signal: subCtrl.signal,
+            model: routed,
+            ...(effort ? { effort } : {}),
+            ...(def?.name ? { agent: def.name } : {}),
+            record,
+            registry,
             ...(opts.runOpts?.autoReview ? { autoReview: opts.runOpts.autoReview } : {}),
             ...(opts.runOpts?.team ? { team: opts.runOpts.team } : {}),
           });

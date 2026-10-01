@@ -36,6 +36,8 @@ export interface SubagentDef {
   description: string;
   /** 可选：per-agent 模型（缺省 = 主代理当前模型） */
   model?: string;
+  /** 可选：per-agent 思考级别（reasoning_effort；缺省 = 当前会话 reasoningEffort，对标 Codex model_reasoning_effort） */
+  reasoningEffort?: string;
   /** 可选：per-agent 权限档位（缺省 = 主代理当前档位） */
   permission?: PermissionTier;
   /** 可选：工具白名单（缺省 = 全部可用工具） */
@@ -60,6 +62,7 @@ export function parseSubagentFrontmatter(
   name?: string;
   description?: string;
   model?: string;
+  reasoningEffort?: string;
   permission?: PermissionTier;
   tools?: string[];
   skills?: string[];
@@ -87,6 +90,7 @@ export function parseSubagentFrontmatter(
     name: fields.name,
     description: fields.description,
     model: fields.model,
+    reasoningEffort: fields.reasoningeffort,
     permission: TIERS.includes(fields.permission as PermissionTier)
       ? (fields.permission as PermissionTier)
       : undefined,
@@ -115,6 +119,7 @@ async function readSubagentDef(file: string, nameFromFile: string): Promise<Suba
     name,
     description: fm.description,
     model: fm.model,
+    reasoningEffort: fm.reasoningEffort,
     permission: fm.permission,
     tools: fm.tools,
     skills: fm.skills,

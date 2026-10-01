@@ -16,7 +16,8 @@
  * 被 mock server 识别，离线 e2e 可用固定输出验证。
  */
 import type OpenAI from 'openai';
-import { runSubagent, nextSubagentId } from './subagent.js';
+import { runSubagent, resumeSubagent, nextSubagentId } from './subagent.js';
+import { ensureRegistry, type SubagentRecord } from './subagent-registry.js';
 import { parseWorkflowPlan, planBatches, ensureTeam } from './team.js';
 import type { SubagentDef } from './subagent-defs.js';
 import type { RunOptions, SubagentEvent } from './types.js';
@@ -36,9 +37,52 @@ function workerEvent(rec: EventRecorder | undefined, cb: ((ev: SubagentEvent) =>
   };
 }
 
+/**
+ * 编排 worker 线程注册（Agent View / 子代理任务中心）：编排直驱 runSubagent 不经
+ * delegate 工具，这里补齐线程记录 + 续跑闭包，让 /tasks 面板也能钻取/追问/停止编排 worker。
+ * 返回注册表（调用方把它透传给 runSubagent 的 registry 字段）。
+ */
+function registerWorker(
+  runOpts: RunOptions | undefined,
+  rec: SubagentRecord,
+  ctx: {
+    client: OpenAI;
+    model: string;
+    tools: import('../tools/types.js').Tool[];
+    gate: import('../safety/index.js').Safety;
+    hooks?: RunOptions['hooks'];
+    maxSteps?: number;
+    onEvent: (ev: SubagentEvent) => void;
+  }
+): import('./subagent-registry.js').SubagentRegistry {
+  const registry = ensureRegistry(runOpts);
+  const ctrl = new AbortController();
+  rec.controller = ctrl;
+  const resume = async (followUp: string): Promise<string> => {
+    const c2 = new AbortController();
+    rec.controller = c2;
+    return resumeSubagent(ctx.client, ctx.model, rec, followUp, {
+      tools: ctx.tools,
+      gate: ctx.gate,
+      maxSteps: ctx.maxSteps,
+      hooks: ctx.hooks,
+      name: rec.name,
+      onEvent: ctx.onEvent,
+      id: rec.id,
+      parentId: rec.parentId,
+      depth: rec.depth,
+      signal: c2.signal,
+      model: ctx.model,
+      ...(rec.effort ? { effort: rec.effort } : {}),
+      registry,
+    });
+  };
+  registry.register({ record: rec, resume });
+  return registry;
+}
+
 /** worker 子代理系统提示（mock server 按此前缀识别返回固定结果） */
-export const ORCHESTRATE_WORKER_PREFIX = '你是 Omni 编排流水线的一个子代理';
-const WORKER_PROMPT =
+export const ORCHESTRATE_WORKER_PREFIX = '你是 Omni 编排流水线的一个子代理';const WORKER_PROMPT =
   `${ORCHESTRATE_WORKER_PREFIX}（worker），从指定角度独立完成任务。` +
   '只完成分配给你的角度，不越界；完成后用简洁中文总结结果。\n角度：';
 
@@ -261,18 +305,53 @@ export async function runOrchestrate(
               `\n\n协作：用 task_board 更新你的任务状态（任务 id：${taskIds[i]}），遇到阻塞或需要主代理决策用 send_message 发给 main。`;
             const whitelist = def?.tools ? new Set(def.tools) : null;
             const tools = whitelist ? workerTools.filter((t) => whitelist.has(t.name)) : workerTools;
+            const workerModelName = def?.model ?? workerModel;
+            const onWorkerEvent = workerEvent(runOpts.events, opts.onSubagentEvent);
+            // Agent View：登记编排 worker 线程（可钻取/追问/停止）
+            const rec: SubagentRecord = {
+              id,
+              parentId: null,
+              depth: 0,
+              name: workerName,
+              ...(def?.name ? { agent: def.name } : {}),
+              model: workerModelName,
+              ...(def?.reasoningEffort ? { effort: def.reasoningEffort } : {}),
+              task: step.task,
+              status: 'running',
+              steps: 0,
+              maxSteps: def?.maxSteps ?? runOpts.maxSubagentSteps ?? 10,
+              startedAt: Date.now(),
+              seq: null,
+              transcript: [],
+              items: [],
+              dropped: 0,
+            };
+            const registry = registerWorker(runOpts, rec, {
+              client: opts.client,
+              model: workerModelName,
+              tools,
+              gate,
+              hooks,
+              maxSteps: def?.maxSteps ?? runOpts.maxSubagentSteps,
+              onEvent: onWorkerEvent,
+            });
             try {
-              const answer = await runSubagent(opts.client, def?.model ?? workerModel, prompt, {
+              const answer = await runSubagent(opts.client, workerModelName, prompt, {
                 tools,
                 gate,
                 maxSteps: def?.maxSteps ?? runOpts.maxSubagentSteps,
                 hooks,
                 permission: def?.permission,
                 name: workerName,
-                onEvent: workerEvent(runOpts.events, opts.onSubagentEvent),
+                onEvent: onWorkerEvent,
                 id,
                 parentId: null,
                 depth: 0,
+                signal: rec.controller?.signal,
+                model: workerModelName,
+                ...(def?.reasoningEffort ? { effort: def.reasoningEffort } : {}),
+                record: rec,
+                registry,
                 ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
                 ...(runOpts.team ? { team: runOpts.team } : {}),
               });
@@ -318,21 +397,59 @@ export async function runOrchestrate(
         }
         if (parts.length > 0) skillsText = parts.join('\n\n');
       }
-      const answer = await runSubagent(opts.client, job.def?.model ?? workerModel, job.prompt, {
-        tools,
-        gate,
-        maxSteps: job.def?.maxSteps ?? runOpts.maxSubagentSteps,
-        hooks,
-        permission: job.def?.permission,
-        skills: skillsText,
-        name: job.def?.name ?? `worker${i + 1}`,
-        onEvent: workerEvent(runOpts.events, opts.onSubagentEvent),
-        id,
-        parentId: null,
-        depth: 0,
-        ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
-        ...(runOpts.team ? { team: runOpts.team } : {}),
-      });
+      const answer = await (async () => {
+        const jobModel = job.def?.model ?? workerModel;
+        const workerName = job.def?.name ?? `worker${i + 1}`;
+        const onWorkerEvent = workerEvent(runOpts.events, opts.onSubagentEvent);
+        // Agent View：登记编排 worker 线程（可钻取/追问/停止）
+        const rec: SubagentRecord = {
+          id,
+          parentId: null,
+          depth: 0,
+          name: workerName,
+          ...(job.def?.name ? { agent: job.def.name } : {}),
+          model: jobModel,
+          ...(job.def?.reasoningEffort ? { effort: job.def.reasoningEffort } : {}),
+          task: job.prompt,
+          status: 'running',
+          steps: 0,
+          maxSteps: job.def?.maxSteps ?? runOpts.maxSubagentSteps ?? 10,
+          startedAt: Date.now(),
+          seq: null,
+          transcript: [],
+          items: [],
+          dropped: 0,
+        };
+        const registry = registerWorker(runOpts, rec, {
+          client: opts.client,
+          model: jobModel,
+          tools,
+          gate,
+          hooks,
+          maxSteps: job.def?.maxSteps ?? runOpts.maxSubagentSteps,
+          onEvent: onWorkerEvent,
+        });
+        return runSubagent(opts.client, jobModel, job.prompt, {
+          tools,
+          gate,
+          maxSteps: job.def?.maxSteps ?? runOpts.maxSubagentSteps,
+          hooks,
+          permission: job.def?.permission,
+          skills: skillsText,
+          name: workerName,
+          onEvent: onWorkerEvent,
+          id,
+          parentId: null,
+          depth: 0,
+          signal: rec.controller?.signal,
+          model: jobModel,
+          ...(job.def?.reasoningEffort ? { effort: job.def.reasoningEffort } : {}),
+          record: rec,
+          registry,
+          ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
+          ...(runOpts.team ? { team: runOpts.team } : {}),
+        });
+      })();
       return `[${job.label}]\n${answer}`;
     })
   );
@@ -405,16 +522,49 @@ export async function runGoal(
     if (lastResult) prompt += `\n\n上一轮结果（第 ${i - 1} 轮）：\n${lastResult}`;
     if (lastFeedback) prompt += `\n\n上一轮验收判定：${lastFeedback}\n请针对判定指出的差距继续推进，不要重复已完成的工作。`;
     const id = nextSubagentId();
+    const onWorkerEvent = workerEvent(runOpts.events, opts.onSubagentEvent);
+    // Agent View：登记 goal worker 线程（可钻取/追问/停止）
+    const rec: SubagentRecord = {
+      id,
+      parentId: null,
+      depth: 0,
+      name: 'goal-worker',
+      model: workerModel,
+      ...(runOpts.reasoningEffort ? { effort: runOpts.reasoningEffort } : {}),
+      task: prompt,
+      status: 'running',
+      steps: 0,
+      maxSteps: runOpts.maxSubagentSteps ?? 10,
+      startedAt: Date.now(),
+      seq: null,
+      transcript: [],
+      items: [],
+      dropped: 0,
+    };
+    const registry = registerWorker(runOpts, rec, {
+      client: opts.client,
+      model: workerModel,
+      tools: workerTools,
+      gate,
+      hooks,
+      maxSteps: runOpts.maxSubagentSteps,
+      onEvent: onWorkerEvent,
+    });
     const answer = await runSubagent(opts.client, workerModel, prompt, {
       tools: workerTools,
       gate,
       maxSteps: runOpts.maxSubagentSteps,
       hooks,
       name: 'goal-worker',
-      onEvent: workerEvent(runOpts.events, opts.onSubagentEvent),
+      onEvent: onWorkerEvent,
       id,
       parentId: null,
       depth: 0,
+      signal: rec.controller?.signal,
+      model: workerModel,
+      ...(runOpts.reasoningEffort ? { effort: runOpts.reasoningEffort } : {}),
+      record: rec,
+      registry,
       ...(runOpts.autoReview ? { autoReview: runOpts.autoReview } : {}),
     });
     lastResult = answer;

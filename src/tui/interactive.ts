@@ -28,7 +28,7 @@ import { EventRecorder } from '../agent/events.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { resolveContextLimit } from '../config/model-context.js';
-import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand, scheduleCmdPanelAutoClose, type TuiCommandContext } from './commands.js';
+import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand, scheduleCmdPanelAutoClose, taskDetailLines, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 
@@ -41,7 +41,7 @@ import { enqueuePending, handlePendingKey, selectLastPending } from './pending.j
 import { t, tf } from './i18n.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
-import { pushCmdLine, pushLine, type ScrollAction, type TuiState } from './state.js';
+import { pushCmdLine, pushLine, openCmdPanel, type ScrollAction, type TuiState } from './state.js';
 
 /**
  * 等待输入框下一次 Enter 提交，resolve 出输入内容与提交模式。
@@ -319,6 +319,24 @@ export async function runTuiInteractive(
       await pushSkillShow(state, name);
       await session.paint();
     }
+    // /tasks 面板确认：渲染子代理 transcript 明细；已完成的预填续跑命令到输入框
+    if (state.tasksPick) {
+      const id = state.tasksPick;
+      state.tasksPick = null;
+      const rec = runOpts.subagentRegistry?.get(id)?.record;
+      if (rec) {
+        openCmdPanel(state, `${rec.id} · ${rec.name}`);
+        for (const l of taskDetailLines(rec)) pushCmdLine(state, { kind: 'meta', text: l });
+        // 已完成的子代理：把续跑命令预填进输入框（用户只补追问内容即可回车）
+        if (rec.status !== 'running' && input.plainText.trim() === '') {
+          input.setText(`/tasks resume ${rec.id} `);
+        }
+      } else {
+        openCmdPanel(state, '/tasks');
+        pushCmdLine(state, { kind: 'warn', text: `子代理记录已不存在：${id}` });
+      }
+      await session.paint();
+    }
     // /context 面板确认：落盘 + 同步运行时（与直接键入同语义）
     if (state.contextLimitSave != null) {
       const v = state.contextLimitSave;
@@ -436,7 +454,7 @@ export async function runTuiInteractive(
       // 面板确认意图即时消费（确认关菜单的同时加载/回滚/重建，不等下一次提交；
       // run 在飞时跳过，意图留到本轮结束——drainMenuIntents 幂等，循环开头会兜底）
       if (!state.menu && !state.loading &&
-        (state.sessionPick || state.rewindPick != null || state.mcpPick || state.skillPick || state.contextLimitSave != null)) {
+        (state.sessionPick || state.rewindPick != null || state.mcpPick || state.skillPick || state.tasksPick || state.contextLimitSave != null)) {
         void drainMenuIntents().then(() => session.paint().catch(() => {}));
       }
       paintNow();

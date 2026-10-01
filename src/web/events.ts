@@ -51,6 +51,7 @@ export type WebEventName =
   | 'usage'
   | 'subagent'
   | 'subagent.background' // 后台子代理完成（{ sessionId, id, name, status, durationMs, resultPreview }）
+  | 'tasks.changed' // 子代理任务中心变更（{ sessionId }）——前端刷新「子代理」面板
   | 'hook.output'
   | 'auto.review' // AI 自动审批结果（{ sessionId, tool, summary, approve, reason }）
   | 'error'

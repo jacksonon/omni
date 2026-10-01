@@ -355,8 +355,7 @@ export async function appendWriteDiff(file: string, rec: WriteDiffRecord): Promi
 }
 
 /** 读回全部改前记录（callId → 记录；同 callId 多条取最后一条） */
-export async function loadWriteDiffs(file: string): Promise<Record<string, { path: string; original: string | null }>> {
-  const out: Record<string, { path: string; original: string | null }> = {};
+export async function loadWriteDiffs(file: string): Promise<Record<string, { path: string; original: string | null }>> {  const out: Record<string, { path: string; original: string | null }> = {};
   try {
     if (!existsSync(file)) return out;
     const raw = await readFile(file, 'utf8');
@@ -382,8 +381,7 @@ export async function loadWriteDiffs(file: string): Promise<Record<string, { pat
   return out;
 }
 
-/** 最近一个会话（当前项目、未归档；无则 null） */
-export async function latestSession(project: string): Promise<SessionInfo | null> {
+/** 最近一个会话（当前项目、未归档；无则 null） */export async function latestSession(project: string): Promise<SessionInfo | null> {
   const list = await listSessions(project, { includeArchived: false });
   return list[0] ?? null;
 }
@@ -437,4 +435,94 @@ export function formatSessionInfo(s: SessionInfo): string {
   const time = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const marks = `${s.pinned ? '★ ' : ''}${s.archived ? '[已归档] ' : ''}`;
   return `${marks}${time}  ${s.messages} 条消息  ${s.project}  [${s.id}]`;
+}
+
+/* ---------------- 子代理线程持久化（Agent View 恢复，1.0 完整版） ----------------
+ * `{"t":"sub"}` 行（与 `ev`/`wfile` 同机制）：子代理结束时追加一条（含状态/模型/
+ * 步骤/明细/结果；transcript 不落盘——体量大且续跑依赖运行上下文闭包，恢复后只读）。
+ * /resume 恢复会话时回灌注册表 → /tasks 任务中心在重启后仍可查看历史子代理。 */
+
+/** 持久化的子代理记录（会话 JSONL `t:"sub"` 行） */
+export interface PersistedSubagentRecord {
+  id: string;
+  parentId: string | null;
+  depth: number;
+  name: string;
+  agent?: string;
+  model?: string;
+  effort?: string;
+  task: string;
+  status: 'running' | 'ok' | 'err' | 'stopped';
+  steps: number;
+  maxSteps: number;
+  startedAt: number;
+  endedAt?: number;
+  seq?: number | null;
+  cwd?: string;
+  worktreeBranch?: string;
+  items: { kind: string; text: string; name?: string; ok?: boolean }[];
+  dropped: number;
+  result?: string;
+  resumed?: boolean;
+}
+
+/** 追加一条子代理记录（fire-and-forget；失败静默）。密钥形状文本经 redact。 */
+export async function appendSubagentRecord(file: string, rec: PersistedSubagentRecord): Promise<boolean> {
+  try {
+    const items = (rec.items ?? []).slice(-200).map((it) => ({
+      kind: String(it.kind),
+      text: redactText(String(it.text ?? '').slice(0, 2000)),
+      ...(it.name ? { name: it.name } : {}),
+      ...(it.ok === undefined ? {} : { ok: it.ok }),
+    }));
+    const payload: Record<string, unknown> = {
+      t: 'sub',
+      id: rec.id,
+      parentId: rec.parentId,
+      depth: rec.depth,
+      name: rec.name,
+      ...(rec.agent ? { agent: rec.agent } : {}),
+      ...(rec.model ? { model: rec.model } : {}),
+      ...(rec.effort ? { effort: rec.effort } : {}),
+      task: redactText(String(rec.task ?? '').slice(0, 1000)),
+      status: rec.status,
+      steps: rec.steps,
+      maxSteps: rec.maxSteps,
+      startedAt: rec.startedAt,
+      ...(rec.endedAt ? { endedAt: rec.endedAt } : {}),
+      ...(rec.seq == null ? {} : { seq: rec.seq }),
+      ...(rec.cwd ? { cwd: rec.cwd } : {}),
+      ...(rec.worktreeBranch ? { worktreeBranch: rec.worktreeBranch } : {}),
+      items,
+      dropped: rec.dropped ?? 0,
+      ...(rec.result ? { result: redactText(String(rec.result).slice(0, 4000)) } : {}),
+      ...(rec.resumed ? { resumed: true } : {}),
+    };
+    await appendFile(file, JSON.stringify(payload) + '\n', 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读回全部子代理记录（同 id 多条取最后一条——续跑会重复追加）。 */
+export async function loadSubagentRecords(file: string): Promise<PersistedSubagentRecord[]> {
+  const byId = new Map<string, PersistedSubagentRecord>();
+  try {
+    if (!existsSync(file)) return [];
+    const raw = await readFile(file, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let p: any;
+      try {
+        p = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (p && p.t === 'sub' && typeof p.id === 'string') byId.set(p.id, p as PersistedSubagentRecord);
+    }
+  } catch {
+    // 静默（历史降级）
+  }
+  return [...byId.values()].sort((a, b) => a.startedAt - b.startedAt);
 }

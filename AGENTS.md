@@ -268,7 +268,8 @@ src/
     session.ts          # **会话持久化**：交互对话 JSONL 落盘（~/.config/omni/sessions/，XDG-aware）+ 列表/最近/按 id 恢复 + 脚手架消息过滤 + meta 刷新（--continue / -r / -l）
     undo.ts             # **/undo 文件撤销**：UndoStack（write_file 执行前快照原内容/新建标记，1MB 上限）+ applyUndo（恢复/删除）+ withUndoSnapshot 包装器（主循环与子代理共用）
     subagent-defs.ts    # **子代理定义**：.agents/subagents/*.md frontmatter 解析（name/description/model/permission/tools/skills/maxSteps）+ 发现/按名加载
-    subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸；per-agent 模型/权限/工具白名单/技能预载 + 嵌套 depth 上限）
+    subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸；per-agent 模型/权限/工具白名单/技能预载 + 嵌套 depth 上限）；保留完整 transcript/明细 + resumeSubagent 续跑
+    subagent-registry.ts # **子代理线程注册表（Agent View，1.0）**：会话级记录全部子代理（含 transcript/status/model/effort/明细）+ resume/stop 闭包 + onChange/persist（会话 JSONL `t:"sub"` 落盘）+ hydrate/hydrateRegistryFromSession（恢复回灌）
     semaphore.ts        # 子代理并发信号量（2026-09）：前后台 delegate 共享，超限排队
     orchestrate.ts      # **编排**：/orchestrate 动态工作流（模型产出结构化计划 → 依赖分层并行执行，2026-09；--pipeline/计划失败回退固定 fan-out pipeline）+ /goal 目标机制（自动推导验收标准 → 循环执行直至达标）
     team.ts             # **Team 协作（2026-09）**：共享任务看板 TeamBoard + SendMessage 队列 + 动态工作流计划解析（parseWorkflowPlan/planBatches）
@@ -419,7 +420,7 @@ for step in 1..maxSteps:
 | `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；`/session archived` 查看归档；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
 | `/memory-apply` 命令 | **应用待提交的项目记忆片段**：`.omni/memory-pending.md` → 项目根 AGENTS.md（退出时自动提取项目持久事实生成待确认片段；确认后应用并清片段） |
 | `/team` 命令 | **Team 任务看板**（2026-09）：共享任务列表 + 未投递消息 + 运行中子代理树（TUI 面板 / CLI / Web `/team`） |
-| `/tasks` 命令 | **运行中任务**（2026-09）：前台/后台子代理状态 + `/tasks stop <seq>` 停止（Web 端 `/tasks` 返回运行中会话） |
+| `/tasks` 命令 | **子代理任务中心（Agent View，1.0 完整版）**：列出本次会话全部子代理（运行中 + 已完成，含编排 worker；行含 名 · model · effort · 步数 · 耗时）；`/tasks show <id>` 钻取完整 transcript 明细；`/tasks resume <id> <追问>` 对已完成子代理**带原上下文续跑**（对标 Claude Code 打开 transcript 发 follow-up / Codex agent thread + steer）；`/tasks stop <id\|seq>` 停止运行中。TUI 无参开可导航面板（选中→明细面板 + 预填续跑命令），Web 无参开原生面板（`/api/tasks` REST + 钻取/追问/停止）） |
 | `/cd` 命令 | **切换工作目录**（2026-09，对标 Codex /cd）：`/cd [路径]`（无参显示当前，`~` 展开）；TUI 同时更新 `state.cwd` |
 | `/pin` 命令 | **置顶会话**（2026-09）：`/pin [id]` 切换置顶（无参 = 当前），列表置顶优先 |
 | `/archive` / `/unarchive` 命令 | **归档会话**（2026-09）：默认从列表隐藏，`/session archived` 查看；Web 侧栏底部「已归档 (N)」切换 + ⋯ 菜单 |

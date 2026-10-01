@@ -5814,6 +5814,37 @@ async function main(): Promise<void> {
   }
   console.log('✓ 场景 44 通过：轨迹账本投影（foldTrace 折叠/detail/账本文本；TUI 右侧面板已删除）');
 
+  // 场景 44b：子代理任务中心面板（/tasks Agent View）——菜单构造 / model-effort 展示 / 明细行 / confirm 意图
+  {
+    const { openTasksMenu, taskDetailLines, confirmMenu } = await import('../src/tui/commands.js');
+    const s44b = createTuiState();
+    const recs: any[] = [
+      { id: 'sub1', parentId: null, depth: 0, name: 'delegate', model: 'mock', effort: 'high', task: '做事', status: 'ok', steps: 3, maxSteps: 10, startedAt: 1000, endedAt: 2500, seq: 1, transcript: [], items: [{ kind: 'tool', text: 'read_file', name: 'read_file', ok: true }], dropped: 0, result: '结果X' },
+      { id: 'sub2', parentId: null, depth: 0, name: 'step1', model: 'mock', task: '做事2', status: 'running', steps: 1, maxSteps: 10, startedAt: Date.now(), seq: null, transcript: [], items: [], dropped: 0 },
+    ];
+    openTasksMenu(s44b, recs);
+    if (!s44b.menu || s44b.menu.id !== 'tasks' || s44b.menu.options.length !== 2 || s44b.menu.options[0]!.value !== 'sub1') {
+      console.error(`✗ 场景 44b 任务中心菜单构造错误: ${JSON.stringify(s44b.menu)}`);
+      process.exit(1);
+    }
+    if (!s44b.menu.options[0]!.label.includes('mock') || !s44b.menu.options[0]!.label.includes('high')) {
+      console.error(`✗ 场景 44b 任务行应含 model/effort: ${s44b.menu.options[0]!.label}`);
+      process.exit(1);
+    }
+    const det = taskDetailLines(recs[0]);
+    if (!det[0]!.includes('delegate') || !det.some((l) => l.includes('结果X')) || !det.some((l) => l.includes('/tasks resume sub1'))) {
+      console.error(`✗ 场景 44b 明细行错误: ${JSON.stringify(det)}`);
+      process.exit(1);
+    }
+    s44b.menu.selectedIndex = 1;
+    confirmMenu(s44b);
+    if (s44b.tasksPick !== 'sub2' || s44b.menu !== null) {
+      console.error(`✗ 场景 44b confirmMenu 应记录 tasksPick: ${JSON.stringify({ pick: s44b.tasksPick, menu: s44b.menu })}`);
+      process.exit(1);
+    }
+    console.log('✓ 场景 44b 通过：子代理任务中心面板（菜单构造/模型-effort 展示/明细行/confirm 意图）');
+  }
+
   // 场景 45：ask_user 提问面板（输入区上方：选项 A-D / 自定义输入 / Esc 取消）
   const { createAskUserTool } = await import('../src/tools/ask.js');
   // a) TuiOutput.askUser：队列串行——两个提问排队，第一个 resolve 后自动展示第二个

@@ -2056,16 +2056,78 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    if (cmd === '/tasks') {
-      // /tasks：运行中子代理（轨迹事件折叠 start/step/end；无运行项给空提示）
-      const { openSubagents, formatOpenSubagents } = await import('../agent/trace.js');
-      const running = openSubagents(runOpts.events?.events ?? []);
-      if (running.length === 0) {
-        console.log(dim('（当前没有运行中的子代理）'));
-      } else {
-        console.log(dim(`运行中子代理（${running.length} 个）：`));
-        for (const l of formatOpenSubagents(running)) console.log(dim(l));
+    if (cmd === '/tasks' || cmd.startsWith('/tasks ')) {
+      // /tasks：子代理任务中心（Agent View，1.0 完整版）——列出本次会话全部子代理
+      // （运行中 + 已完成），支持钻取 transcript、对已完成子代理追问续跑、停止运行中。
+      const { formatSubagentLine, subagentStatusLabel, hydrateRegistryFromSession } = await import('../agent/subagent-registry.js');
+      await hydrateRegistryFromSession(runOpts);
+      const registry = runOpts.subagentRegistry;
+      const arg = cmd.slice('/tasks'.length).trim();
+      const [sub, idArg, ...rest] = arg ? arg.split(/\s+/) : [];
+      const records = registry?.records() ?? [];
+      const resolve = (key: string) =>
+        records.find((r) => r.id === key) ?? records.filter((r) => r.id.startsWith(key));
+      const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
+      if (!arg) {
+        if (records.length === 0) {
+          console.log(dim('（本次会话还没有子代理记录）— delegate / /orchestrate 之后这里会列出可钻取/追问的子代理'));
+        } else {
+          const running = records.filter((r) => r.status === 'running').length;
+          console.log(dim(`子代理任务中心（${records.length} 个${running ? ` · ${running} 运行中` : ''}；/tasks show <id> 查看 · /tasks resume <id> <追问> · /tasks stop <id>）：`));
+          for (const r of records) console.log(dim(formatSubagentLine(r)));
+        }
+        safePrompt();
+        continue;
       }
+      if (sub === 'show' || sub === 'detail') {
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit)) {
+          console.log(red(idArg ? `未找到子代理「${idArg}」${Array.isArray(hit) ? '（前缀匹配多个，请用完整 id）' : ''}` : '用法：/tasks show <id>'));
+          safePrompt();
+          continue;
+        }
+        console.log(dim(`子代理 ${hit.id} · ${hit.name}${hit.model ? ` · ${hit.model}` : ''}${hit.effort ? ` · ${hit.effort}` : ''} · ${subagentStatusLabel(hit.status)} · ${hit.steps}/${hit.maxSteps} 步`));
+        if (hit.task) console.log(dim(`任务：${clip(hit.task, 300)}`));
+        if (hit.dropped > 0) console.log(dim(`… 更早 ${hit.dropped} 条明细已省略`));
+        for (const it of hit.items) {
+          const mark = it.kind === 'think' ? '💭' : it.kind === 'tool' ? (it.ok === false ? '✗' : '→') : '≡';
+          console.log(dim(`${mark} ${it.name ? `${it.name}: ` : ''}${clip(it.text, 400)}`));
+        }
+        if (hit.result) console.log(dim(`结果：${clip(hit.result, 1500)}`));
+        safePrompt();
+        continue;
+      }
+      if (sub === 'resume' || sub === 'ask') {
+        const followUp = rest.join(' ').trim();
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit) || !followUp) {
+          console.log(red('用法：/tasks resume <id> <追问内容>（对已完成的子代理带原上下文继续）'));
+          safePrompt();
+          continue;
+        }
+        console.log(dim(`续跑子代理 ${hit.id}（${hit.name}）…`));
+        const answer = await registry!.resume(hit.id, followUp);
+        console.log(answer == null ? red('该子代理不支持续跑（记录缺少运行上下文）') : green(`子代理追问结果：\n${answer}`));
+        safePrompt();
+        continue;
+      }
+      if (sub === 'stop') {
+        let target = idArg ? resolve(idArg) : undefined;
+        if (!target && idArg && /^\d+$/.test(idArg)) {
+          const seq = Number(idArg);
+          target = records.find((r) => r.seq === seq && r.status === 'running');
+        }
+        if (!target || Array.isArray(target)) {
+          console.log(red('用法：/tasks stop <id|seq>（id 见 /tasks 列表）'));
+          safePrompt();
+          continue;
+        }
+        const ok = registry?.stop(target.id) ?? false;
+        console.log(dim(ok ? `已请求停止子代理 ${target.id}` : `子代理 ${target.id} 不在运行中`));
+        safePrompt();
+        continue;
+      }
+      console.log(red(`未知子命令「${sub}」——/tasks [show <id> | resume <id> <追问> | stop <id|seq>]`));
       safePrompt();
       continue;
     }

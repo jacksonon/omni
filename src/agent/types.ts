@@ -228,6 +228,13 @@ export interface RunOptions {
    * 主循环、delegate 子代理与 task_board/send_message 工具共用同一实例。
    */
   team?: import('./team.js').TeamBoard;
+  /**
+   * 子代理线程注册表（Agent View / 子代理任务中心，1.0 完整版）：本次会话跑过的
+   * 所有子代理（delegate / 编排 worker / goal worker）的完整记录（含 transcript），
+   * 供 /tasks 面板钻取查看 + 对已完成子代理追问续跑。主循环、delegate、orchestrate
+   * 与 UI 共用同一实例（ensureRegistry 惰性创建）。
+   */
+  subagentRegistry?: import('./subagent-registry.js').SubagentRegistry;
 }
 
 /**
@@ -261,6 +268,10 @@ export interface SubagentEvent {
    * 非 loop 链路直驱的委托，UI 按 id 归集）。
    */
   seq?: number | null;
+  /** 实际使用的模型名（Agent View /tasks 展示；缺省 = 未知） */
+  model?: string;
+  /** 实际使用的思考级别（reasoning_effort；Agent View 展示） */
+  effort?: string;
   /** 委托任务（start 事件携带） */
   task?: string;
   /** step 事件：当前步数 / 步数上限 */

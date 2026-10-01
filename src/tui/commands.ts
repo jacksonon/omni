@@ -77,6 +77,7 @@ import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
 import { setTerminalTitle } from '../ui.js';
 import { openCmdPanel, pushCmdLine, pushLine, type TuiLine, type TuiState, type TuiThemeMode } from './state.js';
+import { formatSubagentLine, hydrateRegistryFromSession, subagentStatusLabel, type SubagentRecord } from '../agent/subagent-registry.js';
 import { t, tf, TUI_LANG_LABELS, TUI_LANGS } from './i18n.js';
 
 /** 命令执行上下文（interactive.ts 组装） */
@@ -1733,54 +1734,81 @@ export const TUI_COMMANDS: TuiCommand[] = [
   },
   {
     name: 'tasks',
-    description: '运行中任务：前台/后台子代理状态与停止（/tasks stop <seq>）',
-    descriptionEn: 'Running tasks: foreground/background subagents + stop (/tasks stop <seq>)',
+    description: '子代理任务中心（Agent View）：/tasks [show <id> | resume <id> <追问> | stop <id|seq>]',
+    descriptionEn: 'Subagent task center: /tasks [show <id> | resume <id> <msg> | stop <id|seq>]',
     group: 'agent',
-    run: (ctx) => {
+    run: async (ctx) => {
+      await hydrateRegistryFromSession(ctx.runOpts);
+      const records = ctx.runOpts?.subagentRegistry?.records() ?? [];
       const arg = (ctx.args ?? '').trim();
-      if (arg === 'stop' || arg.startsWith('stop ')) {
-        const seq = Number(arg.slice(4).trim());
-        if (!Number.isInteger(seq) || seq <= 0) {
-          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/tasks stop <seq>（seq 见 /tasks 列表）' });
+      const [sub, idArg, ...rest] = arg ? arg.split(/\s+/) : [];
+      const resolve = (key: string) =>
+        records.find((r) => r.id === key) ?? records.filter((r) => r.id.startsWith(key));
+      if (!arg) {
+        if (records.length === 0) {
+          pushCmdLine(ctx.state, {
+            kind: 'meta',
+            text: '本次会话还没有子代理（delegate / /orchestrate 之后这里可钻取/追问/停止）',
+          });
+          // 纯通告（单行、无事发生）：短暂停留后自动收起，无需 Esc
+          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
           return;
         }
-        const stop = ctx.runOpts?.subagentStops?.get(seq);
-        if (!stop) {
-          pushCmdLine(ctx.state, { kind: 'warn', text: `未找到运行中的子代理 seq=${seq}（可能已结束）` });
-        } else {
-          stop();
-          const msg = `已请求停止子代理 seq=${seq}`;
-          pushCmdLine(ctx.state, { kind: 'meta', text: msg });
-          ctx.out.pushToast(`✓ ${msg}`, 'success');
-          // 纯提示（单行确认）：短暂停留后自动收起，无需 Esc
-          scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+        openTasksMenu(ctx.state, records);
+        return;
+      }
+      if (sub === 'show' || sub === 'detail') {
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit)) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/tasks show <id>（id 见 /tasks 列表）' });
+          return;
         }
+        openCmdPanel(ctx.state, `子代理 ${hit.id}`);
+        for (const l of taskDetailLines(hit)) pushCmdLine(ctx.state, { kind: 'meta', text: l });
         ctx.state.schedulePaint?.();
         return;
       }
-      const front = ctx.state.delegateRuns.filter((r) => !r.ended && !r.stopped);
-      const bg = ctx.state.backgroundRuns;
-      if (front.length === 0 && bg.length === 0) {
-        pushCmdLine(ctx.state, { kind: 'meta', text: '当前没有运行中的子代理。delegate 传 background:true 可后台执行。' });
-        // 纯通告（单行、无事发生）：短暂停留后自动收起，无需 Esc
-        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+      if (sub === 'resume' || sub === 'ask') {
+        const followUp = rest.join(' ').trim();
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit) || !followUp) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/tasks resume <id> <追问内容>（对已完成的子代理带原上下文继续）' });
+          return;
+        }
+        openCmdPanel(ctx.state, `子代理 ${hit.id} · 续跑`);
+        pushCmdLine(ctx.state, { kind: 'meta', text: `续跑子代理 ${hit.id}（${hit.name}）…` });
+        ctx.state.schedulePaint?.();
+        const answer = await ctx.runOpts!.subagentRegistry!.resume(hit.id, followUp).catch((e) => `续跑失败：${e instanceof Error ? e.message : String(e)}`);
+        pushCmdLine(ctx.state, {
+          kind: answer == null ? 'warn' : 'answer',
+          text: answer ?? '该子代理不支持续跑（记录缺少运行上下文）',
+        });
+        ctx.state.schedulePaint?.();
         return;
       }
-      pushCmdLine(ctx.state, { kind: 'meta', text: `运行中任务（${front.length + bg.filter((b) => b.status === 'running').length}）：` });
-      for (const r of front) {
-        pushCmdLine(ctx.state, {
-          kind: 'meta',
-          text: `· [前台] ${r.name} · ${r.status}${r.seq != null ? ` · /tasks stop ${r.seq}` : ''}`,
-        });
+      if (sub === 'stop') {
+        let target = idArg ? resolve(idArg) : undefined;
+        if (!target && idArg && /^\d+$/.test(idArg)) {
+          const seq = Number(idArg);
+          target = records.find((r) => r.seq === seq && r.status === 'running');
+        }
+        if (!target || Array.isArray(target)) {
+          pushCmdLine(ctx.state, { kind: 'warn', text: '用法：/tasks stop <id|seq>（id/seq 见 /tasks 列表）' });
+          return;
+        }
+        const ok = ctx.runOpts?.subagentRegistry?.stop(target.id) ?? false;
+        const msg = ok ? `已请求停止子代理 ${target.id}` : `子代理 ${target.id} 不在运行中`;
+        pushCmdLine(ctx.state, { kind: 'meta', text: msg });
+        ctx.out.pushToast(ok ? `✓ ${msg}` : msg, ok ? 'success' : 'info');
+        // 纯提示（单行确认）：短暂停留后自动收起，无需 Esc
+        scheduleCmdPanelAutoClose(ctx.state, ctx.session);
+        ctx.state.schedulePaint?.();
+        return;
       }
-      for (const b of bg) {
-        const elapsed = ((b.durationMs ?? Date.now() - b.startedAt) / 1000).toFixed(1);
-        const mark = b.status === 'running' ? '⠋' : b.status === 'ok' ? '✓' : '✗';
-        pushCmdLine(ctx.state, {
-          kind: 'meta',
-          text: `· [后台] ${mark} ${b.name} · ${b.status} · ${elapsed}s${b.seq != null && b.status === 'running' ? ` · /tasks stop ${b.seq}` : ''}`,
-        });
-      }
+      pushCmdLine(ctx.state, {
+        kind: 'warn',
+        text: `未知子命令「${sub}」——/tasks [show <id> | resume <id> <追问> | stop <id|seq>]`,
+      });
       ctx.state.schedulePaint?.();
     },
   },
@@ -2317,8 +2345,51 @@ export async function openSkillMenu(state: TuiState, cwd = process.cwd()): Promi
   };
 }
 
-/** MCP 服务器详情行（面板确认与 /mcp list 共用同一文本格式） */
-export function mcpServerDetailLines(
+/**
+ * 子代理任务中心面板（Agent View，1.0 完整版）：列出本次会话全部子代理
+ * （运行中 + 已完成；含编排 worker）。选中后 confirmMenu 只记录意图
+ * （state.tasksPick = 子代理 id），interactive 每轮渲染 transcript 明细，
+ * 并对已完成的子代理把 `/tasks resume <id> ` 预填输入框（带原上下文续跑）。
+ */
+export function openTasksMenu(state: TuiState, records: SubagentRecord[]): void {
+  state.menu = {
+    id: 'tasks',
+    title: state.language === 'en' ? 'Subagents' : '子代理任务中心',
+    options: records.map((r) => ({
+      label: truncateToWidth(formatSubagentLine(r), 72),
+      value: r.id,
+    })),
+    selectedIndex: 0,
+    currentValue: '',
+    scrollTop: 0,
+  };
+}
+
+/** 子代理 transcript 明细行（钻取视图：状态头 + 任务 + 思考/工具明细 + 结果） */
+export function taskDetailLines(rec: SubagentRecord): string[] {
+  const lines: string[] = [];
+  const model = rec.model ? ` · ${rec.model}` : '';
+  const effort = rec.effort && rec.effort !== 'none' && rec.effort !== 'auto' ? ` · ${rec.effort}` : '';
+  lines.push(
+    `${rec.id} · ${rec.name}${model}${effort} · ${subagentStatusLabel(rec.status)} · ${rec.steps}/${rec.maxSteps} 步`
+  );
+  if (rec.cwd) lines.push(`工作树：${rec.cwd}`);
+  if (rec.task) lines.push(`任务：${truncateToWidth(rec.task, 160)}`);
+  if (rec.dropped > 0) lines.push(`… 更早 ${rec.dropped} 条明细已省略`);
+  for (const it of rec.items) {
+    const mark = it.kind === 'think' ? '💭' : it.kind === 'tool' ? (it.ok === false ? '✗' : '→') : '≡';
+    lines.push(`${mark} ${it.name ? `${it.name}: ` : ''}${it.text}`);
+  }
+  if (rec.result) {
+    lines.push('', `结果：${rec.result}`);
+  }
+  if (rec.status !== 'running' && rec.status !== undefined) {
+    lines.push('', `（/tasks resume ${rec.id} <追问> 可带原上下文续跑）`);
+  }
+  return lines;
+}
+
+/** MCP 服务器详情行（面板确认与 /mcp list 共用同一文本格式） */export function mcpServerDetailLines(
   name: string,
   servers: Record<string, McpServerConfig>,
   handles: McpServerHandle[]
@@ -2648,6 +2719,10 @@ export function confirmMenu(state: TuiState): void {
   } else if (menu.id === 'skill') {
     // 技能面板：只记录意图（state.skillPick），interactive 每轮加载完整内容。
     state.skillPick = opt.value;
+  } else if (menu.id === 'tasks') {
+    // 子代理任务中心：只记录选中的子代理 id（state.tasksPick），interactive 每轮
+    // 渲染 transcript 明细（已完成的顺带预填 /tasks resume，带原上下文续跑）。
+    state.tasksPick = opt.value;
   } else if (menu.id === 'context') {
     // 上下文窗口面板：只记录意图（state.contextLimitSave），interactive 每轮落盘+应用。
     state.contextLimitSave = opt.value;

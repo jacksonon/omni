@@ -578,6 +578,12 @@ export interface TuiState {
    */
   skillPick: string | null;
   /**
+   * /tasks（子代理任务中心）面板确认的子代理 id（interactive 每轮渲染 transcript
+   * 明细到命令面板；已完成的子代理顺带把 `/tasks resume <id> ` 预填输入框）。
+   * 非 null 时 interactive 在处理完后置 null。
+   */
+  tasksPick: string | null;
+  /**
    * /settings 菜单确认「环境诊断」项的意图（confirmMenu 是纯 state 操作拿不到
    * ctx——只记录意图，interactive 每轮消费后调 runCommand('/settings doctor')）。
    * 非 null 时 interactive 在每轮命令分发前执行诊断并置 false。
@@ -752,6 +758,7 @@ export function createTuiState(): TuiState {
     rewindMode: null,
     mcpPick: null,
     skillPick: null,
+    tasksPick: null,
     doctorPending: false,
     inputText: '',
     vimMode: false,

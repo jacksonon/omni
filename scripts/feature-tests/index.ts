@@ -19,6 +19,7 @@ import { memoryEnhanceSuite } from './memory-enhance.js';
 import { rewindSuite } from './rewind.js';
 import { extras2026Suite } from './extras-2026-09.js';
 import { btwSuite } from './btw.js';
+import { subagentTasksSuite } from './subagent-tasks.js';
 import { miniSuite } from './mini.js';
 import { execSuite } from './exec.js';
 
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
     rewindSuite(),
     extras2026Suite(),
     btwSuite(),
+    subagentTasksSuite(),
     miniSuite(),
     execSuite(),
     coreSuite(),

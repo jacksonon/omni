@@ -548,6 +548,24 @@ const I18N_ZH = {
   'err.settings': '设置失败：{msg}',
   'err.lang': '语言设置失败：{msg}',
   'err.readImage': '⚠ 无法读取图片：{name}',
+  // 子代理任务中心（/tasks Agent View）
+  'tasks.title': '子代理任务中心',
+  'tasks.loading': '加载中…',
+  'tasks.empty': '本次会话还没有子代理（delegate / /orchestrate 之后这里可钻取/追问）',
+  'tasks.loadFailed': '加载失败：{msg}',
+  'tasks.runningMeta': '运行中 · {step}/{max} 步 · {sec}s',
+  'tasks.doneMeta': '{step} 步 · {sec}s',
+  'tasks.dropped': '… 更早 {n} 条明细已省略',
+  'tasks.result': '结果：',
+  'tasks.stop': '⏹ 停止',
+  'tasks.stopped': '已请求停止子代理',
+  'tasks.resume': '追问续跑',
+  'tasks.resuming': '续跑中…',
+  'tasks.resumePlaceholder': '输入追问内容（带原上下文继续这个子代理）…',
+  'tasks.resumeEmpty': '追问内容不能为空',
+  'tasks.resumed': '子代理已按追问继续并给出结果',
+  'tasks.resumeFailed': '续跑失败：{msg}',
+  'tasks.notResumable': '该子代理不支持续跑（记录缺少运行上下文）',
 };
 const I18N_EN = {
   'sidebar.new': 'New chat',
@@ -1004,6 +1022,24 @@ const I18N_EN = {
   'err.settings': 'Settings update failed: {msg}',
   'err.lang': 'Failed to set language: {msg}',
   'err.readImage': '⚠ Could not read image: {name}',
+  // Subagent task center (/tasks Agent View)
+  'tasks.title': 'Subagent task center',
+  'tasks.loading': 'Loading…',
+  'tasks.empty': 'No subagents in this session yet (delegate / /orchestrate show up here for inspection)',
+  'tasks.loadFailed': 'Load failed: {msg}',
+  'tasks.runningMeta': 'Running · {step}/{max} steps · {sec}s',
+  'tasks.doneMeta': '{step} steps · {sec}s',
+  'tasks.dropped': '… {n} earlier entries omitted',
+  'tasks.result': 'Result: ',
+  'tasks.stop': '⏹ Stop',
+  'tasks.stopped': 'Stop requested',
+  'tasks.resume': 'Follow up',
+  'tasks.resuming': 'Resuming…',
+  'tasks.resumePlaceholder': 'Type a follow-up (continues this subagent with its context)…',
+  'tasks.resumeEmpty': 'Follow-up cannot be empty',
+  'tasks.resumed': 'Subagent continued and returned a result',
+  'tasks.resumeFailed': 'Resume failed: {msg}',
+  'tasks.notResumable': 'This subagent cannot be resumed (no runtime context)',
 };
 function t(key, vars) {
   const lang = state.language === 'en' ? I18N_EN : I18N_ZH;
@@ -2375,6 +2411,176 @@ async function openRewindModal(sessionId) {
 }
 $('#btn-close-rewind').addEventListener('click', () => $('#rewind-modal').classList.add('hidden'));
 $('#rewind-modal').addEventListener('click', (e) => { if (e.target === $('#rewind-modal')) $('#rewind-modal').classList.add('hidden'); });
+
+/**
+ * 子代理任务中心（Agent View，1.0 完整版）：`/tasks` 打开。
+ * 左侧列出本次会话全部子代理（运行中 + 已完成，含编排 worker）；右侧钻取 transcript
+ * 明细，运行中可⏹停止、已完成可「追问续跑」（带原上下文继续，对标 Claude Code
+ * 打开 transcript 发 follow-up / Codex 打开 agent thread + steer）。
+ */
+function openTasksModal() {
+  const sid = state.session || '';
+  const overlay = el('div', 'modal');
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  const card = el('div', 'modal-card');
+  card.style.width = 'min(920px, 94vw)';
+  const head = el('div', 'modal-head');
+  head.appendChild(el('h2', null, t('tasks.title')));
+  const x = el('button', 'icon-button', '✕');
+  x.type = 'button';
+  x.title = t('modal.close');
+  x.addEventListener('click', () => overlay.remove());
+  head.appendChild(x);
+  card.appendChild(head);
+  const body = el('div', 'modal-body');
+  const wrap = el('div');
+  wrap.style.display = 'flex';
+  wrap.style.gap = '12px';
+  wrap.style.minHeight = '320px';
+  wrap.style.maxHeight = '64vh';
+  const list = el('div');
+  list.style.flex = '0 0 250px';
+  list.style.overflowY = 'auto';
+  list.style.borderRight = '1px solid var(--border, #333)';
+  list.style.paddingRight = '8px';
+  const detail = el('div');
+  detail.style.flex = '1';
+  detail.style.overflowY = 'auto';
+  detail.style.whiteSpace = 'pre-wrap';
+  detail.style.wordBreak = 'break-word';
+  wrap.append(list, detail);
+  body.appendChild(wrap);
+  card.appendChild(body);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  const icon = (s) => (s === 'running' ? '⠋' : s === 'ok' ? '✓' : s === 'stopped' ? '⏹' : '✗');
+  const label = (s) => (s === 'running' ? t('subagent.running') : s === 'ok' ? t('subagent.doneSteps', { n: '' }).trim() || 'ok' : s === 'stopped' ? t('subagent.stopped') : t('subagent.label'));
+  let selectedId = null;
+
+  const renderDetail = (task) => {
+    detail.innerHTML = '';
+    const head2 = el('div', null, `${icon(task.status)} ${task.id} · ${task.name}` +
+      (task.model ? ` · ${task.model}` : '') + (task.effort ? ` · ${task.effort}` : '') +
+      ` · ${task.steps}/${task.maxSteps} · ${(task.durationMs / 1000).toFixed(1)}s`);
+    head2.style.fontWeight = '600';
+    head2.style.marginBottom = '6px';
+    detail.appendChild(head2);
+    if (task.cwd) detail.appendChild(el('div', 'dir-empty', task.cwd));
+    if (task.task) {
+      const tt = el('div', null, task.task);
+      tt.style.opacity = '0.85';
+      tt.style.marginBottom = '8px';
+      detail.appendChild(tt);
+    }
+    if (task.dropped > 0) detail.appendChild(el('div', 'dir-empty', t('tasks.dropped', { n: task.dropped })));
+    (task.items || []).forEach((it) => {
+      const mark = it.kind === 'think' ? '💭' : it.kind === 'tool' ? (it.ok === false ? '✗' : '→') : '≡';
+      const row = el('div', null, `${mark} ${it.name ? it.name + ': ' : ''}${it.text}`);
+      row.style.opacity = it.kind === 'think' ? '0.7' : '1';
+      row.style.fontSize = '13px';
+      detail.appendChild(row);
+    });
+    if (task.result) {
+      const r = el('div', null, t('tasks.result') + task.result);
+      r.style.marginTop = '8px';
+      r.style.borderTop = '1px solid var(--border, #333)';
+      r.style.paddingTop = '8px';
+      detail.appendChild(r);
+    }
+    const actions = el('div');
+    actions.style.marginTop = '12px';
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.alignItems = 'center';
+    actions.style.flexWrap = 'wrap';
+    if (task.status === 'running') {
+      const stop = el('button', 'secondary-button danger', t('tasks.stop'));
+      stop.type = 'button';
+      stop.addEventListener('click', async () => {
+        try {
+          await api(`/api/tasks/${encodeURIComponent(task.id)}/stop`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: sid }),
+          });
+          notify(t('tasks.stopped'), 'success');
+          refresh();
+        } catch (e) { notify(e.message, 'error'); }
+      });
+      actions.appendChild(stop);
+    } else if (task.resumable) {
+      const input = document.createElement('textarea');
+      input.className = 'cfg-text';
+      input.rows = 2;
+      input.placeholder = t('tasks.resumePlaceholder');
+      input.style.flex = '1';
+      input.style.minWidth = '200px';
+      const btn = el('button', 'primary-button', t('tasks.resume'));
+      btn.type = 'button';
+      btn.addEventListener('click', async () => {
+        const message = input.value.trim();
+        if (!message) { notify(t('tasks.resumeEmpty'), 'error'); return; }
+        btn.disabled = true;
+        btn.textContent = t('tasks.resuming');
+        try {
+          await api(`/api/tasks/${encodeURIComponent(task.id)}/resume`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: sid, message }),
+          });
+          notify(t('tasks.resumed'), 'success');
+          refresh(task.id);
+        } catch (e) {
+          notify(t('tasks.resumeFailed', { msg: e.message }), 'error');
+          btn.disabled = false;
+          btn.textContent = t('tasks.resume');
+        }
+      });
+      actions.append(input, btn);
+    } else {
+      actions.appendChild(el('div', 'dir-empty', t('tasks.notResumable')));
+    }
+    detail.appendChild(actions);
+  };
+
+  const refresh = async (keepId) => {
+    list.innerHTML = `<div class="dir-empty">${esc(t('tasks.loading'))}</div>`;
+    let data;
+    try {
+      data = await api(`/api/tasks${sid ? `?sessionId=${encodeURIComponent(sid)}` : ''}`);
+    } catch (err) {
+      list.innerHTML = '';
+      list.appendChild(el('div', 'dir-empty', t('tasks.loadFailed', { msg: err.message })));
+      return;
+    }
+    const tasks = data.tasks || [];
+    list.innerHTML = '';
+    if (!tasks.length) { list.appendChild(el('div', 'dir-empty', t('tasks.empty'))); return; }
+    tasks.forEach((task) => {
+      const row = el('div');
+      row.style.cursor = 'pointer';
+      row.style.padding = '6px 8px';
+      row.style.borderRadius = '6px';
+      row.style.marginBottom = '2px';
+      const name = el('div', null, `${icon(task.status)} ${task.name}` + (task.model ? ` · ${task.model}` : '') + (task.effort ? ` · ${task.effort}` : ''));
+      name.style.fontWeight = '600';
+      name.style.fontSize = '13px';
+      row.appendChild(name);
+      const meta = el('div', 'dir-empty',
+        task.status === 'running'
+          ? t('tasks.runningMeta', { step: task.steps, max: task.maxSteps, sec: (task.durationMs / 1000).toFixed(1) })
+          : t('tasks.doneMeta', { step: task.steps, sec: (task.durationMs / 1000).toFixed(1) }));
+      row.appendChild(meta);
+      row.addEventListener('click', () => { selectedId = task.id; renderDetail(task); refresh(task.id); });
+      list.appendChild(row);
+    });
+    const pick = keepId ? tasks.find((x) => x.id === keepId) : (selectedId ? tasks.find((x) => x.id === selectedId) : tasks[tasks.length - 1]);
+    if (pick) { selectedId = pick.id; renderDetail(pick); }
+  };
+  refresh();
+}
+
 
 /* —— 快捷键弹窗：⌘K 会话切换 + ⌘/ 速查表 —— */
 $('#btn-close-sw').addEventListener('click', closeSessionSwitch);
@@ -3962,6 +4168,7 @@ const SLASH_COMMANDS = [
   { name: '/btw', desc: '旁问（不打断任务，只读工具查证，答案不进对话历史；--keep 留下）' },
   { name: '/diff', desc: '查看未提交改动（--stat 只看统计 · --full 不截断）' },
   { name: '/rewind', desc: '检查点三模式（无参数开面板，/rewind <N> 预览，/rewind <N> --code|--chat|--both）' },
+  { name: '/tasks', desc: '子代理任务中心（无参数开面板；show <id> · resume <id> <追问> · stop <id|seq>）' },
   { name: '/trace', desc: '查看运行轨迹账本' },
   { name: '/agents', desc: '查看子代理配置与定义' },
   { name: '/orchestrate', desc: '并行编排（fan-out delegate → 汇总 → 审查）' },
@@ -4335,6 +4542,10 @@ async function runSlashCommand(cmd) {
       notify(cnt === '' ? `已回滚到检查点 #${n}` : t('rewind.done', { index: n, mode: rewindModeLabelWeb(mode), n: cnt }), 'success');
     } catch (e) { notify(t('rewind.failed', { msg: e.message }), 'error'); }
     return;
+  }
+  // /tasks 无参数 → 打开子代理任务中心面板（Agent View）；带参数（show/resume/stop）走后端文本命令
+  if (base === '/tasks') {
+    if (!arg) { closeCmdPanel(); openTasksModal(); return; }
   }
   // /fork 无参数 → 打开分叉对话框；带参数 → 直接调 REST 分叉（与对话框同接口）
   if (base === '/fork') {

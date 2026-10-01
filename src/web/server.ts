@@ -32,6 +32,7 @@ import { runAgent } from '../agent/loop.js';
 import { EventRecorder } from '../agent/events.js';
 import { generateSessionTitle } from '../agent/title.js';
 import { buildTraceTextLines } from '../agent/trace.js';
+import { formatSubagentLine, hydrateRegistryFromSession, subagentStatusLabel, type SubagentRecord, type SubagentRegistry } from '../agent/subagent-registry.js';
 import {
   appendSessionMessages,
   createSession,
@@ -521,6 +522,32 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
   };
 
+  /** 子代理记录 → JSON（REST /api/tasks 序列化；transcript 不下发——明细 items 足够展示） */
+  const serializeTask = (r: SubagentRecord, reg?: SubagentRegistry): Record<string, unknown> => ({
+    id: r.id,
+    parentId: r.parentId,
+    depth: r.depth,
+    name: r.name,
+    agent: r.agent ?? null,
+    model: r.model ?? null,
+    effort: r.effort ?? null,
+    task: r.task,
+    status: r.status,
+    steps: r.steps,
+    maxSteps: r.maxSteps,
+    startedAt: r.startedAt,
+    endedAt: r.endedAt ?? null,
+    durationMs: (r.endedAt ?? Date.now()) - r.startedAt,
+    seq: r.seq ?? null,
+    cwd: r.cwd ?? null,
+    worktreeBranch: r.worktreeBranch ?? null,
+    dropped: r.dropped,
+    resumed: r.resumed === true,
+    result: r.result ?? null,
+    resumable: !!(reg?.get(r.id)?.resume),
+    items: r.items,
+  });
+
   /** 前端 `+` 文件/图片选择器提交的附件（D11：扩展 POST /api/sessions/:id/messages 的 body） */
   type WebAttachment = {
     kind: 'image' | 'text' | 'path';
@@ -859,10 +886,46 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/tasks' || cmd.startsWith('/tasks ')) {
-      // 运行中任务（2026-09 FLT）：前台子代理看 runs 状态，后台在队列/运行中提示
-      const running = [...runs.keys()];
-      if (running.length === 0) add('当前没有运行中的会话/子代理。');
-      else add(`运行中会话：${running.join('、')}（子代理过程见对话流 delegate 面板）`);
+      // 子代理任务中心（Agent View，1.0 完整版）：列出本次会话全部子代理（含编排 worker），
+      // 支持 show/resume/stop；Web 原生面板走 /api/tasks（前端优先）。
+      const ro = s ? runtimeFor(s) : runOpts;
+      await hydrateRegistryFromSession(ro);
+      const records = ro.subagentRegistry?.records() ?? [];
+      const arg = cmd.slice('/tasks'.length).trim();
+      const [sub, idArg, ...rest] = arg ? arg.split(/\s+/) : [];
+      const resolve = (key: string) =>
+        records.find((r) => r.id === key) ?? records.filter((r) => r.id.startsWith(key));
+      if (!arg) {
+        if (records.length === 0) add('本次会话还没有子代理记录（delegate / /orchestrate 之后可在「子代理」面板钻取/追问）。');
+        else for (const r of records) add(formatSubagentLine(r));
+        return { lines };
+      }
+      if (sub === 'show' || sub === 'detail') {
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit)) { add('用法：/tasks show <id>'); return { lines }; }
+        add(`${hit.id} · ${hit.name}${hit.model ? ` · ${hit.model}` : ''}${hit.effort ? ` · ${hit.effort}` : ''} · ${subagentStatusLabel(hit.status)} · ${hit.steps}/${hit.maxSteps} 步`);
+        if (hit.task) add(`任务：${hit.task.slice(0, 200)}`);
+        for (const it of hit.items) add(`${it.name ? `${it.name}: ` : ''}${it.text.slice(0, 300)}`);
+        if (hit.result) add(`结果：${hit.result.slice(0, 800)}`);
+        return { lines };
+      }
+      if (sub === 'resume' || sub === 'ask') {
+        const followUp = rest.join(' ').trim();
+        const hit = idArg ? resolve(idArg) : undefined;
+        if (!hit || Array.isArray(hit) || !followUp) { add('用法：/tasks resume <id> <追问内容>'); return { lines }; }
+        const answer = await ro.subagentRegistry!.resume(hit.id, followUp).catch((e) => `续跑失败：${e instanceof Error ? e.message : String(e)}`);
+        add(answer ?? '该子代理不支持续跑（记录缺少运行上下文）');
+        return { lines };
+      }
+      if (sub === 'stop') {
+        let target = idArg ? resolve(idArg) : undefined;
+        if (!target && idArg && /^\d+$/.test(idArg)) target = records.find((r) => r.seq === Number(idArg) && r.status === 'running');
+        if (!target || Array.isArray(target)) { add('用法：/tasks stop <id|seq>'); return { lines }; }
+        const ok = ro.subagentRegistry?.stop(target.id) ?? false;
+        add(ok ? `已请求停止子代理 ${target.id}` : `子代理 ${target.id} 不在运行中`);
+        return { lines };
+      }
+      add(`未知子命令「${sub}」——/tasks [show <id> | resume <id> <追问> | stop <id|seq>]`);
       return { lines };
     }
 
@@ -2695,6 +2758,65 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           'content-disposition': `attachment; filename="omni-${sid}.md"`,
         });
         res.end(md);
+        return;
+      }
+
+      /* ---------------- 子代理任务中心（Agent View，1.0 完整版）---------------- */
+      // 列表：本次会话全部子代理（运行中 + 已完成；含编排 worker）——前端「子代理」面板数据源
+      if (p === '/api/tasks' && req.method === 'GET') {
+        const sid0 = url.searchParams.get('sessionId');
+        const s0 = sid0 ? sessions.get(sid0) ?? null : null;
+        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        await hydrateRegistryFromSession(ro0);
+        const reg0 = ro0.subagentRegistry;
+        json(res, 200, { tasks: (reg0?.records() ?? []).map((r) => serializeTask(r, reg0)) });
+        return;
+      }
+      // 明细：单条子代理记录（含 items 明细 / result / resumable）
+      const taskDetailMatch = p.match(/^\/api\/tasks\/([^/]+)$/);
+      if (taskDetailMatch && req.method === 'GET') {
+        const id = decodeURIComponent(taskDetailMatch[1]);
+        const sid0 = url.searchParams.get('sessionId');
+        const s0 = sid0 ? sessions.get(sid0) ?? null : null;
+        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        await hydrateRegistryFromSession(ro0);
+        const entry = ro0.subagentRegistry?.get(id);
+        if (!entry) { json(res, 404, { error: '子代理记录不存在' }); return; }
+        json(res, 200, { task: serializeTask(entry.record, ro0.subagentRegistry), resumable: !!entry.resume });
+        return;
+      }
+      // 续跑：body = { sessionId?, message } → 带原 transcript + 追问继续跑，返回结果文本
+      const taskResumeMatch = p.match(/^\/api\/tasks\/([^/]+)\/resume$/);
+      if (taskResumeMatch && req.method === 'POST') {
+        const id = decodeURIComponent(taskResumeMatch[1]);
+        const body = await readBody(req);
+        const message = typeof body.message === 'string' ? body.message.trim() : '';
+        if (!message) { json(res, 400, { error: '追问内容为空' }); return; }
+        const sid0 = typeof body.sessionId === 'string' ? body.sessionId : url.searchParams.get('sessionId');
+        const s0 = sid0 ? sessions.get(sid0) ?? null : null;
+        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const entry = ro0.subagentRegistry?.get(id);
+        if (!entry?.resume) { json(res, 404, { error: '该子代理不支持续跑' }); return; }
+        try {
+          const answer = await entry.resume(message);
+          broadcast('tasks.changed', { sessionId: sid0 ?? null });
+          json(res, 200, { ok: true, result: answer });
+        } catch (err) {
+          json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // 停止：只停这一条子代理（不影响主循环/其它并行子代理）
+      const taskStopMatch = p.match(/^\/api\/tasks\/([^/]+)\/stop$/);
+      if (taskStopMatch && req.method === 'POST') {
+        const id = decodeURIComponent(taskStopMatch[1]);
+        const body = await readBody(req);
+        const sid0 = typeof body.sessionId === 'string' ? body.sessionId : url.searchParams.get('sessionId');
+        const s0 = sid0 ? sessions.get(sid0) ?? null : null;
+        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const ok = ro0.subagentRegistry?.stop(id) ?? false;
+        broadcast('tasks.changed', { sessionId: sid0 ?? null });
+        json(res, 200, { ok });
         return;
       }
 

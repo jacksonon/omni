@@ -21,6 +21,8 @@ import { Safety, type ApprovalRequest, type PermissionTier } from '../safety/ind
 import { truncate } from '../tools/index.js';
 import type { Tool } from '../tools/types.js';
 import type { SubagentEvent } from './types.js';
+import type { SubagentRecord, SubagentRegistry } from './subagent-registry.js';
+import { detailItemFromEvent, SUBAGENT_DETAIL_MAX } from './subagent-registry.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
 import { extractReasoning } from './thinking.js';
 import { formatToolCall, previewOutput } from '../output/format.js';
@@ -101,18 +103,47 @@ export interface SubagentOptions {
   autoReview?: (req: ApprovalRequest) => Promise<{ approve: boolean; reason: string } | null>;
   /** Team 协作看板（2026-09 DYN）：SendMessage 收件箱（发给本子代理 id 的消息） */
   team?: import('./team.js').TeamBoard;
+  /**
+   * 子代理线程记录（Agent View / 子代理任务中心）：提供时 runSubagent 实时维护它——
+   * transcript（完整 messages，续跑/钻取的唯一真相源）、status/steps/items/result。
+   * 由 delegate / orchestrate 创建并注册进 runOpts.subagentRegistry。
+   */
+  record?: SubagentRecord;
+  /** 子代理线程注册表（完成/停止时 touch 通知 UI；可选） */
+  registry?: SubagentRegistry;
+  /** 实际使用的模型名（事件/记录标注；缺省 undefined） */
+  model?: string;
+  /** 思考级别（reasoning_effort；随请求下发，缺省不带该参数） */
+  effort?: string;
+  /** 命名的子代理定义名（记录标注用；缺省 'delegate'） */
+  agent?: string;
 }
 
 /** 事件回调统一收口（start/step/end/think/toolStart/toolEnd；onEvent 缺省 no-op） */
 function emit(opts: SubagentOptions, ev: Omit<SubagentEvent, 'id' | 'parentId' | 'depth' | 'name'>): void {
-  opts.onEvent?.({
+  const full: SubagentEvent = {
     ...ev,
     id: opts.id ?? 'sub',
     parentId: opts.parentId ?? null,
     depth: opts.depth ?? 0,
     name: opts.name ?? 'delegate',
     seq: opts.seq ?? null,
-  });
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.effort ? { effort: opts.effort } : {}),
+  };
+  opts.onEvent?.(full);
+  // Agent View 明细留存（钻取视图）：think/toolStart/toolEnd → 记录 items（截断防爆）
+  const rec = opts.record;
+  if (rec) {
+    const item = detailItemFromEvent(full);
+    if (item) {
+      rec.items.push(item);
+      if (rec.items.length > SUBAGENT_DETAIL_MAX) {
+        rec.dropped += rec.items.length - SUBAGENT_DETAIL_MAX;
+        rec.items.splice(0, rec.items.length - SUBAGENT_DETAIL_MAX);
+      }
+    }
+  }
 }
 
 export async function runSubagent(
@@ -123,17 +154,36 @@ export async function runSubagent(
 ): Promise<string> {
   // Hooks：SubagentStart（fire-and-forget，任务回传；失败静默）
   opts.hooks?.subagentStart(task);
-  // 进度事件：start（UI 可视化 + /trace 账本嵌套的根）
-  emit(opts, { type: 'start', task });
   const t0 = Date.now();
   const maxSteps = opts.maxSteps ?? 10;
+  const rec = opts.record;
+  if (!opts.model) opts.model = model; // 事件/记录标注当前模型（Agent View 展示）
+  // 线程登记兜底：调用方（delegate/orchestrate）通常已先注册 resume 闭包，这里只补
+  // 未登记的（不覆盖既有条目，避免丢掉 resume 能力）。
+  if (rec && opts.registry && !opts.registry.get(rec.id)) opts.registry.register({ record: rec });
+  // 线程记录（Agent View）：已有 transcript = 续跑（复用原 messages 继续）；否则新建
+  const isResume = !!rec && rec.transcript.length > 0;
   // 命名子代理（SubagentDef）的 instructions 拼进提示词；技能预载全文紧随其后
   const prompt =
     SUBAGENT_PROMPT +
     task +
     (opts.cwd ? `\n\n当前工作目录：${opts.cwd}（独立 git 工作树——你的文件读写与命令执行都发生在这里，不影响主工作区）` : '') +
     (opts.skills ? `\n\n已预载技能：\n${opts.skills}` : '');
-  const messages: ChatCompletionMessageParam[] = [{ role: 'user', content: prompt }];
+  const messages: ChatCompletionMessageParam[] =
+    rec && rec.transcript.length > 0 ? rec.transcript : [{ role: 'user', content: prompt }];
+  if (rec) {
+    rec.transcript = messages;
+    rec.status = 'running';
+    rec.endedAt = undefined;
+    rec.steps = 0;
+    rec.maxSteps = maxSteps;
+    rec.model = rec.model ?? model;
+    rec.effort = opts.effort;
+    if (isResume) rec.resumed = true;
+    else rec.task = task;
+  }
+  // 进度事件：start（UI 可视化 + /trace 账本嵌套的根）
+  emit(opts, { type: 'start', task: rec?.task ?? task });
   const toolSchemas = opts.tools.map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -154,22 +204,38 @@ export async function runSubagent(
   // 被主动停止（signal abort）时：先发 stopped 进度事件（UI 知道这是用户停止而非
   // 自然失败），再走常规 finish 链（hooks + end 事件，status='err'、文案标明停止）。
   const finish = (answer: string, steps: number): string => {
+    const dur = Date.now() - t0;
+    if (rec) {
+      rec.steps = steps;
+      rec.endedAt = Date.now();
+    }
     if (isStopped(opts)) {
-      emit(opts, { type: 'stopped', steps, durationMs: Date.now() - t0 });
+      emit(opts, { type: 'stopped', steps, durationMs: dur });
       const stoppedAnswer = answer.startsWith('（子代理') ? answer : `（子代理已停止）${answer ? `：${answer}` : ''}`;
       opts.hooks?.subagentStop(stoppedAnswer);
-      emit(opts, { type: 'end', status: 'err', summary: '已停止', steps, durationMs: Date.now() - t0 });
+      emit(opts, { type: 'end', status: 'err', summary: '已停止', steps, durationMs: dur });
+      if (rec) {
+        rec.status = 'stopped';
+        rec.result = stoppedAnswer;
+        opts.registry?.recordDone(rec);
+      }
       return stoppedAnswer;
     }
     const status: 'ok' | 'err' =
       /^(错误|执行失败|已拦截)/.test(answer) || answer.includes('（子代理') ? 'err' : 'ok';
     opts.hooks?.subagentStop(answer);
-    emit(opts, { type: 'end', status, summary: answer.slice(0, 200), steps, durationMs: Date.now() - t0 });
+    emit(opts, { type: 'end', status, summary: answer.slice(0, 200), steps, durationMs: dur });
+    if (rec) {
+      rec.status = status;
+      rec.result = answer;
+      opts.registry?.recordDone(rec);
+    }
     return answer;
   };
 
   for (let step = 0; step < maxSteps; step++) {
     if (isStopped(opts)) return finish('', step); // 停止请求在步间到达 → 立即退出
+    if (rec) rec.steps = step;
     // Team 消息注入（2026-09 DYN）：发给本子代理的 send_message 在下一步前兑现
     const inbox = opts.team?.takeMessages(opts.id ?? '');
     if (inbox && inbox.length > 0) {
@@ -187,6 +253,10 @@ export async function runSubagent(
         stream: true,
         // 子代理取消：abort 信号透传给 SDK——用户停止后流式请求立即断连
         ...(opts.signal ? { signal: opts.signal } : {}),
+        // 思考级别（/variants 同口径：none/auto 不下发）
+        ...(opts.effort && opts.effort !== 'none' && opts.effort !== 'auto'
+          ? { reasoning_effort: opts.effort as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming['reasoning_effort'] }
+          : {}),
       });
     } catch (err: any) {
       // 主动停止导致的请求中断（AbortError）→ 按停止收尾，不当作请求失败
@@ -313,4 +383,22 @@ export async function runSubagent(
 /** 分配一个子代理实例 id（进程内唯一；嵌套逐层传） */
 export function nextSubagentId(): string {
   return `sub${++subagentSeq}`;
+}
+
+/**
+ * 续跑一个子代理线程（Agent View 的「追问」，对标 Claude Code 打开 transcript 发
+ * follow-up / resume subagents，Codex 的 open agent thread + steer）：
+ * 把一条 user 追问 push 进原 transcript，带完整历史继续跑同一个循环。
+ * 调用方（delegate / orchestrate 的 resume 闭包）负责把与首跑一致的运行上下文
+ * （tools / gate / hooks / 模型路由…）透传进来；返回最终结论文本。
+ */
+export async function resumeSubagent(
+  client: OpenAI,
+  model: string,
+  record: SubagentRecord,
+  followUp: string,
+  opts: Omit<SubagentOptions, 'record'>
+): Promise<string> {
+  record.transcript.push({ role: 'user', content: followUp });
+  return runSubagent(client, model, record.task, { ...opts, record });
 }
