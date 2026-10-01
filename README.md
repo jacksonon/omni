@@ -16,6 +16,10 @@ Currently at **Beta (feature-complete)**: single-agent loop + 8 static tools (+ 
 
 ![Omni Web](Doc/images/web.png)
 
+**Terminal mini** (`omni mini`, Codex CLI-style line mode) — streamed answers, `• Ran` tool cards with output previews, Markdown tables / code / diff, per-turn token & timing stats (plain scrollback lines, `Ctrl+T` for the full transcript):
+
+![Omni mini](Doc/images/mini.png)
+
 ## Features
 
 - **Agent main loop**: streams LLM calls → executes tool calls (in parallel) → feeds results back, with self-correction (tool failure messages are returned to the model so it can fix its own mistakes)

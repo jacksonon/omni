@@ -16,6 +16,10 @@
 
 ![Omni Web](Doc/images/web.png)
 
+**纯终端 mini**（`omni mini`，Codex CLI 形态的行式终端）——流式回答、`• Ran` 工具卡片与输出预览、Markdown 表格/代码/diff、每轮 token 与耗时统计（全部普通滚动行，可管道，`Ctrl+T` 看完整轨迹）：
+
+![Omni mini](Doc/images/mini.png)
+
 ## 特性
 
 - **Agent 主循环**：流式调用 LLM → 工具调用（并行执行）→ 执行 → 结果回传，支持自我纠错（工具失败信息回传由模型自行修正）
