@@ -440,7 +440,7 @@ npm run tui:snapshot                 # TUI 渲染快照
 | `/rewind` | 会话检查点三模式：仅代码 / 仅对话 / 双向（面板两步确认 · 每轮自动打点 · 上限 100 个/30 天） |
 | `/plugin` | 插件管理：install（本地路径/git URL）· list · enable/disable · remove（打包技能/子代理/hooks/MCP） |
 | `/auto` · `/vim` | AI 自动审批开关 · TUI 输入框 Vim 键位开关（均持久化） |
-| `/tasks` · `/team` | 运行中前台/后台子代理台账（`/tasks stop <seq>`）· Team 共享任务看板 + 消息 + 子代理树 |
+| `/tasks` · `/team` | 子代理任务中心（Agent View）：全部子代理台账（运行中+已完成，名·模型·思考级别·步数·耗时）· `/tasks show <id>` 钻取 transcript · `/tasks resume <id> <追问>` 带原上下文续跑 · `/tasks stop <id\|seq>` 停止 · TUI/Web 无参开面板 · Team 共享任务看板 + 消息 + 子代理树 |
 | `/doctor`（console）/ `/settings doctor`（TUI） | 环境诊断：Node/bun 版本、API Key、端点连通性、配置/MCP/权限/模型 |
 | `/clear` · `/exit`（别名 `/quit`） | 清屏 · 退出（autoMemory + 会话落盘） |
 

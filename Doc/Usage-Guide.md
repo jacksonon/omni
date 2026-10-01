@@ -575,7 +575,7 @@ source of truth. A few are console-only (`/doctor`, `/trace`) and are noted inli
 | `/plugin` | plugin management: `list` · `install <path\|git URL> --yes [--force]` · `remove <name> --yes` · `enable\|disable <name>` — plugins bundle skills/subagents/hooks/MCP (see 14.3) |
 | `/auto [on\|off]` | AI auto-approval toggle (persisted; same as `autoReview` / `omni exec --approve-for-me`, see 5.6) |
 | `/vim [on\|off]` | Vim keybindings in the TUI input box (persisted, see section 7) |
-| `/tasks` | running tasks: foreground/background subagent ledger + `/tasks stop <seq>` |
+| `/tasks` | subagent task center (Agent View): all subagents (running + done) · `show <id>` drill into transcript · `resume <id> <msg>` resume with original context · `stop <id\|seq>`; TUI/Web open a panel with no args |
 | `/team` | team task board: shared task list + undelivered messages + running subagent tree |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` | clear the current session view (memory and undo stack are untouched) |
@@ -1209,8 +1209,11 @@ the console/web `/trace` ledger.
 
 **Background subagents & concurrency**: `delegate` with `background: true` returns immediately and
 keeps running; its result is injected into the main loop's next step. Foreground and background
-delegates share the `maxConcurrentSubagents` cap (default 4; queued beyond it). `/tasks` lists running
-foreground/background subagents (`/tasks stop <seq>` stops one); `/team` shows the shared task board
+delegates share the `maxConcurrentSubagents` cap (default 4; queued beyond it). `/tasks` is the subagent
+task center (Agent View): it lists every subagent of the session (running + done, including orchestration
+workers); `/tasks show <id>` drills into the full transcript, `/tasks resume <id> <msg>` continues a
+finished subagent with its original context, `/tasks stop <id|seq>` stops a running one; TUI/Web open a
+panel with no args. `/team` shows the shared task board
 (the `task_board` tool) and inter-subagent messages (the `send_message` tool).
 
 ### Model routing (architect / editor)

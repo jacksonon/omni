@@ -445,7 +445,7 @@ npm run tui:snapshot                 # TUI rendering snapshots (bun renderer)
 | `/rewind` | three-mode session checkpoints: code-only / conversation-only / both (panel two-step confirm; auto-checkpointed every turn; cap 100 / 30 days) |
 | `/plugin` | plugin management: install (local path/git URL) · list · enable/disable · remove (bundles skills/subagents/hooks/MCP) |
 | `/auto` · `/vim` | AI auto-approval toggle · TUI Vim keybindings toggle (both persisted) |
-| `/tasks` · `/team` | running foreground/background subagent ledger (`/tasks stop <seq>`) · team task board + messages + subagent tree |
+| `/tasks` · `/team` | subagent task center (Agent View): ledger of all subagents (running+done, name·model·effort·steps·duration) · `/tasks show <id>` drill into transcript · `/tasks resume <id> <msg>` resume with original context · `/tasks stop <id\|seq>` stop · TUI/Web open a panel with no args · team board + messages + subagent tree |
 | `/doctor` (console) / `/settings doctor` (TUI) | environment diagnostics: Node/bun versions, API key, endpoint connectivity, config/MCP/permission/models |
 | `/clear` · `/exit` (alias `/quit`) | clear view · quit (autoMemory + session finalize) |
 

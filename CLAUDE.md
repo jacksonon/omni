@@ -30,7 +30,7 @@ npm run models:snapshot        # 重建模型能力快照（改 model-context �
 - 安全闸门 `src/safety/`：每个工具调用（含 MCP/子代理）过 `Safety.gate`——档位 full/safe/ask/read + 危险命令审批 + 审计；未信任目录强制只读并跳过 hooks/MCP/技能/子代理/项目记忆（`trust.ts`）。
 - 工具 `src/tools/`：8 静态（read/write/edit/list/search/run_command/skill/lsp）+ 运行时注入（delegate/ask_user/task_board/send_message/web_search/web_fetch/MCP `server_tool`）。改工具必须同步更新其 JSON Schema 与 `description`（写给模型看的说明书）。
 - 上下文 `src/agent/context.ts`：全局+项目记忆级联注入（嵌套 AGENTS.md，32KB 上限）+ 相关文件预载 + 长对话摘要压缩；会话落盘 `src/agent/session.ts`（JSONL，`~/.config/omni/sessions/`）；撤销 `undo.ts`；检查点 `/rewind`（code/chat/both）。
-- 子代理/编排：`subagent.ts`（隔离小循环）+ `orchestrate.ts`（动态工作流：模型产计划→依赖分层并行）+ `team.ts` 看板；技能 `agent/skill.ts`（SKILL.md 渐进披露 15 条，`skill` 工具按需加载全文）；MCP `tools/mcp.ts`（stdio/streamable-HTTP，资源/提示词/instructions/审批模式/白黑名单）。
+- 子代理/编排：`subagent.ts`（隔离小循环，保留完整 transcript + `resumeSubagent` 续跑）+ `subagent-registry.ts`（**Agent View 线程注册表**：会话级记录全部子代理 + resume/stop 闭包 + `t:"sub"` 会话落盘回灌）+ `orchestrate.ts`（动态工作流：模型产计划→依赖分层并行）+ `team.ts` 看板；`/tasks` 子代理任务中心（列表/钻取/续跑/停止，三端面板）；技能 `agent/skill.ts`（SKILL.md 渐进披露 15 条，`skill` 工具按需加载全文）；MCP `tools/mcp.ts`（stdio/streamable-HTTP，资源/提示词/instructions/审批模式/白黑名单）。
 - 渲染层（同一运行时，四套 Output）：`output/console.ts`（console）/ `output/mini.ts`（mini，Codex 形态：`• Ran` + 前3行预览 + `↳` 轮内排队输入）/ `tui/`（全屏，命令式渲染 OpenTUI，无 JSX 信号；改前必读 `Doc/tui-architecture.md`）/ `web/` + `electron/`（REST+SSE 本地后端，`web/` 目录是 `src/web/assets.ts` 的源，改页面后跑 `npm run web:sync`）。
 - 配置 `src/config/`：分层 默认→全局（`~/.config/omni/omni.json`，XDG-aware）→项目（向上找 `omni.json[c]`）→`OMNI_CONFIG`/`--config`→环境变量→CLI；端点/密钥只认 `providers` 分组或 `OMNI_BASE_URL`/`OMNI_API_KEY`。JSONC 带注释。
 

@@ -31,7 +31,8 @@
 |---|---|---|
 | ✅ **DYN 动态工作流 / Mission 编排** | 动态工作流计划（模型出计划、引擎按依赖执行）+ 共享任务列表 + SendMessage + 并发预算 + `/team` 可视化 | P1 |
 | ✅ **PLG 插件包格式** | plugin.json 统一打包 skills/subagents/hooks/MCP + 安装/移除/列举生命周期 + 三端命令 | P1 |
-| ✅ **FLT 舰队视图 / 后台子代理** | TUI `/tasks` 运行中任务面板 + delegate 后台执行 + Web 远程接入令牌 | P1 |
+| ✅ **FLT 舰队视图 / 后台子代理** | TUI `/tasks` 运行中任务面板（后升级为 Agent View，见下）+ delegate 后台执行 + Web 远程接入令牌 | P1 |
+| ✅ **子代理任务中心（Agent View）** | `/tasks` 可寻址线程 + 钻取完整 transcript + 对已完成子代理带原上下文续跑（resume subagents）+ 三端面板 + 会话持久化回灌（对标 Claude Code /tasks 与 Codex agent thread；第二百六十四次） | P1 |
 | ✅ **MCP elicitation / sampling / 2026-07-28** | 服务器反向请求（用户提问/模型采样）+ 协议版本 + 分页发现 + DCR/CIMD | P1 |
 | ✅ **AI 自动审批** | `autoReview` 模型审阅层（对标 Codex --approve-for-me），不改变沙箱边界 | P1 |
 | ✅ **BTW 旁问（/btw）** | 不打断任务的侧问（对标 Claude Code `/btw`）：当前对话快照 + 只读工具迷你循环，答案不进历史；`--keep` 留在上下文（第二百四十七次） | P2 |
