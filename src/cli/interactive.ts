@@ -75,7 +75,8 @@ import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
 import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
-import { applyMentionInsert, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, MINI_SLASH_COMMANDS, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
+import { applyMentionInsert, commonPrefix, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
+import type { SlashSuggestHandle } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
 
 /** `/stop` 精确匹配（codex /stop：轮内前置拦截与空闲提示共用；`/stop xxx` 带参不认，避免误吞普通消息） */
@@ -100,6 +101,13 @@ export async function runInteractive(
   // Tab 补全（readline 原生 completer，只读行缓冲不提交）：`/mo`→命令名、
   // `/model <片>`→模型名、`/variants <片>`→级别/命名 id。只在 TTY 挂载，
   // 管道保持原行为；数据源经 runOpts 实时读（/model add 后即时可补）。
+  //
+  // 命令词（第一词）的候选 UI 由联想面板负责：completer 只做「行内补公共前缀」，
+  // 绝不把多候选交给 readline 原生哑巴列表——原生列表会把输入行重画到列表下方，
+  // 面板的整块 DL 光标纪律随之错位（取消时拽着输入行上跳、留残行；历史 bug 源）。
+  // 无补全进展时改由面板把完整清单落进 scrollback（listAll；面板本身只列前 8 条）。
+  // 第二词（模型名/目录/子命令）面板不参与，原生列表照旧。
+  let suggestRef: SlashSuggestHandle | null = null;
   const completer = (line: string): [string[], string] => {
     // @ 提及 Tab 由专职拦截器处理（模态选择/同步插入；readline 补全异步落行，
     // 被动面板看不到同一 tick 的结果）——这里对 @ 行一律 no-op，避免双 UI 打架
@@ -156,16 +164,15 @@ export async function runInteractive(
       },
       dirs,
     });
-    // 裸 `/` + Tab：直接打印全部可用命令（免得用户去猜双 Tab 才出列表）。
-    // 走 MiniOutput.print 便带上轮内输入行协作；console 等无此方法则回退直打。
-    if (word === '/' && line.trim() === '/') {
-      const list = MINI_SLASH_COMMANDS.join('  ');
-      const print = (out as unknown as { print?: (s: string) => void }).print;
-      if (print) print(dim(list));
-      else console.log(dim(list));
-      return [[], word];
-    }
-    return [hits, word];
+    // 第二词（含 `/` 后有空格）：面板不参与，候选照旧交 readline 原生列表
+    if (!/^\/[a-z-]*$/.test(trimmedHead)) return [hits, word];
+    const uniq = [...new Set(hits)];
+    if (uniq.length === 0) return [[], word];
+    const prefix = commonPrefix(uniq);
+    // 有进展就补公共前缀（含唯一命中与整命令补尾空格）；无进展 → 面板 listAll
+    if (prefix.length > word.length) return [[prefix], word];
+    suggestRef?.listAll();
+    return [[], word];
   };
   // keypress 发射前置 + /stop 轮内拦截（codex /stop 命令）：
   // Node readline 把回车 keypress 只发给接口创建前挂载的监听器（后挂的收不到
@@ -369,6 +376,7 @@ export async function runInteractive(
       }
     },
   });
+  suggestRef = suggest; // completer（Tab）无进展时把完整清单交面板 listAll 落盘
   // readline 行缓冲读写（Tab 提及插入用；promises 接口的 line/cursor 是可写属性）
   const rlCursor = (): number => (rl as unknown as { cursor?: number }).cursor ?? rl.line.length;
   const setRlText = (text: string, cursor: number): void => {
@@ -605,6 +613,10 @@ export async function runInteractive(
     // bang（`!`）保留反斜杠交 sh 原生续行；其余去标记拼接（见 joinContinued）
     const full = joinContinued(rawParts, isBangShellCommand(rawParts.join('\n')));
     const cmd = full.trim();
+    // 联想面板提交收尾（拿到真实提交行）：命令词 + 面板在场 → 面板+回显整块回收；
+    // 消息只放弃跟踪。必须在这里（任何输出之前）调用——keypress 监听看不到提交内容
+    //（readline 回车先清行缓冲），凭「面板在场」猜会误伤 Ctrl+R/Ctrl+G 异步改行的场景。
+    suggestRef?.confirmSubmit(cmd);
     if (input.isTTY && cmd !== '') {
       // 提交即落盘（crash/强杀不丢；空行不收；readline 本轮 history 由原生维护）
       saveInputHistory((rl as unknown as { history?: readonly string[] }).history ?? []);
@@ -2278,5 +2290,6 @@ export async function runInteractive(
   }
   await finishSession(); // EOF（Ctrl+D）同样收尾（与 /exit 同一流程，幂等）
   suggest?.dispose();
+  mentionPanel?.dispose();
   rl.close();
 }

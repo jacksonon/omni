@@ -247,7 +247,8 @@ src/
                         #   --ignore-user-config（codex 同款：只跳用户层，项目/显式 --config/profile/环境变量/CLI 照常；另三枚 exec flag 评估后不定植：thread-source 系遥测内务/skip-git-repo-check 无此要求/ignore-rules 无 .rules 对应物）；
                         #   空行 Esc 取回上一条（codex edit-previous：lastUserText+单行压平；轮内/续行/模态不触发；pty e2e）；
                         #   未知斜杠报错不送模型 + 模糊推荐（联想面板同算法子序列：/ac→/compact；did-you-mean 前 3）；
-                        #   Tab 补全对齐 popup（首词模糊兜底：唯一命中直插；/plugin·/diff 第二词表）；
+                        #   Tab 补全对齐 popup（首词只补公共前缀 commonPrefix＋无进展交面板 listAll 完整清单落 scrollback——绝不交 readline 原生哑巴列表，防整块 DL 光标错位；/plugin·/diff 第二词走原生列表）；
+                        #   联想面板收尾（用户实测「取消后输入框上移」根治）：取消/清空/不再匹配只放弃跟踪不擦屏（面板留 scrollback 当参考，bash 同款，输入框原地不动）；Enter 提交整块回收（面板 H+1 行，连命令回显一起——readline 回车已把光标移到回显下一行）；回收由主循环 confirmSubmit 用**真实提交行**触发（键监听看不到——回车先清行缓冲；防 Ctrl+R/Ctrl+G 异步改行时误删消息回显）；PTY 回归 slash-cancel-pty（取消切片零 DL + 提交切片 \x1b[2A\x1b[2M）；
                         #   复数别名 /skills→/skill、/plugins→/plugin + /hooks 生效视图（HookRunner.list；改配置重启生效）；
                         #   /mcp verbose 逐服务器状态（codex 对等：连接/失败/跳过+认证+工具名；带参报用法）+ /rollout 打印会话路径；
                         #   分隔行对齐 separators.rs（耗时不补零 2m 5s；Local tools/Inference 后缀走 lap 累积，零调用省略；超宽按段折行）；

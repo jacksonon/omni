@@ -46,6 +46,7 @@ import { completeMention, MINI_SLASH_COMMANDS } from '../../src/cli/picker.js';
 import { applyMentionInsert } from '../../src/cli/picker.js';
 import { fuzzySlashMatch } from '../../src/cli/picker.js';
 import { completeMiniLine } from '../../src/cli/picker.js';
+import { commonPrefix } from '../../src/cli/picker.js';
 import { loadInputHistory, saveInputHistory } from '../../src/cli/history.js';
 import { isBangShellCommand, stripBangPrefix } from '../../src/cli/picker.js';
 import { formatModePrompt } from '../../src/cli/picker.js';
@@ -1010,6 +1011,11 @@ export function miniSuite(): TestSuite {
     suite.assert(completeMiniLine('/plugin ins', ctx, { secondWords: sw })[0].join() === 'install', '/plugin 第二词过滤');
     suite.assert(completeMiniLine('/diff --', ctx, { secondWords: sw })[0].join(',') === '--stat,--full', '/diff flags 第二词');
     suite.assert(completeMiniLine('/bogusxyz', ctx)[0].length === 0, '无命中回空');
+    // commonPrefix：命令词多候选只补公共前缀（不触发 readline 原生哑巴列表——
+    // 原生列表把输入行重画到列表下方，会破坏联想面板的整块 DL 光标纪律）
+    suite.assert(commonPrefix(['/model', '/mcp', '/memory-apply']) === '/m', '公共前缀取到分叉点');
+    suite.assert(commonPrefix(['/compact', '/archive']) === '/', '无公共身体回退 /');
+    suite.assert(commonPrefix([]) === '' && commonPrefix(['/x']) === '/x', '空/单候选');
   });
 
   suite.test('@ 提及：Tab 补全候选（文件尾空格/目录留/·模糊/空白结束/斜杠抑制）', () => {
@@ -1418,6 +1424,51 @@ export function miniSuite(): TestSuite {
       suite.assert(v.answered === true, 'mock 首轮回答（回提示符，行空）');
       suite.assert(v.recalled === true, '空行 Esc 后 marker 计数增加（取回重画）');
       suite.assert(v.quit0 === true, `取回后清行退出干净（exit ${v.exitCode}）`);
+      suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
+    } finally {
+      mock.kill();
+    }
+  });
+
+  suite.test('端到端：/ 联想面板取消不擦屏（输入框不上移）+ 回车整块回收（PTY 真终端）', async () => {
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-slash-'));
+    fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    const port = MOCK_PORT + 18;
+    const mock = spawn('node', ['scripts/mock-server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await waitFor(async () => {
+        const r = await fetch(`http://127.0.0.1:${port}/v1/models`).catch(() => null);
+        return r !== null;
+      }, 8000, 'mock server 启动');
+      const log = path.join(xdg, 'slash-cancel-pty.log');
+      const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const py = spawn('python3', ['scripts/feature-tests/slash-cancel-pty.py'], {
+          cwd: ROOT,
+          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let acc = '';
+        py.stdout.on('data', (d) => (acc += d));
+        py.stderr.on('data', (d) => (acc += d));
+        const timer = setTimeout(() => py.kill('SIGKILL'), 120_000);
+        py.on('close', (c) => {
+          clearTimeout(timer);
+          resolve({ code: c, out: acc });
+        });
+      });
+      const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
+      let v: { prompted?: boolean; panelShown?: boolean; cancelNoDelete?: boolean; submitReclaim?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      try { v = JSON.parse(lastLine); } catch { /* 非 JSON 则下面断言失败 */ }
+      suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
+      suite.assert(v.panelShown === true, '打 /m 后联想面板出现（/memory-apply 候选行）');
+      suite.assert(v.cancelNoDelete === true, 'Ctrl+U 取消后面板不擦屏（无 DL 序列，输入框不上移）');
+      suite.assert(v.submitReclaim === true, '/pwd 回车后面板+回显整块回收（上移 2 删 2）');
+      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
     } finally {
       mock.kill();
