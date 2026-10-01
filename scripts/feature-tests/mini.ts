@@ -37,6 +37,8 @@ import {
   renderTurnSeparator,
   renderWorkingLine,
   toolDetail,
+  turnStatSegments,
+  turnTokenRate,
   verbForTool,
 } from '../../src/output/mini.js';
 import { MiniMarkdownRenderer, chunksToAnsi } from '../../src/output/markdown-ansi.js';
@@ -776,6 +778,16 @@ export function miniSuite(): TestSuite {
       { toolCalls: 2, toolMs: 1200, llmCalls: 1, llmMs: 300 }
     );
     suite.assert(withStats.includes('Local tools: 2 calls (1.2s)') && withStats.includes('Inference: 1 call (300ms)'), '分隔行带统计后缀');
+    // tok/s 段（用户要求：mini 分隔行也显示 token 速率）
+    const withRate = renderTurnSeparator(
+      5_000, new Date(2026, 8, 24, 22, 30),
+      { toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 3000, completion: 312, genMs: 2600 }
+    );
+    suite.assert(withRate.includes('120 tok/s'), '分隔行带 token 速率（completion / genMs）');
+    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300, completion: 150 }) === 500, '无 genMs 时回退 llmMs 计速');
+    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 1, completion: 1000 }) === 999, '瞬时流速率钳到上限 999');
+    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300, completion: 0 }) === null, '无 token 不展示速率');
+    suite.assert(!turnStatSegments({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300 }).some((s) => s.includes('tok/s')), '无 token 用量时无速率段');
     const noStats = renderTurnSeparator(5_000, new Date(2026, 8, 24, 22, 30), { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 });
     suite.assert(!noStats.includes('Local tools') && !noStats.includes('Inference'), '零调用不展示统计段');
     const stripAnsi = (t: string): string => t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');

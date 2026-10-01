@@ -1,6 +1,8 @@
 # Omni 演进日志
 
-> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十五次）。
+> 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
+
+- **2026-10-01（第二百六十六次）**：**mini 分隔行加 token 速率（用户要求）**——`onTurnEnd` 的 `12:10 · Local tools · Inference` 分隔行追加 `N tok/s` 段（`TurnStats` 增 `completion`/`genMs`：`onUsage` 累加 completion、`onLlmLap` 折入 genMs）。速率 = completion / 纯生成耗时 genMs（与 TUI 同口径）；genMs <100ms（mock/瞬时流假象）回退分隔行同源分段墙钟 llmMs；无 token 不展示；上限钳 999 防四位噪声。验证：typecheck ✓ · 功能回归 225/225（mini 回合形态用例 22 断言 + PTY 实机确认 `999 tok/s`）✓。
 
 - **2026-10-01（第二百六十五次）**：**mini 输入区间距（用户截图：分隔行/统计行紧贴 `› ` 太挤）**——`onTurnEnd` 打完 `Worked for/时间 · Local tools · Inference` 分隔行（或 Tip 行）后补一个空行再交回输入行；`gapOpen=true` 让下一轮 `onUserMessage` 不再重复补行（保持恰好一行间距，且顺带消掉首轮提示行后的双空行）。PTY 实机重建屏幕确认：分隔行与 `› ` 之间出现一空行。验证：typecheck ✓ · 功能回归 225/225（含 mini PTY e2e 88/88）✓。
 

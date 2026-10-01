@@ -330,6 +330,25 @@ export interface TurnStats {
   toolMs: number;
   llmCalls: number;
   llmMs: number;
+  /** 本轮 completion token 合计（onUsage 累加；tok/s 段数据源，缺省 0） */
+  completion?: number;
+  /** 本轮纯生成耗时合计（onLlmLap 的 genMs 累加；tok/s 段分母，缺省 0） */
+  genMs?: number;
+}
+
+/**
+ * 本轮 token 速率（tok/s）= completion / 生成耗时。
+ * 分母优先用纯生成耗时 genMs（排除首 token 等待，与 TUI 同口径）；genMs 过小
+ *（<100ms，多为 mock/瞬时流假象）时回退分隔行同源的分段墙钟 llmMs；两者都不可用则不展示。
+ */
+export function turnTokenRate(stats: TurnStats): number | null {
+  const completion = stats.completion ?? 0;
+  if (completion <= 0) return null;
+  const gen = stats.genMs ?? 0;
+  const denom = gen >= 100 ? gen : stats.llmMs > 0 ? stats.llmMs : 0;
+  if (!(denom > 0)) return null;
+  // 上限 999：mock/瞬时流（生成耗时趋近 0）会算出四位数，钳到合理上限避免误导
+  return Math.max(1, Math.min(999, Math.round((completion / denom) * 1000)));
 }
 
 /** 分隔行统计段（codex runtime_metrics_label：`Local tools: 3 calls (1.2s)` 形态；零调用省略） */
@@ -340,6 +359,8 @@ export function turnStatSegments(stats: TurnStats): string[] {
   }
   if (stats.llmCalls > 0) {
     parts.push(`Inference: ${stats.llmCalls} ${stats.llmCalls === 1 ? 'call' : 'calls'} (${fmtLapDuration(stats.llmMs)})`);
+    const rate = turnTokenRate(stats);
+    if (rate != null) parts.push(`${rate} tok/s`);
   }
   return parts;
 }
@@ -1116,12 +1137,17 @@ export class MiniOutput implements Output {
     this.answerEnded = true;
   }
 
-  onUsage(_usage: TokenUsage): void {}
+  /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源） */
+  onUsage(usage: TokenUsage): void {
+    this.turnStats.completion = (this.turnStats.completion ?? 0) + Math.max(0, usage.completion ?? 0);
+  }
 
-  /** LLM 单轮耗时折入本轮统计（分隔行 Inference 段数据源；调用次数同步累加） */
-  onLlmLap(llmMs: number): void {
+  /** LLM 单轮耗时折入本轮统计（分隔行 Inference 段数据源；调用次数同步累加；
+   *  genMs = 纯生成耗时，折入 tok/s 段分母） */
+  onLlmLap(llmMs: number, _firstTokenMs?: number | null, genMs?: number): void {
     this.turnStats.llmCalls += 1;
     this.turnStats.llmMs += Math.max(0, llmMs);
+    if (genMs !== undefined) this.turnStats.genMs = (this.turnStats.genMs ?? 0) + Math.max(0, genMs);
   }
 
   /** 工具执行耗时折入本轮统计（分隔行 Local tools 段时长数据源；次数按结果计数） */
@@ -1130,11 +1156,11 @@ export class MiniOutput implements Output {
   }
 
   /** 本轮统计累积（separators.rs RuntimeMetricsSummary 子集；onTurnStart 清零） */
-  private turnStats: TurnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 };
+  private turnStats: TurnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0 };
 
   onTurnStart(): void {
     this.turnStart = Date.now();
-    this.turnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 };
+    this.turnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0 };
     this.answerEnded = false; // `!` 直跑回合无正文：防沿用上一轮标记误发 tip
     this.beginInputCapture();
   }
