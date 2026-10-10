@@ -1,15 +1,7 @@
-"""PTY 端到端：/ 联想面板「取消不上移」+「回车整块回收」（用户反馈回归锁）。
+"""PTY 回归：斜杠列表是临时区域，过滤/取消/补全/提交不堆积、不移动输入行。
 
-背景：此前取消（行清空/不再匹配）走 eraseAndClose —— 整块 DL 把输入行拽回面板
-起点，实测「取消后输入框上移」；当前策略改为只放弃跟踪（面板留 scrollback，
-bash 补全列表同款），回车提交才回收（面板 H 行 + 命令回显 1 行 = DL H+1 行）。
-
-时序（确定性，全部字节断言；NO_COLOR=1 让面板行/提示符为连续字节）：
-  等 `›` 提示符 → 打 `/m` 等面板候选行（`  /memory-apply`）→ 记偏移，发 Ctrl+U
-  → 取消切片必须**没有 DL 序列**（\\x1b[<n>M；面板不擦屏、输入不搬家）
-  → 打 `/pwd` 等面板行（`\\r\\x1b[2K  /pwd`，与回显区分）→ 记偏移，发回车
-  → 提交切片必须有回收序列 \\x1b[2A\\x1b[2M（H=1 面板 + 回显）→ /quit 干净退出。
-verdict（JSON，stdout 末行）：prompted / panelShown / cancelNoDelete / submitReclaim / quit0。
+重建 ANSI 屏幕和 scrollback，断言用户实际看到的结果（不是只断言擦除字节）。
+分别跑普通、短窄、输入可折行的窗口；每次 PTY 写入都在 try 内，finally 落盘与回收。
 """
 import fcntl
 import json
@@ -17,126 +9,269 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import sys
 import termios
 import time
+import unicodedata
 
 ROOT = os.environ['OMNI_FT_ROOT']
 XDG = os.environ['OMNI_FT_XDG']
 PORT = os.environ['OMNI_FT_PORT']
 LOG = os.environ['OMNI_FT_LOG']
+CSI = re.compile(r'\x1b\[([0-9;?]*)([ -/]*)([@-~])')
+OSC = re.compile(r'\x1b\].*?(?:\x07|\x1b\\)', re.S)
+CANDIDATE = re.compile(r'^  /[a-z-]+…?(?: +/[a-z-]+…?)*$')
 
-DL = re.compile(rb'\x1b\[\d*M')  # Delete Line（面板块删除的唯一手段）
+
+def screen(data, width, height):
+    """按完整 transcript 重建有界屏幕；处理自动折行、CJK、CUU/ED/EL 和 DL。"""
+    grid = [[' '] * width for _ in range(height)]
+    history = []
+    row = col = 0
+    normal = None
+    text = OSC.sub('', data.decode('utf-8', errors='replace'))
+
+    def newline():
+        nonlocal row
+        row += 1
+        if row >= height:
+            history.append(''.join(grid.pop(0)).rstrip())
+            grid.append([' '] * width)
+            row = height - 1
+
+    def erase_line(mode):
+        if mode == 2:
+            grid[row] = [' '] * width
+        elif mode == 1:
+            grid[row][:min(width, col + 1)] = [' '] * min(width, col + 1)
+        else:
+            grid[row][col:] = [' '] * max(0, width - col)
+
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\x1b':
+            m = CSI.match(text, i)
+            if m:
+                nums = [int(p) for p in m[1].replace('?', '').split(';') if p] or [0]
+                n = nums[0] or 1
+                cmd = m[3]
+                if m[1] == '?1049' and cmd == 'h' and normal is None:
+                    normal = (grid, history, row, col)
+                    grid = [[' '] * width for _ in range(height)]
+                    history = []
+                    row = col = 0
+                elif m[1] == '?1049' and cmd == 'l' and normal is not None:
+                    grid, history, row, col = normal
+                    normal = None
+                elif cmd == 'A': row = max(0, row - n)
+                elif cmd == 'B': row = min(height - 1, row + n)
+                elif cmd == 'C': col = min(width - 1, col + n)
+                elif cmd == 'D': col = max(0, col - n)
+                elif cmd == 'G': col = min(width - 1, n - 1)
+                elif cmd in ('H', 'f'):
+                    row = min(height - 1, n - 1)
+                    col = min(width - 1, (nums[1] if len(nums) > 1 else 1) - 1)
+                elif cmd == 'K': erase_line(nums[0])
+                elif cmd == 'J':
+                    if nums[0] == 2:
+                        grid = [[' '] * width for _ in range(height)]
+                    elif nums[0] == 0:
+                        erase_line(0)
+                        for r in range(row + 1, height): grid[r] = [' '] * width
+                elif cmd == 'M':
+                    count = min(n, height - row)
+                    grid[row:] = grid[row + count:] + [[' '] * width for _ in range(count)]
+                i = m.end()
+                continue
+            i += 2
+            continue
+        if ch == '\r': col = 0
+        elif ch == '\n': newline()
+        elif ch == '\b': col = max(0, col - 1)
+        elif ord(ch) >= 32 and not unicodedata.combining(ch):
+            w = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+            if col + w > width:
+                col = 0
+                newline()
+            grid[row][col:col + w] = [ch] + [''] * (w - 1)
+            col += w
+        i += 1
+    lines = [''.join(r).rstrip() for r in grid]
+    return {'lines': lines, 'history': history, 'cursor': (row, col), 'alternate': normal is not None}
 
 
-def main() -> int:
+def run_case(width, height, warp=False):
     pid, fd = pty.fork()
     if pid == 0:
-        # 真窗口尺寸（0x0 下 readline 行刷新字节不完整，回归断言会误判）
-        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
-        env = dict(os.environ)
-        env['XDG_CONFIG_HOME'] = XDG
-        env['OMNI_BASE_URL'] = f'http://127.0.0.1:{PORT}/v1'
-        env['OMNI_API_KEY'] = 'sk-mock'
-        env['OMNI_MODEL'] = 'mock-model'
-        env['OMNI_PERMISSION'] = 'full'
-        env['OMNI_SHOW_THINKING'] = '0'
-        env['NO_COLOR'] = '1'
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
+        env = dict(os.environ, XDG_CONFIG_HOME=XDG,
+                   OMNI_BASE_URL=f'http://127.0.0.1:{PORT}/v1', OMNI_API_KEY='sk-mock',
+                   OMNI_MODEL='mock-model', OMNI_PERMISSION='full', OMNI_SHOW_THINKING='0', NO_COLOR='1',
+                   TERM_PROGRAM='WarpTerminal' if warp else 'test-vt')
         os.chdir(ROOT)
-        os.execvpe('npx', ['npx', 'tsx', 'src/index.ts', 'mini'], env)
+        os.execvpe('node', ['node', '--import', './node_modules/tsx/dist/loader.mjs', 'src/index.ts', 'mini'], env)
 
     out = b''
-    notes = []
+    checks = {}
+    snapshots = {}
+    code = None
 
-    def drain(timeout: float) -> None:
+    def drain(timeout=0.2):
         nonlocal out
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            r, _, _ = select.select([fd], [], [], 0.15)
-            if not r:
-                continue
-            try:
-                chunk = os.read(fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            ready, _, _ = select.select([fd], [], [], min(0.03, max(0, end - time.monotonic())))
+            if not ready: continue
+            try: chunk = os.read(fd, 65536)
+            except OSError: break
+            if not chunk: break
             out += chunk
 
-    def wait_for(marker: bytes, timeout: float) -> bool:
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            drain(0.2)
-            if marker in out:
-                return True
-        return False
+    def snap(name):
+        s = screen(out, width, height)
+        snapshots[name] = s
+        return s
 
-    prompted = wait_for('›'.encode(), 60)
-    drain(2.0)
+    def send(data, name, delay=0.2):
+        os.write(fd, data)
+        drain(delay)
+        return snap(name)
 
-    # 1) 打 /m：联想面板出现（`  /memory-apply` 只有面板会打）
-    os.write(fd, b'/m')
-    panel_shown = wait_for(b'  /memory-apply', 15)
-    drain(1.2)
-    cancel_mark = len(out)
+    def candidates(s):
+        if warp:
+            return [l for l in s['lines'] if l.startswith('›') and ('  Tab' in l or re.search(r'  /[a-z-]', l))]
+        return [l for l in s['lines'] if CANDIDATE.fullmatch(l)]
 
-    # 2) Ctrl+U 取消：面板不擦屏（无 DL）；输入行原地不动
-    os.write(fd, b'\x15')
-    drain(1.5)
-    cancel_slice = out[cancel_mark:]
-    cancel_dls = [m.group() for m in DL.finditer(cancel_slice)]
-    cancel_no_delete = panel_shown and len(cancel_dls) == 0
-    notes.append(f'cancel slice={len(cancel_slice)}B, DLs={cancel_dls[:5]}')
+    def anchor(s):
+        return next((i for i in range(len(s['lines']) - 1, -1, -1) if s['lines'][i].startswith('›')), -1)
 
-    # 3) /pwd + 回车：面板（H=1）与命令回显整块回收（上移 2 删 2）
-    os.write(fd, b'/pwd')
-    # 等面板行（`\r\x1b[2K  /pwd`——与 readline 回显 `› /pwd` 区分，防抢跑）
-    pwd_panel = wait_for(b'\x1b[2K  /pwd', 15)
-    drain(1.2)
-    submit_mark = len(out)
-    os.write(fd, b'\r')
-    drain(1.5)
-    submit_slice = out[submit_mark:]
-    submit_reclaim = pwd_panel and b'\x1b[2A\x1b[2M' in submit_slice
-    notes.append(f'submit slice={len(submit_slice)}B, reclaim={b"\x1b[2A\x1b[2M" in submit_slice}')
+    def no_history(s):
+        return not any(CANDIDATE.fullmatch(l) for l in s['history'])
 
-    # 4) 干净退出
-    drain(0.3)
-    os.write(fd, b'/quit\r')
-    drain(3)
     try:
+        end = time.monotonic() + 30
+        while '›'.encode() not in out and time.monotonic() < end: drain()
+        checks['prompted'] = '›'.encode() in out
+        baseline = snap('before-slash')
+        first = send(b'/', 'slash')
+        checks['panelShown'] = bool(candidates(first)) if warp else '  /exit' in candidates(first)
+        m = send(b'm', 'm')
+        mo = send(b'o', 'mo')
+        model = send(b'del', 'model')
+        checks['filterStable'] = all(anchor(s) == anchor(first) for s in (m, mo, model))
+        checks['filteredOnly'] = (bool(candidates(model)) if warp else candidates(model) == ['  /model']) and no_history(model)
+        esc = send(b'\x1b', 'escape', 0.7)
+        left = send(b'\x1b[D', 'escape-left')
+        right = send(b'\x1b[C', 'escape-right')
+        checks['escapeClears'] = all(not candidates(s) and anchor(s) == anchor(model) for s in (esc, left, right))
+        cleared = send(b'\x7f' * 6, 'clear-backspace')
+        checks['cancelStable'] = not candidates(cleared) and anchor(cleared) == anchor(model)
+        repeated = True
+        for n in range(4):
+            send(b'/m', f'repeat-{n}')
+            s = send(b'\x15', f'repeat-clear-{n}')
+            repeated = repeated and not candidates(s) and no_history(s) and anchor(s) == anchor(cleared)
+        checks['noAccumulation'] = repeated
+        checks['inlineNoGrowth'] = not warp or (anchor(first) == anchor(baseline) == anchor(cleared) and s['history'] == baseline['history'])
+
+        send(b'/', 'tab-prefix')
+        tab = send(b'\t', 'tab')
+        if warp:
+            checks['tabStable'] = tab['alternate'] and not tab['history']
+            tab2 = send(b'\x1b', 'tab-close', 0.7)
+        else:
+            tab2 = send(b'\t', 'tab-again')
+        tab_clear = send(b'\x15', 'tab-clear')
+        if warp:
+            checks['tabStable'] = checks['tabStable'] and not tab2['alternate'] and anchor(tab2) == anchor(tab_clear) == anchor(cleared)
+        else:
+            checks['tabStable'] = bool(candidates(tab)) and anchor(tab2) == anchor(tab) == anchor(tab_clear)
+        checks['tabClears'] = not candidates(tab_clear) and no_history(tab_clear)
+        if warp:
+            send(b'/p', 'command-pick-prefix')
+            send(b'\t', 'command-pick-open')
+            filled = send(b'\r', 'command-pick-confirm')
+            checks['commandPickRefills'] = not filled['alternate'] and filled['lines'][anchor(filled)].startswith('› /plan')
+            send(b'\x15', 'command-pick-clear')
+        else:
+            checks['commandPickRefills'] = True
+        send(b'/mo', 'complete-prefix')
+        completed = send(b'\t', 'completed')
+        spaced = send(b'\t', 'completed-space')
+        checks['completionClears'] = (bool(candidates(completed)) if warp else candidates(completed) == ['  /model']) and '› /model' in spaced['lines'][anchor(spaced)] and not candidates(spaced)
+        send(b'\x15', 'complete-clear')
+
+        # 窄屏时 /memory-apply 正好折行；行内左移不能让面板盖住输入尾行。
+        wrapped = send(b'/memory-apply', 'wrapped')
+        moved = send(b'\x1b[D\x1b[D\x1b[D', 'wrapped-left')
+        checks['wrappedCursor'] = anchor(moved) == anchor(wrapped) and (not moved['alternate'] if warp else len(candidates(moved)) == 1 and candidates(moved)[0].startswith('  /memory-'))
+        backspace = send(b'\x05\x15', 'wrapped-clear')
+        checks['wrappedClear'] = not candidates(backspace)
+        send(b'/m', 'ctrl-l-prefix')
+        clear_screen = send(b'\x0c', 'ctrl-l')
+        fresh = send(b'o', 'ctrl-l-next')
+        checks['clearScreen'] = not candidates(clear_screen) and (bool(candidates(fresh)) if warp else candidates(fresh).count('  /model') == 1)
+        send(b'\x15', 'ctrl-l-clear')
+
+        # 在列表显示时打开历史选择，取消后输入仍可编辑，旧候选未进入历史。
+        send(b'/m', 'history-prefix')
+        send(b'\x12', 'history-open')
+        history_closed = send(b'\x1b', 'history-close', 0.7)
+        checks['historyClears'] = not candidates(history_closed) and no_history(history_closed)
+        send(b'\x15', 'history-clear')
+        # 真正的 /model 模态菜单：长模型名、项目数超过窗口、反复导航和取消。
+        menu_stable = True
+        for n in range(3):
+            draft = send(b'/model', f'model-draft-{n}')
+            opened = send(b'\r', f'model-open-{n}')
+            navigated = send(b'\x1b[B' * 25 + b'\x1b[A', f'model-navigate-{n}')
+            closed = send(b'\x1b', f'model-cancel-{n}', 0.7)
+            menu_stable = menu_stable and opened['alternate'] and navigated['alternate'] and not navigated['history'] and not closed['alternate']
+            menu_stable = menu_stable and anchor(closed) == min(height - 1, anchor(draft) + 1)
+            menu_stable = menu_stable and not any('picker-model-' in l for l in closed['lines'] + closed['history'])
+        checks['modelMenuRestores'] = menu_stable
+        # 确认当前 mock 模型，不修改配置；确认键不能泄漏到主 readline 提交幽灵轮。
+        send(b'/model\r', 'model-confirm-open')
+        mark = len(out)
+        confirmed = send(b'\r', 'model-confirm', 0.5)
+        checks['modelConfirmRestores'] = not confirmed['alternate'] and '已是当前模型'.encode() in out[mark:] and not any('picker-model-' in l for l in confirmed['lines'] + confirmed['history'])
+        send(b'/pwd', 'pwd')
+        mark = len(out)
+        submitted = send(b'\r', 'submitted', 0.5)
+        checks['submitClears'] = not candidates(submitted) and ROOT.encode() in out[mark:]
+        checks['noDeleteLine'] = re.search(rb'\x1b\[\d*M', out[:mark]) is None
+        send(b'/quit\r', 'quit', 1)
+        end = time.monotonic() + 10
+        while time.monotonic() < end:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                code = os.waitstatus_to_exitcode(status)
+                break
+            drain(0.1)
+        checks['quit0'] = code == 0
+    finally:
+        suffix = f'{width}x{height}' + ('-warp' if warp else '')
+        with open(f'{LOG}.{suffix}', 'wb') as f: f.write(out)
+        with open(f'{LOG}.{suffix}.json', 'w') as f: json.dump(snapshots, f, ensure_ascii=False, indent=2)
+        if code is None:
+            try: os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: os.waitpid(pid, 0)
+            except ChildProcessError: pass
         os.close(fd)
-    except OSError:
-        pass
-    code = None
-    t0 = time.time()
-    while time.time() - t0 < 15:
-        done, status = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            if os.WIFEXITED(status):
-                code = os.WEXITSTATUS(status)
-            break
-        time.sleep(0.2)
-    else:
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
-    with open(LOG, 'wb') as f:
-        f.write(out)
-    verdict = {
-        'prompted': bool(prompted),
-        'panelShown': bool(panel_shown),
-        'cancelNoDelete': bool(cancel_no_delete),
-        'submitReclaim': bool(submit_reclaim),
-        'quit0': code == 0,
-        'exitCode': code,
-        'notes': notes,
-    }
-    sys.stdout.write(json.dumps(verdict) + '\n')
-    ok = prompted and panel_shown and cancel_no_delete and submit_reclaim and code == 0
-    return 0 if ok else 1
+    return {'size': f'{width}x{height}', 'terminal': 'warp' if warp else 'vt', 'checks': checks, 'exitCode': code}
+
+
+def main():
+    cases = [run_case(w, h, warp) for warp in (False, True) for w, h in [(100, 30), (24, 12), (14, 12)]]
+    keys = cases[0]['checks'].keys()
+    verdict = {key: all(c['checks'].get(key, False) for c in cases) for key in keys}
+    verdict['cases'] = cases
+    print(json.dumps(verdict))
+    return 0 if all(verdict[key] for key in keys) else 1
 
 
 if __name__ == '__main__':

@@ -903,6 +903,20 @@ export class MiniOutput implements Output {
    * 清掉后 live 下次 update 从光标新位置起画，旧状态行不残留不重影。
    * 调用方传已组装好的 header/lines（含缩进与着色），这里只管落盘顺序。
    */
+  /** 最近一次执行工具的完整输出（供 Ctrl+O 查看，避免 Ctrl+T 全量轨迹刷屏） */
+  private lastToolResult: {
+    name: string;
+    verb: string;
+    detail: string;
+    output: string;
+  } | null = null;
+  /** 多行输入接收器（外部编辑器组稿/粘贴装载） */
+  private multilineHandler?: (lines: string[]) => void;
+
+  setMultilineHandler(fn: (lines: string[]) => void): void {
+    this.multilineHandler = fn;
+  }
+
   dumpLedger(header: string, lines: string[]): void {
     this.live.clear();
     this.print('');
@@ -910,6 +924,19 @@ export class MiniOutput implements Output {
     this.print(header);
     for (const l of lines) this.print(l);
     this.print('');
+  }
+
+  /** Ctrl+O：展开查看最近一次工具的完整输出（避免必须按 Ctrl+T 查全量轨迹） */
+  dumpLastToolOutput(): boolean {
+    if (!this.lastToolResult) {
+      this.dumpLedger(`  ${dim('暂无最近工具输出记录')}`, []);
+      return false;
+    }
+    const { verb, detail, output } = this.lastToolResult;
+    const lines = output.split('\n').map((l) => `    ${dim(l)}`);
+    const header = `  ${dim(`最近工具「${verb} ${detail}」完整输出（${lines.length} 行 · Ctrl+O 对应此处）：`)}`;
+    this.dumpLedger(header, lines);
+    return true;
   }
 
   private beginInputCapture(): void {
@@ -991,9 +1018,18 @@ export class MiniOutput implements Output {
       this.rl.prompt();
       return 'failed';
     }
-    // Ctrl+U 清行再回填（write(null, key) 走 readline 按键模拟，非显示层擦除）；
-    // 多行压单行（行缓冲见换行即提交，直写会误发首行）
+    // Ctrl+U 清行再回填（write(null, key) 走 readline 按键模拟，非显示层擦除）
     this.rl.write(null, { ctrl: true, name: 'u' });
+    const trimmed = res.text.trim();
+    if (!trimmed) {
+      this.rl.prompt();
+      return 'empty';
+    }
+    const lines = res.text.split(/\r?\n/);
+    if (lines.length > 1 && this.multilineHandler) {
+      this.multilineHandler(lines);
+      return 'done';
+    }
     const flat = flattenComposedText(res.text);
     if (flat) this.rl.write(flat);
     this.rl.prompt();
@@ -1284,6 +1320,15 @@ export class MiniOutput implements Output {
     if (!t || (toolSeq != null && toolSeq !== t.id)) return;
 
     const width = termWidth();
+    // 记录最近工具完整输出（供 Ctrl+O 查看，避免 Ctrl+T 全量轨迹刷屏）
+    const recordedOutput = (detail?.diff ? diffPreviewBody(detail, width).body.join('\n') : null)
+      ?? (t.out.length ? t.out.join('\n') : (preview ?? []).join('\n'));
+    this.lastToolResult = {
+      name: t.name,
+      verb: t.userShell ? 'You ran' : t.verb,
+      detail: t.detail,
+      output: recordedOutput || NO_OUTPUT,
+    };
     // bullet 是状态色：成功绿 / 失败红（codex exec_cell/render.rs），失败同时换 ✗ 起头
     const bullet = ok ? green(bold('•')) : red(bold('•'));
     const head = `${bullet} ${bold(t.userShell ? 'You ran' : t.verb)} ${truncateToWidth(t.detail, width)}`;
@@ -1346,7 +1391,7 @@ export class MiniOutput implements Output {
   }
 
   /** 回合结束：dim 的 `Worked for Xs · 16:41` 分隔行（codex separators.rs） */
-  onTurnEnd(): void {
+  onTurnEnd(reason?: string): void {
     const skipCompletionTip = this.workingTipShown;
     this.workingTipShown = false;
     this.workingTipMemo = null;
@@ -1354,6 +1399,12 @@ export class MiniOutput implements Output {
     const start = this.turnStart;
     this.turnStart = null;
     let printedTail = false;
+    if (reason === 'aborted') {
+      this.ensureGap();
+      this.print(`${PREFIX}${yellow('•')} ${dim('Interrupted by user')}`);
+      this.gapOpen = false;
+      printedTail = true;
+    }
     if (start != null) {
       this.ensureGap();
       this.print(renderTurnSeparator(Date.now() - start, new Date(), { ...this.turnStats }, termWidth()));

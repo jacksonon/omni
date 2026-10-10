@@ -247,8 +247,8 @@ src/
                         #   --ignore-user-config（codex 同款：只跳用户层，项目/显式 --config/profile/环境变量/CLI 照常；另三枚 exec flag 评估后不定植：thread-source 系遥测内务/skip-git-repo-check 无此要求/ignore-rules 无 .rules 对应物）；
                         #   空行 Esc 取回上一条（codex edit-previous：lastUserText+单行压平；轮内/续行/模态不触发；pty e2e）；
                         #   未知斜杠报错不送模型 + 模糊推荐（联想面板同算法子序列：/ac→/compact；did-you-mean 前 3）；
-                        #   Tab 补全对齐 popup（首词只补公共前缀 commonPrefix＋无进展交面板 listAll 完整清单落 scrollback——绝不交 readline 原生哑巴列表，防整块 DL 光标错位；/plugin·/diff 第二词走原生列表）；
-                        #   联想面板收尾（用户实测「取消后输入框上移」根治）：取消/清空/不再匹配只放弃跟踪不擦屏（面板留 scrollback 当参考，bash 同款，输入框原地不动）；Enter 提交整块回收（面板 H+1 行，连命令回显一起——readline 回车已把光标移到回显下一行）；回收由主循环 confirmSubmit 用**真实提交行**触发（键监听看不到——回车先清行缓冲；防 Ctrl+R/Ctrl+G 异步改行时误删消息回显）；PTY 回归 slash-cancel-pty（取消切片零 DL + 提交切片 \x1b[2A\x1b[2M）；
+                        #   Tab 补全对齐 popup（首词补公共前缀，无进展由 listAll 展开临时清单；常规终端为输入下方多列，Warp 为可导航选择器，确认只回填不提交；promises readline 的异步补全完成后重估候选）；/plugin·/diff 第二词走原生列表；
+                        #   斜杠联想面板（2026-10 用户截图回归）：常规终端候选在输入行下方原地重画，Warp（TERM_PROGRAM）用同行提示避免改变输出 Block 高度；Esc/退格清空/Ctrl+U/不再匹配/提交清除，Ctrl+R/G/T/O 等先清面板；getCursorPos 处理折行/行内移动；/model 等共用 picker 临时进入 alternate screen、限宽限高与窗口滚动、确认/取消恢复主屏，不再 CUU/DL 回收；PTY 重建主屏/临时屏/scrollback，覆盖两种终端路径及普通/短窄/折行窗口、40 个长模型名；
                         #   复数别名 /skills→/skill、/plugins→/plugin + /hooks 生效视图（HookRunner.list；改配置重启生效）；
                         #   /mcp verbose 逐服务器状态（codex 对等：连接/失败/跳过+认证+工具名；带参报用法）+ /rollout 打印会话路径；
                         #   分隔行对齐 separators.rs（耗时不补零 2m 5s；Local tools/Inference 后缀走 lap 累积，零调用省略；超宽按段折行）；

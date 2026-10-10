@@ -54,11 +54,19 @@ function installExternalEditor(getOut: () => unknown): () => void {
  */
 function installTranscriptViewer(
   runOpts: RunOptions,
-  dump?: (header: string, lines: string[]) => void
+  dump?: (header: string, lines: string[]) => void,
+  getOut?: () => unknown
 ): () => void {
   const stdin = process.stdin as unknown as KeypressStream;
   if (!stdin.isTTY) return () => {};
   const onKey: KeypressHandler = (_str, key) => {
+    if (key?.ctrl && key.name === 'o') {
+      const out = getOut?.();
+      if (out instanceof MiniOutput) {
+        out.dumpLastToolOutput();
+      }
+      return;
+    }
     if (!key?.ctrl || key.name !== 't') return;
     const events = runOpts.events?.events ?? [];
     // 与上一单元格留空行（弹在当前输入行下方）；MiniOutput 走 dumpLedger
@@ -69,7 +77,7 @@ function installTranscriptViewer(
       else process.stdout.write(`\n\n${header}\n`);
       return;
     }
-    const header = `  ${dim(`完整轨迹（${events.length} 条事件 · ${TRANSCRIPT_HINT} 对应此处）：`)}`;
+    const header = `  ${dim(`完整轨迹（${events.length} 条事件 · ${TRANSCRIPT_HINT} 对应此处 · Ctrl+O 仅看最近工具输出）：`)}`;
     const lines = buildTraceTextLines(events, { full: true }).map((line) => `  ${dim(line)}`);
     if (dump) dump(header, lines);
     else {
@@ -92,7 +100,11 @@ export async function runMiniInteractive(
   runOpts: RunOptions,
   out: Output
 ): Promise<void> {
-  const uninstall = installTranscriptViewer(runOpts, out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined);
+  const uninstall = installTranscriptViewer(
+    runOpts,
+    out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined,
+    () => out
+  );
   const uninstallEditor = installExternalEditor(() => out);
   // 交互模式：渲染层据此擦掉 readline 回显的输入行（避免输入显示两遍）
   if (out instanceof MiniOutput) out.markInteractive();

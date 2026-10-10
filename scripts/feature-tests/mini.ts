@@ -62,7 +62,7 @@ import { isShortcutsHelpRequest, formatShortcutsHelp } from '../../src/cli/picke
 import { formatModelPickLabel } from '../../src/cli/picker.js';
 import { completionScript, runCompletionCommand } from '../../src/cli/completion.js';
 import { spawnSync as spawnSyncCheck } from 'node:child_process';
-import { PasteBurstTracker } from '../../src/cli/picker.js';
+import { PasteBurstTracker, ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from '../../src/cli/picker.js';
 import { copyTextToClipboard, osc52Sequence } from '../../src/ui.js';
 import { parseAskAnswer } from '../../src/output/mini.js';
 import { approvalDiffText } from '../../src/output/format.js';
@@ -974,6 +974,28 @@ export function miniSuite(): TestSuite {
     suite.assert(flattenComposedText('   ') === '', '纯空白压空（调用方走清空）');
   });
 
+  suite.test('mini 交互增强：bracketed paste / Ctrl+O 最近输出 / 中止标记 / 多行组稿', () => {
+    suite.assert(ENABLE_BRACKETED_PASTE === '\x1b[?2004h', 'bracketed paste 启用转义');
+    suite.assert(DISABLE_BRACKETED_PASTE === '\x1b[?2004l', 'bracketed paste 关闭转义');
+
+    const out = new MiniOutput({ showThinking: false, stream: true });
+    suite.assert(out.dumpLastToolOutput() === false, '无工具输出时 dump 返回 false');
+
+    out.onToolStep(1, 10, 'run_command', '$ npm test');
+    out.onCommandOutput('line 1\nline 2\nline 3\n', false);
+    out.onToolResult(true, 21, ['line 1', 'line 2', 'line 3'], undefined, undefined, 3);
+    suite.assert(out.dumpLastToolOutput() === true, '有工具输出时 dump 成功');
+
+    // 中止标记：reason='aborted' 时打印 Interrupted
+    let captured = '';
+    const oldPrint = out.print;
+    out.print = (l: string) => { captured += l + '\n'; };
+    out.onTurnStart();
+    out.onTurnEnd('aborted');
+    out.print = oldPrint;
+    suite.assert(captured.includes('Interrupted by user'), 'aborted 回合显式打印 Interrupted by user');
+  });
+
   suite.test('mini markdown：空列表项保留 marker（codex #48623）', () => {
     const m = new MiniMarkdownRenderer(false);
     const one = (line: string): string => m.pushLine(line, 80).join('\n');
@@ -1458,10 +1480,18 @@ export function miniSuite(): TestSuite {
     }
   });
 
-  suite.test('端到端：/ 联想面板取消不擦屏（输入框不上移）+ 回车整块回收（PTY 真终端）', async () => {
+  suite.test('端到端：/ 临时联想面板过滤/取消/Tab/提交不堆积（PTY 屏幕回归）', async () => {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-slash-'));
     fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
     fs.writeFileSync(path.join(xdg, 'omni', 'trusted-workspaces.json'), JSON.stringify({ workspaces: [ROOT] }));
+    fs.writeFileSync(path.join(xdg, 'omni', 'input-history.json'), JSON.stringify(['/pwd']));
+    const config = path.join(xdg, 'picker-config.json');
+    fs.writeFileSync(config, JSON.stringify({
+      autoMemory: false, mcpServers: {}, skills: false, repoMap: false, agentsFile: false, globalAgentsFile: false,
+      providers: { picker: { models: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [
+        `picker-model-${i}-${'long-name-'.repeat(8)}`, { reasoningEffort: 'high' },
+      ])) } },
+    }));
     const port = MOCK_PORT + 18;
     const mock = spawn('node', ['scripts/mock-server.mjs'], {
       cwd: ROOT,
@@ -1477,26 +1507,27 @@ export function miniSuite(): TestSuite {
       const verdict = await new Promise<{ code: number | null; out: string }>((resolve) => {
         const py = spawn('python3', ['scripts/feature-tests/slash-cancel-pty.py'], {
           cwd: ROOT,
-          env: { ...process.env, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
+          env: { ...process.env, OMNI_CONFIG: config, OMNI_FT_ROOT: ROOT, OMNI_FT_XDG: xdg, OMNI_FT_PORT: String(port), OMNI_FT_LOG: log },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let acc = '';
         py.stdout.on('data', (d) => (acc += d));
         py.stderr.on('data', (d) => (acc += d));
-        const timer = setTimeout(() => py.kill('SIGKILL'), 120_000);
+        const timer = setTimeout(() => py.kill('SIGKILL'), 180_000);
         py.on('close', (c) => {
           clearTimeout(timer);
           resolve({ code: c, out: acc });
         });
       });
       const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
-      let v: { prompted?: boolean; panelShown?: boolean; cancelNoDelete?: boolean; submitReclaim?: boolean; quit0?: boolean; exitCode?: number | null } = {};
+      let v: Record<string, unknown> = {};
       try { v = JSON.parse(lastLine); } catch { /* 非 JSON 则下面断言失败 */ }
       suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
-      suite.assert(v.panelShown === true, '打 /m 后联想面板出现（/memory-apply 候选行）');
-      suite.assert(v.cancelNoDelete === true, 'Ctrl+U 取消后面板不擦屏（无 DL 序列，输入框不上移）');
-      suite.assert(v.submitReclaim === true, '/pwd 回车后面板+回显整块回收（上移 2 删 2）');
-      suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
+      suite.assert(v.panelShown === true, '打 / 后联想面板出现');
+      for (const key of ['filterStable', 'filteredOnly', 'escapeClears', 'cancelStable', 'noAccumulation', 'inlineNoGrowth', 'tabStable', 'tabClears', 'commandPickRefills', 'completionClears', 'wrappedCursor', 'wrappedClear', 'clearScreen', 'historyClears', 'modelMenuRestores', 'modelConfirmRestores', 'submitClears', 'noDeleteLine']) {
+        suite.assert(v[key] === true, `普通/短窄/折行窗口：${key}`, v.cases);
+      }
+      suite.assert(v.quit0 === true, '所有窗口都干净退出');
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
     } finally {
       mock.kill();

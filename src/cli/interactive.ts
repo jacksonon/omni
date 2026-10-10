@@ -75,7 +75,7 @@ import type { RunOptions } from '../agent/types.js';
 import type { Output } from '../output/types.js';
 import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
-import { applyMentionInsert, commonPrefix, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker } from './picker.js';
+import { applyMentionInsert, commonPrefix, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker, ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from './picker.js';
 import type { SlashSuggestHandle } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
 
@@ -104,8 +104,8 @@ export async function runInteractive(
   //
   // 命令词（第一词）的候选 UI 由联想面板负责：completer 只做「行内补公共前缀」，
   // 绝不把多候选交给 readline 原生哑巴列表——原生列表会把输入行重画到列表下方，
-  // 面板的整块 DL 光标纪律随之错位（取消时拽着输入行上跳、留残行；历史 bug 源）。
-  // 无补全进展时改由面板把完整清单落进 scrollback（listAll；面板本身只列前 8 条）。
+  // 面板和原生列表会争抢输入光标，导致取消上跳、候选残留。
+  // 无补全进展时由临时面板展开清单（listAll；通常只列前 8 条）。
   // 第二词（模型名/目录/子命令）面板不参与，原生列表照旧。
   let suggestRef: SlashSuggestHandle | null = null;
   const completer = (line: string): [string[], string] => {
@@ -223,6 +223,19 @@ export async function runInteractive(
     }
   }
   opts.onRl?.(rl);
+  if (out instanceof MiniOutput) {
+    out.setMultilineHandler((lines: string[]) => {
+      if (lines.length === 0) return;
+      const lead = lines.slice(0, -1);
+      const tail = lines[lines.length - 1]!;
+      contBuf.push(...lead.map((l) => (hasLineContinuation(l) ? l : `${l}\\`)));
+      (rl as unknown as { line: string }).line = tail;
+      (rl as unknown as { cursor: number }).cursor = tail.length;
+      (rl as unknown as { setPrompt(s: string): void }).setPrompt(contPrompt());
+      console.log(dim(`  已载入 ${lines.length} 行组稿（回车发送 · \\ 续行 · Ctrl+C 放弃）`));
+      rl.prompt(true);
+    });
+  }
   // 空闲提示符下的打 / 联想面板（纯显示被动监听；轮内 inTurn 一律不渲染不擦除）
   let inTurn = false;
   // `!` shell 模式提示符态（codex composer bash mode）：函数作用域——TTY 监听器与主循环共用
@@ -260,14 +273,46 @@ export async function runInteractive(
       turnAbort?.abort();
     },
   };
+  let inBracketedPaste = false;
+  const pasteBuf: string[] = [];
   if (input.isTTY) {
+    process.stdout.write(ENABLE_BRACKETED_PASTE);
     const flagged = input as unknown as { __omniKeypressOn?: boolean };
     if (!flagged.__omniKeypressOn) {
       classicReadline.emitKeypressEvents(input);
       flagged.__omniKeypressOn = true;
     }
-    input.on('keypress', (_ch: unknown, key?: { name?: string; ctrl?: boolean }) => {
+    input.on('keypress', (_ch: unknown, key?: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string }) => {
       try {
+        if (key?.name === 'paste-start') {
+          inBracketedPaste = true;
+          pasteBuf.length = 0;
+          return;
+        }
+        if (key?.name === 'paste-end') {
+          inBracketedPaste = false;
+          if (pasteBuf.length > 0) {
+            const cur = rl.line ?? '';
+            contBuf.push(...pasteBuf.map((l) => (hasLineContinuation(l) ? l : `${l}\\`)));
+            (rl as unknown as { setPrompt(s: string): void }).setPrompt(contPrompt());
+            console.log(dim(`  （已接收粘贴 ${pasteBuf.length + (cur ? 1 : 0)} 行，回车发送 · Ctrl+C 放弃）`));
+            rl.prompt(true);
+            pasteBuf.length = 0;
+          }
+          return;
+        }
+        // Shift+Enter / Alt+Enter 行内续行（现代终端多行编辑）
+        const isAltEnter = (key?.meta && (key?.name === 'return' || key?.name === 'enter')) || key?.sequence === '\x1b\r' || key?.sequence === '\x1b\n';
+        const isShiftEnter = (key?.shift && (key?.name === 'return' || key?.name === 'enter')) || key?.sequence === '\x1b[13;2u' || key?.sequence === '\x1b[27;2;13~';
+        if ((isAltEnter || isShiftEnter) && !inTurn) {
+          const cur = rl.line ?? '';
+          contBuf.push(hasLineContinuation(cur) ? cur : `${cur}\\`);
+          (rl as unknown as { line: string }).line = '';
+          (rl as unknown as { cursor: number }).cursor = 0;
+          (rl as unknown as { setPrompt(s: string): void }).setPrompt(contPrompt());
+          rl.prompt();
+          return;
+        }
         if (!inTurn || !turnAbort || turnAbort.signal.aborted) return;
         // Esc 中断（codex status 行 `esc to interrupt`）；Ctrl+C 同样中断而非退出
         if (key?.name === 'escape' || (key?.ctrl && key?.name === 'c')) turnAbort.abort();
@@ -276,16 +321,33 @@ export async function runInteractive(
       }
     });
     // Ctrl+C 在 readline 行：轮内 abort（中断任务）；空闲清掉当前输入行
-    // （codex clear_for_ctrl_c：清 draft 不退出；退出走 /exit 或 Ctrl+D）。
+    // （codex clear_for_ctrl_c：清 draft 不退出；退出走 /exit 或 Ctrl+D；空行双击提供退出快捷）。
     // Shell 模式（`!` 开头）提示符同步回正常（下方的 bang 监听器平时维护，SIGINT 后补一次）。
+    let lastEmptySigintTime = 0;
     (rl as unknown as { on(e: string, h: () => void): void }).on('SIGINT', () => {
       try {
-        if (inTurn) turnAbort?.abort();
-        else {
+        if (inTurn) {
+          turnAbort?.abort();
+        } else {
+          const cur = rl.line ?? '';
+          if (cur === '' && contBuf.length === 0) {
+            const now = Date.now();
+            if (now - lastEmptySigintTime < 2000) {
+              if (input.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
+              void finishSession().then(() => process.exit(0));
+              return;
+            }
+            lastEmptySigintTime = now;
+            process.stdout.write(`\n${dim('（再次按 Ctrl+C 或按 Ctrl+D 退出）')}\n`);
+            rl.prompt();
+            return;
+          }
+          lastEmptySigintTime = 0;
           (rl as unknown as { line: string }).line = '';
           (rl as unknown as { cursor: number }).cursor = 0;
           bangPrompt = false;
           contBuf = [];
+          pasteBuf.length = 0;
           applyPrompt();
           redrawBangPrompt();
         }
@@ -343,7 +405,8 @@ export async function runInteractive(
               try {
                 const idx = await pickFromList(input, items, {
                   selected: 0,
-                  hint: '↑↓ 选择 · Enter 回填 · Esc 取消',
+                  hint: '↑↓ 导航 · 输入过滤 · Enter 回填 · Esc 取消',
+                  filterable: true,
                 });
                 if (idx >= 0) {
                   const v = items[idx]!.value;
@@ -363,11 +426,27 @@ export async function runInteractive(
     });
   }
   const suggestPrint = (out as unknown as { print?: (s: string) => void }).print?.bind(out) ?? ((s: string) => console.log(s));
+  const suggestPosition = (): { rows: number; cols: number; endRows: number; endCols: number } => {
+    const pos = rl.getCursorPos();
+    const editable = rl as unknown as { cursor: number };
+    const cursor = editable.cursor;
+    try {
+      editable.cursor = rl.line.length;
+      const end = rl.getCursorPos();
+      return { ...pos, endRows: end.rows, endCols: end.cols };
+    } finally {
+      editable.cursor = cursor;
+    }
+  };
   const suggest = installSlashSuggest({
     stdin: input,
     getLine: () => rl.line,
     isActive: () => !inTurn,
     print: (s) => suggestPrint(s),
+    getPosition: suggestPosition,
+    replaceLine: (line) => {
+      setRlText(line, line.length);
+    },
     redraw: () => {
       try {
         rl.prompt(true);
@@ -376,7 +455,7 @@ export async function runInteractive(
       }
     },
   });
-  suggestRef = suggest; // completer（Tab）无进展时把完整清单交面板 listAll 落盘
+  suggestRef = suggest; // completer（Tab）无进展时在临时面板展开清单
   // readline 行缓冲读写（Tab 提及插入用；promises 接口的 line/cursor 是可写属性）
   const rlCursor = (): number => (rl as unknown as { cursor?: number }).cursor ?? rl.line.length;
   const setRlText = (text: string, cursor: number): void => {
@@ -385,6 +464,7 @@ export async function runInteractive(
   };
   const redrawInput = (): void => {
     try {
+      (rl as unknown as { _refreshLine?: () => void })._refreshLine?.();
       rl.prompt(true);
     } catch {
       /* 接口已关闭，忽略 */
@@ -561,6 +641,7 @@ export async function runInteractive(
   const finishSession = async (): Promise<void> => {
     if (finished) return;
     finished = true;
+    if (input.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
     // 会话结束：把本轮新表达的偏好自动追加进全局记忆（autoMemory 开关；静默失败）
     if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
       // 退出预算：死端点/慢网关不能拖住退出（失败会话实测两段提取串行拖几十秒）；
@@ -590,6 +671,10 @@ export async function runInteractive(
     }
   };
   for await (const line of rl) {
+    if (inBracketedPaste) {
+      pasteBuf.push(line);
+      continue;
+    }
     // `/exit` 永远是退出：续行积累中也不被吞成消息正文（先清累积再走正常流程）
     if (line.trim() === '/exit') contBuf = [];
     // 问答消费行吞没（审批/提问的答案字节会同时进主 rl 行缓冲；命中渲染层记录即跳过，
@@ -613,9 +698,7 @@ export async function runInteractive(
     // bang（`!`）保留反斜杠交 sh 原生续行；其余去标记拼接（见 joinContinued）
     const full = joinContinued(rawParts, isBangShellCommand(rawParts.join('\n')));
     const cmd = full.trim();
-    // 联想面板提交收尾（拿到真实提交行）：命令词 + 面板在场 → 面板+回显整块回收；
-    // 消息只放弃跟踪。必须在这里（任何输出之前）调用——keypress 监听看不到提交内容
-    //（readline 回车先清行缓冲），凭「面板在场」猜会误伤 Ctrl+R/Ctrl+G 异步改行的场景。
+    // 回车后光标已在输入下一行；输出之前清掉下方的临时联想面板，不向上擦除回显。
     suggestRef?.confirmSubmit(cmd);
     if (input.isTTY && cmd !== '') {
       // 提交即落盘（crash/强杀不丢；空行不收；readline 本轮 history 由原生维护）
@@ -1934,6 +2017,9 @@ export async function runInteractive(
       const res = persistGlobalBoolToConfig('vimMode', next, 'Vim 键位开关');
       console.log(dim(res.message));
       console.log(dim(`Vim 键位：${next ? '已开启（TUI 输入框 Esc 进 normal / i 回 insert）' : '已关闭'}`));
+      if (out instanceof MiniOutput && next) {
+        console.log(dim('注：Vim Normal/Insert 键位在全屏 TUI 模式（omni）生效；mini 模式遵循标准终端/Emacs 键位（支持 Esc 取回上一条、Ctrl+G 外部编辑器组稿）'));
+      }
       safePrompt();
       continue;
     }
@@ -2071,6 +2157,30 @@ export async function runInteractive(
       if (!arg) {
         if (records.length === 0) {
           console.log(dim('（本次会话还没有子代理记录）— delegate / /orchestrate 之后这里会列出可钻取/追问的子代理'));
+        } else if (input.isTTY) {
+          const items = records.map((r) => ({
+            label: formatSubagentLine(r),
+            value: r.id,
+          }));
+          const idx = await pickFromList(input, items, {
+            selected: 0,
+            hint: '↑↓ 选择 · Enter 查看明细 · Esc 仅列出',
+          });
+          if (idx >= 0) {
+            const hit = records[idx]!;
+            console.log(dim(`子代理 ${hit.id} · ${hit.name}${hit.model ? ` · ${hit.model}` : ''}${hit.effort ? ` · ${hit.effort}` : ''} · ${subagentStatusLabel(hit.status)} · ${hit.steps}/${hit.maxSteps} 步`));
+            if (hit.task) console.log(dim(`任务：${clip(hit.task, 300)}`));
+            if (hit.dropped > 0) console.log(dim(`… 更早 ${hit.dropped} 条明细已省略`));
+            for (const it of hit.items) {
+              const mark = it.kind === 'think' ? '💭' : it.kind === 'tool' ? (it.ok === false ? '✗' : '→') : '≡';
+              console.log(dim(`${mark} ${it.name ? `${it.name}: ` : ''}${clip(it.text, 400)}`));
+            }
+            if (hit.result) console.log(dim(`结果：${clip(hit.result, 1500)}`));
+          } else {
+            const running = records.filter((r) => r.status === 'running').length;
+            console.log(dim(`子代理任务中心（${records.length} 个${running ? ` · ${running} 运行中` : ''}；/tasks show <id> 查看 · /tasks resume <id> <追问> · /tasks stop <id>）：`));
+            for (const r of records) console.log(dim(formatSubagentLine(r)));
+          }
         } else {
           const running = records.filter((r) => r.status === 'running').length;
           console.log(dim(`子代理任务中心（${records.length} 个${running ? ` · ${running} 运行中` : ''}；/tasks show <id> 查看 · /tasks resume <id> <追问> · /tasks stop <id>）：`));
@@ -2347,9 +2457,11 @@ export async function runInteractive(
       const committed = await autoGitCommit(cmd).catch(() => null);
       if (committed) console.log(dim(`✓ ${committed}`));
     }
-    out.onTurnEnd();
+    const turnReason = runOpts.abortSignal?.aborted ? 'aborted' : 'completed';
+    out.onTurnEnd(turnReason);
     safePrompt();
   }
+  if (input.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
   await finishSession(); // EOF（Ctrl+D）同样收尾（与 /exit 同一流程，幂等）
   suggest?.dispose();
   mentionPanel?.dispose();

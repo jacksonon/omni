@@ -3,7 +3,9 @@
  * 调用方拼好 items（label 为已着色成品行，不含序号），picker 只负责导航渲染。
  */
 import readline from 'node:readline';
+import { stripVTControlCharacters } from 'node:util';
 import { bold, cyan, dim, magenta, red } from '../ui.js';
+import { truncateToWidth } from '../output/format.js';
 import { detectMention, listMentionCandidates } from '../tui/mention.js';
 
 export interface PickerItem {
@@ -17,7 +19,13 @@ export interface PickerOptions {
   selected: number;
   /** 底部提示行（缺省默认文案） */
   hint?: string;
+  /** 是否支持打字即时过滤（如 Ctrl+R 历史搜索） */
+  filterable?: boolean;
 }
+
+/** 终端 Bracketed Paste 开启/关闭转义序列 */
+export const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
+export const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 
 const DEFAULT_HINT = '↑↓ 选择 · 数字直选 · Enter 确认 · Esc 取消';
 
@@ -290,6 +298,7 @@ export function stripBangPrefix(text: string): string {
  * TTY 下渲染箭头选择器并等待按键，返回选中下标；Esc / Ctrl+C 取消返回 -1。
  * 非 TTY 直接返回 -1（调用方走原纯文本列表路径）。
  *
+ * 菜单临时进入 alternate screen，按窗口宽高截断/分页；确认和取消都恢复主屏与光标。
  * 按键协议：保存全部 keypress 监听 → 先挂自己的 → 逐个摘掉保存的
  * （计数恒≥1；只动 keypress，解码器的 data 不动；绝不用 removeAllListeners）
  * → 收尾摘掉自己的、按原序装回。raw mode 全程不动。
@@ -308,84 +317,130 @@ export async function pickFromList(
   }
 
   const out = process.stdout;
-  const hint = opts.hint ?? DEFAULT_HINT;
-  let sel = Math.min(Math.max(opts.selected, 0), items.length - 1);
-  const block = items.length + 1; // 菜单行 + 底部提示行
+  const isFilter = opts.filterable === true;
+  let query = '';
 
-  /** 收尾清场（未经确认/取消都删掉菜单块，不在对话流里留残块——此前 done 直接 resolve，
-   * 菜单永久留在 scrollback，每次 Tab 多选都多十几行杂物）。
-   * 调用时光标在块下方：上移到块首 → DL 整块删除 → 回列首；
-   * 调用方随后重画输入行/打印结果，无缝接回。 */
-  const cleanup = (): void => {
-    out.write(`\x1b[${block}A`);
-    out.write(`\x1b[${block}M`);
-    out.write('\r');
+  const getFiltered = (): { item: PickerItem; origIdx: number }[] => {
+    if (!isFilter || !query) return items.map((item, origIdx) => ({ item, origIdx }));
+    const q = query.toLowerCase();
+    return items
+      .map((item, origIdx) => ({ item, origIdx }))
+      .filter(({ item }) => item.value.toLowerCase().includes(q) || item.label.toLowerCase().includes(q));
   };
 
-  const renderRow = (i: number): string => {
+  let curItems = getFiltered();
+  let sel = Math.min(Math.max(opts.selected, 0), Math.max(0, curItems.length - 1));
+  const hint = opts.hint ?? (isFilter ? '↑↓ 导航 · 输入过滤 · Enter 回填 · Esc 取消' : DEFAULT_HINT);
+
+  const renderRow = (i: number, width: number): string => {
+    const it = curItems[i]!.item;
     const prefix = i === sel ? bold(cyan('› ')) : '  ';
-    const body = i === sel ? bold(cyan(items[i].label)) : items[i].label;
+    // 每条只占一个物理行：调用方着色不能计入宽度，换行也不能突破窗口。
+    const label = truncateToWidth(stripVTControlCharacters(it.label).replace(/[\r\n\t]/g, ' '), Math.max(1, width - 2));
+    const body = i === sel ? bold(cyan(label)) : label;
     return `${prefix}${body}`;
   };
+
   const paint = (): void => {
-    for (let i = 0; i < items.length; i++) out.write(`\x1b[2K\r${renderRow(i)}\n`);
-    out.write(`\x1b[2K\r${dim(hint)}\n`);
-  };
-  const repaint = (): void => {
-    out.write(`\x1b[${block}A`);
-    paint();
+    const width = Math.max(3, out.columns || 80);
+    const height = Math.max(2, out.rows || 24);
+    const rows: string[] = [];
+    const showFilter = isFilter && height >= 3;
+    if (showFilter) rows.push(dim(truncateToWidth(`  filter: ${query}▌`, width)));
+    const maxVisible = Math.max(1, Math.min(12, height - rows.length - 1));
+    const start = Math.max(0, Math.min(sel - Math.floor(maxVisible / 2), curItems.length - maxVisible));
+    const slice = curItems.slice(start, start + maxVisible);
+    if (slice.length === 0) rows.push(dim(truncateToWidth('  (无匹配项)', width)));
+    else for (let i = 0; i < slice.length; i++) rows.push(renderRow(start + i, width));
+    const position = curItems.length > maxVisible ? `${sel + 1}/${curItems.length} · ` : '';
+    rows.push(dim(truncateToWidth(position + hint, width)));
+    // 临时屏幕按绝对行定位，不发换行，不用项目数猜光标回退距离。
+    // 主屏的聊天内容和输入光标由终端保存；菜单永远不会滚入聊天 scrollback。
+    out.write('\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join(''));
   };
 
-  // 首屏打印全部行（选中行 › 前缀 + cyan bold；未选中行两空格前缀）+ 底部 dim 提示行
+  out.write('\x1b[?1049h\x1b[?25l');
   paint();
 
   return new Promise<number>((resolve) => {
     // 先挂自己的，再逐个摘掉保存的（own 占位，计数恒≥1）
     const saved = [...stdin.listeners('keypress')] as ((...args: unknown[]) => void)[];
+    let settled = false;
     const done = (n: number): void => {
-      // 确认/取消都先删掉菜单块（scrollback 不留残块；调用方随后 redraw 重画输入行）
+      if (settled) return;
+      settled = true;
       try {
-        cleanup();
+        out.write('\x1b[?1049l\x1b[?25h');
       } catch {
         /* 清场失败不影响结果 */
       }
       stdin.removeListener('keypress', onKey);
+      out.removeListener('resize', paint);
+      stdin.removeListener('end', onEnd);
       for (const fn of saved) stdin.on('keypress', fn as (...args: unknown[]) => void);
       resolve(n);
     };
-    const onKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
+    const onKey = (ch: unknown, key?: { name?: string; ctrl?: boolean; meta?: boolean }): void => {
       const name = key?.name ?? '';
-      if (key?.ctrl && name === 'c') {
+      if (key?.ctrl && (name === 'c' || name === 'd')) {
         done(-1);
         return;
       }
+      const count = isFilter ? curItems.length : items.length;
       if (name === 'up') {
-        sel = (sel - 1 + items.length) % items.length;
-        repaint();
+        if (count > 0) {
+          sel = (sel - 1 + count) % count;
+          paint();
+        }
         return;
       }
       if (name === 'down') {
-        sel = (sel + 1) % items.length;
-        repaint();
+        if (count > 0) {
+          sel = (sel + 1) % count;
+          paint();
+        }
         return;
       }
       // 回车确认见 isPickerConfirmKey（两键都接受）
       if (isPickerConfirmKey(name)) {
-        done(sel);
+        if (isFilter) done(curItems[sel]?.origIdx ?? -1);
+        else done(sel);
         return;
       }
       if (name === 'escape') {
         done(-1);
         return;
       }
-      // 数字 1-9 立即确认对应下标（超界忽略）
-      if (/^[1-9]$/.test(name)) {
-        const idx = Number(name) - 1;
-        if (idx < items.length) done(idx);
-        return;
+      if (isFilter) {
+        if (name === 'backspace') {
+          if (query.length > 0) {
+            query = query.slice(0, -1);
+            curItems = getFiltered();
+            sel = 0;
+            paint();
+          }
+          return;
+        }
+        if (typeof ch === 'string' && ch.length === 1 && !key?.ctrl && !key?.meta && ch.charCodeAt(0) >= 32) {
+          query += ch;
+          curItems = getFiltered();
+          sel = 0;
+          paint();
+          return;
+        }
+      } else {
+        // 数字 1-9 立即确认对应下标（超界忽略）
+        if (/^[1-9]$/.test(name)) {
+          const idx = Number(name) - 1;
+          if (idx < items.length) done(idx);
+          return;
+        }
       }
     };
+    const onEnd = (): void => done(-1);
     stdin.on('keypress', onKey as (...args: unknown[]) => void);
+    stdin.once('end', onEnd);
+    out.on('resize', paint);
     for (const fn of saved) stdin.removeListener('keypress', fn as (...args: unknown[]) => void);
   });
 }
@@ -425,8 +480,12 @@ export interface SlashSuggestOptions {
   getLine: () => string;
   isActive: () => boolean;
   print: (s: string) => void;
-  /** 重画输入行（面板打在输入行上方，结束必须把输入行画回面板下方，光标才有归处） */
+  /** 重画 readline 输入行 */
   redraw: () => void;
+  /** 当前光标与完整输入末尾相对输入首行的位置；用于折行/行内移动后归位 */
+  getPosition: () => { rows: number; cols: number; endRows: number; endCols: number };
+  /** 完整命令菜单确认后回填，不提交 */
+  replaceLine: (line: string) => void;
 }
 
 /** 联想面板句柄基类（两面板共用） */
@@ -436,36 +495,22 @@ export interface SuggestHandleBase {
 
 /** installSlashSuggest 返回句柄 */
 export interface SlashSuggestHandle extends SuggestHandleBase {
-  /** 把当前匹配的完整命令清单落进 scrollback（Tab 触发；见 interactive 的 completer） */
+  /** 展开当前匹配的命令清单（Tab 触发；高度不超过当前窗口） */
   listAll(): void;
-  /**
-   * 主循环提交行回调（拿到**真实提交内容**，回车后键缓冲已清空、监听器看不到）：
-   * 命令词 + 面板在场（H>0）→ 面板 H 行 + 命令回显 1 行整块回收（上移 H+1 → DL H+1）；
-   * 其余（消息/无面板）只放弃跟踪。必须由主循环在处理之前调用——不能凭「面板在场」
-   * 在 keypress 监听器里猜（Ctrl+R 历史选择 / Ctrl+G 编辑器会异步改行：猜错会把
-   * 消息回显连同会话最后一行一起删掉）。
-   */
+  /** 回车已把光标移到输入下一行；在主循环输出之前清除临时面板 */
   confirmSubmit(line: string): void;
+  /** 取消/模态选择前清除面板，保持输入行与光标原位 */
+  close(): void;
 }
 
 /**
- * 打 / 实时联想面板（纯显示，绝不拦截按键）。
- * 常驻被动 keypress 监听（永不摘除，只观察不消费）；每次按键后读 getLine()
- * 做状态机：空闲提示符下行匹配 `^\/[a-z-]*$` 时列出前 8 个候选（超出加一行提示），
- * 行变化才重绘（旧块整块删除，不留空白残留）。
- *
- * 收尾策略（用户反馈「取消后输入框上移」的根治，与 bash 补全列表同款）：
- * - Enter 提交：面板 H 行 + 命令回显 1 行整块回收（readline 回车后已把光标移到
- *   回显下一行，故上移 H+1 → DL H+1），命令输出直接落在回显原位，不留块；
- * - 其余收尾（行清空/不再匹配/取消）：只放弃跟踪、绝不擦屏——面板留在 scrollback
- *   当普通输出行（历史参考），输入框原地不动。此前删块会把输入行拽回面板起点，
- *   即「取消后输入框上移」。
- * 轮内/Ctrl+C/Ctrl+T/Ctrl+L 只放弃不碰屏。光标纪律（闭环）：面板打在输入行上方，结束
- * 必须把输入行画回面板下方——否则 readline 后续重绘落错行（输入隐身、Tab 插入错位）。
- * 非 TTY 返回 null。行格式为两空格前缀 + 命令名（dim 包裹整行，不做序号/高亮）。
+ * 打 / 实时联想面板：常规终端占输入行下方的临时区域，Warp 用同行提示 + Tab 临时菜单。
+ * 每次 readline 刷新会清掉光标下方，因此每次按键后重画（候选相同也要重画）。
+ * 绘制后返回原输入光标；过滤/取消不删终端行，不把输入框拽回列表起点。
+ * Enter 后直接清除下方区域，无须凭过期的面板高度向上擦除。
  */
 export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHandle | null {
-  const { stdin, getLine, isActive, print, redraw } = opts;
+  const { stdin, getLine, isActive, print, redraw, getPosition, replaceLine } = opts;
   if (!stdin.isTTY) return null;
   const flagged = stdin as NodeJS.ReadStream & { __omniKeypressOn?: boolean };
   if (!flagged.__omniKeypressOn) {
@@ -473,148 +518,200 @@ export function installSlashSuggest(opts: SlashSuggestOptions): SlashSuggestHand
     flagged.__omniKeypressOn = true;
   }
   const out = process.stdout;
-  let H = 0; // 当前面板行数
-  let lastRows: string[] = []; // 上次渲染内容（diff 用）
-  let listedFor: string | null = null; // listAll 刚落盘的那一行（同一按键的紧接重估不再多打面板）
-  // 删除面板块（整块 DL，不留空行——此前逐行 EL 清空，旧块内容虽被擦掉但行仍在，
-  // 每次按键在下方重打新块，旧块变成 H 个空白残留；打几个字符就攒几十个空行）。
-  // 调用时光标在输入行：上移到块首 → DL 整块删除 → 回列首；n 可覆盖（Enter 连回显一起回收）。
-  const deleteBlock = (n = H): void => {
-    if (n <= 0) return;
-    out.write(`\x1b[${n}A`);
-    out.write(`\x1b[${n}M`);
-    out.write('\r');
-  };
-  // 忘记旧块（H=0，不碰屏幕——保留在 scrollback 当普通输出行；轮内/ledger 输出
-  // 已把面板顶出视口时 H 已过期，任何擦除都会清掉别人的行，也只能忘记）
+  // Warp 的普通输出按 Block 高度排版，增删下方多行会改变输入在窗口中的位置。
+  // 同行提示不改变 Block 高度；完整清单交给独立的临时屏幕选择器。
+  const inline = /warp/i.test(process.env.TERM_PROGRAM ?? '');
+  let visible = false;
+  let modal = false;
+  let disposed = false;
+  let expandedFor: string | null = null;
+  let dismissedFor: string | null = null;
   const forget = (): void => {
-    H = 0;
-    lastRows = [];
-    listedFor = null;
+    visible = false;
+    expandedFor = null;
+    dismissedFor = null;
   };
-  // 终端尺寸变化：面板/输入的折行全部失效（旧 H 已过期），只忘记不擦屏——
-  // 下一次渲染按新布局另起，防用过期 H 擦错行
-  const onResize = (): void => {
+  const close = (): void => {
+    const wasVisible = visible;
     forget();
+    if (wasVisible) redraw();
   };
-  process.stdout.on('resize', onResize);
-  // 重画面板：删旧块 → 清输入行（免得留残影行）→ 打新块 → 重画输入行。
-  // 结束时光标必在新鲜输入行上，这是 readline 后续重绘落点正确的唯一前提。
-  const render = (rows: string[]): void => {
-    if (H > 0) {
-      deleteBlock();
-      forget();
+  const render = (): void => {
+    if (modal || disposed) return;
+    const line = getLine() ?? '';
+    if (!isActive() || !/^\/[a-z-]*$/.test(line)) {
+      close();
+      return;
     }
-    out.write('\r\x1b[2K');
-    for (const r of rows) print(dim(`  ${r}`));
-    H = rows.length;
-    lastRows = rows;
-    if (H > 0) redraw();
+    if (line === dismissedFor) return;
+    const filtered = fuzzySlashMatch(line.slice(1));
+    if (filtered.length === 0) {
+      close();
+      return;
+    }
+    const pos = getPosition();
+    const width = Math.max(1, out.columns || 80);
+    if (inline) {
+      const available = width - pos.endCols;
+      if (available < 4) {
+        close();
+        return;
+      }
+      const tailRows = pos.endRows - pos.rows;
+      let paint = '\r';
+      if (tailRows > 0) paint += `\x1b[${tailRows}B`;
+      if (pos.endCols > 0) paint += `\x1b[${pos.endCols}C`;
+      const hint = filtered.length === 1 ? `  ${filtered[0]}` : `  Tab 菜单 · ${filtered.join(' · ')}`;
+      paint += `\x1b[0K${dim(truncateToWidth(hint, available))}`;
+      if (tailRows > 0) paint += `\x1b[${tailRows}A`;
+      paint += '\r';
+      if (pos.cols > 0) paint += `\x1b[${pos.cols}C`;
+      out.write(paint);
+      visible = true;
+      return;
+    }
+    // 留出输入本身和绘制后的空行，确保归位 CUU 不越过窗口顶端。
+    const maxRows = Math.max(0, (out.rows || 24) - pos.endRows - 2);
+    if (maxRows === 0) {
+      close();
+      return;
+    }
+    let rows: string[];
+    if (expandedFor === line) {
+      const colW = Math.max(...filtered.map((r) => r.length)) + 3;
+      const perRow = Math.max(1, Math.floor(Math.max(1, width - 2) / colW));
+      rows = [];
+      for (let i = 0; i < filtered.length; i += perRow) {
+        rows.push(filtered.slice(i, i + perRow).map((r) => r.padEnd(colW)).join('').trimEnd());
+      }
+    } else {
+      rows = filtered.slice(0, Math.min(8, maxRows));
+      if (filtered.length > rows.length && rows.length < maxRows) {
+        rows.push(`…还有 ${filtered.length - rows.length} 个（继续打字过滤，Tab 展开）`);
+      }
+    }
+    if (rows.length > maxRows) {
+      rows = rows.slice(0, maxRows);
+      rows[maxRows - 1] = '…继续打字过滤';
+    }
+    // 先到完整输入的末行，再换行进入面板；print 的最后一个换行后返回原光标。
+    // 不用 DL（Delete Line）；列表变短只清除下面的旧内容，输入行位置不变。
+    const tailRows = pos.endRows - pos.rows;
+    out.write('\r');
+    if (tailRows > 0) out.write(`\x1b[${tailRows}B`);
+    out.write('\n\r\x1b[0J');
+    for (const r of rows) print(dim(truncateToWidth(`  ${r}`, width)));
+    out.write(`\x1b[${tailRows + rows.length + 1}A\r`);
+    if (pos.cols > 0) out.write(`\x1b[${pos.cols}C`);
+    visible = true;
+  };
+  // 先清面板再让其它快捷键打印输出/打开模态 UI，避免旧候选被账本顶入历史。
+  const beforeKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
+    try {
+      if (inline && isPickerConfirmKey(key?.name ?? '')) close(); // 同行提示不随命令回显进入历史
+      if (key?.ctrl && ['c', 'd', 'g', 'l', 'o', 'r', 't'].includes(key.name ?? '')) close();
+    } catch {
+      /* 快捷键清场永不打断输入 */
+    }
   };
   const onKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
     try {
-      // Ctrl+C / Ctrl+T / Ctrl+L：放弃旧块（不碰屏），不干扰 readline 默认行为；
-      // Ctrl+T 会直接打印轨迹账本把面板顶出视口、Ctrl+L 清屏（readline 原生），
-      // 此时 H 已过期，擦除会清掉别人的行
-      if (key?.ctrl && (key?.name === 'c' || key?.name === 't' || key?.name === 'l')) {
-        forget();
-        return;
-      }
-      // 轮内一律不渲染不擦除（只放弃跟踪）
+      if (key?.ctrl && ['c', 'd', 'g', 'l', 'o', 'r', 't'].includes(key.name ?? '')) return;
+      // 回车收尾由主循环触发；键监听可能已看不到提交前的行缓冲。
+      if (isPickerConfirmKey(key?.name ?? '')) return;
+      if (modal) return;
       if (!isActive()) {
         forget();
         return;
       }
-      const line = getLine() ?? '';
-      const isReturn = key?.name === 'return';
-      // Enter：不在这里判定/擦除（行缓冲已被 readline 清空，键监听看不到提交内容；
-      // 真实判定与整块回收由主循环 confirmSubmit 用提交行做，见句柄注释）
-      if (isReturn) return;
-      const matched = /^\/[a-z-]*$/.test(line);
-      if (matched) {
-        // 完整清单刚落盘（Tab）：同一行（同一按键）的紧接重估不再多打一份前 8 条面板
-        if (listedFor !== null && listedFor === line) {
-          listedFor = null;
-          return;
-        }
-        const frag = line.slice(1);
-        const filtered = fuzzySlashMatch(frag);
-        const rows = filtered.slice(0, 8);
-        if (filtered.length > 8) rows.push(`…还有 ${filtered.length - 8} 个（继续打字过滤，Tab 直接列出全部）`);
-        const same = rows.length === lastRows.length && rows.every((r, i) => r === lastRows[i]);
-        if (!same) render(rows);
+      if (key?.name === 'tab') {
+        // promises readline 的补全在 await 后才改行；同一 keypress 中仍是旧文本。
+        // 等它插入完成再重估，防 /mo→/model 后还显示 /mo 的四个候选。
+        queueMicrotask(() => {
+          try {
+            if (disposed || expandedFor === getLine()) return;
+            expandedFor = null;
+            dismissedFor = null;
+            render();
+          } catch {
+            /* 异步补全收尾永不打断输入 */
+          }
+        });
         return;
       }
-      // 其他不匹配（清空/取消/改成普通消息）：保留面板（bash 同款），只放弃跟踪——
-      // 删块会把输入行拽回面板起点（用户反馈的「取消后输入框上移」）
-      forget();
+      if (key?.name === 'escape') {
+        close();
+        dismissedFor = getLine();
+        return;
+      }
+      if (dismissedFor !== getLine()) dismissedFor = null;
+      if (expandedFor !== getLine()) expandedFor = null;
+      render();
     } catch {
       /* 联想面板永不打断输入 */
     }
   };
-  // 完整候选清单落进 scrollback（Tab 触发，面板只列前 8 条）：回收面板 → 清单从
-  // 原面板位置开始打印（4-6 个一行按宽分包）→ 输入行重画到清单下方。
-  // 清单之后不再跟踪（下次打 / 在输入行位置另起新块，输入不搬家）。
+  const onResize = (): void => {
+    close(); // readline 按新宽度重画输入并清掉旧区域，不依赖旧高度
+  };
   const listAll = (): void => {
     try {
-      if (!isActive()) return;
-      const line = getLine() ?? '';
-      if (!/^\/[a-z-]*$/.test(line)) return;
-      const rows = fuzzySlashMatch(line.slice(1));
-      if (rows.length === 0) return;
-      if (H > 0) {
-        deleteBlock();
-        H = 0;
-      } else {
-        out.write('\r\x1b[2K');
-      }
-      lastRows = [];
-      listedFor = line; // 同一行（同一按键）的紧接重估不再多打一份前 8 条面板
-      const width = Math.max(20, (process.stdout.columns ?? 80) - 2);
-      const maxLen = rows.reduce((m, r) => Math.max(m, r.length), 0);
-      const colW = Math.min(24, Math.max(8, maxLen + 3));
-      const perRow = Math.max(1, Math.floor(width / colW));
-      for (let i = 0; i < rows.length; i += perRow) {
-        const lineTxt = rows
-          .slice(i, i + perRow)
-          .map((r) => r.padEnd(colW))
-          .join('')
-          .trimEnd();
-        print(dim(`  ${lineTxt}`));
-      }
-      redraw(); // 输入行画到清单下方（readline 以此为新的输入行位置）
-    } catch {
-      /* 联想面板永不打断输入 */
-    }
-  };
-  // 主循环提交行回调（拿到真实提交内容）：命令词 + 面板在场 → 面板 + 回显整块回收
-  // （readline 回车已把光标移到回显下一行，上移 H+1 落在块首；命令输出随即将落在
-  // 回显原位）；消息/无面板只放弃跟踪（回显由 onUserMessage 统一擦写，别抢）。
-  const confirmSubmit = (line: string): void => {
-    try {
-      if (!/^\/[a-z-]*$/.test(line.trimStart())) {
-        forget();
+      if (inline) {
+        if (modal || disposed || !isActive()) return;
+        const line = getLine();
+        if (!/^\/[a-z-]*$/.test(line)) return;
+        const commands = fuzzySlashMatch(line.slice(1));
+        if (commands.length === 0) return;
+        close();
+        modal = true;
+        void (async () => {
+          try {
+            const idx = await pickFromList(stdin, commands.map((c) => ({ label: c, value: c })), {
+              selected: 0,
+              hint: '↑↓ 选择 · Enter 回填 · Esc 取消',
+            });
+            if (disposed) return;
+            if (idx >= 0) replaceLine(commands[idx]!);
+            else dismissedFor = getLine();
+          } finally {
+            modal = false;
+            if (!disposed) {
+              redraw();
+              render();
+            }
+          }
+        })().catch(() => { /* 选择失败保留输入 */ });
         return;
       }
-      if (H > 0) deleteBlock(H + 1);
-      forget();
+      expandedFor = getLine();
+      dismissedFor = null;
+      render();
     } catch {
-      /* 联想面板永不打断主循环 */
+      /* 联想面板永不打断补全 */
     }
   };
+  const confirmSubmit = (_line: string): void => {
+    if (visible && !inline) out.write('\r\x1b[0J');
+    forget();
+  };
+  stdin.prependListener('keypress', beforeKey as (...args: unknown[]) => void);
   stdin.on('keypress', onKey as (...args: unknown[]) => void);
+  out.on('resize', onResize);
   return {
     dispose: () => {
+      disposed = true;
+      stdin.removeListener('keypress', beforeKey as (...args: unknown[]) => void);
       stdin.removeListener('keypress', onKey as (...args: unknown[]) => void);
-      process.stdout.removeListener('resize', onResize);
+      out.removeListener('resize', onResize);
     },
     listAll,
     confirmSubmit,
+    close,
   };
 }
 
 /** installMentionSuggest 配置（与 SlashSuggestOptions 同形 + 取 cwd/光标） */
-export interface MentionSuggestOptions extends SlashSuggestOptions {
+export interface MentionSuggestOptions extends Omit<SlashSuggestOptions, 'getPosition' | 'replaceLine'> {
   /** 当前工作目录（候选检索根，随 /cd 变化，调用时实时读） */
   getCwd: () => string;
   /** 输入框光标位置（提及检测按光标取查询，TUI 同款精度） */
@@ -675,9 +772,7 @@ export function installMentionSuggest(opts: MentionSuggestOptions): MentionSugge
   // 同 slash 面板：调用时光标在输入行，上移→DL→回列首，随后重画输入行。
   const deleteBlock = (): void => {
     if (H <= 0) return;
-    out.write(`\x1b[${H}A`);
-    out.write(`\x1b[${H}M`);
-    out.write('\r');
+    out.write(`\x1b[${H}A\x1b[${H}M\x1b[0J\r`);
   };
   // 忘记旧块（H=0，不碰屏幕——面板留在 scrollback；轮内/ledger 输出已把面板
   // 顶出视口时 H 已过期，擦除会清掉别人的行，也只能忘记）
