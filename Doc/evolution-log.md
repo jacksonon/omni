@@ -2,6 +2,10 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
 
+- **2026-10-10（mini 进行时呼吸位，用户截图：Working/输出和输入框挤在一起）**：根因两处——① live 块画在光标处，`› ` 输入行经 pre 擦除/post 紧贴重画钉在块正下方，设计上就是 0 空行；② 首帧 pre 会吃掉用户回显后的分隔空行（块必须自带上间距；工具 Running 块早有前置空行，Working/流式没有）。修：新增 `padLiveLines`（首尾各垫一空行，纯函数单测锁定）+ `MiniOutput.liveUpdate` 统一入口，三处 live 更新（Working tick/工具 Running/流式 partial）全部走垫行；commit 落盘与 gap 纪律保持原样（只影响进行时 transient，不动最终版式）。验证：typecheck ✓ · 纯函数 9 用例 ✓ · stop-PTY（真终端 Working live）9/9 ✓。
+
+- **2026-10-10（mini 像素级对齐第一批，用户要求克隆 codex CLI）**：对照 `codex-rs/tui` 源码（`history_cell/session.rs`、`bottom_pane/footer.rs`、`key_hint.rs`、`ui_consts.rs`）修三处可见差异：① `banner()` 帮助块按上游首事件 7 行逐字对齐（`  /cmd` + dim ` - desc`，补齐缺失的 `/permission` 行；问候语移出会话头——上游头里无问候）；② `markInteractive()` 双行静态提示改单行 `renderMiniFooter`（key 加粗 + 描述 dim，`·` 分隔，2 空格缩进，超宽按段折叠，至少保留首段；`/stop` 段保留在前——开场 hint 回归要求；`?` 覆盖更多）；③ 修正文件头注释里过期的 `╭─╮` 有框描述（实现早已是无框 compact 头）；④ `stop-pty.py` 的 verdict 匹配前先剥 ANSI（key/描述分开上色会切开行内字节，裸匹配不到）。全屏 alternate 切屏/composer 盒/审批覆盖层等骨架差异保留（mini 定位滚屏轻量模式，全屏重写另议）。验证：typecheck ✓ · mini 88/89（stop-PTY 9/9 ✓；剩余 14 列窄窗口 4 子项失败属同目录另一在途 picker 改动路径，与本批静态文本无关——开场 33 行零候选污染已实证）。
+
 - **2026-10-01（第二百六十六次）**：**mini 分隔行加 token 速率（用户要求）**——`onTurnEnd` 的 `12:10 · Local tools · Inference` 分隔行追加 `N tok/s` 段（`TurnStats` 增 `completion`/`genMs`：`onUsage` 累加 completion、`onLlmLap` 折入 genMs）。速率 = completion / 纯生成耗时 genMs（与 TUI 同口径）；genMs <100ms（mock/瞬时流假象）回退分隔行同源分段墙钟 llmMs；无 token 不展示；上限钳 999 防四位噪声。验证：typecheck ✓ · 功能回归 225/225（mini 回合形态用例 22 断言 + PTY 实机确认 `999 tok/s`）✓。
 
 - **2026-10-01（第二百六十五次）**：**mini 输入区间距（用户截图：分隔行/统计行紧贴 `› ` 太挤）**——`onTurnEnd` 打完 `Worked for/时间 · Local tools · Inference` 分隔行（或 Tip 行）后补一个空行再交回输入行；`gapOpen=true` 让下一轮 `onUserMessage` 不再重复补行（保持恰好一行间距，且顺带消掉首轮提示行后的双空行）。PTY 实机重建屏幕确认：分隔行与 `› ` 之间出现一空行。验证：typecheck ✓ · 功能回归 225/225（含 mini PTY e2e 88/88）✓。

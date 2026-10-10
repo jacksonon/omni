@@ -102,16 +102,19 @@ def main() -> int:
             pass
     with open(LOG, 'wb') as f:
         f.write(out)
+    # footer key/描述分开上色（codex 单行 hint 对等）会把行内字节切开： verdict 匹配前先剥 ANSI
+    import re as _re
+    clean = _re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]', b'', out)
     verdict = {
         'prompted': bool(prompted),
-        'swallowed': out.count('当前没有正在执行的任务'.encode()) == 1,
-        'aborted': 'mock 端到端验证通过'.encode() not in out,
-        'alive': code == 0 and ROOT.encode() in out,
+        'swallowed': clean.count('当前没有正在执行的任务'.encode()) == 1,
+        'aborted': 'mock 端到端验证通过'.encode() not in clean,
+        'alive': code == 0 and ROOT.encode() in clean,
         'exitCode': code,
-        'idleHint': '当前没有正在执行的任务'.encode() in out,
-        'helpStop': 'Esc 或 /stop'.encode() in out,
-        'introStop': '/stop 停止'.encode() in out,
-        'ledgerDumped': '完整轨迹'.encode() in out,
+        'idleHint': '当前没有正在执行的任务'.encode() in clean,
+        'helpStop': 'Esc 或 /stop'.encode() in clean,
+        'introStop': '/stop 停止'.encode() in clean,
+        'ledgerDumped': '完整轨迹'.encode() in clean,
     }
     sys.stdout.write(json.dumps(verdict) + '\n')
     ok = prompted and verdict['swallowed'] and verdict['aborted'] and verdict['alive'] and verdict['idleHint'] and verdict['helpStop'] and verdict['introStop'] and verdict['ledgerDumped']

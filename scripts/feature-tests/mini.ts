@@ -34,6 +34,8 @@ import {
   fmtLapDuration,
   foldRows,
   renderMiniBanner,
+  renderMiniFooter,
+  padLiveLines,
   renderTurnSeparator,
   renderWorkingLine,
   toolDetail,
@@ -250,6 +252,12 @@ export function miniSuite(): TestSuite {
     suite.assert(one.length === 1 && one[0] === 'W', '未出 tip 单行');
     const two = workingLines('W', '用 /model 切换模型。');
     suite.assert(two.length === 2 && two[0] === 'W' && two[1]!.includes('Tip: 用 /model 切换模型。'), '出 tip 附第二行同文案');
+  });
+
+  suite.test('live 块首尾垫空行（进行时和 `› ` 输入行留呼吸位）', () => {
+    const padded = padLiveLines(['W']);
+    suite.assert(padded.length === 3 && padded[0] === '' && padded[1] === 'W' && padded[2] === '', '首尾各一空行');
+    suite.assert(padLiveLines([]).length === 2, '空内容也垫两行（行数数学稳定）');
   });
 
   suite.test('`!` shell：判定/剥前缀 + `• You ran` 标题（codex bash mode）', () => {
@@ -705,6 +713,14 @@ export function miniSuite(): TestSuite {
     });
     const plain = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     suite.assert(plain.includes('\\ 续行'), 'hint 显示 `\\ 续行`（单反斜杠，非双空格）');
+    // 像素级（codex footer 单行）：提示为单行 hint + 一空行，key 加粗 + 描述 dim
+    const lines = plain.split('\n');
+    const hintIdx = lines.findIndex((l) => l.includes('发送'));
+    suite.assert(hintIdx >= 0 && lines[hintIdx + 1] === '', '单行 hint 后只跟一空行');
+    suite.assert(!plain.includes('⏎'), '不再用 `⏎`（codex key label 小写 enter）');
+    suite.assert(renderMiniFooter(200).includes('ctrl+t'), '宽屏保留全部 7 段');
+    const narrow = renderMiniFooter(24).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    suite.assert(visualWidth(narrow) <= 24 && narrow.includes('enter'), '窄屏按段折叠且至少保留首段');
   });
 
   suite.test('自动压缩可见反馈：compactedSince 取新增移除数', () => {

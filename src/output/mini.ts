@@ -3,7 +3,8 @@
  *
  * 版面规则逐条对齐 codex-rs/tui 的源码（history_cell/*.rs、exec_cell/render.rs、
  * status_indicator_widget.rs、bottom_pane/footer.rs），不是"看着截图猜"：
- * - 会话信息框：内容自适应宽度（上限 56）+ `╭─╮` 细边框（history_cell/session.rs）；
+ * - 会话头：无框 compact（history_cell/session.rs SessionHeader：空行 / 2 空格标题 /
+ *   5 空格目录 / 仅 YOLO 时权限行；首事件 7 行帮助块直连，无额外空行；问候语与 Tip 不在头里）；
  * - 正文/思考：`• ` 开头 + 续行 2 空格缩进（history_cell/messages.rs AgentMessageCell /
  *   ReasoningSummaryCell：思考为 dim + italic 纯文本；正文走 MiniMarkdownRenderer ——
  *   复用 tui/markdown.ts 同一套解析（加粗/行内代码/标题/引用/列表/任务/围栏隐藏 +
@@ -14,6 +15,8 @@
  *   `+N lines (ctrl+t to view transcript)`（tool_output.rs，与快照逐字一致）；
  * - 运行中状态行：`• Working (12s • esc to interrupt)` 原地计时（status_indicator_widget.rs）；
  * - 回合分隔：`Worked for 12s · 16:41` dim 行，时长仅在 >60s 时出现（history_cell/separators.rs）；
+ * - 底部提示：单行（bottom_pane/footer.rs 单行 hint 对等：key 加粗 + 描述 dim，`·` 分隔，
+ *   2 空格缩进，超宽按段折叠；`?` 快捷键覆盖层见 picker 快捷键帮助）；
  * - 全程普通滚动行，不用备用屏；非 TTY（管道）自动退化为"只出最终单元格"。
  */
 import { homedir } from 'node:os';
@@ -264,6 +267,11 @@ export function renderWorkingTip(tip: string): string {
   return `${PREFIX}${dim(`Tip: ${tip}`)}`;
 }
 
+/** live 块首尾垫空行（纯函数：和 `› ` 输入行留呼吸位，首帧补偿被吃掉的分隔行） */
+export function padLiveLines(lines: string[]): string[] {
+  return ['', ...lines, ''];
+}
+
 /** working live 块内容组装（状态行；出过 tip 则下方附一条，LiveBlock 按行数伸缩） */
 export function workingLines(line: string, tip: string | null): string[] {
   return tip ? [line, renderWorkingTip(tip)] : [line];
@@ -430,6 +438,33 @@ export function renderTurnSeparator(elapsedMs: number, date = new Date(), stats?
   }
   if (cur) lines.push(cur);
   return lines.map((l) => dim(`${PREFIX}${l}`)).join('\n');
+}
+
+/** 底部提示行分段（codex bottom_pane/footer.rs 左侧 hint 对等：key 加粗 + 描述 dim；`?` 覆盖更多） */
+const MINI_FOOTER_SEGS: ReadonlyArray<readonly [string, string]> = [
+  ['enter', '发送'],
+  ['/stop', '停止'],
+  ['shift+enter/\\', '续行'],
+  ['/', '命令'],
+  ['@', '文件'],
+  ['!', 'shell'],
+  ['?', '帮助'],
+  ['ctrl+t', '轨迹'],
+];
+
+/**
+ * 底部提示单行（纯函数；codex single_line_footer_layout 简化版：按宽折叠，
+ * 放不下时从尾部逐段丢弃，至少保留首段）。
+ */
+export function renderMiniFooter(width: number): string {
+  const seps = dim(' · ');
+  const render = (n: number): string =>
+    `${PREFIX}${MINI_FOOTER_SEGS.slice(0, n).map(([k, d]) => `${bold(k)}${dim(` ${d}`)}`).join(seps)}`;
+  const plainWidth = (n: number): number =>
+    visualWidth(`  ${MINI_FOOTER_SEGS.slice(0, n).map(([k, d]) => `${k} ${d}`).join(' · ')}`);
+  let n = MINI_FOOTER_SEGS.length;
+  while (n > 1 && plainWidth(n) > width) n--;
+  return render(n);
 }
 
 /**
@@ -715,7 +750,8 @@ class StreamingCell {
     const body = this.renderPartialText
       ? this.renderPartialText(this.buf, room)
       : this.style(tailToWidth(this.buf, room));
-    this.live.update([`${this.prefix()}${body}${dim(CURSOR)}`]);
+    // 首尾垫空行（padLiveLines：和 `› ` 输入行留呼吸位）
+    this.live.update(padLiveLines([`${this.prefix()}${body}${dim(CURSOR)}`]));
   }
 
   private prefix(): string {
@@ -972,9 +1008,8 @@ export class MiniOutput implements Output {
   markInteractive(): void {
     this.interactive = true;
     if (this.opts.stream) {
-      // 双行（上游 footer hint rows 对等）：单行超 80 列会被终端原生折行（续行顶格难看），按功能拆两行
-      this.print(`${PREFIX}${dim('⏎ 发送 · \\ 续行 · /stop 停止 · Ctrl+C 中断 · /exit 退出')}`);
-      this.print(`${PREFIX}${dim('Ctrl+T 轨迹 · Ctrl+G 编辑器 · 空行 Esc 取回 · ? 帮助')}`);
+      // 单行（codex bottom_pane/footer.rs 单行 hint 对等，超宽按段折叠；更多见 `?` 快捷键帮助）
+      this.print(renderMiniFooter(cols()));
       this.print('');
     }
   }
@@ -1045,24 +1080,25 @@ export class MiniOutput implements Output {
     } as ThinkingDisplay;
   }
 
-  /** 会话头 + 上手帮助 + Tip 行（codex compact 头 + new_session_info 首事件帮助块；问候语每次启动取一条） */
+  /** 会话头 + 上手帮助 + Tip 行（codex new_session_info 首事件 7 行块；问候语不在头里；
+   * Tip 是 scrollback 保留的 tooltip 行，fullscreen 下 codex 会省略它） */
   banner(cfg: OmniConfig): void {
     const info: MiniBannerInfo = {
       directory: process.cwd(),
       permission: cfg.permission ?? 'safe',
       sandbox: cfg.sandbox,
     };
-    for (const line of renderMiniBanner(info, cols(), pickMiniGreeting())) this.print(line);
-    this.print('');
+    for (const line of renderMiniBanner(info, cols(), null)) this.print(line);
     this.print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
     this.print('');
     const helps: Array<[string, string]> = [
-      ['/init', 'create an AGENTS.md file with instructions'],
+      ['/init', 'create an AGENTS.md file with instructions for Codex'],
       ['/status', 'show current session configuration'],
+      ['/permission', 'choose what Omni is allowed to do'],
       ['/model', 'choose what model and reasoning effort to use'],
       ['/review', 'review any changes and find issues'],
     ];
-    for (const [cmd, desc] of helps) this.print(`${PREFIX}${cmd} ${dim(`- ${desc}`)}`);
+    for (const [cmd, desc] of helps) this.print(`${PREFIX}${cmd}${dim(` - ${desc}`)}`);
     this.print('');
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
     this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
@@ -1089,6 +1125,16 @@ export class MiniOutput implements Output {
     this.startWorking();
   }
 
+  /**
+   * live 区更新统一入口：首尾各垫一空行。live 块画在光标处，`› ` 输入行经
+   * pre 擦除/post 紧贴重画钉在块正下方，不垫则进行时 Working/流式/Running
+   * 与输入行挤在一起；首帧 pre 会吃掉当前分隔空行，块必须自带上间距。
+   * （只影响进行时 transient 展示；commit 落盘数组与 gap 纪律保持原样。）
+   */
+  private liveUpdate(lines: string[]): void {
+    this.live.update(padLiveLines(lines));
+  }
+
   private startWorking(hint = 'esc to interrupt'): void {
     if (!this.live.active || this.working) return;
     // turn 级计时（onTurnStart 置位；多 LLM round 共用同一 working 语义，30s 阈值按整轮算）
@@ -1098,7 +1144,7 @@ export class MiniOutput implements Output {
       const secs = Math.floor((Date.now() - started) / 1000);
       const line = renderWorkingLine(secs, ACTIVITY_FRAMES[i++ % ACTIVITY_FRAMES.length]!, hint);
       if (shouldShowWorkingTip(secs, this.workingTipShown)) this.workingTipShown = true;
-      this.live.update(workingLines(line, this.workingTipShown ? this.workingTipText() : null));
+      this.liveUpdate(workingLines(line, this.workingTipShown ? this.workingTipText() : null));
     };
     tick();
     this.working = { timer: setInterval(tick, 100) };
@@ -1214,11 +1260,11 @@ export class MiniOutput implements Output {
     const head = t.running
       ? `${dim(ACTIVITY_FRAMES[Math.floor(Date.now() / 100) % ACTIVITY_FRAMES.length]!)} ${bold('Running')} ${truncateToWidth(t.detail, width)}`
       : `${green(bold('•'))} ${bold(title)} ${truncateToWidth(t.detail, width)}`;
-    const lines = ['', head];
+    const lines = [head];
     for (const [i, l] of t.out.slice(-PREVIEW_LINES).entries()) {
       lines.push(`${i === 0 ? `${PREFIX}${dim('└ ')}` : '    '}${dim(truncateToWidth(oneLine(l), width))}`);
     }
-    this.live.update(lines);
+    this.liveUpdate(lines);
   }
 
   onToolResult(
