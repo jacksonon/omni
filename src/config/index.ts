@@ -33,6 +33,8 @@ export interface OmniConfig {
   userAgent?: string;
   /** 是否在终端展示思考过程（默认 true；关闭后仍会落盘 .omni/last-thinking.md） */
   showThinking: boolean;
+  /** 是否在界面展示成本估算（Web 状态行/回合 footer；默认 true；关闭只隐藏显示，不停累计） */
+  showCost: boolean;
   /**
    * 安全护栏权限分级：full（直通，任意命令含危险命令）/ safe（危险命令询问）/ ask（全部询问）/ read（只读）。
    * 默认 safe——危险命令不直接拦截，改为询问用户，用户允许后执行。
@@ -89,6 +91,8 @@ export interface OmniConfig {
       apiKey?: string;
       userAgent?: string;
       headers?: Record<string, string>;
+      /** 组级 token 单价（组内模型缺省继承，模型级按字段覆盖） */
+      price?: ModelPrice;
       /** 组内模型：允许模型级 baseURL/apiKey 覆盖（继承/覆盖开关，D8）——缺省继承 provider */
       models?: Record<string, Omit<ModelEntryConfig, 'userAgent' | 'headers'>>;
       /**
@@ -303,6 +307,19 @@ export interface OmniConfig {
 }
 
 /**
+ * 模型 token 单价（单位 $/1M tokens；headless 成本估算用）。
+ * 只收正有限数字，非法值加载期丢弃；缺省字段回退组级/环境变量/内置默认。
+ */
+export interface ModelPrice {
+  /** 输入单价（$/1M prompt tokens） */
+  input?: number;
+  /** 输出单价（$/1M completion tokens） */
+  output?: number;
+  /** 缓存命中单价（$/1M cached tokens；缺省回退输入单价） */
+  cacheRead?: number;
+}
+
+/**
  * 单个模型的配置条目（顶层 models 表 / providers.*.models 展开前的通用形态）。
  * 元数据字段见 ModelEndpoint 同名注释。
  */
@@ -313,6 +330,8 @@ export interface ModelEntryConfig {
   apiKey?: string;
   userAgent?: string;
   headers?: Record<string, string>;
+  /** token 单价（模型级覆盖组级；缺省回退环境变量/内置默认） */
+  price?: ModelPrice;
   reasoningEffortOptions?: string[];
   reasoningEffort?: string;
   /** 当前选中的命名 variant（/variants <id> 切换后持久化到这里） */
@@ -384,6 +403,7 @@ const DEFAULTS = {
   model: 'gpt-4o-mini',
   maxSteps: 50,
   showThinking: true,
+  showCost: true,
   permission: 'safe' as PermissionTier,
   auditLog: true,
   agentsFile: true,
@@ -490,6 +510,18 @@ function parseCapabilitiesField(v: unknown): { capabilities?: { tools?: boolean;
   return Object.keys(cap).length > 0 ? { capabilities: cap } : {};
 }
 
+// 单价解析（per-model 计价）：只收正有限数字，非法（<=0/NaN/非数字）丢弃；
+// 全非法 = 无 price 字段（调用方回退组级/环境变量/内置默认）
+function parsePriceField(v: unknown): { price?: ModelPrice } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const e = v as Record<string, unknown>;
+  const price: ModelPrice = {};
+  for (const k of ['input', 'output', 'cacheRead'] as const) {
+    if (typeof e[k] === 'number' && Number.isFinite(e[k]) && (e[k] as number) > 0) price[k] = e[k] as number;
+  }
+  return Object.keys(price).length > 0 ? { price } : {};
+}
+
 /**
  * `{env:VAR}` 引用替换（1.0 P1）：密钥不进配置文件——配置里写
  * `"apiKey": "{env:GLM_KEY}"`，加载期替换为环境变量真实值；未设置时移除该字段
@@ -518,6 +550,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
     cfg.maxSteps = Math.max(1, Math.floor(data.maxSteps));
   }
   if (typeof data.showThinking === 'boolean') cfg.showThinking = data.showThinking;
+  if (typeof data.showCost === 'boolean') cfg.showCost = data.showCost;
   if (['full', 'safe', 'ask', 'read'].includes(String(data.permission))) {
     cfg.permission = data.permission as PermissionTier;
   }
@@ -550,6 +583,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
         ...(p.headers && typeof p.headers === 'object' && !Array.isArray(p.headers)
           ? { headers: p.headers as Record<string, string> }
           : {}),
+        ...parsePriceField(p.price),
         ...(p.modelCatalog && Array.isArray(p.modelCatalog)
           ? {
               modelCatalog: (p.modelCatalog as unknown[])
@@ -602,6 +636,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
             ...parseLimitField(e.limit),
             ...parseModalitiesField(e.modalities),
             ...parseCapabilitiesField(e.capabilities),
+            ...parsePriceField(e.price),
             ...(e.disabled === true ? { disabled: true } : {}),
           };
         }
@@ -845,7 +880,7 @@ const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'model', 'permission', 'plugins', 'preloadFiles', 'preloadMaxBytes', 'preloadMaxFiles',
   'profiles', 'providers', 'reasoningEffort', 'reasoningEffortOptions', 'redactSecrets',
   'repoMap', 'repoMapMaxSymbols', 'sandbox', 'sandboxFailClosed', 'sandboxMaskEnv',
-  'sandboxNetworkAllow', 'sandboxWritePaths', 'showThinking', 'skills', 'statusline',
+  'sandboxNetworkAllow', 'sandboxWritePaths', 'showCost', 'showThinking', 'skills', 'statusline',
   'statuslineAlign', 'summarizeAt', 'summarizeWindow', 'telemetry', 'vimMode',
   'webConcurrency', 'webFetchDomains', 'webSearchApiKey', 'webTheme', 'webWorkspace',
   'webWorkspaces',
@@ -1004,13 +1039,16 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
     const models: Record<string, ModelEntryConfig> = {};
     for (const [pname, p] of Object.entries(cfg.providers)) {
       for (const [mid, m] of Object.entries(p.models ?? {})) {
+        // 组级 price 与模型级 price 按字段合并（模型级优先，如组定 input、模型只覆盖 output）
+        const { price: modelPrice, ...mrest } = m;
         const merged: ModelEntryConfig = {
           ...(p.baseURL ? { baseURL: p.baseURL } : {}),
           ...(p.apiKey ? { apiKey: p.apiKey } : {}),
           ...(p.userAgent ? { userAgent: p.userAgent } : {}),
           ...(p.headers ? { headers: p.headers } : {}),
-          ...m,
+          ...mrest,
         };
+        if (p.price ?? modelPrice) merged.price = { ...p.price, ...modelPrice };
         const key = mid.includes('/') ? `${pname}/${mid}` : mid;
         merged.apiModel ??= mid; // 目录友好名 ≠ API 名：缺省 apiModel = 原始 modelID
         merged.provider = pname;

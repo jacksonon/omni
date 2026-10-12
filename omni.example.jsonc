@@ -148,6 +148,9 @@
   //   variant 字段；/variants 面板列出思考级别 + 命名 variants，选中命名项即叠加生效并持久化
   //   providers."<网关>".models."<模型名>".variant。apiModel = 发给 API 的真实模型名（目录友好名
   //   ≠ API 名，/model 按别名也能切换）；displayName = 面板显示名；limit/modalities/capabilities = 元数据。
+  //   price = token 单价（$/1M tokens，headless 成本估算用；组级写一次组内继承、模型级按字段覆盖；
+  //   缺省回退 OMNI_INPUT/OUTPUT/CACHE_PRICE_PER_M 环境变量、再回退 OpenRouter 公开表快照（npm run prices:snapshot 更新 src/config/model-price-snapshot.ts）、最后回退内置默认；缓存单价缺省回退输入单价）。
+  //   price 示例（组级写法，与 baseURL 同级）："price": { "input": 0.5, "output": 2, "cacheRead": 0.1 },
   // 示例（一个网关挂两个模型，mimo 带专属级别 + 命名 variants + apiModel 别名）:
   // "providers": {
   //   "opencode": {

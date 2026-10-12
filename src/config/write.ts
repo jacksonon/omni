@@ -721,7 +721,7 @@ function globalConfigFile(): string {
  * 通用全局布尔开关持久化（2026-09 补课：/auto、/vim）：写全局配置的指定字段
  * （JSONC 拒绝自动改；失败给出可手动添加的提示）。返回结构复用 PersistModelResult。
  */export function persistGlobalBoolToConfig(
-  field: 'autoReview' | 'vimMode' | 'redactSecrets',
+  field: 'autoReview' | 'vimMode' | 'redactSecrets' | 'showCost',
   value: boolean,
   label: string
 ): PersistModelResult {

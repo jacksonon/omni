@@ -350,6 +350,7 @@ export async function attachRuntime(
     protocol: e?.protocol,
     displayName: e?.displayName,
     limit: autoFillLimit(e?.limit, ...autoNames(name, e)),
+    price: e?.price,
     modalities: e?.modalities,
     capabilities: e?.capabilities,
     disabled: e?.disabled,

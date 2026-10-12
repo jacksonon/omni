@@ -21,6 +21,11 @@
       "description": "是否展示思考过程（默认 true；关闭仍落盘 .omni/last-thinking.md）",
       "default": true
     },
+    "showCost": {
+      "type": "boolean",
+      "description": "是否在 Web 状态行/回合统计展示成本估算（默认 true；关闭只隐藏显示）",
+      "default": true
+    },
     "permission": {
       "enum": [
         "full",
@@ -319,6 +324,10 @@
               "type": "string"
             }
           },
+          "price": {
+            "$ref": "#/definitions/modelEntry/properties/price",
+            "description": "分组级 token 单价（组内模型缺省继承，模型级按字段覆盖）"
+          },
           "models": {
             "type": "object",
             "additionalProperties": {
@@ -550,6 +559,27 @@
             }
           }
         },
+        "price": {
+          "type": "object",
+          "description": "token 单价（$/1M tokens；headless 成本估算用，缺省回退环境变量/内置默认 1/2）",
+          "properties": {
+            "input": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "输入单价（$/1M prompt tokens）"
+            },
+            "output": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "输出单价（$/1M completion tokens）"
+            },
+            "cacheRead": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "缓存命中单价（$/1M cached tokens；缺省回退输入单价）"
+            }
+          }
+        },
         "modalities": {
           "type": "object",
           "properties": {
@@ -627,6 +657,9 @@
         },
         "limit": {
           "$ref": "#/definitions/modelEntry/properties/limit"
+        },
+        "price": {
+          "$ref": "#/definitions/modelEntry/properties/price"
         },
         "modalities": {
           "$ref": "#/definitions/modelEntry/properties/modalities"

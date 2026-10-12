@@ -87,6 +87,8 @@ export interface ModelEndpoint {
   displayName?: string;
   /** token 上限画像 */
   limit?: ModelLimit;
+  /** token 单价（$/1M tokens；headless 成本估算用，缺省回退环境变量/内置默认） */
+  price?: { input?: number; output?: number; cacheRead?: number };
   /** 输入/输出类型数组（vision 模型标 input 含 image） */
   modalities?: ModelModalities;
   /** 能力标记 */
