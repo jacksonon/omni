@@ -9,6 +9,7 @@ import readline from 'node:readline/promises';
 import classicReadline from 'node:readline';
 import { parseModelAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistModelDefaultToConfig, persistModelToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { describeModelIntelligence } from '../config/model-pricing.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -44,6 +45,7 @@ import {
   exportSession,
   fullStatusReport,
   sumSessionUsage,
+  usageReport,
   memoryFilesFromMessages,
   lastAssistantText,
   lastUserText,
@@ -1359,9 +1361,9 @@ export async function runInteractive(
       };
       if (!want) {
         if (input.isTTY && models.length > 0) {
-          // TTY 箭头选择器（文案见 formatModelPickLabel：名称 · provider · 上下文k/输出k · 思考级别 · 当前✓）
+          // TTY 箭头选择器（文案见 formatModelPickLabel：名称 · provider · 上下文k/输出k · 思考级别 · 智能指数 · 当前✓）
           const items = models.map((m) => ({
-            label: formatModelPickLabel(m, m.name === currentModel),
+            label: formatModelPickLabel({ ...m, intelligence: describeModelIntelligence(m.name) ?? describeModelIntelligence(m.apiModel) }, m.name === currentModel),
             value: m.name,
           }));
           const curIdx = models.findIndex((m) => m.name === currentModel);
@@ -1464,10 +1466,21 @@ export async function runInteractive(
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
         contextWindow,
+        intelligence: describeModelIntelligence(currentModel) ?? describeModelIntelligence(curEp?.apiModel),
       }, {
         messages,
         summarizeAt: runOpts.cfg?.summarizeAt ?? 40,
         compressRatio: runOpts.cfg?.contextCompressRatio,
+      })) console.log(dim(line));
+      safePrompt();
+      continue;
+    }
+    if (cmd === '/usage') {
+      // /usage：会话 token 用量与成本估算
+      const curEp = (runOpts.models ?? []).find((m) => m.name === currentModel);
+      for (const line of usageReport(messages, currentModel, {
+        endpointPrice: curEp?.price,
+        apiModel: curEp?.apiModel,
       })) console.log(dim(line));
       safePrompt();
       continue;

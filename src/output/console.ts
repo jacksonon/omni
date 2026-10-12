@@ -99,8 +99,16 @@ export class ConsoleOutput implements Output {
     this.answerInFence = false;
   }
 
-  onUsage(_usage: TokenUsage): void {
-    // console 无 footer 展示位，忽略（token 用量仅 TUI 展示）
+  /** 本轮 token/成本累计（onUsage 累加；onTurnEnd 打印后清零） */
+  private turnPrompt = 0;
+  private turnCompletion = 0;
+  private turnCost = 0;
+
+  onUsage(usage: TokenUsage): void {
+    this.turnPrompt += Math.max(0, usage.prompt ?? 0);
+    this.turnCompletion += Math.max(0, usage.completion ?? 0);
+    const c = usage.costUsd ?? 0;
+    if (typeof c === 'number' && Number.isFinite(c) && c > 0) this.turnCost += c;
   }
 
   onRequestFailed(err: unknown): void {
@@ -297,6 +305,14 @@ export class ConsoleOutput implements Output {
   }
 
   onTurnEnd(): void {
+    // 本轮用量 dim 行（无用量不打印；成本 >0 才附带，避免未知单价时误导性 $0）
+    if (this.turnPrompt > 0 || this.turnCompletion > 0) {
+      const costSeg = this.turnCost > 0 ? ` · 预估成本 $${this.turnCost.toFixed(6)}` : '';
+      console.log(dim(`本轮 token：输入 ${this.turnPrompt} · 输出 ${this.turnCompletion}${costSeg}`));
+    }
+    this.turnPrompt = 0;
+    this.turnCompletion = 0;
+    this.turnCost = 0;
     console.log('');
   }
 

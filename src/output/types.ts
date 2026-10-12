@@ -33,6 +33,12 @@ export interface TokenUsage {
   total: number;
   /** 缓存命中 token 数（prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens；网关不支持时缺省） */
   cached?: number;
+  /** 本轮单价明细（$/1M；与 costUsd 同源，Web 展开明细展示用） */
+  prices?: { input: number; output: number; cacheRead: number };
+  /** 单价来源（config/env/snapshot/default；Web 展示用） */
+  priceSource?: string;
+  /** 本次请求的成本估算（美元；loop 经 estimator 附带，缺省 = 未估算） */
+  costUsd?: number;
 }
 
 /** 工具执行完成的展示补充数据（工具卡片 diff 展示用；缺省 undefined = 无补充） */

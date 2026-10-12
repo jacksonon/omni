@@ -53,6 +53,7 @@ import {
   exportSession,
   fullStatusReport,
   memoryFilesFromMessages,
+  usageReport,
 } from '../agent/report.js';
 import {
   findSessionCandidates,
@@ -73,6 +74,7 @@ import { closeMcpClients, discoverMcpTools } from '../tools/mcp.js';
 import type { OmniConfig } from '../config/index.js';
 import { parseModelAddArgs, parseMcpAddArgs, persistContextLimitToConfig, persistGlobalBoolToConfig, persistMcpServerToConfig, removeMcpServerFromConfig, persistModelToConfig } from '../config/write.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { describeModelIntelligence } from '../config/model-pricing.js';
 import type { ModelEndpoint } from '../client.js';
 import { EventRecorder } from '../agent/events.js';
 import { setTerminalTitle } from '../ui.js';
@@ -1279,10 +1281,24 @@ export const TUI_COMMANDS: TuiCommand[] = [
         memoryFiles: memoryFilesFromMessages(ctx.messages),
         globalMemory: ctx.messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
         contextWindow,
+        intelligence: describeModelIntelligence(model) ?? describeModelIntelligence(curEp?.apiModel),
       }, {
         messages: ctx.messages,
         summarizeAt: ctx.cfg?.summarizeAt ?? 40,
         compressRatio: ctx.cfg?.contextCompressRatio,
+      })) pushCmdLine(ctx.state, { kind: 'meta', text: line });
+    },
+  },
+  {
+    name: 'usage',
+    description: '会话 token 用量与成本估算',
+    descriptionEn: 'Session token usage and cost estimate',
+    run: (ctx) => {
+      const model = ctx.model ?? ctx.state.model;
+      const curEp = (ctx.runOpts?.models ?? []).find((m) => m.name === model);
+      for (const line of usageReport(ctx.messages, model, {
+        endpointPrice: curEp?.price,
+        apiModel: curEp?.apiModel,
       })) pushCmdLine(ctx.state, { kind: 'meta', text: line });
     },
   },
@@ -2054,7 +2070,7 @@ export type CommandGroupId = 'session' | 'model' | 'agent' | 'system';
 export const COMMAND_GROUP_ORDER: CommandGroupId[] = ['session', 'model', 'agent', 'system'];
 const COMMAND_GROUPS: Record<string, CommandGroupId> = {
   session: 'session', resume: 'session', fork: 'session', send: 'session', clear: 'session',
-  compact: 'session', rename: 'session', export: 'session', status: 'session', context: 'session',
+  compact: 'session', rename: 'session', export: 'session', status: 'session', usage: 'session', context: 'session',
   rewind: 'session', undo: 'session', redo: 'session', diff: 'session',
   model: 'model', variants: 'model',
   agents: 'agent', orchestrate: 'agent', goal: 'agent', skill: 'agent',
@@ -2520,6 +2536,9 @@ function modelMenuLabels(
     if (ep?.provider) bits.push(ep.provider);
     if (ep?.limit?.context) bits.push(`${Math.round(ep.limit.context / 1000)}k`);
     if (ep?.limit?.output) bits.push(`出 ${Math.round(ep.limit.output / 1000)}k`);
+    // 智能指数（OpenRouter artificial_analysis）：有才拼段，无则省略
+    const intel = describeModelIntelligence(n) ?? describeModelIntelligence(ep?.apiModel);
+    if (intel !== undefined) bits.push(`智能指数 ${intel}`);
     if (ep?.disabled) bits.push('已禁用');
     return { label: bits.length > 0 ? `${n} · ${bits.join(' · ')}` : n, value: n };
   });

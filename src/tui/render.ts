@@ -62,7 +62,7 @@ import { logCrash } from './crashlog.js';
 import { copyTextToClipboard, dim } from '../ui.js';
 import { t, tf } from './i18n.js';
 import { detectMention, insertMention, listMentionCandidates } from './mention.js';
-import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, formatCompact, formatContextUsage, formatMiniBar, sessionAvgRate, truncatePathHead } from './layout.js';
+import { ACCENT_BAR, CONTENT_PAD, contextPercent, estimateInputLines, fitCount, formatCompact, formatContextUsage, formatCostUsd, formatMiniBar, sessionAvgRate, truncatePathHead } from './layout.js';
 import { effortColor, hslToHex, isLightTheme, modeCycleColor, themeColor, themeFor, type TuiTheme } from './theme.js';
 import { SPINNER_FRAMES, pushLine, pushToast, type CmdSuggestion, type MentionSuggestion, type TuiState } from './state.js';
 import { editPending } from './pending.js';
@@ -188,6 +188,8 @@ export interface TuiTree {
   footerIO: TextRenderable | null;
   /** 缓存命中（`缓存 N%`；灰块外底行右侧、上下文用量左侧；无缓存数据时隐藏） */
   footerCache: TextRenderable | null;
+  /** 会话累计成本（`$0.0234`，4 位小数；loop estimator 随 usage 附带，无估算时隐藏） */
+  footerCost: TextRenderable | null;
   /** 待发送消息区（输入框上方小视图：显示 queue/steer 消息，回合结束后按序发送；可选中/排序/删除/编辑） */
   queueBox: BoxRenderable | null;
   queueCells: TextRenderable[];
@@ -282,6 +284,8 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   /** 输入/输出 · 缓存（灰块外底行右侧、上下文用量左侧；随 metaRow 创建） */
   let footerIO: TextRenderable | null = null;
   let footerCache: TextRenderable | null = null;
+  /** 会话累计成本（灰块外底行最右侧；随 metaRow 创建） */
+  let footerCost: TextRenderable | null = null;
   let queueBox: BoxRenderable | null = null;
   const queueCells: TextRenderable[] = [];
   let todoBox: BoxRenderable | null = null;
@@ -433,6 +437,9 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     metaCtx = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     metaCtx.fg = parseColor(theme.footerDim);
     metaRow.add(metaCtx);
+    footerCost = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
+    footerCost.fg = parseColor(theme.footerDim);
+    metaRow.add(footerCost);
     // 注意：metaRow 挂到 root 尾部（bottomBlock 之后，见 mount 末尾）——
     // 早挂会被渲染到内容区顶部（root 子节点顺序 = 渲染顺序）
     // hero（无对话 / /clear 后回到初始居中态）下整行隐藏——该行的左侧文件夹
@@ -684,6 +691,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     footerLoad,
     footerIO,
     footerCache,
+    footerCost,
     queueBox,
     queueCells,
     todoBox,
@@ -1055,23 +1063,32 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     : '';
   const cachePct = state.tokens.prompt > 0 ? Math.min(100, Math.round((state.stats.cached / state.tokens.prompt) * 100)) : 0;
   const cacheText = state.stats.cached > 0 ? (en ? `Cache ${cachePct}%` : `缓存 ${cachePct}%`) : '';
+  // 会话累计成本（loop estimator 随 usage 附带；缺失/≤0 不显示）
+  const costVal = state.tokens.costUsd ?? 0;
+  const costText = costVal > 0 ? formatCostUsd(costVal) : '';
   // 宽度预算：左侧可用 = 行宽 - 根边距(2) - 行 margin(4) - 右侧段；文件夹最小 8 列，
-  // 仍溢出时按 缓存→输入输出 顺序隐藏（上下文恒保留）。段间 · 以前缀形式附在后一段
-  // 内容里（无缓存时 Out 与上下文之间不断开，也不留悬空分隔符），宽度按段文本计，
-  // 分隔符 riding 在每段 +1 的间隙 allowance 内（flex gap 实际已留出 1 列）。
+  // 仍溢出时保 token 段（输入/输出最后折），其余按 缓存→上下文→成本 顺序隐藏。
+  // 段间 · 以前缀形式附在后一段内容里（无缓存时 Out 与上下文之间不断开，也不留悬空分隔符），
+  // 宽度按段文本计，分隔符 riding 在每段 +1 的间隙 allowance 内（flex gap 实际已留出 1 列）。
   const wCtx = ctxText ? visualWidth(ctxText) : 0;
   const wIO = visualWidth(ioText);
   const wCache = visualWidth(cacheText);
+  const wCost = visualWidth(costText);
   let showIO = ioText !== '';
   let showCache = cacheText !== '';
+  let showCtx = ctxText !== '';
+  let showCost = costText !== '';
   // 右侧总宽：隐藏后重算，保证不残留已隐藏段的宽度
   const calcRightW = (): number =>
     (showIO ? wIO + 1 : 0) +
     (showCache ? wCache + 1 : 0) +
-    (ctxText ? wCtx + 1 : 0);
+    (showCtx ? wCtx + 1 : 0) +
+    (showCost ? wCost + 1 : 0);
   let rightW = calcRightW();
-  while ((showCache || showIO) && (width ?? 80) - 6 - rightW < 8) {
+  while ((showCache || showCtx || showCost || showIO) && (width ?? 80) - 6 - rightW < 8) {
     if (showCache) showCache = false;
+    else if (showCtx) showCtx = false;
+    else if (showCost) showCost = false;
     else showIO = false;
     rightW = calcRightW();
   }
@@ -1099,8 +1116,8 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   }
   if (tree.metaCtx) {
     // 上下文段：左侧有可见段时加 · 前缀（无缓存时 Out 与上下文之间不断开）；隐藏时内容清空
-    tree.metaCtx.content = ctxText !== '' ? ((showIO || showCache ? '· ' : '') + ctxText) : '';
-    tree.metaCtx.visible = ctxText !== '';
+    tree.metaCtx.content = showCtx ? ((showIO || showCache ? '· ' : '') + ctxText) : '';
+    tree.metaCtx.visible = showCtx;
     if (ctxText !== '') {
       const pct = contextPercent(lastPrompt, contextLimit);
       const light = isLightTheme(theme);
@@ -1109,6 +1126,11 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       else if (pct >= 70) color = light ? '#d97706' : '#fbbf24';
       tree.metaCtx.fg = parseColor(color);
     }
+  }
+  if (tree.footerCost) {
+    // 成本段（最右侧）：左侧有可见段时加 · 前缀；无估算/超宽折叠时隐藏
+    tree.footerCost.content = showCost ? ((showIO || showCache || showCtx ? '· ' : '') + costText) : '';
+    tree.footerCost.visible = showCost;
   }
   // 模型行（输入框下方，灰色块内）：模式/模型/级别/均值 + loading/esc 打断提示
   //（会话进行中显示在速率右侧，`· ⠹ esc interrupt`——`·` 分隔符仅 loading 时显示）

@@ -1800,9 +1800,9 @@ async function main(): Promise<void> {
   const frame19 = t19.captureCharFrame();
   console.log('=== 场景 19：/ 命令联想列表 ===');
   console.log(frame19);
-  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/context/export）+ 底部「↓ 还有 N 个」提示行
+  // 紧凑窗口：标题 + 前 6 条（注册表顺序：clear/undo/compact/status/usage/context；/usage 在 /status 后注册）+ 底部「↓ 还有 N 个」提示行
   //（无分组头——用户要求移除 section 组标题）
-  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/context', '/export'];
+  const checks19 = ['命令', 'esc', '/clear', '清空对话上下文', '/undo', '/compact', '/status', '/usage', '/context'];
   const missing19 = checks19.filter((c) => !frame19.includes(c));
   if (!/↓ 还有 \d+ 个/.test(frame19)) missing19.push('↓ 还有 N 个');
   if (missing19.length) {

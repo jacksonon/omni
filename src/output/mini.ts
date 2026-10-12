@@ -342,6 +342,8 @@ export interface TurnStats {
   completion?: number;
   /** 本轮纯生成耗时合计（onLlmLap 的 genMs 累加；tok/s 段分母，缺省 0） */
   genMs?: number;
+  /** 本轮成本估算合计（美元；onUsage 的 costUsd 累加，缺省 0） */
+  costUsd?: number;
 }
 
 /**
@@ -370,6 +372,8 @@ export function turnStatSegments(stats: TurnStats): string[] {
     const rate = turnTokenRate(stats);
     if (rate != null) parts.push(`${rate} tok/s`);
   }
+  const cost = stats.costUsd ?? 0;
+  if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
   return parts;
 }
 
@@ -1219,9 +1223,13 @@ export class MiniOutput implements Output {
     this.answerEnded = true;
   }
 
-  /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源） */
+  /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源）+ 成本累加 */
   onUsage(usage: TokenUsage): void {
     this.turnStats.completion = (this.turnStats.completion ?? 0) + Math.max(0, usage.completion ?? 0);
+    const c = usage.costUsd ?? 0;
+    if (typeof c === 'number' && Number.isFinite(c) && c > 0) {
+      this.turnStats.costUsd = (this.turnStats.costUsd ?? 0) + c;
+    }
   }
 
   /** LLM 单轮耗时折入本轮统计（分隔行 Inference 段数据源；调用次数同步累加；
@@ -1238,11 +1246,11 @@ export class MiniOutput implements Output {
   }
 
   /** 本轮统计累积（separators.rs RuntimeMetricsSummary 子集；onTurnStart 清零） */
-  private turnStats: TurnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0 };
+  private turnStats: TurnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0, costUsd: 0 };
 
   onTurnStart(): void {
     this.turnStart = Date.now();
-    this.turnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0 };
+    this.turnStats = { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0, completion: 0, genMs: 0, costUsd: 0 };
     this.answerEnded = false; // `!` 直跑回合无正文：防沿用上一轮标记误发 tip
     this.beginInputCapture();
   }

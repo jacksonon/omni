@@ -306,6 +306,10 @@ export class TuiOutput implements Output {
     this.state.tokens.completion += usage.completion;
     this.state.tokens.total += usage.total;
     this.state.stats.cached += usage.cached ?? 0;
+    // 会话累计成本（loop estimator 随 usage 附带；缺失/≤0 不累计，footer 不显示）
+    if (typeof usage.costUsd === 'number' && usage.costUsd > 0) {
+      this.state.tokens.costUsd = (this.state.tokens.costUsd ?? 0) + usage.costUsd;
+    }
     // 当前上下文大小 = 最近一次请求的 prompt token（每次覆盖——footer context 段用）
     this.state.lastPromptTokens = usage.prompt;
     // 当次统计：按请求顺序收集（一轮可能多次 LLM 请求——多步工具调用每步各一次）

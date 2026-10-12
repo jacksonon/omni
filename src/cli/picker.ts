@@ -33,7 +33,7 @@ const DEFAULT_HINT = '↑↓ 选择 · 数字直选 · Enter 确认 · Esc 取�
 export const MINI_SLASH_COMMANDS = [
   '/exit', '/clear', '/new', '/plan', '/permission', '/undo', '/spec', '/preset',
   '/skill', '/compact', '/agents', '/orchestrate', '/goal', '/loop', '/review',
-  '/btw', '/variants', '/settings', '/model', '/status', '/context', '/export',
+  '/btw', '/variants', '/settings', '/model', '/status', '/usage', '/context', '/export',
   '/mcp', '/diff', '/rewind', '/rename', '/memory-apply', '/fork', '/send',
   '/resume', '/cd', '/pin', '/archive', '/unarchive', '/auto', '/vim',
   '/team', '/session', '/redo', '/doctor', '/trace', '/init', '/import', '/recap',
@@ -54,7 +54,7 @@ export interface CompleteContext {
 
 /**
  * /model 选择器行文案（codex 模型面板对等）：有多少字段拼多少——
- * 名称 · provider · 上下文k/输出k · 思考级别 · 当前✓（缺字段跳过，不断言）。
+ * 名称 · provider · 上下文k/输出k · 思考级别 · 智能指数 · 当前✓（缺字段跳过，不断言）。
  */
 export function formatModelPickLabel(
   m: {
@@ -63,6 +63,8 @@ export function formatModelPickLabel(
     provider?: string;
     limit?: { context?: number; output?: number };
     reasoningEffort?: string;
+    /** 智能指数（OpenRouter artificial_analysis；undefined 不显示） */
+    intelligence?: number;
   },
   isCurrent: boolean
 ): string {
@@ -74,6 +76,7 @@ export function formatModelPickLabel(
     .join('/');
   if (k) segs.push(k);
   if (m.reasoningEffort) segs.push(m.reasoningEffort);
+  if (m.intelligence !== undefined) segs.push(`智能指数 ${m.intelligence}`);
   if (isCurrent) segs.push('✓');
   return segs.join(' · ');
 }
