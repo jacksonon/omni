@@ -114,4 +114,4 @@ npm run eval:mock         # 离线评估（确定性，可进 CI）
 
 ## 许可证
 
-[BSD-3-Clause](LICENSE)。
+[BSD-3-Clause](LICENSE)。作者：Jackson——联系请走 [GitHub Issues](https://github.com/jacksonon/omni/issues) 或 <wang542413041@gmail.com>。

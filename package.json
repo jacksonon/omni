@@ -2,7 +2,16 @@
   "name": "omni",
   "version": "0.9.0",
   "description": "Omni - Agent CLI & Engineering Assistant",
-  "author": "Omni Contributors",
+  "author": "Jackson <wang542413041@gmail.com> (https://github.com/jacksonon)",
+  "homepage": "https://github.com/jacksonon/omni",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jacksonon/omni.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jacksonon/omni/issues",
+    "email": "wang542413041@gmail.com"
+  },
   "license": "BSD-3-Clause",
   "type": "module",
   "main": "electron/main.cjs",

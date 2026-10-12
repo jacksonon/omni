@@ -114,4 +114,4 @@ npm run eval:mock         # offline evaluation (deterministic, CI-friendly)
 
 ## License
 
-[BSD-3-Clause](LICENSE).
+[BSD-3-Clause](LICENSE). Author: Jackson — contact via [GitHub Issues](https://github.com/jacksonon/omni/issues) or <wang542413041@gmail.com>.
