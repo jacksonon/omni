@@ -29,6 +29,7 @@ import {
   type ResponsesStream,
 } from './responses.js';
 import { formatToolCall, previewOutput, isExitCodeZeroLine, approvalDiffText } from '../output/format.js';
+import { estimateCost } from '../config/model-pricing.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
@@ -923,11 +924,29 @@ async function runAgentInner(
     );
     if (lastUsage) {
       // 缓存命中 token：OpenAI 系 prompt_tokens_details.cached_tokens；DeepSeek 系 prompt_cache_hit_tokens；Anthropic 系 cache_read_input_tokens
+      const promptTokens = lastUsage.prompt_tokens ?? 0;
+      const completionTokens = lastUsage.completion_tokens ?? 0;
+      // 本轮成本估算（统一 estimator；失败静默不带，不阻塞）
+      let costUsd: number | undefined;
+      let est: ReturnType<typeof estimateCost> | undefined;
+      try {
+        est = estimateCost(promptTokens, completionTokens, routedModelRuntime, {
+          endpointPrice: activeEndpoint?.price,
+          apiModel: activeEndpoint?.apiModel,
+          cachedTokens: extractCachedTokens(lastUsage),
+        });
+        if (Number.isFinite(est.costUsd) && est.costUsd > 0) costUsd = est.costUsd;
+        else est = undefined;
+      } catch {
+        /* 不带成本，流程继续 */
+      }
       output.onUsage({
-        prompt: lastUsage.prompt_tokens ?? 0,
-        completion: lastUsage.completion_tokens ?? 0,
+        prompt: promptTokens,
+        completion: completionTokens,
         total: lastUsage.total_tokens ?? 0,
         cached: extractCachedTokens(lastUsage),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+        ...(est !== undefined ? { prices: est.prices, priceSource: est.source } : {}),
       });
     }
 

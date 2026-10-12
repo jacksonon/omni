@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { OmniConfig } from '../config/index.js';
+import { estimateCost, type PriceResolveOpts } from '../config/model-pricing.js';
 import { formatTokenCount, type ContextWindowInfo } from '../config/model-context.js';
 import type { TokenUsage } from '../output/types.js';
 
@@ -35,6 +36,8 @@ export interface StatusInput {
   trusted?: boolean;
   /** 当前生效的上下文窗口（数据源自动档：手动配置 > models.dev 查表 > 兑底） */
   contextWindow?: ContextWindowInfo;
+  /** 智能指数（OpenRouter artificial_analysis；undefined = 无数据，不显示） */
+  intelligence?: number;
 }
 
 /** 从消息里提取已加载记忆文件的路径清单（`[项目记忆 AGENTS.md：<path>]` 前缀） */
@@ -115,6 +118,40 @@ export function sumSessionUsage(messages: ChatCompletionMessageParam[]): TokenUs
   return cached > 0 ? { prompt, completion, total, cached } : { prompt, completion, total };
 }
 
+/** 单价来源中文标注（/usage 价格来源行用） */
+const PRICE_SOURCE_LABEL: Record<string, string> = {
+  config: '显式配置',
+  env: '环境变量',
+  snapshot: 'OpenRouter 快照',
+  default: '内置默认',
+};
+
+/**
+ * /usage：会话 token 用量与成本估算（多行文本）。
+ * 累加内存消息里 assistant 的 usage meta（prompt/completion/cached，缺失兼容为 0），
+ * 经统一 estimator 计价；无用量返回暂无文案（与 /status 同口径）。
+ */
+export function usageReport(
+  messages: ChatCompletionMessageParam[],
+  modelName: string,
+  opts?: PriceResolveOpts
+): string[] {
+  const u = sumSessionUsage(messages);
+  if (!u) return ['token 用量：（暂无：完成一轮对话后显示累计）'];
+  const cached = u.cached ?? 0;
+  const { costUsd, source, prices } = estimateCost(u.prompt, u.completion, modelName, { ...opts, cachedTokens: cached });
+  const lines = [
+    `会话 token 用量与成本估算（模型 ${modelName}）：`,
+    `· 输入：${u.prompt} tokens（单价 $${prices.input}/1M）`,
+    `· 输出：${u.completion} tokens（单价 $${prices.output}/1M）`,
+  ];
+  if (cached > 0) lines.push(`· 缓存命中：${cached} tokens（单价 $${prices.cacheRead}/1M）`);
+  lines.push(`· 合计：${u.total} tokens`);
+  lines.push(`· 预估成本：$${costUsd.toFixed(6)}`);
+  lines.push(`· 价格来源：${PRICE_SOURCE_LABEL[source] ?? source}`);
+  return lines;
+}
+
 /** /status：一行汇总当前会话状态 */
 export function statusReport(s: StatusInput): string[] {
   const lines = [
@@ -123,6 +160,8 @@ export function statusReport(s: StatusInput): string[] {
     `· 权限：${s.permission}${s.planMode ? '（计划模式）' : ''}${s.trusted === false ? '（未信任目录 → 只读）' : ''}`,
     `· 思考级别：${s.reasoningEffort || '（未设置，用模型默认）'}`,
     ...(s.contextWindow ? [`· 上下文窗口：${formatTokenCount(s.contextWindow.value)} tokens（${s.contextWindow.label}）`] : []),
+    // 智能指数（OpenRouter artificial_analysis）：有才显示，无则省略、不报错
+    ...(s.intelligence !== undefined ? [`· 智能指数：${s.intelligence}（OpenRouter artificial_analysis）`] : []),
     s.tokens
       ? `· token 用量：${s.tokens.total}（prompt ${s.tokens.prompt} + completion ${s.tokens.completion}）`
       : '· token 用量：（暂无：完成一轮对话后显示累计）',
