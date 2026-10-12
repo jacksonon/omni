@@ -33,6 +33,8 @@ import {
   type ImageAttachment,
 } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
+import { findEndpointByName } from './client.js';
+import { estimateCost } from './config/model-pricing.js';
 import { EventRecorder, type TrajEvent } from './agent/events.js';
 import { appendSessionMessages, createSession, finalizeSession, findSessionById, latestSession, listSessions, loadSession, persistableMessages } from './agent/session.js';
 import { forkSession } from './agent/session-fork.js';
@@ -384,6 +386,11 @@ export class ExecOutput implements Output {
   cachedTokens = 0;
   /** 最终回答文本（onAnswer 累计；结果提取以 messages 为准，这里仅兜底） */
   answerText = '';
+  /** 时延分解累计（onLlmLap 上报；headless 结果 latency 字段来源） */
+  llmCalls = 0;
+  ttftSamples: number[] = [];
+  llmMsTotal = 0;
+  genMsTotal = 0;
 
   constructor(
     private quiet = false,
@@ -442,6 +449,13 @@ export class ExecOutput implements Output {
     this.inTokens += u.prompt ?? 0;
     this.outTokens += u.completion ?? 0;
     this.cachedTokens += u.cached ?? 0;
+  }
+  onLlmLap(llmMs: number, firstTokenMs: number | null, genMs?: number): void {
+    // 时延累计（含失败轮，loop 失败也会报；无声累计，进度不刷屏）
+    this.llmCalls += 1;
+    this.llmMsTotal += llmMs;
+    if (firstTokenMs !== null) this.ttftSamples.push(firstTokenMs);
+    if (genMs !== undefined) this.genMsTotal += genMs;
   }
   onRequestFailed(err: unknown): void {
     this.log(red(`✗ 请求失败：${(err as Error)?.message ?? String(err)}`));
@@ -615,11 +629,11 @@ export interface HeadlessResult {
   idleTurns: number;
   /** 失败类别：completed / error / max-steps / aborted / schema-fail（成本报告维度） */
   errorType: string;
+  /** 时延分解（onLlmLap 累计；ttftMs = 首 token 延迟均值四舍五入，无样本则 null） */
+  latency: { ttftMs: number | null; llmMs: number; genMs: number };
 }
 
-/** 输入/输出单价（$/1M tokens，估算用；可用 OMNI_INPUT_PRICE_PER_M / OMNI_OUTPUT_PRICE_PER_M 覆盖） */
-const INPUT_PRICE_PER_M = Number(process.env.OMNI_INPUT_PRICE_PER_M ?? 1);
-const OUTPUT_PRICE_PER_M = Number(process.env.OMNI_OUTPUT_PRICE_PER_M ?? 2);
+/** 输入/输出单价与成本估算收口在 src/config/model-pricing.ts（resolveModelPrice/estimateCost） */
 
 /**
  * 执行一次 headless 回合：会话持久化（新建/恢复）→ prompt 组装 → runAgent →
@@ -716,7 +730,13 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
       exitCode = 1;
     }
   }
-  const costUsd = (output.inTokens / 1e6) * INPUT_PRICE_PER_M + (output.outTokens / 1e6) * OUTPUT_PRICE_PER_M;
+  // 成本估算（统一收口 estimator；四级优先级见 resolveModelPrice；行为与之前内联计算一致）
+  const ep = findEndpointByName(runOpts.models, cfg.model);
+  const { costUsd } = estimateCost(output.inTokens, output.outTokens, cfg.model, {
+    endpointPrice: ep?.price,
+    apiModel: ep?.apiModel,
+    cachedTokens: output.cachedTokens,
+  });
   // 1.0 P1-10：token 用量 / 空转回合 / 失败类别（成本效率报告维度）
   const tokens = { prompt: output.inTokens, completion: output.outTokens, cached: output.cachedTokens };
   const idleTurns = messages.filter(
@@ -729,6 +749,14 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
     : reason === 'max-steps' ? 'max-steps'
     : reason === 'aborted' ? 'aborted'
     : 'error';
+  // 时延分解（onLlmLap 累计；ttft = 样本均值四舍五入，无样本 null）
+  const latency = {
+    ttftMs: output.ttftSamples.length > 0
+      ? Math.round(output.ttftSamples.reduce((a, b) => a + b, 0) / output.ttftSamples.length)
+      : null,
+    llmMs: output.llmMsTotal,
+    genMs: output.genMsTotal,
+  };
   return {
     result,
     costUsd: Number(costUsd.toFixed(6)),
@@ -739,6 +767,7 @@ export async function runHeadless(ctx: RunContext, output: ExecOutput, opts: Hea
     tokens,
     idleTurns,
     errorType,
+    latency,
   };
 }
 
@@ -755,6 +784,10 @@ export function resultJson(res: HeadlessResult, extra: Record<string, unknown> =
     tokens: res.tokens,
     idle_turns: res.idleTurns,
     error_type: res.errorType,
+    // 时延分解字段（additive；与 HeadlessResult.latency 同值）
+    ttft_ms: res.latency.ttftMs,
+    llm_ms: res.latency.llmMs,
+    gen_ms: res.latency.genMs,
     ...extra,
   };
 }

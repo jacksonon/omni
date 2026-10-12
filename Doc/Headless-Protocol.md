@@ -11,7 +11,7 @@
 
 | 协议 | Schema | 说明 |
 |---|---|---|
-| `omni exec --output-format json` | `schemas/exec-result.v1.json` | 单对象 `{ result, cost_usd, duration_ms, num_turns, session_id, exit_code, tokens, idle_turns, error_type }` |
+| `omni exec --output-format json` | `schemas/exec-result.v1.json` | 单对象 `{ result, cost_usd, duration_ms, num_turns, session_id, exit_code, tokens, idle_turns, error_type, ttft_ms, llm_ms, gen_ms }`（时延分解：ttft_ms 首 token 延迟均值/无样本 null，llm_ms 请求墙钟累计，gen_ms 纯生成累计） |
 | `omni exec --output-format stream-json` | `schemas/stream-json.v1.json` | 每行 `{"t":"ev",...}`（轨迹事件），末行 `{"t":"result",...}` 同 exec-result |
 | 会话 JSONL | `schemas/session-jsonl.v1.json` | `{"t":"meta"}` 首行 + `{"t":"m","m":msg}` 消息行 + `{"t":"ev","e":ev}` 轨迹行；恢复/续写必须按此协议 |
 | `omni mcp-server` | `schemas/mcp-server.v1.json` | stdio JSON-RPC（2024-11-05）：`omni_exec` / `omni_reply`；请求串行、isError 透传退出码 |

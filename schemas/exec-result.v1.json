@@ -17,6 +17,9 @@
       "properties": { "prompt": { "type": "integer" }, "completion": { "type": "integer" }, "cached": { "type": "integer" } }
     },
     "idle_turns": { "type": "integer", "description": "无工具调用的空转回合数" },
-    "error_type": { "enum": ["completed", "error", "max-steps", "aborted", "schema-fail", "unknown"] }
+    "error_type": { "enum": ["completed", "error", "max-steps", "aborted", "schema-fail", "unknown"] },
+    "ttft_ms": { "type": ["integer", "null"], "description": "首 token 延迟均值毫秒（四舍五入；无样本则 null）" },
+    "llm_ms": { "type": "integer", "description": "LLM 请求墙钟累计毫秒（含失败轮）" },
+    "gen_ms": { "type": "integer", "description": "纯生成耗时累计毫秒（lastContentAt - firstTokenAt；无内容轮不计）" }
   }
 }
