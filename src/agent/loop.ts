@@ -18,6 +18,16 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { createClient, findEndpointByName, getClient, resolveModelRoute, withRequestSession, MODEL_DEFAULTS, type ModelEndpoint } from '../client.js';
+import {
+  shouldUseResponses,
+  isProtocolUnsupportedError,
+  chatToolsToResponsesTools,
+  chatMessagesToResponsesInput,
+  buildResponsesParams,
+  ResponsesAccumulator,
+  createResponsesStream,
+  type ResponsesStream,
+} from './responses.js';
 import { formatToolCall, previewOutput, isExitCodeZeroLine, approvalDiffText } from '../output/format.js';
 import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
@@ -392,6 +402,8 @@ async function runAgentInner(
   let activeEndpoint: ModelEndpoint | undefined;
   /** fallback 已接管本回合（不再重算基础路由——保持回退语义） */
   let fallbackActive = false;
+  /** Responses 协议偏好（Chat 遇到协议不支持 400 后自动切 Responses，本回合剩余步骤沿用） */
+  let responsesPreferred = false;
   // 安全护栏：权限分级 + 审批 + 审计。所有工具（含 MCP 外部工具 / 子代理）统一过闸；
   // 缺省 full + 无审批回调 = 拒绝（fail-safe），入口层负责注入真实回调。
   // write_file diff 确认审批（P2）：需要审批的写操作把变更统计附进审批 reason
@@ -509,9 +521,13 @@ async function runAgentInner(
       return;
     }
 
+    // 本轮传输协议：显式 protocol=responses，或 muse-spark 等 Responses-only 模型默认 responses；
+    // 一旦因协议 400 自动切过（responsesPreferred），本回合剩余步骤沿用 Responses。
+    let useResponses = responsesPreferred || shouldUseResponses(activeEndpoint, routedModelRuntime);
+
     // 调试开关：OMNI_DEBUG=1 时打印发往 LLM 的请求体（用 stderr，避免污染流式输出）
     if (process.env.OMNI_DEBUG) {
-      console.error(`\n[OMNI_DEBUG] 第 ${step + 1} 轮请求 → POST {baseURL}/chat/completions`);
+      console.error(`\n[OMNI_DEBUG] 第 ${step + 1} 轮请求 → POST {baseURL}/${useResponses ? 'responses' : 'chat/completions'}`);
       console.error(`[OMNI_DEBUG] model=${routedModelRuntime} · messages=${requestMessages.length} 条（含 system）· tools=${toolSchemas.length} 个`);
       console.error(JSON.stringify({ model: routedModelRuntime, messages: requestMessages, tools: toolSchemas }, null, 2).slice(0, 6000));
     }
@@ -529,9 +545,25 @@ async function runAgentInner(
     let firstTokenAt: number | null = null; // 首个有意义内容（reasoning/content/tool_call）的到达时间
     let lastContentAt: number | null = null; // 最后一个非空内容 chunk 的到达时间（生成耗时 = lastContentAt - firstTokenAt）
     let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> | null = null;
+    let responsesStream: ResponsesStream | null = null;
     /** fallback 回退链（P0）：主模型失败时按序尝试的 [client, model] 对（惰性构建一次） */
     let fallbacks: { client: OpenAI; model: string; endpoint?: ModelEndpoint }[] | null = null;
     try {
+      if (useResponses) {
+        // Responses 协议：input + 扁平 tools + reasoning.effort + max_output_tokens，
+        // 不带任何 Chat 专有字段（网关会 400 拒绝）。
+        const flatTools = chatToolsToResponsesTools(toolSchemas);
+        const input = chatMessagesToResponsesInput(requestMessages);
+        const built = buildResponsesParams(activeEndpoint, routedModelRuntime, input, flatTools, {
+          reasoningEffort: opts.reasoningEffort ?? activeEndpoint?.reasoningEffort,
+          signal: opts.abortSignal,
+        });
+        responsesStream = await waitAbort(
+          createResponsesStream(activeClient, built.params, built.options),
+          opts.abortSignal
+        );
+        responsesPreferred = true;
+      } else {
       // 附加参数：stream_options.include_usage（TUI footer token 用量）+ reasoning_effort
       //（/variants 思考级别）+ max_tokens（元数据 limit.output）+ 命名 variants 叠加层。
       // 个别网关不认会直接报错 → 回退为不带这些参数的普通流式请求。
@@ -550,6 +582,22 @@ async function runAgentInner(
         );
       } catch (createErr) {
         if ((createErr as Error)?.name === 'AbortError') throw createErr;
+        // 协议自动切换：Chat 400 协议不支持 → 同参数改走 Responses 重试一次
+        //（muse-spark 未配 protocol 的零配置自愈；成功后本回合沿用 Responses）。
+        if (isProtocolUnsupportedError(createErr)) {
+          const flatTools = chatToolsToResponsesTools(toolSchemas);
+          const input = chatMessagesToResponsesInput(requestMessages);
+          const built = buildResponsesParams(activeEndpoint, routedModelRuntime, input, flatTools, {
+            reasoningEffort: opts.reasoningEffort ?? activeEndpoint?.reasoningEffort,
+            signal: opts.abortSignal,
+          });
+          responsesStream = await waitAbort(
+            createResponsesStream(activeClient, built.params, built.options),
+            opts.abortSignal
+          );
+          useResponses = true;
+          responsesPreferred = true;
+        } else {
         // 回退：不带 include_usage/reasoning_effort/max_tokens/cache_control 等增强参数的普通流式请求
         const plain = buildStreamParams(activeEndpoint, routedModelRuntime, requestMessages, toolSchemas, {
           signal: opts.abortSignal,
@@ -562,6 +610,8 @@ async function runAgentInner(
           activeClient.chat.completions.create(plain.params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming, plain.options),
           opts.abortSignal
         );
+        }
+      }
       }
     } catch (err) {
       // 取消/打断优先判定：abort 信号已触发时（如工具执行期间被 steer 打断），create 立刻抛
@@ -585,7 +635,8 @@ async function runAgentInner(
       // 网络错误——非 401 鉴权、非 400 参数）按序切换备用端点重试本轮；成功后提示
       // 「已回退到 X」（meta 行 + 轨迹），本轮后续请求继续用该备用端点（activeClient）。
       // 401/400 是配置问题——换端点也一样失败，直接走失败路径不浪费重试。
-      if (isRetryableRequestError(err) && (opts.fallbackEndpoints?.length ?? 0) > 0) {
+      // Responses 协议下跳过 Chat fallback 链（备用端点同样按各自 protocol 在下一步重算时生效）
+      if (!useResponses && isRetryableRequestError(err) && (opts.fallbackEndpoints?.length ?? 0) > 0) {
         // 1.0：备用端点客户端走缓存工厂（同 provider 复用连接池）；请求参数同样带
         // 该端点的 max_tokens / 命名 variant（同 id 存在于备用端点时叠加）。
         fallbacks ??= opts.fallbackEndpoints!.map((ep) => ({
@@ -637,7 +688,7 @@ async function runAgentInner(
         }
       }
       // 全部备用端点都不可用 / 未配置 fallback：优雅结束本轮（原语义）
-      if (stream === null) {
+      if (stream === null && responsesStream === null) {
         output.onLlmLap?.(Date.now() - llmT0, null); // 失败也计入 LLM 墙钟（首 token 无）
         output.onRequestFailed(err);
         opts.events?.turnEnd('error', (err as Error)?.message); // 轨迹：请求失败结束本轮
@@ -664,10 +715,83 @@ async function runAgentInner(
     };
 
     try {
+      if (useResponses && responsesStream) {
+        // Responses 协议流式消费：事件折叠为同构累积（content/reasoning/toolCalls/usage），
+        // 下游（assistant 组装/工具执行）与 Chat 完全复用；取消语义同样抛给下方统一 catch。
+        const accum = new ResponsesAccumulator();
+        const riter = responsesStream[Symbol.asyncIterator]();
+        for (;;) {
+          const next = await waitAbort(
+            riter.next(),
+            opts.abortSignal,
+            () => {
+              void riter.return?.().catch(() => {});
+            }
+          );
+          if (next.done) break;
+          const ev = next.value as Record<string, unknown>;
+          if (!streamStarted) {
+            streamStarted = true;
+            output.onStreamStart();
+          }
+          const inc = accum.consume(ev);
+          const hasContent = Boolean(inc.text || inc.reasoning || inc.toolDelta || inc.usage);
+          if (hasContent) {
+            const now = Date.now();
+            firstTokenAt ??= now;
+            lastContentAt = now;
+            let deltaText = '';
+            if (inc.text) deltaText += inc.text;
+            if (inc.reasoning) deltaText += inc.reasoning;
+            const chunkTokens = estimateTokens(deltaText);
+            streamTokens += chunkTokens;
+            const liveGenMs = lastContentAt - firstTokenAt;
+            const firstTokenMs = firstTokenAt - llmT0;
+            const dt = prevContentAt > 0 ? now - prevContentAt : 0;
+            prevContentAt = now;
+            if (dt > 0 && liveGenMs >= 300) {
+              const inst = chunkTokens / (dt / 1000);
+              emaTps = emaTps == null ? streamTokens / (liveGenMs / 1000) : 0.3 * inst + 0.7 * emaTps;
+            }
+            const tps = liveGenMs >= 300 && emaTps != null && emaTps > 0 ? emaTps : 0;
+            output.onStreamProgress?.({ liveGenMs, streamTokens, tps, firstTokenMs });
+          }
+          if (inc.reasoning) {
+            reasoning += inc.reasoning;
+            thinking.write(inc.reasoning);
+          }
+          if (inc.text) {
+            finishThinking();
+            content += inc.text;
+            output.onAnswer(inc.text);
+          }
+          if (inc.toolDelta) finishThinking();
+          if (inc.usage && accum.usage) {
+            const u = accum.usage;
+            lastUsage = {
+              prompt_tokens: u.input_tokens ?? 0,
+              completion_tokens: u.output_tokens ?? 0,
+              total_tokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+              prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens ?? 0 },
+            } as unknown as OpenAI.Completions.CompletionUsage;
+            if (u.output_tokens) streamTokens = u.output_tokens;
+          }
+        }
+        for (const [k, v] of accum.toolCalls) toolCalls.set(k, v);
+        if (!lastUsage && accum.usage) {
+          const u = accum.usage;
+          lastUsage = {
+            prompt_tokens: u.input_tokens ?? 0,
+            completion_tokens: u.output_tokens ?? 0,
+            total_tokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+            prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens ?? 0 },
+          } as unknown as OpenAI.Completions.CompletionUsage;
+        }
+      } else {
       // **手动驱动流式迭代 + waitAbort**：abort 立即中断（不等下一个 chunk——真实模型
       // 思考中 chunk 间隔可能数秒，逐 chunk 检查会让取消延迟、ESC 后新消息「先排队等一会」，
       // 用户反馈）。onAbort 里 iter.return() 让 SDK 迭代器收尾（finally → controller.abort 断连）
-      const iter = stream[Symbol.asyncIterator]();
+      const iter = stream![Symbol.asyncIterator]();
       for (;;) {
         const next = await waitAbort(
           iter.next(),
@@ -756,6 +880,7 @@ async function runAgentInner(
           toolCalls.set(tc.index, cur);
         }
       }
+      } // end Chat 分支 else
     } catch (err) {
       // 用户点击「取消」（abort 中断流式响应）：优雅结束本轮——已输出的内容保留，
       // 半截 assistant 消息不入上下文（push 在流结束后），下一轮不受污染

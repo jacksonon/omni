@@ -347,6 +347,7 @@ export async function attachRuntime(
     variant: e?.variant,
     variants: e?.variants,
     apiModel: e?.apiModel,
+    protocol: e?.protocol,
     displayName: e?.displayName,
     limit: autoFillLimit(e?.limit, ...autoNames(name, e)),
     modalities: e?.modalities,

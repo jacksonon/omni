@@ -164,6 +164,8 @@
   //         "variant": "deep"
   //       },
   //       "muse-spark-1.2-contributor": { "reasoningEffort": "xhigh" }
+  //       "muse-spark-1.3-contributor": { "protocol": "responses" }  // Responses-only 模型走 /responses
+  //       （未配 protocol 时名字含 muse-spark 自动走 responses；显式配 completions 可强制走 Chat）
   //     }
   //   }
   // }

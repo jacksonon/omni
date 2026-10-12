@@ -24,6 +24,13 @@ import type { SubagentEvent } from './types.js';
 import type { SubagentRecord, SubagentRegistry } from './subagent-registry.js';
 import { detailItemFromEvent, SUBAGENT_DETAIL_MAX } from './subagent-registry.js';
 import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
+import {
+  chatToolsToResponsesTools,
+  chatMessagesToResponsesInput,
+  buildResponsesParams,
+  ResponsesAccumulator,
+  createResponsesStream,
+} from './responses.js';
 import { extractReasoning } from './thinking.js';
 import { formatToolCall, previewOutput } from '../output/format.js';
 
@@ -115,6 +122,8 @@ export interface SubagentOptions {
   model?: string;
   /** 思考级别（reasoning_effort；随请求下发，缺省不带该参数） */
   effort?: string;
+  /** 传输协议（缺省按模型名启发：muse-spark 默认 responses，其余 completions） */
+  protocol?: 'completions' | 'responses';
   /** 命名的子代理定义名（记录标注用；缺省 'delegate'） */
   agent?: string;
 }
@@ -244,8 +253,21 @@ export async function runSubagent(
       }
     }
     emit(opts, { type: 'step', step, maxSteps }); // 思考/请求中（无工具名）
-    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+    // Responses-only 模型（muse-spark 等）走 /responses，显式 protocol 优先于启发式
+    const useResponses =
+      opts.protocol === 'responses' || (opts.protocol !== 'completions' && /muse-spark/i.test(model));
+    let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> | null = null;
+    let responsesStream: AsyncIterable<Record<string, unknown>> | null = null;
     try {
+      if (useResponses) {
+        const flatTools = chatToolsToResponsesTools(toolSchemas);
+        const input = chatMessagesToResponsesInput(messages);
+        const built = buildResponsesParams(undefined, model, input, flatTools, {
+          reasoningEffort: opts.effort,
+          signal: opts.signal,
+        });
+        responsesStream = await createResponsesStream(client, built.params, built.options);
+      } else {
       stream = await client.chat.completions.create({
         model,
         messages,
@@ -258,6 +280,7 @@ export async function runSubagent(
           ? { reasoning_effort: opts.effort as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming['reasoning_effort'] }
           : {}),
       });
+      }
     } catch (err: any) {
       // 主动停止导致的请求中断（AbortError）→ 按停止收尾，不当作请求失败
       if (isStopped(opts) || err?.name === 'AbortError' || err?.name === 'APIUserAbortError') {
@@ -271,7 +294,23 @@ export async function runSubagent(
     const toolCalls = new Map<number, ToolCallAccum>();
     let aborted = false;
     try {
-      for await (const chunk of stream) {
+      if (useResponses && responsesStream) {
+        const accum = new ResponsesAccumulator();
+        for await (const ev of responsesStream) {
+          if (isStopped(opts)) {
+            aborted = true;
+            break;
+          }
+          const inc = accum.consume(ev as Record<string, unknown>);
+          if (inc.reasoning) {
+            reasoningBuf += inc.reasoning;
+            emitThink(opts, inc.reasoning);
+          }
+          if (inc.text) content += inc.text;
+        }
+        for (const [k, v] of accum.toolCalls) toolCalls.set(k, v);
+      } else {
+      for await (const chunk of stream!) {
         if (isStopped(opts)) {
           aborted = true;
           break; // 停止请求到达：断流退出（SDK signal 也会在下次拉取时抛错）
@@ -292,6 +331,7 @@ export async function runSubagent(
           toolCalls.set(tc.index, cur);
         }
       }
+      } // end Chat 分支 else
     } catch (err: any) {
       // SDK 抛 AbortError = 我们的 signal 断连 → 按停止收尾
       if (isStopped(opts) || err?.name === 'AbortError' || err?.name === 'APIUserAbortError') aborted = true;

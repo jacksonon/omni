@@ -81,6 +81,8 @@ export interface ModelEndpoint {
   variants?: Record<string, NamedVariant>;
   /** 发给 API 的真实模型名（目录友好名 ≠ API 模型名时的别名；缺省 = name） */
   apiModel?: string;
+  /** 传输协议：completions（默认，/chat/completions）/ responses（/responses，muse-spark 等 Responses-only 模型） */
+  protocol?: 'completions' | 'responses';
   /** 展示名（/model 面板/下拉显示；缺省 = name） */
   displayName?: string;
   /** token 上限画像 */

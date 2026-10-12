@@ -114,6 +114,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
                                       //   /model 切换到该模型自动带出（面板/请求同步），/variants 切换持久化到 providers."<组>".models."<名>".reasoningEffort（仅该模型生效）
                                       //   命名 variants（1.0）：variants = { id: { description?, reasoningEffort?, body?, headers? } } 请求叠加层，variant = 当前选中 id；/variants 面板同时列出思考级别和命名 variants
                                       //   apiModel = 发给 API 的真实模型名（目录友好名 ≠ API 名），displayName = 面板显示名，limit/modalities/capabilities = 元数据
+                                      //   protocol = 传输协议 completions（默认，/chat/completions）/ responses（/responses；muse-spark 等 Responses-only 模型，未配时按名自动走 responses，Chat 400 协议不支持也会自动切一次）
                                       //   端点兜底只来自环境变量 OMNI_BASE_URL / OMNI_API_KEY；模型名带 / 时改挂 "<网关>/<模型>"
     "bigmodel": { "baseURL": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm", "models": { "glm-4-flash": { … } } }
   },

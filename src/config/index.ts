@@ -324,6 +324,8 @@ export interface ModelEntryConfig {
   >;
   /** 发给 API 的真实模型名（目录友好名 ≠ API 名） */
   apiModel?: string;
+  /** 传输协议：completions（默认）/ responses（muse-spark 等 Responses-only 模型走 /responses） */
+  protocol?: 'completions' | 'responses';
   displayName?: string;
   limit?: { context?: number; output?: number };
   modalities?: { input?: string[]; output?: string[] };
@@ -593,6 +595,7 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
             ...(typeof e.variant === 'string' && e.variant.trim() ? { variant: e.variant.trim() } : {}),
             ...parseVariantsField(e.variants),
             ...(typeof e.apiModel === 'string' && e.apiModel.trim() ? { apiModel: e.apiModel.trim() } : {}),
+            ...(e.protocol === 'responses' || e.protocol === 'completions' ? { protocol: e.protocol } : {}),
             ...(typeof e.displayName === 'string' && e.displayName.trim()
               ? { displayName: e.displayName.trim() }
               : {}),
