@@ -47,6 +47,27 @@ omni                             # 交互会话
 | `omni web` | 本地后端（REST + SSE）+ 浏览器界面，多会话侧栏 |
 | 桌面应用 | 独立 Electron 应用（mac/win/linux），见 GitHub Releases，无需 Node |
 
+## 评测数据
+
+本仓库实测（可复现，非厂商宣传）：
+
+```bash
+npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5
+```
+
+模型 `deepseek-v4.1-flash`（OpenRouter 快照单价：输入 $0.15 / 输出 $0.6 / 缓存 $0.003 每 1M）· 2026-10-12 · 3 个冒烟任务 × 5 次：
+
+| 任务 | 通过 | 时长 p50/p90/p99 | TTFT p50/p90/p99 | 平均 token | 平均成本 |
+|---|---|---|---|---|---|
+| 回答身份 | 5/5 | 2535/4008/4008ms | 2430/3872/3872ms | 16,654 | $0.0006 |
+| 算术+工具 | 5/5 | 2926/3360/3360ms | 2261/2625/2625ms | 16,727 | $0.0001 |
+| 读文件+回答 | 5/5 | 6893/7415/7415ms | 2155/3106/3106ms | 36,126 | $0.0003 |
+| **合计** | **15/15** | 3171/7224/7415ms | 2277/3106/3872ms | 347,534 | **$0.0003/次** |
+
+说明：N=5，p99 即最大值，按"观测到的最坏情况"理解。成本大头被缓存吃掉：热命中（99% 缓存）单次约 $0.00006，冷启动约 $0.0025（差 ~40 倍）。之前 hanging 是评测 runner 的 bug（超时只杀 `npx` 壳、真进程继续跑），已改为进程组 kill。
+
+外部对照（任务/harness 不同，仅供参考）：Berkeley [HarnessTax 研究](https://arena.ai/blog/coding-agents-harness-tax)（2026-09，21 组模型×harness）发现 harness 主要影响成本而非正确率（成功率 ±2–5%，成本差可达 ~2 倍：Claude Code ≈ 2.0× Pi、≈ 1.6× Codex CLI，SWE-bench Lite）——Omni 走极简路线的原因。Terminal-Bench 榜单（[tbench.ai](https://www.tbench.ai/)）：Claude Code + Opus 5.5 为 64.8%。
+
 ## 特性
 
 - **Agent 主循环**：流式调模型 → 并行执行工具 → 结果回传；失败信息回传给模型自我修正

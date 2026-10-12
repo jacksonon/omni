@@ -47,6 +47,27 @@ No key at hand? `npm run mock` starts a local mock API for keyless end-to-end ru
 | `omni web` | Local backend (REST + SSE) + browser UI, multi-session sidebar |
 | Desktop app | Standalone Electron app (mac/win/linux) from GitHub Releases, no Node needed |
 
+## Benchmarks
+
+Measured on this repo (reproducible — not vendor slides):
+
+```bash
+npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5
+```
+
+Model `deepseek-v4.1-flash` (OpenRouter snapshot pricing: in $0.15 / out $0.6 / cache $0.003 per 1M) · 2026-10-12 · 3 smoke tasks × 5 runs:
+
+| Task | Pass | Duration p50/p90/p99 | TTFT p50/p90/p99 | Avg tokens | Avg cost |
+|---|---|---|---|---|---|
+| Answer identity | 5/5 | 2535/4008/4008ms | 2430/3872/3872ms | 16,654 | $0.0006 |
+| Arithmetic + tool | 5/5 | 2926/3360/3360ms | 2261/2625/2625ms | 16,727 | $0.0001 |
+| Read file + answer | 5/5 | 6893/7415/7415ms | 2155/3106/3106ms | 36,126 | $0.0003 |
+| **Total** | **15/15** | 3171/7224/7415ms | 2277/3106/3872ms | 347,534 | **$0.0003/run** |
+
+Notes: N=5, so p99 = max — read it as "worst observed", not a true 99th percentile. Prompt caching does the heavy lifting: warm runs cost ~$0.00006 (99% cache hits) vs ~$0.0025 cold (~40×). Previous hangs were an eval-runner bug (timeout killed only the `npx` wrapper, the agent kept running) — fixed with process-group kill.
+
+External context (different tasks/harnesses, for reference only): the Berkeley [HarnessTax study](https://arena.ai/blog/coding-agents-harness-tax) (Sep 2026, 21 model×harness pairs) found harness choice moves success rate only ±2–5% but cost up to ~2× (Claude Code ≈ 2.0× Pi, ≈ 1.6× Codex CLI on SWE-bench Lite) — which is why Omni stays minimal like Pi. Terminal-Bench leaderboard ([tbench.ai](https://www.tbench.ai/)): Claude Code + Opus 5.5 at 64.8%.
+
 ## Features
 
 - **Agent loop**: streams the model → runs tool calls in parallel → feeds results back; failures are returned to the model so it fixes its own mistakes
