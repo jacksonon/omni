@@ -71,13 +71,22 @@ function runTask(task: EvalTask, env: Record<string, string>, model?: string): P
       cwd: ROOT,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // 独立进程组：超时必须带走 npx 壳 + 内层真进程（见 run-headless-eval.ts 同修）
+      detached: true,
     });
     let out = '';
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => {
       if (process.env.OMNI_DEBUG) process.stderr.write(d);
     });
-    const timer = setTimeout(() => child.kill('SIGKILL'), task.timeoutMs ?? 120_000);
+    const timer = setTimeout(() => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    }, task.timeoutMs ?? 120_000);
     child.on('close', (code) => {
       clearTimeout(timer);
       const missing = task.expect.filter((e) => !out.includes(e));
