@@ -117,12 +117,8 @@ export class WebOutput implements Output {
   }
 
   onUsage(usage: TokenUsage): void {
-    this.announce('usage', {
-      prompt: usage.prompt,
-      completion: usage.completion,
-      total: usage.total,
-      cached: usage.cached ?? 0,
-    });
+    // TokenUsage 全字段透传（含未来可选扩展字段）——SSE 新增用量字段无需再改服务端
+    this.announce('usage', { ...usage, cached: usage.cached ?? 0 });
   }
 
   onThinkingSaved(_len: number, _file: string | null): void {

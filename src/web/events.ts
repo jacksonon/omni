@@ -16,7 +16,7 @@
  *   turn.step        —— 本轮第 N 步（{ sessionId, step, maxSteps }）
  *   lap              —— LLM 请求墙钟 / 首 token / 生成耗时（{ sessionId, llmMs, firstTokenMs, genMs }）
  *   toolsLap         —— 该轮工具执行墙钟（{ sessionId, toolsMs }）
- *   usage            —— token 用量（{ sessionId, prompt, completion, total, cached }）
+ *   usage            —— token 用量（{ sessionId } + TokenUsage 全字段透传，含未来可选扩展）
  *   subagent         —— 子代理进度事件（{ sessionId, ev: SubagentEvent }）
  *   hook.output      —— Hooks 输出回显（{ sessionId, event, lines }）
  *   error            —— 请求失败（{ sessionId, message }）

@@ -65,6 +65,7 @@ import {
   fullStatusReport,
   memoryFilesFromMessages,
   sumSessionUsage,
+  usageReport,
 } from '../agent/report.js';
 import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import {
@@ -101,6 +102,7 @@ import { attachRuntime, prepareRun } from '../main.js';
 import { isTrustedWorkspace } from '../safety/trust.js';
 import type { ConfigOverrides, OmniConfig } from '../config/index.js';
 import { autoFillLimit, CONTEXT_K_TIERS, describeModelContextWindow, formatTokenCount, parseContextSetArg, refreshModelContextSnapshot, resolveContextLimit, resolveModelCapabilities, resolveReasoningEffortOptions, snapshotInfo } from '../config/model-context.js';
+import { describeModelIntelligence } from '../config/model-pricing.js';
 import { maybeWriteGlobalMemory } from '../agent/memory.js';
 import {
   parseModelAddArgs,
@@ -410,6 +412,8 @@ async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<strin
     concurrency: runOpts.cfg?.webConcurrency ?? 3,
     // AI 自动审批开关（2026-09 补课）：设置面板勾选初始态
     autoReview: runOpts.cfg?.autoReview === true,
+    // 成本展示开关：Web 状态行/回合统计是否显示价格（默认开）
+    showCost: runOpts.cfg?.showCost !== false,
     tools: runOpts.tools?.map((t) => t.name) ?? [],
     // 已知工作区列表（设置面板一键切换用）
     workspaces: runOpts.cfg?.webWorkspaces ?? [],
@@ -1060,10 +1064,20 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
         contextWindow,
+        intelligence: describeModelIntelligence(model) ?? describeModelIntelligence(curEp?.apiModel),
       }, {
         messages,
         summarizeAt: cfg.summarizeAt ?? 40,
         compressRatio: cfg.contextCompressRatio,
+      })) add(l);
+      return { lines };
+    }
+
+    if (cmd === '/usage') {
+      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
+      for (const l of usageReport(messages, model, {
+        endpointPrice: curEp?.price,
+        apiModel: curEp?.apiModel,
       })) add(l);
       return { lines };
     }
@@ -2328,6 +2342,13 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           cfg.autoReview = body.autoReview;
           const { persistGlobalBoolToConfig } = await import('../config/write.js');
           persistGlobalBoolToConfig('autoReview', body.autoReview, '自动审批开关');
+        }
+        // 成本展示开关：Web 状态行/回合统计是否显示价格（默认开；只隐藏显示，不停累计）
+        if (typeof body.showCost === 'boolean') {
+          if (runOpts.cfg) runOpts.cfg.showCost = body.showCost;
+          cfg.showCost = body.showCost;
+          const { persistGlobalBoolToConfig } = await import('../config/write.js');
+          persistGlobalBoolToConfig('showCost', body.showCost, '成本展示开关');
         }
         // 设置面板「状态栏」tab：哪些统计段显示在输入区下方（勾选开关 → statusline 数组）
         if (Array.isArray(body.statusline)) {

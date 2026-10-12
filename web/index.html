@@ -114,7 +114,7 @@
           <div id="permission-pop" class="permission-pop hidden"></div>
         </div>
         <div id="composer-note" class="composer-note" data-i18n="composer.chooseSession">选择或新建会话</div>
-        <div id="composer-meta" class="composer-meta hidden"><span id="composer-in" class="meta-item hidden"></span><span id="composer-out" class="meta-item hidden"></span><span id="composer-ft" class="meta-item hidden" data-i18n-title="composer.ftTitle"></span><span id="composer-speed" class="meta-item hidden" data-i18n-title="composer.instantTitle"></span><span id="composer-cache" class="meta-item hidden"></span><span id="composer-ctx" class="meta-ctx hidden"><span class="ctx-track"><span id="composer-ctx-fill" class="ctx-fill"></span></span><span id="composer-ctx-text"></span></span></div>
+        <div id="composer-meta" class="composer-meta hidden"><span id="composer-in" class="meta-item hidden"></span><span id="composer-out" class="meta-item hidden"></span><span id="composer-ft" class="meta-item hidden" data-i18n-title="composer.ftTitle"></span><span id="composer-speed" class="meta-item hidden" data-i18n-title="composer.instantTitle"></span><span id="composer-cache" class="meta-item hidden"></span><span id="composer-cost" class="meta-item hidden"></span><span id="composer-ctx" class="meta-ctx hidden"><span class="ctx-track"><span id="composer-ctx-fill" class="ctx-fill"></span></span><span id="composer-ctx-text"></span></span></div>
       </footer>
     </div>
   </main>
@@ -169,6 +169,10 @@
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.autoReview">AI 自动审批</h4><p data-i18n="settings.autoReviewDesc">需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），失败回退人工审批；不改变权限与沙箱边界。</p></div>
               <label class="plan-toggle" title="AI 自动审批"><input type="checkbox" id="set-auto-review" aria-label="AI 自动审批"><svg><use href="#i-target"/></svg><span data-i18n="settings.autoReviewShort">自动审阅</span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info"><h4 data-i18n="settings.showCost">成本展示</h4><p data-i18n="settings.showCostDesc">在状态行与回合统计显示 token 成本估算；关闭只隐藏显示，用量照常累计。</p></div>
+              <label class="plan-toggle" title="成本展示"><input type="checkbox" id="set-show-cost" aria-label="成本展示"><svg><use href="#i-target"/></svg><span data-i18n="settings.showCostShort">显示成本</span></label>
             </div>
             <div class="setting-row">
               <div class="setting-info"><h4 data-i18n="settings.lang">语言</h4><p data-i18n="settings.langDesc">界面显示语言，保存后立即生效。</p></div>

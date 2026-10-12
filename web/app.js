@@ -29,7 +29,7 @@ const state = {
   blocks: new Map(),    // blockId -> MessageBlock
   waiters: new Map(),   // interactionId -> { sessionId, type(approval|ask), el }
   inFlight: 0,          // 本轮未完成的请求计数（跑完才印统计行）
-  turnTokens: { prompt: 0, completion: 0, cached: 0 },
+  turnTokens: { prompt: 0, completion: 0, cached: 0, costUsd: 0 },
   turnFirstTokenSum: 0, // 本轮首 token 延迟累计（turn-footer 首 token 均值用）
   turnFirstTokenCount: 0,
   turnUsages: [],
@@ -42,7 +42,7 @@ const state = {
   _localRunning: new Set(), // 本地刚启动的会话（doSend 设置，status 覆盖前保持；run.end 清除）
   cfgModelName: null,       // 设置 → 模型配置 tab 当前编辑的模型名
   sessionStats: new Map(),  // sessionId -> { turns, steps, llmMs, toolsMs, genMs, cached }
-  sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached, lastPrompt }
+  sessionUsage: new Map(),  // sessionId -> { prompt, completion, total, cached, lastPrompt, costUsd }
   messageQueue: [],     // 运行中 Enter 入队的消息（仅当前会话）
   historyLimit: 60,       // 历史渲染消息数上限（长会话分页，防 DOM 爆炸；“加载更多”累加）
   historyCache: null,     // 当前会话完整历史缓存 { id, data }（分页重绘不重复请求）
@@ -205,6 +205,9 @@ const I18N_ZH = {
   'settings.autoReview': 'AI 自动审批',
   'settings.autoReviewDesc': '需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），失败回退人工审批；不改变权限与沙箱边界。',
   'settings.autoReviewShort': '自动审阅',
+  'settings.showCost': '成本展示',
+  'settings.showCostDesc': '在状态行与回合统计显示 token 成本估算；关闭只隐藏显示，用量照常累计。',
+  'settings.showCostShort': '显示成本',
   'plugin.refresh': '刷新',
   'plugin.empty': '未安装插件（下方输入本地路径或 git URL 安装）',
   'plugin.installTitle': '安装插件',
@@ -525,6 +528,11 @@ const I18N_ZH = {
   'composer.instantTitle': '瞬时生成速率（EMA 平滑；停止流动后回退隐藏）',
   'composer.avgTitle': '会话平均速率（输出 token / 纯生成耗时，不含首 token 等待）',
   'turn.firstToken': ' · 首 token {dur}',
+  'turn.priceDetail': '单价 input ${input} · output ${output} · cache ${cache} /1M（{source}）',
+  'turn.priceSrcConfig': '自定义配置',
+  'turn.priceSrcEnv': '环境变量',
+  'turn.priceSrcSnapshot': 'OpenRouter 快照',
+  'turn.priceSrcDefault': '内置默认',
   'model.head': '模型',
   'model.none': '当前无可用模型',
   'model.effortHead': '思考级别',
@@ -680,6 +688,9 @@ const I18N_EN = {
   'settings.autoReview': 'AI auto-approval',
   'settings.autoReviewDesc': 'Requests that need approval are first reviewed by the model (approve/deny); review failures fall back to manual approval. Permission and sandbox boundaries are unchanged.',
   'settings.autoReviewShort': 'Auto review',
+  'settings.showCost': 'Cost display',
+  'settings.showCostDesc': 'Show token cost estimates in the status row and turn stats; hiding only affects display, usage is still tracked.',
+  'settings.showCostShort': 'Show cost',
   'plugin.refresh': 'Refresh',
   'plugin.empty': 'No plugins installed (install from a local path or git URL below)',
   'plugin.installTitle': 'Install plugin',
@@ -999,6 +1010,11 @@ const I18N_EN = {
   'composer.instantTitle': 'Instantaneous generation rate (EMA smoothed; hides after the stream stalls)',
   'composer.avgTitle': 'Session average rate (output tokens / generation time, excluding first-token wait)',
   'turn.firstToken': ' · first token {dur}',
+  'turn.priceDetail': 'prices input ${input} · output ${output} · cache ${cache} /1M ({source})',
+  'turn.priceSrcConfig': 'custom config',
+  'turn.priceSrcEnv': 'env vars',
+  'turn.priceSrcSnapshot': 'OpenRouter snapshot',
+  'turn.priceSrcDefault': 'builtin default',
   'model.head': 'Model',
   'model.none': 'No model available',
   'model.effortHead': 'Reasoning',
@@ -2950,18 +2966,20 @@ function renderTurnFooter(sessionId, data) {
   const tokens = data.tokens;
   if (!usages.length && (!tokens || (tokens.prompt + tokens.completion === 0))) return null;
 
-  let sumNew = 0, sumCached = 0, sumTotal = 0;
+  let sumNew = 0, sumCached = 0, sumTotal = 0, sumCost = 0;
   for (const item of usages) {
     const cached = item.cached || 0;
     sumNew += Math.max(0, item.prompt - cached);
     sumCached += cached;
     sumTotal += (item.total || (item.prompt + item.completion));
+    if (typeof item.costUsd === 'number' && item.costUsd > 0) sumCost += item.costUsd;
   }
   if (usages.length === 0 && tokens) {
     const cached = tokens.cached || 0;
     sumNew = Math.max(0, tokens.prompt - cached);
     sumCached = cached;
     sumTotal = tokens.prompt + tokens.completion;
+    if (typeof tokens.costUsd === 'number' && tokens.costUsd > 0) sumCost = tokens.costUsd;
   }
 
   const fmtN = (n) => n.toLocaleString();
@@ -2983,7 +3001,9 @@ function renderTurnFooter(sessionId, data) {
 
   const tokensDiv = el('div', 'turn-tokens');
   const stepCount = Math.max(1, usages.length);
-  const tokensSummary = `Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmtN(sumNew)} new · ${fmtN(sumCached)} cached · ${fmtN(sumTotal)} total`;
+  // 成本段与 TUI footer 同口径（`$x.xxxx`，4 位小数；无估算或开关关闭时不显示）
+  const costSeg = showCostOn() && sumCost > 0 ? ` · $${sumCost.toFixed(4)}` : '';
+  const tokensSummary = `Tokens: ${stepCount} step${stepCount > 1 ? 's' : ''} · ${fmtN(sumNew)} new · ${fmtN(sumCached)} cached · ${fmtN(sumTotal)} total${costSeg}`;
   const tokensHead = el('div', 'turn-tokens-head');
   const tokensTable = el('div', 'turn-tokens-table');
   const paintTokensHead = (collapsed) => {
@@ -3005,6 +3025,20 @@ function renderTurnFooter(sessionId, data) {
     const row = el('div', 'token-row');
     row.innerHTML = `<span class="col-step">${stepName}</span><span class="col-new">${fmtN(newTok)}</span><span class="col-cached">${fmtN(cached)}</span><span class="col-total">${fmtN(tot)}</span>`;
     tokensTable.appendChild(row);
+  }
+  // 单价明细（loop onUsage 附带 prices/priceSource；开关关闭或无则不显示）
+  const priced = [...usages].reverse().find((u) => u.prices);
+  if (showCostOn() && priced && priced.prices) {
+    const srcKey = { config: 'Config', env: 'Env', snapshot: 'Snapshot', default: 'Default' }[priced.priceSource];
+    const srcLabel = srcKey ? t('turn.priceSrc' + srcKey, {}) : (priced.priceSource || '');
+    const priceRow = el('div', 'token-row price');
+    priceRow.textContent = t('turn.priceDetail', {
+      input: priced.prices.input,
+      output: priced.prices.output,
+      cache: priced.prices.cacheRead,
+      source: srcLabel || priced.priceSource || '',
+    });
+    tokensTable.appendChild(priceRow);
   }
 
   tokensHead.addEventListener('click', () => {
@@ -3283,6 +3317,9 @@ function refreshStatus() {
     if (sp) sp.checked = state.planMode;
     const sar = $('#set-auto-review');
     if (sar) sar.checked = !!s.autoReview;
+    // 成本展示开关（默认开；关则状态行/回合统计隐藏价格，用量照常累计）
+    const scost = $('#set-show-cost');
+    if (scost) scost.checked = s.showCost !== false;
     const sc = $('#set-concurrency');
     if (sc) sc.value = String(s.concurrency || 3);
     updateConcurrencySlider(s.concurrency || 3); // 并发滑条填充/刻度/读数同步
@@ -3407,7 +3444,7 @@ function statsOf(sid) {
 }
 function usageOf(sid) {
   if (!state.sessionUsage.has(sid)) {
-    state.sessionUsage.set(sid, { prompt: 0, completion: 0, total: 0, cached: 0, lastPrompt: 0 });
+    state.sessionUsage.set(sid, { prompt: 0, completion: 0, total: 0, cached: 0, lastPrompt: 0, costUsd: 0 });
   }
   return state.sessionUsage.get(sid);
 }
@@ -3420,7 +3457,7 @@ function rebuildSessionStats(id, messages) {
   const s = statsOf(id);
   const u = usageOf(id);
   s.turns = 0; s.steps = 0; s.llmMs = 0; s.genMs = 0; s.cached = 0; s.ftSum = 0; s.ftCount = 0;
-  u.prompt = 0; u.completion = 0; u.total = 0; u.cached = 0; u.lastPrompt = 0;
+  u.prompt = 0; u.completion = 0; u.total = 0; u.cached = 0; u.lastPrompt = 0; u.costUsd = 0;
   for (const m of messages || []) {
     if (m.role === 'user') { s.turns += 1; continue; }
     if (m.role !== 'assistant') continue;
@@ -3431,6 +3468,8 @@ function rebuildSessionStats(id, messages) {
       u.total += um.total || ((um.prompt || 0) + (um.completion || 0));
       u.cached += um.cached || 0;
       s.cached += um.cached || 0;
+      // 会话累计成本（只读；当前落盘 usage 尚无该字段时保持 0 即隐藏）
+      if (typeof um.costUsd === 'number' && um.costUsd > 0) u.costUsd += um.costUsd;
       u.lastPrompt = um.prompt || 0;
     }
     if (typeof m.durMs === 'number') s.llmMs += m.durMs;
@@ -3470,13 +3509,15 @@ function updateComposerMeta() {
     cache = en ? `Cache ${pct}%` : `缓存 ${pct}%`;
   }
   set('#composer-cache', cache);
+  // 会话累计成本（`$x.xxxx`，4 位小数；无估算或开关关闭时隐藏，`$` 金额无需翻译）
+  set('#composer-cost', showCostOn() && u && (u.costUsd || 0) > 0 ? `$${u.costUsd.toFixed(4)}` : '');
   updateComposerMetaVisibility();
 }
 /** 整行显隐：任一项可见即显示；并给可见项计算 · 分隔（首个可见项无前缀，兼容任意隐藏组合） */
 function updateComposerMetaVisibility() {
   const wrap = $('#composer-meta');
   if (!wrap) return;
-  const visible = ['#composer-in', '#composer-out', '#composer-ft', '#composer-speed', '#composer-cache', '#composer-ctx']
+  const visible = ['#composer-in', '#composer-out', '#composer-ft', '#composer-speed', '#composer-cache', '#composer-cost', '#composer-ctx']
     .map((sel) => $(sel))
     .filter((n) => n && !n.classList.contains('hidden') && ((n.id === 'composer-ctx') || (n.textContent || '').trim() !== ''));
   visible.forEach((n, i) => n.classList.toggle('sep', i > 0));
@@ -3752,15 +3793,22 @@ bus.on('tool.result', (ev) => {
 bus.on('usage', (ev) => {
   if (ev.sessionId !== state.session) return;
   if (!state.turnUsages) state.turnUsages = [];
+  // TokenUsage 可选扩展字段随单次记录保留（回合统计行可直接读取，无需再改事件链路）；
+  // sessionId 是 SSE 信封键，不进用量记录；会话级累计键按需另加，这里不动
+  const { sessionId: _drop, prompt, completion, total, cached, ...extra } = ev;
   state.turnUsages.push({
-    prompt: ev.prompt || 0,
-    completion: ev.completion || 0,
-    total: ev.total || ((ev.prompt || 0) + (ev.completion || 0)),
-    cached: ev.cached || 0,
+    prompt: prompt || 0,
+    completion: completion || 0,
+    total: total || ((prompt || 0) + (completion || 0)),
+    cached: cached || 0,
+    ...extra,
   });
   state.turnTokens.prompt += ev.prompt || 0;
   state.turnTokens.completion += ev.completion || 0;
   state.turnTokens.cached += ev.cached || 0;
+  if (typeof ev.costUsd === 'number' && ev.costUsd > 0) {
+    state.turnTokens.costUsd = (state.turnTokens.costUsd || 0) + ev.costUsd;
+  }
   // 会话级累计（输入区下方状态行）
   const u = usageOf(ev.sessionId);
   const s = statsOf(ev.sessionId);
@@ -3768,6 +3816,7 @@ bus.on('usage', (ev) => {
   u.completion += ev.completion || 0;
   u.total += ev.total || 0;
   u.cached += ev.cached || 0;
+  if (typeof ev.costUsd === 'number' && ev.costUsd > 0) u.costUsd += ev.costUsd;
   s.cached += ev.cached || 0; // 缓存命中累计（之前漏加导致 Web 缓存恒显示 0%，对标 TUI onUsage）
   u.lastPrompt = ev.prompt || 0; // 当前上下文 = 最近一次请求的 prompt token（footer context 段）
   updateComposerMeta();
@@ -3972,7 +4021,7 @@ bus.on('run.end', async (ev) => {
     firstTokenAvg: state.turnFirstTokenCount > 0 ? state.turnFirstTokenSum / state.turnFirstTokenCount : null,
   });
   state.turnUsages = [];
-  state.turnTokens = { prompt: 0, completion: 0, cached: 0 };
+  state.turnTokens = { prompt: 0, completion: 0, cached: 0, costUsd: 0 };
   state.turnLlmMs = 0;
   state.turnGenMs = 0;
   state.turnFirstTokenSum = 0;
@@ -6444,6 +6493,14 @@ $('#set-auto-review').addEventListener('change', (e) => {
     .then(() => notify(e.target.checked ? t('settings.autoReview') : t('settings.autoReviewShort'), 'success'))
     .catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
 });
+// 成本展示开关（状态行 #composer-cost + 回合 footer 成本段/单价行；即时生效 + 持久化）
+$('#set-show-cost').addEventListener('change', (e) => {
+  applySettings({ showCost: e.target.checked })
+    .then(() => { if (state.status) state.status.showCost = e.target.checked; updateComposer(); })
+    .catch((err) => notify(t('err.settings', { msg: err.message }), 'error'));
+});
+/** 成本展示是否开启（默认开；配置 showCost=false 关闭） */
+function showCostOn() { return state.status?.showCost !== false; }
 
 /* 设置 · 通用并发滑条（复用输入区 slider 结构：1..16 档，拖动跟手、松手吸附落盘） */
 const CC_MIN = 1, CC_MAX = 16;

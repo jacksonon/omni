@@ -1861,6 +1861,7 @@ body.cmd-open::before {
 .token-row .col-new { width: 68px; text-align: right; }
 .token-row .col-cached { width: 68px; text-align: right; }
 .token-row .col-total { width: 68px; text-align: right; }
+.token-row.price { color: var(--text-caption); margin-top: 2px; }
 
 /* ---- 交互卡片（审批/提问）：从顶部滑入 ---- */
 @keyframes interaction-enter {
