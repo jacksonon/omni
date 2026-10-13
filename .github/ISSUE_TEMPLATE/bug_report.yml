@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible bug in Omni
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in as much detail as you can.
+        For security vulnerabilities, do **not** open a public issue — see SECURITY.md.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues and this has not been reported yet.
+          required: true
+        - label: I am running the latest release (or the current `main`).
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Omni version
+      description: Output of `omni --version`.
+      placeholder: "e.g. 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which interface?
+      options:
+        - TUI (omni)
+        - Mini / console CLI (omni mini)
+        - Headless (omni exec / omni mcp-server)
+        - Web (omni web)
+        - Electron desktop app
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, terminal, Node/Bun versions, and the model/provider you used.
+      placeholder: "e.g. macOS 15, iTerm2, Node 22, Bun 1.3, DeepSeek"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `omni ...`
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Relevant logs (e.g. `~/.config/omni/tui-crash.log`) with secrets redacted.
+      render: shell
+    validations:
+      required: false

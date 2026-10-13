@@ -1,5 +1,5 @@
 /**
- * 探针：providers 分组持久化 + Web API（settings-providers-spec）。
+ * 探针：providers 分组持久化 + Web API（Doc/specs/settings-providers-spec.md）。
  *
  * A. 配置读写纯函数（config/write.ts）：
  *    A1 persistProviderConfigToGlobal 新建/合并（纯 JSON 全局配置、保留无关字段）

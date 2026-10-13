@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jacksonon/omni/security/advisories/new
+    about: Report security issues privately, not in public issues (see SECURITY.md).
+  - name: Usage questions & documentation
+    url: https://github.com/jacksonon/omni/blob/main/Doc/Usage-Guide.md
+    about: Check the user guide (and Doc/使用指导.md) before opening an issue.

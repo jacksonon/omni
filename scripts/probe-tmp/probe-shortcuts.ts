@@ -1,5 +1,5 @@
 /**
- * 探针：Web 快捷键系统纯函数（keyboard-shortcuts-spec.md）。
+ * 探针：Web 快捷键系统纯函数（Doc/specs/keyboard-shortcuts-spec.md）。
  *
  * 从 web/app.js 提取 `shortcuts-pure-start/end` 标记内的纯函数块，在 Node 沙箱
  * （stub localStorage / navigator）中直接运行，验证：

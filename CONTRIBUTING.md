@@ -19,7 +19,7 @@ npm run dev -- "show me the structure of this directory"
 
 ## 项目结构
 
-完整架构说明见 [AGENTS.md](AGENTS.md)（这是给 AI 协作 Agent 看的开发指南，但也是项目最全面的架构文档）。
+完整架构说明见 [AGENTS.md](AGENTS.md)（给 AI 协作 Agent 看的精简开发指南）+ [Doc/agents-reference.md](Doc/agents-reference.md)（逐文件详细参考 / 工具与命令全表）。
 
 ## 开发规范
 
@@ -71,3 +71,14 @@ npm run probe:web          # Web 协议端到端探针（mock 离线）
 - 终端类型、Node/Bun 版本
 - 复现步骤、预期行为与实际行为
 - 相关日志（`~/.config/omni/tui-crash.log` 等）
+
+## Acknowledgements / Prior art（致谢与来源）
+
+Omni 是一个独立项目，但其设计与实现在不同程度上参考、对标了以下开源项目。感谢它们的作者与社区：
+
+- **[sst/opencode](https://github.com/sst/opencode)** —— 「技能」目录约定（项目内 `.opencode/skills`，并兼容 Claude Code 的 `.claude/skills`，Omni 另加 `.agents/skills`）、配置分层 + JSONC 体系，以及 TUI 命令面板、Ctrl+X 前缀绑定等交互的灵感来源。
+- **[OpenAI Codex CLI](https://github.com/openai/codex)** —— `omni mini` 纯终端模式的版面与交互对标 Codex CLI（`• Ran` 状态行、审批三选项、`exec`/`resume` 子命令族、Ctrl+T 轨迹账本等）。
+- **[Anthropic Claude Code](https://github.com/anthropics/claude-code)** —— Hooks 生命周期协议（`PreToolUse`/`PostToolUse` 等事件与 JSON 决策）、工具卡片的 Edit 风格统一 diff、技能（SKILL.md）渐进披露等机制的对标对象。
+- **[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)**（MIT）—— Web UI 部分派生自该项目，版权声明保留在相关文件头（另见 [SECURITY.md](SECURITY.md)）。
+
+以上多为设计灵感与功能对标；涉及直接派生的情况会在相应文件头保留原始版权声明。若你有未列出的来源需要致谢，欢迎提 issue 补充。

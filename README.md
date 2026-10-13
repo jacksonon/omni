@@ -47,15 +47,17 @@ No key at hand? `npm run mock` starts a local mock API for keyless end-to-end ru
 | `omni web` | Local backend (REST + SSE) + browser UI, multi-session sidebar |
 | Desktop app | Standalone Electron app (mac/win/linux) from GitHub Releases, no Node needed |
 
-## Benchmarks
+## Benchmarks (smoke)
 
-Measured on this repo (reproducible — not vendor slides):
+This is a small, **reproducible smoke benchmark** — a sanity check that the loop, tools and streaming path work end-to-end. It is **not** a statistically rigorous evaluation and its numbers are **not comparable** to SWE-bench / Terminal-Bench style leaderboards.
 
 ```bash
-npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5
+npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5   # real API (spends tokens; needs OMNI_API_KEY)
+npm run eval:mock                                             # deterministic, offline, CI-safe (no key)
+npm run eval                                                  # broader task set
 ```
 
-Model `deepseek-v4.1-flash` (OpenRouter snapshot pricing: in $0.15 / out $0.6 / cache $0.003 per 1M) · 2026-10-12 · 3 smoke tasks × 5 runs:
+Snapshot — model `deepseek-v4.1-flash` (OpenRouter pricing: in $0.15 / out $0.6 / cache $0.003 per 1M) · run 2026-10-12 · **N = 5 runs × 3 smoke tasks**.
 
 | Task | Pass | Duration p50/p90/p99 | TTFT p50/p90/p99 | Avg tokens | Avg cost |
 |---|---|---|---|---|---|
@@ -64,9 +66,14 @@ Model `deepseek-v4.1-flash` (OpenRouter snapshot pricing: in $0.15 / out $0.6 / 
 | Read file + answer | 5/5 | 6893/7415/7415ms | 2155/3106/3106ms | 36,126 | $0.0003 |
 | **Total** | **15/15** | 3171/7224/7415ms | 2277/3106/3872ms | 347,534 | **$0.0003/run** |
 
-Notes: N=5, so p99 = max — read it as "worst observed", not a true 99th percentile. Prompt caching does the heavy lifting: warm runs cost ~$0.00006 (99% cache hits) vs ~$0.0025 cold (~40×). Previous hangs were an eval-runner bug (timeout killed only the `npx` wrapper, the agent kept running) — fixed with process-group kill.
+How to read this honestly:
 
-External context (different tasks/harnesses, for reference only): the Berkeley [HarnessTax study](https://arena.ai/blog/coding-agents-harness-tax) (Sep 2026, 21 model×harness pairs) found harness choice moves success rate only ±2–5% but cost up to ~2× (Claude Code ≈ 2.0× Pi, ≈ 1.6× Codex CLI on SWE-bench Lite) — which is why Omni stays minimal like Pi. Terminal-Bench leaderboard ([tbench.ai](https://www.tbench.ai/)): Claude Code + Opus 5.5 at 64.8%.
+- **N = 5 is tiny.** In the table above `p99` equals the max observed value, so it is a "worst case", not a true 99th percentile. The reporter now prints **median + min–max** for small samples and only shows p90/p99 once `N ≥ 20`.
+- These are **three trivial tasks** (identity, arithmetic, one file read) — they exercise plumbing, not coding ability. Do not extrapolate them into a success-rate claim.
+- Absolute latency/token/cost depend on the provider, gateway, region and prompt-cache warmth; only the command, model and task set are fixed. Prompt caching dominates here: warm runs cost ~$0.00006 (≈99% cache hits) vs ~$0.0025 cold (~40×).
+- The raw structured report is written to `eval-report.json`; `npm run eval:mock` is the deterministic offline variant suitable for CI.
+
+Background reading (different tasks and harnesses — **not** a like-for-like comparison): the Berkeley [HarnessTax study](https://arena.ai/blog/coding-agents-harness-tax) (Sep 2026, 21 model×harness pairs) found harness choice moves success rate only ±2–5% but cost up to ~2×; the Terminal-Bench leaderboard ([tbench.ai](https://www.tbench.ai/)) tracks harness×model success rates on real coding tasks.
 
 ## Features
 

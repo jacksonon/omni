@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an idea or improvement for Omni
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Please describe the problem and the change you would like.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues and this has not been requested yet.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Why do you need it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which interface does this affect?
+      options:
+        - TUI (omni)
+        - Mini / console CLI (omni mini)
+        - Headless (omni exec / omni mcp-server)
+        - Web (omni web)
+        - Electron desktop app
+        - Agent core / tools / safety
+        - Other / not sure
+    validations:
+      required: false

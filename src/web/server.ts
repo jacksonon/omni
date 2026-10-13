@@ -127,299 +127,18 @@ import {
 } from '../config/write.js';
 import type { PermissionTier } from '../safety/policy.js';
 import type { McpServerConfig } from '../tools/mcp.js';
-import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import { VERSION } from '../version.js';
-import { WEB_ASSETS } from './assets.js';
 import type { WebBroadcast } from './events.js';
-import { type PendingApproval, type PendingAsk, WebOutput } from './output.js';
+import { WebOutput } from './output.js';
 import { STATUSLINE_DEFAULT } from '../tui/layout.js';
+import { getAsset, getIconPng, json, MIME, readBody } from './http-util.js';
+import { approvals, asks, listeners, pendingRegistry, queuedSends, runs, sessions, type RunningRun, type WebSession } from './state.js';
+import { buildStatus, lastRunReason, maybeAutoTitle } from './status.js';
+import { routingOutput, setCurrentOutput } from './routing-output.js';
 
-/* ---------------- 静态资源 ---------------- */
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC_WEB_DIR = path.resolve(__dirname, '..', '..', 'web');
-const CWD_WEB_DIR = path.resolve(process.cwd(), 'web');
-
-/** 读取页面资源：开发模式优先 web/ 目录（热更新），否则用内嵌 assets.ts */
-function getAsset(name: string): string | null {
-  const candidates = process.env.OMNI_WEB_DIR ? [process.env.OMNI_WEB_DIR] : [SRC_WEB_DIR, CWD_WEB_DIR];
-  for (const dir of candidates) {
-    try {
-      const f = path.join(dir, name);
-      if (existsSync(f)) return readFileSync(f, 'utf8');
-    } catch {
-      // 继续尝试下一个候选
-    }
-  }
-  return WEB_ASSETS[name] ?? null;
-}
-
-/** 读取应用图标 PNG：开发模式优先 web/icon.png，bundle 回退内嵌 base64 */
-function getIconPng(): Buffer | null {
-  const candidates = process.env.OMNI_WEB_DIR ? [process.env.OMNI_WEB_DIR] : [SRC_WEB_DIR, CWD_WEB_DIR];
-  for (const dir of candidates) {
-    try {
-      const f = path.join(dir, 'icon.png');
-      if (existsSync(f)) return readFileSync(f);
-    } catch {
-      // 继续尝试下一个候选
-    }
-  }
-  const embedded = WEB_ASSETS['icon.png'];
-  if (embedded && embedded.startsWith('data:image/png;base64,')) {
-    return Buffer.from(embedded.slice('data:image/png;base64,'.length), 'base64');
-  }
-  return null;
-}
-
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.svg': 'image/svg+xml',
-};
-
-/* ---------------- 工具函数 ---------------- */
-function json(res: http.ServerResponse, code: number, obj: unknown): void {
-  res.writeHead(code, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(obj));
-}
-
-function readBody(req: http.IncomingMessage): Promise<Record<string, any>> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-/* ----------------------------------------------------------------
- * WebOut 路由（attachRuntime 用）
- *
- * attachRuntime 只需 output 的 审批 / 提问 / hook 输出 / 子代理事件 四个通道。
- * 由于我们**全局单运行**，路由对象把调用转发给「当前运行会话」的 WebOutput
- *（currentOutput 在每次运行开始时设置、结束后清空）——并发安全且有单一语义。
- * ---------------------------------------------------------------- */
-let currentOutput: WebOutput | null = null;
-
-/** attachRuntime 输入的 Output 路由对象（导出供 web/index.ts 透传） */
-export const routingOutput = {
-  requestApproval: (req: ApprovalRequest) =>
-    currentOutput ? currentOutput.requestApproval(req) : Promise.resolve(false),
-  askUser: (q: string, opts: string[], multi?: boolean) =>
-    currentOutput ? currentOutput.askUser(q, opts, multi ?? false) : Promise.resolve(null),
-  onHookOutput: (event: string, lines: string[]) => {
-    for (const l of listeners) l('hook.output', { sessionId: null, event, lines: lines.slice(0, 5) });
-  },
-  onSubagentEvent: (ev: unknown) => {
-    const sid = currentOutput?.sessionId ?? null;
-    for (const l of listeners) l('subagent', { sessionId: sid, ev });
-  },
-  onAutoReview: (req: ApprovalRequest, verdict: { approve: boolean; reason: string }) =>
-    currentOutput?.onAutoReview?.(req, verdict),
-  onBackgroundSubagentDone: (r: { id: string; name: string; status: 'ok' | 'err'; result: string; durationMs: number }) =>
-    currentOutput?.onBackgroundSubagentDone?.(r),
-};
-
-/* ---------------- 会话存储与运行管理（1.0 P0-2 多会话并发）---------------- */
-interface WebSession {
-  id: string;
-  file: string | null;
-  messages: ChatCompletionMessageParam[];
-  /** 已持久化的可落盘消息数（增量追加起点；/clear 式压缩后重置为 0） */
-  persisted: number;
-  title: string;
-  created: number;
-  updated: number;
-}
-
-interface RunningRun {
-  sessionId: string;
-  controller: AbortController;
-  /** steer 打断槽（每运行独立——多会话并发下不再用共享变量） */
-  interruptText: string | null;
-}
-
-const sessions = new Map<string, WebSession>();
-const listeners = new Set<WebBroadcast>();
-const approvals = new Map<string, PendingApproval>();
-const asks = new Map<string, PendingAsk>();
-/** 并发运行表：sessionId → 运行句柄（每会话限 1 个并发；全局上限 cfg.webConcurrency） */
-const runs = new Map<string, RunningRun>();
-/** 兼容别名：全局是否至少有一个会话在跑 */
-function anyRunning(): boolean {
-  return runs.size > 0;
-}
-
-/** /send 排队（第六节 P2 轻量多会话协调）：容量空闲时逐条执行（FIFO） */
-const queuedSends: { targetId: string; text: string }[] = [];
-
-
-const pendingRegistry = {
-  addApproval(sessionId: string, req: ApprovalRequest): Promise<boolean> {
-    const id = `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    return new Promise<boolean>((resolve) => {
-      approvals.set(id, { sessionId, resolve });
-      for (const l of listeners) {
-        l('approval.request', {
-          sessionId,
-          approvalId: id,
-          tool: req.tool,
-          summary: req.summary,
-          reason: req.reason,
-        });
-      }
-    });
-  },
-  addAsk(
-    sessionId: string,
-    question: string,
-    options: string[],
-    multiple: boolean
-  ): Promise<AskResult | null> {
-    const id = `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    return new Promise<AskResult | null>((resolve) => {
-      asks.set(id, { sessionId, options, multiple, resolve });
-      for (const l of listeners) {
-        l('ask.request', { sessionId, askId: id, question, options, multiple });
-      }
-    });
-  },
-};
-
-/** 从 EventRecorder 取本轮结束原因（completed / aborted / error / max-steps） */
-function lastRunReason(recorder?: EventRecorder): string {
-  const evs = recorder?.events ?? [];
-  for (let i = evs.length - 1; i >= 0; i--) {
-    const e = evs[i];
-    if (e.k === 'turn/end') return (e as unknown as { reason: string }).reason ?? 'completed';
-  }
-  return 'completed';
-}
-
-/** 生成会话标题（fire-and-forget）：首轮对话后异步调用，写入 meta + 广播。
- *  语言跟随配置 language（第十二节 P2 标题本地化）。 */
-function maybeAutoTitle(s: WebSession, client: OpenAI, model: string, lang: 'zh' | 'en' = 'zh'): void {
-  if (s.title) return;
-  const hasAnswer = s.messages.some((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content);
-  if (!hasAnswer) return;
-  void generateSessionTitle(client, model, s.messages, lang)
-    .then((title) => {
-      if (!title || s.title) return;
-      s.title = title;
-      if (s.file) void updateSessionTitle(s.file, title);
-      for (const l of listeners) l('title', { sessionId: s.id, title });
-    })
-    .catch(() => {
-      // 标题是可选增强，任何异常静默忽略
-    });
-}
-
-/* ---------------- git 快照（分支 / 脏文件数 / 分支列表，供输入区上下文条展示） ----------------
- * 1.0 P0-2 并发安全：execSync 会阻塞事件循环——并发多会话时一个会话的 git 探测会
- * 卡住其它会话的请求（实测并发 202 竞态）。改异步 execAsync + 2s 缓存。 */
-const gitInfoCache = new Map<string, { at: number; info: Record<string, unknown> }>();
-async function getGitInfo(cwd: string): Promise<Record<string, unknown>> {
-  const hit = gitInfoCache.get(cwd);
-  if (hit && Date.now() - hit.at < 2000) return hit.info;
-  const { execAsync } = await import('node:child_process').then((m) => ({ execAsync: (cmd: string, o: unknown) => new Promise<string>((resolve) => {
-    const { exec } = m as unknown as { exec: (c: string, op: any, cb: (e: unknown, s: { stdout: string }) => void) => void };
-    exec(cmd, { cwd, timeout: 1500, maxBuffer: 1024 * 1024 } as never, (e, s) => resolve(e ? '' : (s.stdout ?? '')));
-  }) }));
-  const out: Record<string, unknown> = {};
-  try {
-    const branch = (await execAsync('git rev-parse --abbrev-ref HEAD', {})).trim();
-    if (!branch) return out;
-    out.gitBranch = branch;
-    const st = (await execAsync('git status --porcelain', {})).trim();
-    out.gitDirty = st ? st.split('\n').filter((l) => l.trim()).length : 0;
-    const br = (await execAsync('git branch --format="%(refname:short)"', {})).trim();
-    const branches = br.split('\n').map((x) => x.trim().replace(/^"|"$/g, '')).filter(Boolean);
-    out.gitBranches = branches.length ? branches : [branch];
-  } catch {
-    // 非 git / 其它失败 → 空
-  }
-  gitInfoCache.set(cwd, { at: Date.now(), info: out });
-  return out;
-}
-
-/* ---------------- 状态快照 ---------------- */
-
-/** 下发 providers 分组结构（设置面板「模型配置」渲染，settings-providers-spec）：
- *  cfg.providers 逐组展开——端点/密钥只认 providers 分组（旧版扁平 models 表已移除）。 */
-function buildProvidersStatus(runOpts: RunContext['runOpts']): unknown[] {
-  const out: Record<string, unknown>[] = [];
-  for (const [name, p] of Object.entries(runOpts.cfg?.providers ?? {})) {
-    out.push({
-      name,
-      baseURL: p.baseURL,
-      apiKey: p.apiKey,
-      userAgent: p.userAgent,
-      // 自定义请求头（分组级；值可含 {sessionId} 占位符，请求时解析）
-      headers: p.headers,
-      // 远端模型目录缓存（"获取模型列表" 结果；未拉取过 = undefined，前端据此显示「获取/刷新」）
-      modelCatalog: p.modelCatalog,
-      models: Object.entries(p.models ?? {}).map(([mid, m]) => ({
-        name: mid,
-        apiModel: m.apiModel,
-        displayName: m.displayName,
-        reasoningEffortOptions: m.reasoningEffortOptions,
-        reasoningEffort: m.reasoningEffort,
-        limit: m.limit,
-        variants: m.variants,
-        overrideBaseURL: m.baseURL, // 模型级覆盖（继承/覆盖开关）
-        overrideApiKey: m.apiKey,
-      })),
-    });
-  }
-  return out;
-}
-
-async function buildStatus(runOpts: RunContext['runOpts']): Promise<Record<string, unknown>> {
-  const git = await getGitInfo(process.cwd());
-  return {
-    version: VERSION,
-    cwd: process.cwd(),
-    model: runOpts.modelRuntime?.model ?? '',
-    models: runOpts.models ?? [],
-    providers: buildProvidersStatus(runOpts),
-    permission: runOpts.permission ?? 'safe',
-    planMode: runOpts.planMode ?? false,
-    reasoningEffort: runOpts.reasoningEffort ?? undefined,
-    reasoningEffortOptions: runOpts.reasoningEffortOptions ?? undefined,
-    activeVariant: runOpts.activeVariant ?? undefined,
-    // 生效上下文窗口（手动覆盖（/context <档位>）优先，否则当前模型 limit.context；composer 用量环与压缩分母同源）
-    contextLimit: resolveContextLimit(runOpts.cfg?.contextLimit, (runOpts.models ?? []).find((m) => m.name === runOpts.modelRuntime?.model)?.limit?.context),
-    contextOverride: typeof runOpts.cfg?.contextLimit === 'number' && (runOpts.cfg?.contextLimit ?? 0) > 0,
-    webTheme: runOpts.cfg?.webTheme ?? 'system',
-    language: runOpts.cfg?.language ?? 'zh',
-    // 输入区下方状态行段（设置 → 状态栏配置；同 CLI/TUI footer stats）
-    statusline: Array.isArray(runOpts.cfg?.statusline) ? runOpts.cfg!.statusline : STATUSLINE_DEFAULT,
-    // 1.0 P0-2 多会话并发：running = 是否存在任一运行；runningSessions = 全部运行中的会话 id
-    running: runs.size > 0,
-    runningSession: [...runs.keys()][0] ?? null,
-    runningSessions: [...runs.keys()],
-    concurrency: runOpts.cfg?.webConcurrency ?? 3,
-    // AI 自动审批开关（2026-09 补课）：设置面板勾选初始态
-    autoReview: runOpts.cfg?.autoReview === true,
-    // 成本展示开关：Web 状态行/回合统计是否显示价格（默认开）
-    showCost: runOpts.cfg?.showCost !== false,
-    tools: runOpts.tools?.map((t) => t.name) ?? [],
-    // 已知工作区列表（设置面板一键切换用）
-    workspaces: runOpts.cfg?.webWorkspaces ?? [],
-    ...git,
-  };
-}
+// 抽出模块的对外导出保持路径不变（web/index.ts 仍按 './server.js' 引用 routingOutput）
+export { routingOutput } from './routing-output.js';
 
 /* ---------------- 服务 ---------------- */
 export interface WebServiceOptions {
@@ -642,7 +361,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, runOpts.modelRuntime?.model);
     ro.onBackgroundResult = (r) => output.onBackgroundSubagentDone?.(r);
-    currentOutput = output;
+    setCurrentOutput(output);
 
     // 广播运行状态（客户端据此按会话显示取消按钮 / 其它会话可继续发送）
     void broadcast('status', await buildStatus(runOpts));
@@ -687,7 +406,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         maybeAutoTitle(s, runOpts.modelRuntime!.client, runOpts.modelRuntime!.model, cfg.language);
 
         const reason = lastRunReason(ro.events);
-        currentOutput = null;
+        setCurrentOutput(null);
         runs.delete(sessionId);
         broadcast('run.end', { sessionId, reason });
         void broadcast('status', await buildStatus(runOpts));
@@ -2358,7 +2077,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           cfg.statusline = next;
           persistStatuslineToConfig(next, cfg);
         }
-        // —— providers 分组动作（settings-providers-spec）：一个端点配置多个模型 ——
+        // —— providers 分组动作（Doc/specs/settings-providers-spec.md）：一个端点配置多个模型 ——
         // provider 级新建/更新（共享 baseURL/apiKey/userAgent/headers）
         if (body.providerConfig && typeof body.providerConfig === 'object') {
           const pc = body.providerConfig as Record<string, unknown>;

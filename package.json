@@ -96,6 +96,7 @@
     "mock": "node scripts/mock-server.mjs",
     "eval": "tsx scripts/eval/run-eval.ts",
     "eval:mock": "tsx scripts/eval/run-eval.ts --mock",
+    "test": "tsx --test $(find src -name '*.test.ts')",
     "test:features": "tsx scripts/feature-tests/index.ts",
     "prepack": "npm run web:sync && npm run build",
     "electron:dev": "npm run bundle && electron .",

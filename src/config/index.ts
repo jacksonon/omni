@@ -188,9 +188,12 @@ export interface OmniConfig {
    */
   sandboxNetworkAllow?: string[];
   /**
-   * 沙箱不可用时 fail-closed（1.0 P0-4，企业安全门）：默认 false = 降级直接执行 +
-   * 提示（fail-open，不卡主流程）；true = 平台无 sandbox-exec/bwrap/firejail 时
-   * **拒绝执行命令**并提示安装方式——宁可不跑也不裸奔。
+   * 沙箱不可用时 fail-closed（1.0 P0-4，企业安全门）：
+   * · 缺省（未显式配置）且沙箱启用（read-only / workspace-write）→ **true**：
+   *   平台无 sandbox-exec/bwrap/firejail，或网络白名单无法内核强制（Linux/firejail）
+   *   时**拒绝执行命令**并提示原因——宁可不跑也不裸奔（secure by default）。
+   * · 显式 `false` → 降级直接执行 + 提示（fail-open）；显式 `true` → 始终拒绝。
+   * · `sandbox: off` / `danger-full-access` 不受影响（本字段无意义）。
    */
   sandboxFailClosed?: boolean;
   /**
@@ -1088,6 +1091,14 @@ export function loadConfig(overrides: ConfigOverrides = {}): OmniConfig {
 
   // 密钥脱敏开关（2026-09 补课）：默认开；显式 false 关闭
   setSecretRedaction(cfg.redactSecrets !== false);
+
+  // 沙箱 fail-closed 默认（§4.1 secure by default）：沙箱启用（read-only / workspace-write）
+  // 且用户未显式配置时，默认 fail-closed——平台无沙箱原语（或网络白名单无法内核强制）时
+  // 拒绝执行，而不是静默裸奔。显式 sandboxFailClosed:false 可退回 fail-open 降级放行；
+  // sandbox: off / danger-full-access 不受影响（保持 false）。
+  if (cfg.sandboxFailClosed === undefined) {
+    cfg.sandboxFailClosed = cfg.sandbox === 'read-only' || cfg.sandbox === 'workspace-write';
+  }
 
   return cfg;
 }

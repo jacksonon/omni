@@ -1,0 +1,44 @@
+# CI — 每次 push / PR 到 main 时跑类型检查与测试
+# 目标：把「无测试框架、CI 不跑测试」的审计缺口补齐——
+#   · npm run typecheck  —— TypeScript 全量类型检查
+#   · npm test           —— Node 内置 test runner 单元测试（src/**/*.test.ts）
+#   · npm run eval:mock  —— 离线确定性评估（mock server，无网络/无 API Key）
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Offline eval (deterministic mock)
+        run: npm run eval:mock
+
+      # 说明：npm run test:features（scripts/feature-tests 集成/e2e 套件）**不纳入 CI**：
+      # 它依赖 PTY/TTY（omni mini 的 pty e2e）且耗时约 6 分钟；本地实测 225/227（2 例 PTY
+      # 用例失败，exit 1），无 TTY 的 CI runner 上不可靠。改为在开发者本机按需运行。

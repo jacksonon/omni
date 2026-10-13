@@ -217,12 +217,11 @@
       "items": {
         "type": "string"
       },
-      "description": "沙箱网络白名单（hostname；配置后经内置过滤代理出网）"
+      "description": "沙箱网络白名单（hostname）。经内置过滤代理出网；macOS 由 Seatbelt 内核强制仅连代理端口，Linux/firejail 仅 proxy 环境变量（尽力而为，非内核强制）"
     },
     "sandboxFailClosed": {
       "type": "boolean",
-      "description": "沙箱不可用时拒绝执行（fail-closed；默认 false 降级）",
-      "default": false
+      "description": "沙箱不可用时拒绝执行（fail-closed）。缺省：沙箱启用（read-only/workspace-write）时为 true（拒绝裸奔）；显式 false 退回 fail-open 降级执行"
     },
     "sandboxMaskEnv": {
       "type": "boolean",

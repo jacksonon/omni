@@ -276,7 +276,7 @@ omni -h / -v                      # help / version
   // OS-level sandbox (see 5.5): wraps run_command with sandbox-exec (macOS) / bwrap (Linux)
   "sandbox": "off",                    // off (default) / read-only / workspace-write / danger-full-access
   "sandboxNetworkAllow": [],           // sandbox network allowlist (hostnames); empty = keep network fully blocked
-  "sandboxFailClosed": false,          // true = refuse to run when no sandbox primitive exists (fail-closed)
+  "sandboxFailClosed": true,           // defaults to true when sandbox is enabled: refuse to run if no primitive / network can't be kernel-enforced; set false to degrade
   "sandboxWritePaths": [],             // extra writable absolute paths for workspace-write
   "sandboxMaskEnv": true,              // mask credential env vars (*_KEY/*_TOKEN/*_SECRET/*_PASSWORD) handed to sandboxed commands
 
@@ -387,13 +387,21 @@ Beyond the permission tiers, `run_command` can be wrapped in a real OS sandbox:
 | `sandbox` value | Behavior |
 |---|---|
 | `off` (default) | No wrapping — only the permission tiers apply |
-| `read-only` | Denies writes and network access |
-| `workspace-write` | Denies network; allows writes only inside the current working directory |
+| `read-only` | Denies writes and network access, and denies reads of credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) |
+| `workspace-write` | Denies network; allows writes only inside the current working directory (+ `sandboxWritePaths`) |
 | `danger-full-access` | Sandbox active but permissive (escape hatch) |
 
-On macOS the wrapper is `sandbox-exec`; on Linux it is `bwrap`. When the platform has no sandbox
-primitive available, omni degrades to running the command directly and tells you — unless you set
-`sandboxFailClosed: true`, which refuses to run instead (fail-closed, for locked-down environments).
+On macOS the wrapper is `sandbox-exec` (Seatbelt); on Linux it is `bwrap` (falling back to `firejail`).
+When the platform has no sandbox primitive available, omni is **fail-closed by default** while the sandbox
+is enabled (`read-only` / `workspace-write`): it refuses to run and explains why (secure by default). Set
+`sandboxFailClosed: false` explicitly to degrade to running the command directly (unsafe). Windows has no
+bwrap/sandbox-exec equivalent — run omni inside WSL for bwrap protection.
+
+The network allowlist is platform-dependent: on macOS Seatbelt **kernel-enforces** it (only the local
+proxy port is reachable; the proxy then filters by hostname, **TLS is not decrypted**). On Linux/firejail
+it is only best-effort via `http_proxy`/`https_proxy` env vars (**not kernel-enforced** — a target that
+ignores the proxy vars can connect directly). Under fail-closed, such a non-kernel-enforced allowlist is
+refused too; set `sandboxFailClosed: false` to accept the weaker guarantee.
 
 Related fields:
 
@@ -404,6 +412,8 @@ Related fields:
 - `sandboxMaskEnv: true` (default) — replaces the values of credential-looking env vars
   (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD`) with a sentinel before handing them to a
   sandboxed command, so a command cannot `echo` a key back into the model's context.
+- `sandboxFailClosed` — defaults to `true` while the sandbox is enabled (see above); `sandbox: off` /
+  `danger-full-access` are unaffected.
 
 ### 5.6 AI auto-approval (`autoReview` / `/auto`)
 

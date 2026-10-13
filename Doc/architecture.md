@@ -124,7 +124,7 @@ src/
     policy.ts        # Permission tiers (full/safe/ask/read) + dangerous-command detection
     audit.ts         # Audit log on disk (~/.config/omni/audit.log)
     trust.ts         # Workspace trust: trust list, untrusted = read-only + skip project config
-    sandbox.ts       # OS-level sandbox: sandbox-exec (macOS) / bwrap (Linux) wrapping run_command
+    sandbox.ts       # OS-level sandbox: sandbox-exec (macOS, kernel-enforced) / bwrap·firejail (Linux) wrapping run_command; fail-closed by default when enabled
     netproxy.ts      # Sandbox network allowlist filtering proxy (CONNECT by hostname, TLS untouched)
     auto-review.ts   # AI auto-approval: createAutoReviewer (approve/deny review, falls back to human)
 

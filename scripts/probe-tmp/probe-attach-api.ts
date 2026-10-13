@@ -1,5 +1,5 @@
 /**
- * 探针：Web 附件 API（web-attach-spec.md D11 服务端部分）。
+ * 探针：Web 附件 API（Doc/specs/web-attach-spec.md D11 服务端部分）。
  *
  * 场景 = 前端 `+` 文件/图片选择器提交附件后，POST /api/sessions/:id/messages
  * 携带 { text, attachments }：

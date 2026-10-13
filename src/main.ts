@@ -100,9 +100,12 @@ export interface RunContext {
  * 把 run_command 工具包进 OS 级沙箱（read-only / workspace-write）：
  * 执行前把命令经 wrapSandboxCommand 包装（sandbox-exec / bwrap），结果附带沙箱提示。
  * 1.0 P0-4 沙箱 2.0 增强：
- * · fail-closed——平台无沙箱原语且 config sandboxFailClosed=true 时**拒绝执行**；
- * · 策略面保护——沙箱内命令试图改 omni 配置/hooks/审计/信任清单 → 拒绝（防自我提权）；
- * · 网络白名单代理与凭证 masking 由 opts 传入（attachRuntime 启动代理后注入端口）。
+ * · fail-closed（沙箱启用时**默认开启**，config sandboxFailClosed）——平台无沙箱原语时
+ *   **拒绝执行**（宁可不跑也不裸奔）；用户显式 sandboxFailClosed:false 才降级放行；
+ * · 策略面保护——沙箱内命令试图访问 omni 配置/审计/信任清单/.omni → 拒绝（防自我提权）；
+ * · 网络白名单仅在 macOS 由 Seatbelt 内核强制；Linux/firejail 仅代理环境变量（尽力而为），
+ *   fail-closed 下遇到这种弱保证同样拒绝（避免虚假安全感）；
+ * · 代理与凭证 masking 由 opts 传入（attachRuntime 启动代理后注入端口）。
  * 非 run_command / off / danger-full-access → 原样返回。
  */
 function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, sandboxOpts: SandboxOptions & { failClosed?: boolean }): Tool {
@@ -119,15 +122,30 @@ function wrapRunCommandWithSandbox(tool: Tool, mode: SandboxMode, sandboxOpts: S
           `如确需操作，请在关闭沙箱（config sandbox=off）或经审批后手动执行。`;
       }
       const wrapped = wrapSandboxCommand(mode, process.cwd(), command, sandboxOpts);
+      // fail-closed：平台无沙箱原语 → 拒绝（沙箱启用时默认，见 config/index.ts）
       if (!wrapped.protected && sandboxOpts.failClosed) {
-        return `已拒绝（fail-closed）：当前平台没有可用的沙箱实现（sandbox-exec / bwrap / firejail），` +
-          `且配置了 sandboxFailClosed=true——宁可不执行也不裸奔。` +
-          `安装 bwrap/firejail，或将 sandboxFailClosed 设为 false 以降级放行。`;
+        return `已拒绝（fail-closed）：当前平台没有可用的沙箱实现（sandbox-exec / bwrap / firejail）。` +
+          `沙箱已启用（sandbox=${mode}）时默认拒绝裸奔执行。` +
+          `请安装 bwrap/firejail，或改用 macOS 的 sandbox-exec；` +
+          `确要降级放行请显式设 sandboxFailClosed: false（不安全）。`;
+      }
+      // 网络白名单仅在 macOS 内核强制：Linux/firejail 只能靠代理环境变量（尽力而为）
+      const netAllow = sandboxOpts.networkAllow?.length ? sandboxOpts.networkAllow : undefined;
+      if (netAllow && wrapped.networkEnforced === false && sandboxOpts.failClosed) {
+        return `已拒绝（fail-closed）：网络白名单（${netAllow.join('、')}）在 ${process.platform} 上无法内核强制——` +
+          `bwrap/firejail 为让本机代理可达会放开内核网络限制，非白名单目标绕过 proxy 环境变量即可直连（尽力而为）。` +
+          `为避免虚假安全感，sandboxFailClosed 开启时拒绝执行。` +
+          `如需接受「尽力而为」的弱保证，请设 sandboxFailClosed: false；或在 macOS 上运行获得 Seatbelt 内核强制。`;
       }
       let result = await original({ ...args, command: wrapped.command });
       if (wrapped.note) {
         const warn = wrapped.protected ? wrapped.note : `⚠️ ${wrapped.note}`;
         result = `${result}\n\n${warn}`;
+      }
+      // fail-open 且网络白名单非内核强制 → 明确标注弱保证（避免把尽力而为当成强制）
+      if (netAllow && wrapped.networkEnforced === false && !sandboxOpts.failClosed) {
+        result = `${result}\n\n⚠️ 网络白名单为尽力而为（非内核强制）：${netAllow.join('、')} 经本地代理放行，` +
+          `非白名单目标若绕过 proxy 环境变量即可直连。`;
       }
       return result;
     },
@@ -414,8 +432,11 @@ export async function attachRuntime(
   const undoStack = new UndoStack();
   let tracked = tools.map((t) => withUndoSnapshot(t, undoStack));
   // OS 级沙箱（1.0 P0-4 沙箱 2.0）：cfg.sandbox 非 off 时包装 run_command。
+  // fail-closed 默认（沙箱启用时）：sandboxFailClosed 缺省由 config 解析为 true——
+  // 平台无沙箱原语，或网络白名单无法内核强制（Linux/firejail）时拒绝执行。
   // 网络白名单：配置了 sandboxNetworkAllow 时启动内置过滤代理（CONNECT 按 hostname
-  // 白名单放行，不解密 TLS），Seatbelt 把「允许网络」收紧为「仅连代理端口」；
+  // 白名单放行，不解密 TLS）；macOS Seatbelt 把「允许网络」收紧为「仅连代理端口」
+  // （内核强制），Linux/firejail 仅 proxy 环境变量（尽力而为）。
   // 凭证 masking：默认开启——环境变量名命中 *_KEY/*_TOKEN/*_SECRET/*_PASSWORD 的
   // 值在沙箱命令里替换为 sentinel（防凭据被 echo 进上下文）。
   if (cfg.sandbox && cfg.sandbox !== 'off' && cfg.sandbox !== 'danger-full-access') {

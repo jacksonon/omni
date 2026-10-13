@@ -13,6 +13,8 @@ omni.jsonc
 # 运行产物 / 本地状态
 .omni/
 hello
+# 功能测试产物（feature-tests 的 write_file 用例在工作目录写入的临时文件）
+undo-test.txt
 # 评估报告 / 审计日志
 eval-report.json
 feature-report.json

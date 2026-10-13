@@ -169,8 +169,9 @@ MCP、记忆、会话管理（checkpoint/rewind/fork/share）、权限与沙箱�
       + /v1/models 发现与列表增强。**扁平 models 表与顶层 baseURL/apiKey 解析已移除（第一百六十九次），providers 为唯一端点格式。**
 - [x] **P0-4 沙箱 2.0**（网络白名单过滤代理 + fail-closed + 凭据 masking + 策略文件写保护；Windows fail-closed 文档说明）：出站流量走内置代理按 hostname 白名单放行
       （不解密 TLS）；凭证 masking（沙箱内读到 sentinel 占位符，代理注入真实值）；
-      Windows 无 bwrap/sandbox-exec 等价物时 **fail-closed 可配**（failIfUnavailable 选项，
-      企业安全门）；settings 类文件自动 deny 写入防策略篡改。
+      Windows 无 bwrap/sandbox-exec 等价物时 **fail-closed 默认开**（`sandboxFailClosed` 缺省在沙箱启用时为 true，
+      显式 false 才降级；网络白名单无法内核强制的平台——Linux/firejail——同样拒绝）；
+      settings 类文件自动 deny 写入防策略篡改。
 - [x] **P0-5 Headless 协议冻结 + omni-action**（`schemas/*.v1.json` + `config.schema.json` + `omni-action` + `Doc/Headless-Protocol.md` + 发布工程脚本）：stream-json 事件名/payload 发布 JSON Schema
       并 semver 承诺（破坏性变更升 minor+弃用窗口）；会话 JSONL 行结构与 mcp-server 协议面明示冻结；
       发布 `omni-action`——只读 job 生成 patch → 独立 job 开 PR（密钥隔离，升级现有 examples/ci 模板）。

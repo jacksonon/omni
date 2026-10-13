@@ -44,11 +44,18 @@
   // "dangerousPatterns": ["(\s|^)docker\s+rm\s+-f\b", "(\s|^)az\s+logout\b"],
 
   // OS 级沙箱（可选；默认 off）：用 sandbox-exec（macOS）/ bwrap / firejail（Linux）包裹 run_command，
-  // 限制其副作用范围。read-only 拒绝全部文件写 + 网络；workspace-write 仅允许工作目录写 +
-  // 拒绝网络；danger-full-access = 不沙箱（等同 off）。平台不支持时自动降级并提示。
+  // 限制其副作用范围。read-only 拒绝全部文件写 + 网络（并拒绝读 ~/.ssh、~/.aws 等凭证目录）；
+  // workspace-write 仅允许工作目录写 + 拒绝网络；danger-full-access = 不沙箱（等同 off）。
+  // 平台无沙箱原语时：沙箱启用下默认 fail-closed（拒绝执行裸奔命令，secure by default）——
+  // 显式设 "sandboxFailClosed": false 才降级为直接执行（不安全）。sandbox=off 不受影响。
   // "sandbox": "off",
   // workspace-write 白名单（可选）：额外允许沙箱内命令写的绝对路径（如共享临时目录）。
   // "sandboxWritePaths": ["/tmp/omni-shared"],
+  // 沙箱网络白名单（可选）：hostname 列表，经内置过滤代理出网（TLS 不解密）。
+  // macOS 由 Seatbelt 内核强制「仅连代理端口」；Linux/firejail 仅 proxy 环境变量（尽力而为），
+  // fail-closed 下遇到这种无法内核强制的白名单会拒绝执行（可设 sandboxFailClosed:false 接受弱保证）。
+  // "sandboxNetworkAllow": ["api.openai.com", "api.deepseek.com"],
+  // "sandboxFailClosed": true,
 
   // fallback 模型回退链（可选，最多 3 级）：主模型可重试失败（429 限流/超时/5xx 网关）
   // 时按序自动切换备用端点重试本轮，提示「已回退到 X」。条目须在 providers 分组中有定义。

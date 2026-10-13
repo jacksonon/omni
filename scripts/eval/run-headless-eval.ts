@@ -62,11 +62,13 @@ const HEADLESS_TASKS_MOCK: HeadlessTask[] = [
   },
 ];
 
-/** 真实 API 任务（通用能力冒烟；成本可控——3 个短任务） */
+/** 真实 API 任务（通用能力冒烟；成本可控——5 个短任务） */
 const HEADLESS_TASKS_REAL: HeadlessTask[] = [
   { name: '回答身份', prompt: '你是谁？一句话回答', resultIncludes: ['Omni'], minTurns: 1 },
   { name: '算术', prompt: '计算 17*23 并只输出数字结果', resultIncludes: ['391'], minTurns: 1 },
   { name: '读文件', prompt: '读取 package.json 并说出项目名', resultIncludes: ['omni'], minTurns: 1 },
+  { name: '推理', prompt: '一个篮子里有 3 个苹果，拿走 2 个，还剩几个？只输出阿拉伯数字', resultIncludes: ['1'], minTurns: 1 },
+  { name: '代码搜索', prompt: '在仓库中搜索 runAgent 函数的定义在哪个文件，只回答文件名', resultIncludes: ['loop'], minTurns: 1 },
 ];
 
 interface Tokens {
@@ -149,6 +151,26 @@ function readTtftMs(json: any): number | null {
 function fmtQ(q: Quantiles): string {
   if (q.p50 === null || q.p90 === null || q.p99 === null) return '暂无数据';
   return `${Math.round(q.p50)}/${Math.round(q.p90)}/${Math.round(q.p99)}ms`;
+}
+
+/**
+ * 小样本时延摘要（防「N 小 → p99 = max」被误读成真 99 分位）：
+ * n < 20 → `p50=<中位>ms [min–max <最小>–<最大>ms]`（n=1 只报 p50）；
+ * n ≥ 20 → 沿用 p50/p90/p99。中位数比极值对冒烟评测更有信息量。
+ */
+const SMALL_SAMPLE = 20;
+function fmtLatency(values: number[]): string {
+  if (values.length === 0) return '暂无数据';
+  const sorted = [...values].sort((a, b) => a - b);
+  const median = percentile(sorted, 50)!;
+  if (sorted.length < SMALL_SAMPLE) {
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    return min === max
+      ? `p50=${Math.round(median)}ms（n=${sorted.length}）`
+      : `p50=${Math.round(median)}ms [min–max ${Math.round(min)}–${Math.round(max)}ms]`;
+  }
+  return `p50/p90/p99=${fmtQ(quantiles(values))}`;
 }
 
 function runExec(
@@ -263,12 +285,14 @@ async function runTaskRepeats(task: HeadlessTask, env: Record<string, string>, m
   };
 }
 
-/** 每任务一行：通过率 x/N · 时长分位 · ttft 分位 · tokens 均值 · $均值 */
+/** 每任务一行：通过率 x/N · 时延摘要（小样本用中位+极值）· ttft 摘要 · tokens 均值 · $均值 */
 function printTaskLine(st: TaskStats): void {
-  const ttftPart = st.ttftMissing === st.repeats
+  const durs = st.samples.map((s) => s.durationMs);
+  const ttftVals = st.samples.map((s) => s.ttftMs).filter((v): v is number => v !== null);
+  const ttftPart = ttftVals.length === 0
     ? 'ttft 暂无数据（exec 未上报 ttft_ms，已跳过）'
-    : `ttft p50/p90/p99=${fmtQ(st.ttft)}${st.ttftMissing > 0 ? `（${st.ttftMissing} 次缺失已跳过）` : ''}`;
-  console.log(`  ${st.passed === st.repeats ? '✓' : '✗'} ${st.name}（通过 ${st.passed}/${st.repeats} · 时长 p50/p90/p99=${fmtQ(st.latency)} · ${ttftPart} · ${Math.round(st.avgTokens).toLocaleString()} tok均值 · $${st.avgCostUsd.toFixed(4)}均值）`);
+    : `ttft ${fmtLatency(ttftVals)}${st.ttftMissing > 0 ? `（${st.ttftMissing} 次缺失已跳过）` : ''}`;
+  console.log(`  ${st.passed === st.repeats ? '✓' : '✗'} ${st.name}（通过 ${st.passed}/${st.repeats} · 时长 ${fmtLatency(durs)} · ${ttftPart} · ${Math.round(st.avgTokens).toLocaleString()} tok均值 · $${st.avgCostUsd.toFixed(4)}均值）`);
   for (const s of st.samples) {
     if (!s.ok) console.log(`    ✗ 第 ${s.repeat} 次 — ${s.reason}`);
   }
@@ -335,9 +359,9 @@ function printSummary(suite: SuiteResult): void {
   const allDur = taskStats.flatMap((t) => t.samples.map((s) => s.durationMs));
   const allTtft = taskStats.flatMap((t) => t.samples.map((s) => s.ttftMs).filter((v): v is number => v !== null));
   const ttftMissing = allDur.length - allTtft.length;
-  console.log(`⏱️ 时长 p50/p90/p99=${fmtQ(quantiles(allDur))}（${allDur.length} 次采样）`);
+  console.log(`⏱️ 时长 ${fmtLatency(allDur)}（${allDur.length} 次采样）`);
   if (allTtft.length > 0) {
-    console.log(`⚡ ttft p50/p90/p99=${fmtQ(quantiles(allTtft))}${ttftMissing > 0 ? `（${ttftMissing} 次缺失已跳过）` : ''}`);
+    console.log(`⚡ ttft ${fmtLatency(allTtft)}${ttftMissing > 0 ? `（${ttftMissing} 次缺失已跳过）` : ''}`);
   } else {
     console.log('⚡ ttft 暂无数据（exec 未上报 ttft_ms，分位统计已跳过）');
   }
@@ -346,9 +370,11 @@ function printSummary(suite: SuiteResult): void {
   }
   // 末尾总表
   console.log('\n📋 分任务汇总：');
-  console.log(`  ${'任务'.padEnd(8)}${'通过'.padEnd(7)}${'时长 p50/p90/p99'.padEnd(19)}${'ttft p50/p90/p99'.padEnd(19)}${'tok均值'.padEnd(9)}$均值`);
+  console.log(`  ${'任务'.padEnd(8)}${'通过'.padEnd(7)}${'时延'.padEnd(40)}${'ttft'.padEnd(40)}${'tok均值'.padEnd(9)}$均值`);
   for (const st of taskStats) {
-    console.log(`  ${st.name.padEnd(8)}${`${st.passed}/${st.repeats}`.padEnd(7)}${fmtQ(st.latency).padEnd(19)}${fmtQ(st.ttft).padEnd(19)}${Math.round(st.avgTokens).toLocaleString().padEnd(9)}$${st.avgCostUsd.toFixed(4)}`);
+    const durs = st.samples.map((s) => s.durationMs);
+    const ttftVals = st.samples.map((s) => s.ttftMs).filter((v): v is number => v !== null);
+    console.log(`  ${st.name.padEnd(8)}${`${st.passed}/${st.repeats}`.padEnd(7)}${fmtLatency(durs).padEnd(40)}${fmtLatency(ttftVals).padEnd(40)}${Math.round(st.avgTokens).toLocaleString().padEnd(9)}$${st.avgCostUsd.toFixed(4)}`);
   }
   console.log('');
 }
@@ -404,14 +430,14 @@ async function runCompare(tasks: HeadlessTask[]): Promise<void> {
       console.log('');
     }
     console.log('📊 对比结果：');
-    console.log(`  ${'模型'.padEnd(20)}${'完成率'.padEnd(12)}${'时长 p50/p90/p99'.padEnd(19)}${'ttft p50/p90/p99'.padEnd(19)}$均值/次`);
+    console.log(`  ${'模型'.padEnd(20)}${'完成率'.padEnd(12)}${'时延'.padEnd(40)}${'ttft'.padEnd(40)}$均值/次`);
     for (const { model, suite } of perModel) {
       const passed = suite.results.filter((r) => r.ok).length;
       const rate = ((passed / suite.results.length) * 100).toFixed(0);
       const allDur = suite.taskStats.flatMap((t) => t.samples.map((s) => s.durationMs));
       const allTtft = suite.taskStats.flatMap((t) => t.samples.map((s) => s.ttftMs).filter((v): v is number => v !== null));
       const avgCost = suite.totalCost / suite.results.length;
-      console.log(`  ${model.padEnd(20)}${`${passed}/${suite.results.length}（${rate}%）`.padEnd(12)}${fmtQ(quantiles(allDur)).padEnd(19)}${fmtQ(quantiles(allTtft)).padEnd(19)}$${avgCost.toFixed(4)}`);
+      console.log(`  ${model.padEnd(20)}${`${passed}/${suite.results.length}（${rate}%）`.padEnd(12)}${fmtLatency(allDur).padEnd(40)}${fmtLatency(allTtft).padEnd(40)}$${avgCost.toFixed(4)}`);
     }
     console.log('');
     writeFileSync(

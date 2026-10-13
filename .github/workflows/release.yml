@@ -69,6 +69,15 @@ jobs:
           MUSL_VER=$(node -p "require('./node_modules/@opentui/core/package.json').version")
           npm i --force --no-save "${{ matrix.musl }}@${MUSL_VER}"
 
+      - name: Unit tests + offline eval (linux-x64 only)
+        if: matrix.artifact == 'omni-linux-x64'
+        shell: bash
+        run: |
+          # 发布前先跑测试（审计 §3.3：此前 release 全程不跑测试）——
+          # 单元测试失焦即中止矩阵，坏构建不得进入打包/发布流程。
+          npm test
+          npm run eval:mock
+
       - name: Typecheck + build console bundle (linux-x64 only)
         if: matrix.artifact == 'omni-linux-x64'
         shell: bash

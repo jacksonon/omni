@@ -4734,7 +4734,7 @@ async function runSlashCommand(cmd) {
   }
 }
 
-/* ================= 快捷键系统（keyboard-shortcuts-spec.md） =================
+/* ================= 快捷键系统（Doc/specs/keyboard-shortcuts-spec.md） =================
  * 注册表驱动：⌘/ 速查表、设置-快捷键 pane、冲突检测、localStorage 持久化、
  * 全局分发全部由 SHORTCUT_FEATURES 派生——新增功能只需加一行。
  * 键位约定：跟随 DeepSeek Harness (dsh)——macOS ⌘ / 其它平台 Ctrl（平台中立 'Meta'）；
@@ -5351,7 +5351,7 @@ input.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('keydown', (e) => {
-  // ⌘/Ctrl+K 新建会话、/ 聚焦搜索已移入快捷键注册表（keyboard-shortcuts-spec.md）：
+  // ⌘/Ctrl+K 新建会话、/ 聚焦搜索已移入快捷键注册表（Doc/specs/keyboard-shortcuts-spec.md）：
   // ⌘N=新建、⌘K=会话快速切换、/ = 聚焦搜索（裸键，输入框聚焦时不触发）
   if (e.key === 'Escape') {
     const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));

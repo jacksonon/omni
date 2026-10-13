@@ -1,7 +1,7 @@
 # AGENTS.md — Omni 项目开发指南
 
 > 本文件是 Omni 项目内所有 AI 协作 Agent（Claude Code / Codex / opencode / 本仓库的 omni 自身）的开发指南。
-> 本文件保持**精简**（每次会话首轮完整加载，目标 <40KB）；历史迭代记录、TUI 实现细节、路线图全文、发布流程等详见文末「文档地图」。
+> 本文件保持**精简**（每次会话首轮完整加载，目标 <40KB）；逐文件说明、TUI 实现细节、工具/命令全表见 [`Doc/agents-reference.md`](Doc/agents-reference.md)，历史迭代记录、路线图全文、发布流程等详见文末「文档地图」。
 
 ## 项目是什么
 
@@ -81,7 +81,8 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "showThinking": true,                   // 展示思考过程（默认 true；false 关闭终端显示，仍落盘 .omni/last-thinking.md）
   "permission": "safe",                  // 安全护栏权限分级：full（任意命令直通）/ safe（危险命令询问，默认）/ ask / read
   "dangerousPatterns": [],               // 危险命令扩展正则（可选）：内置清单之外的命令在 safe 及以上档位触发审批
-  "sandbox": "off",                      // OS 级沙箱：off（默认）/ read-only / workspace-write / danger-full-access（sandbox-exec / bwrap 包裹 run_command）
+  "sandbox": "off",                      // OS 级沙箱：off（默认）/ read-only / workspace-write / danger-full-access（macOS sandbox-exec / Linux bwrap·firejail 包裹 run_command；Windows 原生未支持→沙箱启用时默认 fail-closed）
+  "sandboxFailClosed": true,             // 沙箱启用（read-only/workspace-write）时**默认 true**：无沙箱原语/网络无法内核强制则拒绝执行；显式 false 退回降级（不安全）；sandbox=off / danger-full-access 不受影响
   "repoMap": true,                       // 代码库结构感知：首轮注入紧凑符号地图（函数/类/常量，默认 true）
   "repoMapMaxSymbols": 200,              // repo map 符号上限
   "webFetchDomains": [],                 // web_fetch 工具域名允许列表（空 = 全部允许）
@@ -134,219 +135,17 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 ## 架构速览
 
-```
-src/
-  index.ts              # CLI 入口：main 调度（参数 → 配置 → 客户端 → 单次/交互 / exec / mcp-server / web；另有 doctor 顶层诊断、completion 补全、review 非交互审查、resume 会话恢复、fork 分叉进交互、archive/unarchive/delete 会话归档管理、mcp list/get/login/logout/add/remove（add/remove 落盘与 /mcp remove 同口径），均对标 codex 同名命令）
-  client.ts             # OpenAI 客户端工厂：按「模型端点配置」创建（/model 切换不同端点时重建）+ ModelRuntime 共享引用（主循环/子代理）
-  version.ts            # 版本号常量
-  ui.ts                 # 终端 UI：ANSI 颜色、TTY 检测、spinner、窗口标题（OSC 0）
-  exec.ts               # **Headless 执行（`omni exec`）+ MCP server（`omni mcp-server`）**：stdout 只出结果/stderr 进度；
-                        #   --output-format text|json|stream-json（复用 events.ts ev 序列，末行 t=result）· stdin 两形态
-                        #   （`-` 整段 prompt / prompt+stdin 注入上下文）· --max-turns · --allowed-tools（纯工具过滤）·
-                        #   --output-schema（JSON Schema 子集校验，不符 → 非零退出）· exit code 0/1 管道分支 ·
-                        #   `-o/--output-last-message` 最终回答落盘（codex exec 同款；写失败非零退出）·
-                        #   exec resume <id> 会话续跑（复用 session JSONL）· `resume --last`/`--last` 恢复当前目录最近会话（codex 对等，无会话报错不新建）· `--all` 取消目录过滤（codex resume --all）· `--ephemeral` 不落盘会话（codex 对等，json session_id null，与 resume/fork 互斥）· `--json` 事件 JSONL（codex 对等，即 stream-json）· `--add-dir` 沙箱额外可写目录（全局+exec 级合并进 sandboxWritePaths）· 全局 `-i/--image`（交互首轮消费，单次/headless 走显式通道）· 全局 `--approve-for-me`（全模式 cfg.autoReview）· `--strict-config`（未知顶层字段报错；顶层 apiKey 等静默失效字段会被点名）· `exec --help` 打专属帮助（handleExecHelp 双入口共用：扫原始 argv 先拦截，绕过全局 --help 短路；`--` 之后不当 flag）· `exec fork <id|--last>` 分叉全量消息成新会话再跑（无 prompt 仅分叉，stdout 新 id）· `exec --color always|never|auto`（ui setColorOverride，wrap 闭包运行时读绑定）· `exec review [额外要求]`/顶层 `review` 非交互审查（与 /review 同数据源，单请求不建会话；loop 系 flags 互斥报错；-i/@图 vision 随审查发出；--base/--commit 定审查范围，ref 字符集限定防注入）· MCP server 暴露 omni_exec/omni_reply
-                        #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
-  web/
-    index.ts            # **Web 服务入口（`omni web`）**：解析 web 参数（--port/--host/--no-open）→ prepareRun +
-                        #   attachRuntime（routingOutput 路由审批/提问到当前运行会话）→ startWebService；自动打开浏览器
-    server.ts           # **REST + SSE 本地后端**：Node 内置 http（零依赖）；SSE（/api/events）广播运行事件
-                        #   （thinking/tool/answer/approval/ask/usage/status…）· REST（会话创建/列表/历史/发送/取消/审批/提问/设置）·
-                        #   **全局单运行**（同时只有一个会话在跑，共享 runOpts/闸门/撤销栈无并发交错）· 会话落盘复用 session.ts
-                        #   JSONL + 首轮后自动生成标题 · 静态页面优先读 web/ 目录（开发热更新）否则回退内嵌 assets.ts
-    output.ts           # **WebOutput**：Output 实现——所有事件带 sessionId 广播；审批/提问经 PendingRegistry 注册
-                        #   （SSE 发 request，客户端按钮 POST 路由 resolve 后 loop 继续）
-    events.ts           # **Web 事件协议**：事件名与 payload 的单一来源（客户端 web/app.js 按名渲染）
-    assets.ts           # **内嵌页面资源**（web/ 的副本，scripts/web-sync.mjs 生成；bundle 单文件发布免外部文件）
-  electron/
-    main.cjs            # **Electron 桌面应用（`omni`）**：主进程以 Electron 自带 Node（ELECTRON_RUN_AS_NODE=1）
-                        #   执行 `dist/omni.cjs web --no-open --port <p>`（无需系统 Node）→ 轮询 /api/status 就绪 →
-                        #   开 BrowserWindow 加载 http://127.0.0.1:<p> · 单实例锁 · 应用菜单（选择工作目录/重载/DevTools/
-                        #   退出）· 退出时终止后端子进程 · 自动找空闲端口 · 开发模式（OMNI_WEB_DEV=1）走 tsx 源码
-                        #   打包配置在 package.json `build` 字段（electron-builder：mac zip（arm64+x64，dmg 在 CI runner
-                        #   上 hdiutil 产物校验损坏不可用）· win nsis exe x64 · linux AppImage x64）
-  web/                  # **浏览器页面（仓库根目录）**：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；
-                        #   src/web/assets.ts 的源，`npm run web:sync` 重新生成内嵌副本）
-                        #   消息操作按钮：**常显**（无需 hover）——用户消息 复制/重新编写（原文带回输入框，按钮堆在
-                        #   气泡正下方右对齐）、助手消息 复制/重试（重发前一条用户消息）；图标按钮，
-                        #   `.msg-actions` 放 bubble/md-body 外（流式重绘不丢）
-                        #   右上角通知（Alert notification）：`#notifications` 容器 + app.js `notify(msg, type)`
-                        #   ——复制成功/模型切换/保存成功/所有错误提示统一走这里（替代浏览器 alert），
-                        #   info/success/error 三型，自动消失、悬停暂停、✕ 关闭、同屏最多 4 条
-                        #   设置·模型配置为单一滚动视图（列表完全展开，随 .settings-content 整体一滚到底，无嵌套滚动）；
-                        #   模型列表加载时（空列表）不显示灰底（.mc-tbody.bare —— 简体 loading），自动获取只在首次
-                        #   （localStorage 持久化 omni.mcAutoFetched_<provider> 标记，之后需手动点「获取/刷新模型列表」）
-                        #   输入区斜杠命令直达原生 UI（非纯面板）：/model·/variants 无参开模型面板（有参走后端但渲染为通知+面板重绘）/
-                        #   /permission 无参开权限 pop（有参后端切换+通知）/ /plan 直切开关+通知 / /settings 开设置面板（支持面板名直达）/
-                        #   /rewind 开检查点面板（三模式切换，<N> --code|--chat|--both REST 回滚）/ /fork 开分叉对话框（<N> 直接 REST 分叉）/ /export 直接下载 /
-                        #   /rename 走 REST（广播 title）/ /session·/resume 开切换面板（有参本地匹配直达）/ /clear 走后端但只通知不清面板；
-                        #   纯文本命令（/status /context /diff /review 等）保留 cmd-panel；后端 /rename 广播 title、/fork 广播 session.created、
-                        #   /settings 兜底提示面板位置（前端拦截为主）
-                        #   设置·通用输入区风格：权限四档内嵌列表（复用权限 pop 项样式）/ 计划复用 plan-toggle pill /
-                        #   语言复用主题式分段按钮 / 并发上限复用输入区渐变滑条（1-16，填充/thumb/刻度/读数同步）
-                        #   设置·关于输入区风格：版本/服务地址配消息流同款拷贝按钮 / 工具列表改 pill chips（含计数）/
-                        #   语言行改跳转行（chevron，直达通用面板）
-                        #   设置·MCP/技能页：MCP（chips 列表+详情行点击读资源/取提示词+增删+重连/登录+registry 安装，GET /api/mcp；
-                        #   添加复用 /mcp add 文本语法 + 审批/白黑名单高级项；资源/提示词新端点 /api/mcp/resource|prompt）/
-                        #   技能（列表+徽标+新建+删除，GET /api/skills；查看走 /skill show；registry 检索安装；
-                        #   新端点 DELETE /api/skills/<名> + POST /api/skills/find|install；列表行按钮不压缩不换行 /
-                        #   新建改弹窗放头部与刷新并排）
-                        #   确认/输入弹窗（uiConfirm/uiPrompt，替代原生 prompt/confirm，13 处调用点全量替换）
-                        #   命令面板富文本（openCmdPanel format：/diff 走 diff 着色视图，/review·/agents 走 markdown）
-                        #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
-  cli/
-    plugin.ts           # omni plugin CLI：install/list/enable/disable/remove（2026-09）
-    completion.ts       # omni completion <bash|zsh|fish|powershell>：shell 补全脚本（codex 对等 4/5，elvish 无解释器可验暂缺；bash -n/zsh -n 校验，fish/ps 内容断言）
-    args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
-    banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）
-    interactive.ts      # 交互模式：readline 循环，跨轮次保持上下文（含 /init、/plan、/undo、/permission、/compact、/agents、/review、/variants）
-    mini.ts             # **纯终端 CLI 模式（`omni mini`）**：复用 runInteractive（全部斜杠命令/审批/会话/撤销栈），
-                        #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：无框会话头（标题/目录/YOLO/问候） / `› ` 用户行 /
-                        #   `• ` 正文（MiniMarkdownRenderer：复用 tui/markdown 解析输出 ANSI，围栏隐藏/表格框线）+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
-                        #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
-                        #   + Ctrl+T 完整轨迹账本（dumpLedger 先清 live 块：轮内 Working/流式不与账本抢区域）；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
-                        #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C/轮内 /stop 中断（回车 KP 只发给建接口前挂载的监听，发射前置，pty 实证）、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
-                        #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
-                        #   审批问答 PTY e2e（MOCK_DANGEROUS 危险命令→提示→y 放行→回合完成；空目录 fast-fail 无副作用；写 pty 字节必 try 包 transcripts 必落盘 finally）；
-                        #   ask_user 提问 PTY e2e（MOCK_ASK 选项→序号→回合完成；答案不泄漏+stdin 存活同覆盖；计数口径用单发 marker）；
-                        #   审批处 Ctrl+C PTY e2e（取消即 deny fail-safe，模型收尾，会话存活可继续）；
-                        #   console 模式审批 PTY e2e（同双 readline 修复覆盖 mini/console 两路）；
-                        #   /delete 双覆盖（管道非 TTY 拒绝防误触 + PTY 真终端 y 确认删旧会话）；
-                        #   会话头重打（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜 compact 头，只标题行不带问候/帮助；档位读会话级当前值）；
-                        #   审批双 readline 实锤两 bug（次 close() 会 pause 共享 stdin 致主循环饿死→input.resume()；答案字节同时进主 rl→swallowedQa 队列主循环命中吞掉；PTY 证 pwd 存活+无幽灵轮）；
-                        #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
-                        #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
-                        #   开场问候语（codex greeting 全量复刻：全会话 compact 头+随机问候，信息框已随上游删除）；
-                        #   模式提示符（codex footer 模式指示：plan 品红前缀，bang 红 `!` 优先）；
-                        #   Ctrl+R 历史搜索（codex history-search：modal 回填不提交）；picker 回车确认兼容 0x0A；
-                        #   提问回答解析纯函数化（空取消/序号多选去重/越界回落自定义）；
-                        #   斜杠小件（codex 对等）：/copy 上一条回复进剪贴板（OSC52+平台工具同源）/pwd 显示目录/quit 退出别名；
-                        #   /delete 永久删会话（codex 对等：会话目录内才删/当前会话与非 TTY 拒绝/y 确认）；
-                        #   EOF（Ctrl+D）与 /exit 同一收尾（记忆落盘/flush/定稿/空占位清理，幂等）；
-                        #   单行 `?` 快捷键帮助（codex `?` 覆盖层；问句照常进模型）；
-                        #   粘贴突发跟踪（bracketed-paste 标记计数，多行按行提交后在空闲提示符处教 `\` 续行；合并不了是 readline 限制）；
-                        #   mini 单次 `-o` 落盘最终回答（codex exec --output-last-message；单次本就不落会话≈--ephemeral）；
-                        #   mini 单次 `--approve-for-me`（codex exec 同款；置 cfg.autoReview 实时开关）；
-                        #   exec `--model/-m` 生效（合入 overrides 再建客户端；此前解析后丢弃）；
-                        #   exec `--help` 同步新旗标（-m/-i）；
-                        #   mini 单次 stdin 两形态（codex exec：`-` 即全文/`[stdin 输入]` 上下文块；e2e 注意 DEBUG 切片与 npx 解析）；
-                        #   图片提及（codex composer 图片附件：`@图.png` 转 vision parts；无 vision 模型由 modalities 校验报错）；
-                        #   图片显式附件（codex exec -i：`exec/mini -i 图.png` 可重复，与 @提及 合并去重；headless 同样组装 vision parts）；
-                        #   反斜杠续行（codex 多行 composer 行式版：行尾 `\` 拼多行，`… ` 续行提示）；
-                        #   续行组装分 shell/普通两路（`!` 保留反斜杠交 sh 原生续行）；
-                        #   回合 tip 双轨（codex ca41ed3：working 持续 30s 状态行下方随机一条，同轮跳过 completion tip；completion 带最终回答/3 轮起/间隔 3/全会话 2 条）；
-                        #   自动压缩可见反馈（codex compact 单元格：以本轮新增 compact 事件为准打印 dim 提示）；
-                        #   写/改文件单元格带 hunk diff 预览（codex patch cell：变更±2 ctx、add 绿/rem 红，超 10 行截断）；
-                        #   空 marker 保号（codex #48623：裸 -/8./> -/空任务项渲染成 • /8. /• /☐☑；嵌套去缩进与非空一致；引用内列表项剥 `>` 后同样块级解析）；
-                        #   /status 会话累计 token（assistant 落盘 usage 求和；无用量文案；web /status 同口径）；
-                        #   Ctrl+G 外部编辑器组稿（codex open_external_editor：$VISUAL/$EDITOR 接管→回填行缓冲；空闲门控 turnStart；未配置给 hint；doctor 报编辑器环境；多行压单行防误提交；PTY e2e 种子→改写→提交→会话断言）；
-                        #   /warnings retained 警告（codex /warnings：MCP 建连失败/未信任降级/代理失败保留，上限 50）；
-                        #   review --title（codex exec review --title：标题进审查输入；help 双语+补全同步）；
-                        #   MCP OAuth 加齐（add --oauth-resource/--oauth-client-registration；login --no-browser/--scopes/单次 registration；config loader 补 clientId 透传；交互会话内 no-browser 指路顶层）；
-                        #   预注册保密客户端（codex 83b56bc：add --oauth-client-secret 须配对 clientId；显式对跳过 DCR；token 记 clientId（secret 永不落盘）；id 变更丢缓存重登；redactDeep 密钥名字段整值换，mcp get 不泄）；
-                        #   -a/--ask-for-approval（codex -a：never→full/on-request→safe+原生直通；非法抛错 fail-closed；最高优先级；补全同步）；
-                        #   --ignore-user-config（codex 同款：只跳用户层，项目/显式 --config/profile/环境变量/CLI 照常；另三枚 exec flag 评估后不定植：thread-source 系遥测内务/skip-git-repo-check 无此要求/ignore-rules 无 .rules 对应物）；
-                        #   空行 Esc 取回上一条（codex edit-previous：lastUserText+单行压平；轮内/续行/模态不触发；pty e2e）；
-                        #   未知斜杠报错不送模型 + 模糊推荐（联想面板同算法子序列：/ac→/compact；did-you-mean 前 3）；
-                        #   Tab 补全对齐 popup（首词补公共前缀，无进展由 listAll 展开临时清单；常规终端为输入下方多列，Warp 为可导航选择器，确认只回填不提交；promises readline 的异步补全完成后重估候选）；/plugin·/diff 第二词走原生列表；
-                        #   斜杠联想面板（2026-10 用户截图回归）：常规终端候选在输入行下方原地重画，Warp（TERM_PROGRAM）用同行提示避免改变输出 Block 高度；Esc/退格清空/Ctrl+U/不再匹配/提交清除，Ctrl+R/G/T/O 等先清面板；getCursorPos 处理折行/行内移动；/model 等共用 picker 临时进入 alternate screen、限宽限高与窗口滚动、确认/取消恢复主屏，不再 CUU/DL 回收；PTY 重建主屏/临时屏/scrollback，覆盖两种终端路径及普通/短窄/折行窗口、40 个长模型名；
-                        #   复数别名 /skills→/skill、/plugins→/plugin + /hooks 生效视图（HookRunner.list；改配置重启生效）；
-                        #   /mcp verbose 逐服务器状态（codex 对等：连接/失败/跳过+认证+工具名；带参报用法）+ /rollout 打印会话路径；
-                        #   分隔行对齐 separators.rs（耗时不补零 2m 5s；Local tools/Inference 后缀走 lap 累积，零调用省略；超宽按段折行）；
-                        #   YOLO 行双条件（codex has_yolo_permissions：full + 沙箱 off/danger 才算）；
-                        #   /clear 开新会话文件（codex ClearUi→start_fresh_session：与 /new 共用 rotateFreshSession；同文件清空会在 resume 复活）；
-                        #   输入历史跨会话（codex composer history：XDG input-history.json 上限 200，TTY 独占，Up/Ctrl+R 跨进程可用；pty 双进程 e2e）；
-                        #   tui-entry 把它归入 console 路径（bun + TTY 下不被全屏 TUI 接管）
-  agent/
-    loop.ts             # **Agent 主循环**：流式调 LLM → 工具调用（并行）→ 安全过闸 → 执行 → 结果回传
-    thinking.ts         # 思考过程：流式显示（浅色保留在屏幕，不折叠）/落盘（reasoning + reasoningMs 耗时字段提取，恢复会话回放 thinking 块带「· 耗时」头行）
-    messages.ts         # 消息组装：assistant 消息构造、工具参数解析
-    context.ts          # 上下文管理：全局/项目记忆级联注入（项目记忆按层级嵌套，内层贴近用户消息）+ 相关文件预载（selectRelevantFiles）+ 长对话摘要压缩（summarizeContext）
-    report.ts           # 会话状态/上下文用量/导出/诊断/配置路径 共享逻辑（/status /context /export /doctor /config）
-    memory.ts           # **记忆系统**：全局记忆（~/.config/omni/AGENTS.md，XDG-aware）+ 项目记忆（AGENTS.md **嵌套加载**：override/AGENTS.md/fallback 三级选择，从 cwd 向上收集所有层级到 git 根/home 边界，每层独立 40KB 截断 + 合计 32KB 上限）发现/读取 + system 消息构建 + 会话结束自动提取写入（autoMemory：全局偏好去重合并 + TTL 归档；项目级待提交片段 .omni/memory-pending.md + /memory-apply 应用）
-    repomap.ts          # **代码库结构感知（repo map，P1）**：正则提取函数/类/常量定义行 → 紧凑符号地图注入首轮（[项目结构地图 前缀）
-    init.ts             # **/init [--global] [<子目录>]**：扫描项目/全局环境 → LLM 生成 AGENTS.md → 写入项目根/子目录/全局配置目录（已存在不覆盖）
-    session.ts          # **会话持久化**：交互对话 JSONL 落盘（~/.config/omni/sessions/，XDG-aware）+ 列表/最近/按 id 恢复 + 脚手架消息过滤 + meta 刷新（--continue / -r / -l）
-    undo.ts             # **/undo 文件撤销**：UndoStack（write_file 执行前快照原内容/新建标记，1MB 上限）+ applyUndo（恢复/删除）+ withUndoSnapshot 包装器（主循环与子代理共用）
-    subagent-defs.ts    # **子代理定义**：.agents/subagents/*.md frontmatter 解析（name/description/model/permission/tools/skills/maxSteps）+ 发现/按名加载
-    subagent.ts         # 子代理：隔离上下文嵌套循环（无 UI、小步数上限、共用安全闸；per-agent 模型/权限/工具白名单/技能预载 + 嵌套 depth 上限）；保留完整 transcript/明细 + resumeSubagent 续跑
-    subagent-registry.ts # **子代理线程注册表（Agent View，1.0）**：会话级记录全部子代理（含 transcript/status/model/effort/明细）+ resume/stop 闭包 + onChange/persist（会话 JSONL `t:"sub"` 落盘）+ hydrate/hydrateRegistryFromSession（恢复回灌）
-    semaphore.ts        # 子代理并发信号量（2026-09）：前后台 delegate 共享，超限排队
-    orchestrate.ts      # **编排**：/orchestrate 动态工作流（模型产出结构化计划 → 依赖分层并行执行，2026-09；--pipeline/计划失败回退固定 fan-out pipeline）+ /goal 目标机制（自动推导验收标准 → 循环执行直至达标）
-    team.ts             # **Team 协作（2026-09）**：共享任务看板 TeamBoard + SendMessage 队列 + 动态工作流计划解析（parseWorkflowPlan/planBatches）
-    redact.ts           # **密钥脱敏（2026-09）**：redactText/redactDeep（sk-*/Bearer/AWS/GitHub/私钥/env 字段），会话落盘与事件回放共用
-    plugins.ts          # **插件系统（2026-09）**：plugin.json 清单解析/安装（本地目录+git clone）/卸载/启用清单；pluginSkillDirs/pluginAgentDirs/pluginHooks/pluginMcpServers 供运行时加载
-    workspace.ts        # /cd 工作目录解析（空参显示/相对与 ~ 展开/目录校验）
-    title.ts            # 会话标题：首轮后异步生成，设为终端窗口标题
-    review.ts           # 代码审查（/review）：typecheck + git diff → LLM 审查
-    btw.ts              # 旁问（/btw [--keep]）：当前对话快照 + 只读工具迷你循环，答案不进历史（--keep 留下）
-    events.ts           # **轨迹事件记录器**：EventRecorder 内存累积 + 会话文件追加 `{"t":"ev"}` 行（/compact 事件 + console/web /trace 账本源；恢复会话读回续号；可选实时监听回调——headless stream-json 输出）
-    trace.ts            # **轨迹投影层**：foldTrace 纯函数把事件序列折叠成 TraceRow（turn/user/request/answer/tool/compact）+ buildTraceTextLines（console/web 账本）
-    types.ts            # RunOptions / ThinkingDisplay 共享类型
-  safety/
-    index.ts            # Safety 闸门：policy 判定 + 审批回调 + 审计记录（loop/子代理共用；write_file 审批 reason 带统计+有界 diff 正文）
-    policy.ts           # 权限分级（full/safe/ask/read）+ 危险命令检测（内置 + 扩展正则）+ per-tool 审批模式
-    audit.ts            # 审计日志落盘（~/.config/omni/audit.log）
-    trust.ts            # **工作区信任**：信任清单（~/.config/omni/trusted-workspaces.json）判定/增删（路径规范化消解符号链接，不存在逐级向上找祖先）；未信任 = 只读 + 跳过 hooks/MCP/技能/子代理/项目记忆（能执行或注入的一律不加载）
-    sandbox.ts          # **OS 级沙箱**：read-only / workspace-write（macOS sandbox-exec / Linux bwrap 包裹 run_command）；Windows（2026-09）显式不支持（AppContainer 需原生模块）+ fail-closed 语义
-    auto-review.ts      # **AI 自动审批（2026-09）**：createAutoReviewer（模型审阅 approve/deny，失败回退人工）+ parseAutoReviewVerdict
-  hooks/
-    index.ts            # **Hooks 生命周期自动化**（对标 Claude Code）：HookRunner（JSON 协议——stdin 喂入事件上下文、stdout 返回决策）+ 5 事件（UserPromptSubmit 改写 prompt / PreToolUse 硬拦截+改写参数 / PostToolUse 输出回传上下文 / Stop 要求继续修 / Notification 通知）+ matcher 通配 + 超时/失败降级放行
-  tools/
-    index.ts            # 静态工具注册表（新增工具登记处）
-    types.ts            # Tool 接口（独立文件避免循环导入）
-    util.ts             # 公共小函数：num / resolvePath / truncate / TOOL_OUTPUT_LIMIT
-    read-file.ts        # read_file
-    write-file.ts       # write_file
-    edit-file.ts        # edit_file（old_string → new_string 定向编辑）
-    list-directory.ts   # list_directory
-  search-code.ts      # search_code
-  run-command.ts      # run_command（超时 + 输出截断；危险拦截兜底在 safety/policy）
-  skill.ts            # skill 技能工具：按 name 加载 SKILL.md 完整内容（模型按需使用）
-  ask.ts              # ask_user 向用户提问工具（createAskUserTool 工厂，运行时注入提问回调）
-  memory-tools.ts     # 记忆渐进披露工具：memory_search（多关键词 AND + 命中数排序）/ memory_read（按路径读完整记忆）
-  todo.ts             # TodoWrite 任务清单工具：模型维护结构化 todo（in_progress/completed/pending，存 runOpts.todoList）
-  web-fetch.ts        # WebFetch 内置工具：URL 抓取 → htmlToText 转纯文本 → 截断（域名白名单 webFetchDomains 可配）
-  web-search.ts       # WebSearch 内置工具：关键词 → 搜索结果（title/url/snippet），Brave Search API（webSearchApiKey / env BRAVE_API_KEY）
-  diagnose.ts         # 诊断反馈工具（LSP 轻量版）：detectCheckCommand 探测 typecheck→lint→test + 运行返回诊断摘要
-  lsp.ts              # **LSP 导航工具（2026-09）**：definition/hover/references/documentSymbol（手写最小 LSP 客户端；typescript-language-server / pyright-langserver 按需启动）
-  team-tools.ts       # **Team 工具（2026-09）**：task_board（共享看板 add/update/claim/list）+ send_message（异步消息）
-    delegate.ts         # delegate 子代理工具（运行时由入口按配置注入）
-    mcp.ts              # MCP 客户端：stdio/streamable-HTTP 双传输 + JSON-RPC + 运行时发现注册（tools/resources/prompts/instructions、工具白黑名单、审批模式烘焙、OAuth 登录）；反向处理器经 runOpts.mcpHandlers 复用（reconnect 不丢 elicitation/sampling；sampling 经 getters 读当前模型运行时，/model 切换不 stale）
-    mcp-oauth.ts        # MCP OAuth 登录：RFC 8414 discovery + 授权码 PKCE + token 持久化
-  config/
-    index.ts            # 配置加载：分层合并（含权限/审计/上下文/子代理/MCP 字段）
-    jsonc.ts            # JSONC 解析（注释/尾逗号）
-    discover.ts         # 配置发现：目录内查找 + cwd 向上查找
-    model-context.ts         # **模型能力自动识别（数据源查表，1.0 P1）**：三级匹配（精确→裸 id→后缀）、
-                             #   上下文窗口 / 思考级别档位推导 + **/models refresh 热替换**（用户级 JSON 覆盖内置）——显式配置永远优先、查表只补缺、MISS 保守回退
-    model-context-builder.ts # 快照构建纯逻辑（拉取/归一化/建表/双序列化）——scripts 生成器与运行时 /models refresh 共用一份实现
-    model-context-snapshot.ts # models.dev 离线内置快照（scripts/build-model-context-snapshot.ts 生成；进 repo）
-  tui/
-    state.ts            # TUI 状态（纯对象，无响应式依赖；含审批卡片/联想/菜单/面板意图状态）
-    render.ts           # 渲染编排：mountTree/repaintTree/startTui（行构建在 rows.ts）
-    rows.ts             # 内容行构建：buildBody/computeRows/卡片与审批卡/点击命中（纯函数）
-    layout.ts           # 布局常量 + 按显示列数的折行/截断数学（不依赖 OpenTUI）
-    theme.ts            # 主题色板与取色（system/light/dark）
-    output.ts           # TuiOutput：事件 → 状态写入 → 30ms 节流重绘 + 退出前 flush
-    interactive.ts      # TUI 交互模式：输入框提交等待 + 命令/审批按键 + 多轮循环
-    vim.ts              # Vim 键位（纯函数：normal/insert、移动/编辑命令解析）
-  tui-entry.ts          # TUI 入口（纯 TS 无 JSX）：TTY 门控 + 回退 console
-  agent/skill.ts        # **技能系统**：SKILL.md 发现（项目 .opencode/.claude/.agents/skills 向上 + 全局）+ frontmatter 解析（含扩展：disable-model-invocation/context:fork/agent/background）+ 按名加载 + 渐进披露（15 条）+ npx skills CLI 封装 + refreshSkillInjections（安装即时生效）+ createSkillTool（context:fork 子代理执行）
-  tools/skill.ts        # skill 工具：模型按 name 加载 SKILL.md 全文（系统只常驻 name+description 清单；运行时被 createSkillTool 替换以支持子代理执行）
-scripts/build-model-context-snapshot.ts # 模型能力快照生成器（npm run models:snapshot：拉 models.dev api.json →
-                                         #   白名单过滤 → 归一化 {c,r,ro} → src/config/model-context-snapshot.ts；
-                                         #   tsx 跑，复用 src/config/model-context-builder.ts 纯逻辑）
-scripts/mock-server.mjs # 本地 mock OpenAI API（含标题/摘要/usage/MOCK_JSON 分支——最终回答为 JSON 对象，headless schema e2e）
-scripts/mock-mcp.mjs    # mock MCP 服务器（stdio JSON-RPC，验证 MCP 链路）
-scripts/tui-snapshot.ts # TUI 快照验证（51 场景：渲染/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹面板/ask 提问/hero 初始界面）
-scripts/probe-tmp/probe-drag-select.ts # 拖选复制探针（colToChar 列→字符/highlight 克隆/selectionText 单行多行/selectionMoved/down·drag·up 状态机/渲染高亮）
-scripts/probe-tmp/probe-exec.ts # Headless 探针：parseExecArgs/schema 校验单元 + runHeadless 全链路 e2e（text/json/stream-json、
-                                 #   max-turns/allowed-tools/stdin 两形态/exec resume/schema 通过·不符）+ MCP server 握手
-scripts/pack-tui.sh     # 一键打包 TUI（npm run pack:tui）：版本同步 packages/omni-tui → bundle → npm pack；--compile 追加原生二进制
-scripts/eval/tasks.ts   # 评估任务集（mock 离线 / 真实 API 两套）
-scripts/eval/run-eval.ts# 评估运行器：跑任务集 + 完成率报告（npm run eval[:mock]）
-```
+### 模块分层
+
+> 完整 `src/`/`scripts/` 逐文件说明、TUI 渲染实现要点、工具与斜杠命令全表见 [`Doc/agents-reference.md`](Doc/agents-reference.md)。
+
+- **入口与客户端**：`src/index.ts`（CLI 调度：main / exec / mcp-server / web / doctor / completion / review / resume / fork / 会话归档 / mcp 子命令）→ `main.ts` 参数调度 → `client.ts` 按模型端点建 OpenAI 客户端（`/model` 切换重建；`ModelRuntime` 共享引用让主循环/子代理同步）；headless `omni exec` 与 MCP server 在 `src/exec.ts`。
+- **Agent 核心** `src/agent/`：`loop.ts` 主循环；`context.ts` 全局/项目记忆级联注入 + 相关文件预载 + 长对话摘要压缩；`messages.ts` / `thinking.ts`；`session.ts` 会话 JSONL 落盘；`undo.ts` 撤销 + 重做；`subagent.ts` / `subagent-registry.ts` 子代理与 Agent View；`orchestrate.ts` 动态工作流 + `/goal`；`team.ts` 共享看板；`memory.ts` 记忆；`skill.ts` 技能；`redact.ts` 密钥脱敏；`events.ts` / `trace.ts` 轨迹。
+- **工具** `src/tools/`：静态 8 个（read_file / write_file / edit_file / list_directory / search_code / run_command / skill / lsp）+ 运行时注入（delegate / ask_user / task_board / send_message / web_search / web_fetch / MCP `<server>_<tool>`）。
+- **安全** `src/safety/`：`index.ts` 统一闸门（policy 判定 + 审批 + 审计）、`policy.ts` 权限分级与危险命令检测、`trust.ts` 工作区信任、`sandbox.ts` OS 沙箱、`audit.ts` 审计、`auto-review.ts` AI 自动审批。
+- **前端/渲染**（同一运行时，多套 Output）：`ui.ts` + `cli/`（console / interactive / mini）· `src/tui/`（全屏 OpenTUI，命令式渲染；**改前必读 `Doc/tui-architecture.md`**）· `src/web/`（REST + SSE 本地后端）· `electron/`（桌面应用）。
+- **配置** `src/config/`：分层加载（默认 → 全局 → 项目 → 自定义 → 环境变量 → CLI）+ JSONC + `model-context.ts` 模型能力查表（`/settings models refresh` 热替换）。
+- **扩展**：`src/hooks/` 生命周期自动化 · `agent/plugins.ts` 插件系统 · MCP `tools/mcp.ts` + `mcp-oauth.ts`。
 
 ### 核心循环（src/agent/loop.ts）
 
@@ -361,78 +160,10 @@ for step in 1..maxSteps:
 
 关键机制：
 - **自我纠错**：工具执行失败/被拒时，错误信息作为工具结果返回给模型，由模型自己修正；
-- **安全护栏**：每个工具调用（含 MCP 外部工具与子代理）过 `Safety.gate`——权限分级（full 直通/safe 危险命令询问/ask 全询问/read 只读）+ 审批 UI（console readline / TUI 审批卡片，管道模式自动拒绝）+ 审计日志；
+- **安全护栏**：每个工具调用（含 MCP 外部工具与子代理）过 `Safety.gate`——权限分级（full 直通/safe 危险命令询问/ask 全询问/read 只读）+ 审批 UI（console readline / TUI 审批卡片，管道模式自动拒绝）+ OS 沙箱（沙箱启用时默认 fail-closed，`sandboxFailClosed` 缺省 true）+ 审计日志；
 - **并行工具**：一次响应的多个 tool_calls 并发执行（Promise.all），结果按调用顺序回传；
 - **截断**：工具结果超过 8000 字符会被截断并提示模型"用 read_file 定向获取"，防止上下文被撑爆；
 - **防死循环**：`maxSteps` 上限（默认 50；典型任务 15 次内完成，20 对复杂任务偏紧）。
-
-### TUI 渲染（src/tui/）
-
-> 实现级细节（OpenTUI 踩坑结论、布局预算数学、细胞池复用、浮层坐标、宽度判宽对齐、各交互模块）见 `Doc/tui-architecture.md`——修改 TUI 前必读。要点：
-
-- **命令式渲染**：直接用 `@opentui/core` 的 renderable 构建渲染树，状态变更后显式 `renderer.loop()` 重绘——放弃 `@opentui/solid`（JSX 转换时序坑：入口文件先于 preload 转换，信号失效无法重绘）；
-- **细胞池复用**（非全量重建）：池只增不减，行内容原位更新，防原生 TextBuffer 耗尽（早期每帧 remove+new ~1365 次重绘后崩）；`state.ts` 是纯可变对象，不是 signal；
-- **布局**：无边框根 Box + 内容行 → 状态栏 → 底部灰色块（圆角/蓝线/多行输入/模型行）+ 灰块外底行（左文件夹全路径 …… 右输入/输出 · 缓存 · 上下文迷你条，左右与输入区文本对齐、与灰块隔 1 行），`marginTop:auto` 钉底；模型行 = `Build/Plan · 模型名 组名 · 思考级别 · 会话平均 tok/s · ⠹ esc 打断`（loading+esc 打断提示仅会话进行中显示在速率右侧，accentBlue 转圈；超宽按 均值→loading 顺序隐藏）；旧底部统计行与 `/settings statusline` 面板已移除（`statusline`/`statuslineAlign` 配置保留兼容、被忽略）；内容行预算 = 高度 - 9 - inputLines，视口 <11 行隐藏状态栏；长行 CJK 感知折行（`wrapChunks`），每行恰 1 终端行；
-- **提交与打断**：Enter=queue / Cmd|Ctrl|Super|Option+Enter=steer（同一轮内插入打断消息）；Esc 取消当前对话；待发送小视图（每条一行「N 排队/打断 · 文本」，steer 插最前；**点击直接编辑**——文本取回输入框，↑/↓ 选中、←/→ 排序、Backspace 删除）；todo 小视图（输入框上方、待发送区上方：todo_write 经 RunOptions.onTodo 实时镜像 ✓/▸/· 各状态）；create/流式/工具三阶段经 `waitAbort` 全部可立即取消；
-- **浮层体系**：`/` 命令联想与 `@` 提及文件选择（输入区同款风格：同底色 + 左侧深灰竖线 + 与输入区同宽，扁平无边框、窗口滚动、鼠标点击）、命令菜单面板（/theme /settings /model 等）与命令输出面板（/mcp /status 等）——**扁平无边框 + 顶部留白 1 行**（同联想下拉：留白/标题/内容/提示行，无圆角卡片线）、与输入区同宽同左、底边**贴住灰色块**（hero 居中时保持 hero 跟随 0.75 居中输入区，打开面板不把输入区拉到底部；操作提示渲染在面板内部，不写状态栏）、ask 提问面板（**扁平面板**同命令面板风格，bottomBlock 流式节点紧贴输入区；自定义输入独立于主输入框）——全部绝对定位、不占内容流、不遮输入区；
-- **交互细节**：思考段落/工具卡片/token 统计点击展开收起；工具卡片=超淡黄底完整长方形，收起态只显示命令，展开态含 **Claude Code Edit 风格统一 diff**（write_file：文件路径头 ✦ + 行号 gutter 双列 + `+`/`-` 标记，新增绿/删除红/上下文灰行级着色）与多读合并（read_file）；**字符级拖选复制**（OpenTUI 无选区 API，omni 自绘）：左键按在内容行建立选区（`tree.sel`，行下标 + 显示列；`colToChar` 把事件 x → 字符，CJK/emoji 全角 2 列、不断代理对），拖动实时更新焦点行/列（渲染层 `selecRow`/`markRowSelected` 命中行 chunks 重建 + `selBg`/`selFg` 高亮块），松开若有位移则 `selectionText` 提取选区文本（跨行 `\n` 连接）写系统剪贴板（OSC52 + pbcopy/xclip/Set-Clipboard 回退），成功后**右上角 toast「✓ 已复制」**；纯点击（无位移）清空不复制，浮层打开/内容区外不触发；**右上角 toast（Alert notification）**：`pushToast(state, text, type)` 设置 + 过期时间戳，`repaintTree` 渲染绝对定位右上角浮层（`toastBox`，zIndex 11 最高；宽度由内容自适应，类型着色 success 绿/error 深红/info 默认；过期即清除，`state.schedulePaint` 由 TuiOutput 注入驱动自动消失）——**拖选复制/模型切换（/model 面板与 CLI）/思考级别切换/命令面板短结果（/mcp 添加移除·/new·/cd·/pin·/archive·/auto·/vim·/tasks 停止·/plugin 装卸启停；/tasks·/team 空态·/diff·/review 无改动·/context 覆盖清除·未信任警告·未知命令仅面板 1.5s 自动收）/请求失败错误**统一收口到 toast，`TuiOutput.pushToast` 供 Output 通道使用；
-- **主题与 i18n**：system/light/dark 自适应（OSC 10/11 检测 + `/settings theme` 强制）；中英双语 chrome（`/settings language`）；Markdown 行式渲染（含 GFM 表格 box-drawing 方框）；
-- **验证**：`scripts/tui-snapshot.ts`（`npm run tui:snapshot`）内存渲染 51 场景，与 CLI 共用同一渲染路径。
-### 工具列表（src/tools/）
-
-静态注册表 8 个基础工具（含 `lsp`）；`ask_user`（向用户提问）、`delegate`（子代理）、`task_board` / `send_message`（Team 协作）与 MCP 外部工具由入口 `attachRuntime` 按配置**运行时注入**（MCP 工具名带 server 前缀，如 `demo_ping`）。
-
-| 工具 | 作用 |
-|---|---|
-| `read_file` | 按行号读取文件，支持 offset/limit 分段 |
-| `write_file` | 创建或整体覆盖写入文件 |
-| `edit_file` | 局部定向编辑（`old_string` → `new_string`；UI 显示统一 diff） |
-| `list_directory` | 列出目录内容 |
-| `search_code` | 代码搜索（优先 ripgrep，兜底内置扫描） |
-| `run_command` | 执行 shell 命令（带超时 + 输出截断；危险命令拦截在安全护栏闸门）
-| `skill` | **技能**：按 name 加载已安装技能（SKILL.md）的完整指令内容（对标 opencode；只读，不修改文件） |
-| `lsp` | **LSP 导航**（2026-09 静态注册）：definition/hover/references/documentSymbol，按需启动 typescript-language-server / pyright-langserver；未安装返回提示（可改用 search_code） |
-| `task_board` | **Team 共享任务看板**（运行时注入）：主代理与所有子代理共用，add/update/claim/list；动态工作流用它汇报进度 |
-| `send_message` | **Team 消息**（运行时注入）：向 main 或其它子代理异步发消息，收方在下一步注入上下文（协作/请求决策） |
-| `web_search` | **Web 搜索**（运行时注入，Brave Search API）：关键词 → 搜索结果列表（标题/URL/摘要）；key 配 `webSearchApiKey` 或环境变量 `BRAVE_API_KEY`，结果可再交 `web_fetch` 抓取 |
-| `ask_user` | **向用户提问**（运行时注入，同 delegate）：agent 遇歧义/需要用户决策时——TUI 输入区上方**扁平面板**（无边框/无底色，紧贴输入区；A-D 勾选 / **独立自定义输入**——打字进面板缓冲不进主输入框 / Esc 取消）、console readline 询问；结果回传模型继续（取消/非交互则模型自行决定） |
-| `delegate` | **子代理**：把独立子任务委托给隔离上下文的小循环（可选，`allowSubagents`；支持 `agent` 参数按名加载子代理定义——per-agent 模型/权限/工具白名单/技能，嵌套委托 depth 上限 5）。**过程可视化（1.0）**：运行中的 delegate 在**输入区上方面板**（command 样式——TUI delegateBox / Web #delegate-panel）逐条显示，进度事件带工具配对 seq 精确归集（并行/嵌套不互相覆盖）；点击就地展开查看思考（think）与工具调用明细（toolStart/toolEnd）；展开内 **⏹ 停止**（per-subagent AbortController——断流/步间退出，不再幽灵跑完）；完成后面板行移除、对话流留结果摘要卡（点击展开全过程，**thought 式扁平**对齐 thought/Web 透明卡：收起单行 `+ Subagent:` / 展开缩进明细，步数耗时来自 end 事件快照） |
-| `/skill` 命令 | **技能管理**（TUI 面板选择查看 / CLI 交互）：`/skill` 打开选择面板（含标签：全局/仅手动/子代理，选中加载完整内容）· `/skill find <词>` 走 `npx skills find` 网络检索 skills.sh · `/skill add <repo> [--skill <名>] [--global]` 安装（本会话即时生效，`refreshSkillInjections` 刷新注入清单）· `/skill show <名>` 查看内容（含 frontmatter 扩展属性）· `/skill create <名> [描述]` 新建（`.agents/skills`，与 Web 共用 `createSkill`）· `/skill delete <名>` 删除（仅删 discover 到的目录） |
-| `/compact` 命令 | **手动压缩上下文**：把旧消息合并为摘要（复用 summarizeContext，保留最近 8 条原文）
-| `/agents` 命令 | **查看子代理配置**：delegate 启用状态 / 模型 / 步骤上限 / 子代理可用工具 + 已发现子代理定义（`.agents/subagents/*.md`，只读）
-| `/orchestrate` 命令 | **编排（2026-09 动态工作流）**：缺省先由模型产出结构化工作流计划（步骤 + 依赖 + 可选 agent），引擎按依赖分层并行执行（共享 task_board + send_message）→ 汇总 → 对抗审查；计划解析失败或 `--pipeline` / `--agents` 时回退固定 fan-out pipeline（`/orchestrate <任务>`）
-| `/goal` 命令 | **目标机制**（别名 `/loop`）：自动推导验收标准并循环执行直至达标（`/goal <目标>`，缺省「目标拆解器」LLM 推导 2-3 条可验证标准 / `--accept <标准>` 显式指定 / `--max N` 迭代上限 / 含迭代日志与判定反馈） |
-| `/review` 命令 | **代码审查**：先跑项目自带 typecheck（无则 lint），再收集 git diff，一次独立 LLM 调用输出问题与建议
-| `/btw` 命令 | **旁问**（`/btw [--keep] <问题>`）：不打断主线任务的侧问——当前对话快照 + 问题跑一次独立请求，带**只读迷你工具循环**（read_file / search_code / list_directory，无写盘、不过审批）；转录不 push 回 messages（答案不进历史），`--keep` 时把 Q/A 作为 system 消息留在上下文（随会话落盘）；CLI/TUI/Web 三端 |
-| `/variants` 命令 | **切换模型思考级别**（reasoning_effort）：面板/CLI 切换，优先级 = 配置 reasoningEffortOptions（omni.json，显式空数组=明确关闭）> models.dev 快照查表（effort 子集/仅开关 none·auto）> 默认档位（low/medium/high/xhigh/max + none/auto）；none/auto 不随请求下发参数 |
-| 模型能力快照 | **已移入 `/settings models [refresh]`**（三端统一子命令）：查看状态（来源：内置/用户更新 · 条数 · 生成时间天龄）· 在线拉取 models.dev 重建快照 → 写 `~/.config/omni/model-context-snapshot.json` + **热替换内存表立即生效**（默认不自动更新；删除该文件恢复内置；开发者更新内置快照用 `npm run models:snapshot`） |
-| `/model` 命令 | **切换/添加模型**（多端点）：`/model` 面板 · `/model <名称>` 切换 · `/model add <名称> [--base-url <url>] [--api-key <key>] [--user-agent <ua>]` **添加并持久化**（运行时注册进 runOpts.models + 切换，纯 JSON 配置自动追加 **providers 单模型分组**，JSONC 提示手动加）；选项来自配置 providers 分组（端点/密钥的唯一格式，缺省字段回退网关级/环境变量）；切换时用 createClient 重建客户端并更新 ModelRuntime（主循环与子代理同步） |
-| `/status` 命令 | **会话状态汇总**（含上下文用量，原 `/context` 已并入）：模型/权限/计划模式/思考级别/token 用量/会话文件/已加载脚手架（记忆/技能/预载）+ 消息数/token 估算/压缩预算；共享逻辑在 `agent/report.ts`（`fullStatusReport`，三端复用） |
-| `/context` 命令 | **调整上下文窗口**：`/context` 查看当前生效值 · `/context 256|400|512|750|1000` 手动覆盖（单位 K tokens）· `/context 默认` 清除回跟随模型自动；覆盖驱动压缩触发预算与用量分母，持久化到 `contextLimit` 配置 |
-| `/settings` 命令 | **设置 hub**：TUI 打开选择菜单（语言/主题/token 统计/诊断/**帮助/模型快照**）· `/settings help` 帮助（原顶层 `/help`）· `/settings models [refresh]` 模型能力快照（原顶层 `/models`）；CLI/Web 同原子命令 |
-| `/export` 命令 | **导出会话**为 Markdown（`.omni/export-<时间戳>.md`；脚手架 system 消息不导出） |
-| `/mcp` 命令 | **管理 MCP 服务器**（TUI 无参打开选择面板：服务器列表 + 重连全部，选中查看详情/触发重建）：`/mcp reconnect` 重连；`/mcp resources /mcp prompts` 查看资源/提示词；`/mcp read <server> <uri>` 读资源；`/mcp get <server> <模板>` 取提示词；`/mcp add <名> <command|--url>` 运行时添加并持久化；`/mcp remove <名>` 移除；`/mcp login <名>` OAuth 登录（HTTP 服务器） |
-| `/diff` 命令 | **查看未提交改动**（复用 review.ts 的 collectDiff，输出前 60 行） |
-| `/rename` 命令 | **改会话标题**：终端窗口标题（OSC 0）+ 会话 meta 落盘（SessionMeta.title，/resume 还原） |
-| `/resume` 命令 | **恢复历史会话**：无参列出 / `<id>` 恢复（替换 messages + sessionPath + 重置落盘计数 + 历史回放进对话流；onResume 回调由 interactive 组装） |
-| `/new` 命令 | **新建会话并回到初始状态**（与 `/clear` 的区别：新会话文件 + 统计/撤销栈/hook note 全重置，回到 hero；旧会话文件保留，可 `/session` 找回）——TUI（`onNewSession` 回调组装）/ CLI（内联）/ Web（前端原生：草稿态，与「新会话」按钮一致） |
-| `/fork` 命令 | **会话 fork**：从当前会话历史某点分叉独立新会话（原会话不丢）——`/fork` 无参列出可保留消息序号摘要，`/fork <N>` 保留前 N 条并自动切换（复用 onResume 链路；Web 端文件级 fork 侧栏可见） |
-| `/send` 命令 | **跨会话消息**：`/send <会话id> <消息>` 向指定会话发消息取结果——串行执行（保存当前上下文 → 载入目标会话 → 跑一轮 → 落盘 → 恢复），结果以 `[跨会话响应]` system 消息注入当前上下文（TUI/CLI 支持；Web 提示全局单运行限制） |
-| `/session` 命令 | **会话管理（加载同目录历史会话并继续）**：无参列出**当前目录**（同目录）的历史会话——TUI 打开选择面板（↑↓/数字 + Enter 继续）、CLI 文本列出；`/session <id>` 直接继续（支持 id 前缀匹配，多个命中列出候选不静默选）；`/session all` 列出全部跨目录；`/session archived` 查看归档；列表/匹配均排除当前会话；恢复后清理空占位会话文件（同 `/resume` 共用 restoreSession：替换 messages + 会话文件 + 重置落盘计数） |
-| `/memory-apply` 命令 | **应用待提交的项目记忆片段**：`.omni/memory-pending.md` → 项目根 AGENTS.md（退出时自动提取项目持久事实生成待确认片段；确认后应用并清片段） |
-| `/team` 命令 | **Team 任务看板**（2026-09）：共享任务列表 + 未投递消息 + 运行中子代理树（TUI 面板 / CLI / Web `/team`） |
-| `/tasks` 命令 | **子代理任务中心（Agent View，1.0 完整版）**：列出本次会话全部子代理（运行中 + 已完成，含编排 worker；行含 名 · model · effort · 步数 · 耗时）；`/tasks show <id>` 钻取完整 transcript 明细；`/tasks resume <id> <追问>` 对已完成子代理**带原上下文续跑**（对标 Claude Code 打开 transcript 发 follow-up / Codex agent thread + steer）；`/tasks stop <id\|seq>` 停止运行中。TUI 无参开可导航面板（选中→明细面板 + 预填续跑命令），Web 无参开原生面板（`/api/tasks` REST + 钻取/追问/停止）） |
-| `/cd` 命令 | **切换工作目录**（2026-09，对标 Codex /cd）：`/cd [路径]`（无参显示当前，`~` 展开）；TUI 同时更新 `state.cwd` |
-| `/pin` 命令 | **置顶会话**（2026-09）：`/pin [id]` 切换置顶（无参 = 当前），列表置顶优先 |
-| `/archive` / `/unarchive` 命令 | **归档会话**（2026-09）：默认从列表隐藏，`/session archived` 查看；Web 侧栏底部「已归档 (N)」切换 + ⋯ 菜单 |
-| `/plugin` 命令 | **插件管理**（2026-09）：`/plugin list` · `install <路径|git URL> --yes [--force]` · `remove <名> --yes` · `enable|disable <名>`；CLI `omni plugin …` 同源；Web 设置 → 插件页 |
-| `/auto` 命令 | **AI 自动审批开关**（2026-09）：`/auto [on|off]`（持久化；Web 设置 → 通用勾选）；`omni exec --approve-for-me` 等价 |
-| `/vim` 命令 | **TUI Vim 键位开关**（2026-09）：`/vim [on|off]`（Esc normal / i insert；h/j/k/l/w/b/e/0/$/x/dd/cc/dw/yy/p/o/O） |
-| `/redo` 命令 | **重做上次撤销**：UndoStack 新增 redo 栈——/undo 时 popForUndo 捕获「撤销前」状态，/redo 恢复；新写入清空 redo 历史 |
-| `/rewind` 命令 | **会话检查点三模式**：TUI 无参开检查点面板→模式菜单两步确认（`rewindPick`+`rewindMode` 意图异步回滚）/ `/rewind <N>` 预览 / `/rewind <N> --code\|--chat\|--both [--yes]` 执行（仅代码/仅对话/双向；旧检查点无对话快照仅 `--code`）；Web 面板模式切换 + `/rewind <N> --mode` |
-| `/trace` 命令 | **轨迹文本账本**（console/web `/trace`，TUI 右侧面板已删除）：每轮请求/工具/消息事件序列折叠投影（`agent/trace.ts` foldTrace + buildTraceTextLines，数据源 = 事件记录器内存全量事件） |
-| `/doctor` 命令 | **环境诊断**：Node/Bun 版本、API Key、端点连通性（5s 超时 fetch）、配置/MCP/权限/模型 |
-| `mcp_*` | **MCP 外部工具**：经 stdio（本地子进程）或 streamable HTTP（远端端点）调用外部服务器（可选，`mcpServers`）；同名 server 资源/提示词辅助工具（`<server>_read_resource` / `<server>_get_prompt`）随声明自动注册；server instructions 注入系统提示；per-tool 审批模式（`defaultToolsApprovalMode`）过安全闸门 |
 
 ## 对 AI Agent 的协作规范
 
@@ -450,6 +181,7 @@ for step in 1..maxSteps:
 - [x] **MVP → 完整能力（已完成）**：Agent 循环 + 工具 + mock e2e → 安全护栏（权限分级/审批/审计/工作区信任/OS 沙箱 2.0）→ 上下文管理（截断/摘要压缩/预载）→ 评估体系 → CLI/TUI → MCP（双传输/Resources/Prompts/OAuth/通知流）→ 子代理与编排 → 记忆系统（嵌套 AGENTS.md/渐进披露/TTL/结构化）→ 会话持久化/检查点/撤销 → 技能系统 → Web/Electron 多前端 → Headless 与 CI（协议冻结 + omni-action）→ **1.0**（providers 模型层/Web 多会话并发/子代理 worktree 隔离/Hooks 扩展/压缩 2.0/LSP 反馈/预设/规格/遥测/eval 成本报告/发布工程）
 - [x] **2026-09 市场对齐批次（第一百七十八次）**：动态工作流 / Mission 编排（task_board + send_message + 并发预算 + `/team`）· 插件系统（plugin.json + `omni plugin` + 运行时加载）· 后台子代理 + `/tasks` + Web 远程令牌 · MCP elicitation/sampling + 2026-07-28 分页发现 + DCR/CIMD · AI 自动审批（autoReview）· 会话 pin/archive/`/cd`/Vim/LSP/密钥脱敏 · 修复 MCP 子进程阻止退出（stdio unref）
 - [ ] 进阶：SWE-bench 评测、Windows 原生沙箱（AppContainer 需原生模块）
+
 ## 文档地图
 
 | 文档 | 内容 |
@@ -464,3 +196,5 @@ for step in 1..maxSteps:
 | `Doc/research-terminal-agents-2026.md` | 全市场 Agent Harness 调研原始报告 |
 | `README.md` · `README.zh-CN.md` | 项目总览 / 快速开始 |
 | `config.schema.json` · `schemas/` | 配置 JSON Schema / 协议冻结 Schema |
+| `Doc/agents-reference.md` | 详细架构参考（完整 `src/`/`scripts/` 文件树 / TUI 实现要点 / 工具与斜杠命令全表） |
+| `Doc/specs/` | 功能规格历史文档（从仓库根目录迁入，见 `Doc/specs/README.md`） |
