@@ -133,12 +133,146 @@ import type { WebBroadcast } from './events.js';
 import { WebOutput } from './output.js';
 import { STATUSLINE_DEFAULT } from '../tui/layout.js';
 import { getAsset, getIconPng, json, MIME, readBody } from './http-util.js';
-import { approvals, asks, listeners, pendingRegistry, queuedSends, runs, sessions, type RunningRun, type WebSession } from './state.js';
+import { approvals, asks, currentEventSeq, emitEvent, eventsSince, listeners, pendingRegistry, queuedSends, runs, sessions, type RunningRun, type WebSession } from './state.js';
 import { buildStatus, lastRunReason, maybeAutoTitle } from './status.js';
 import { routingOutput, setCurrentOutput } from './routing-output.js';
+import { LoginRateLimiter, WebAuth, normalizePairCode } from './auth.js';
 
 // 抽出模块的对外导出保持路径不变（web/index.ts 仍按 './server.js' 引用 routingOutput）
 export { routingOutput } from './routing-output.js';
+
+
+/* ---------------- 认证小工具 ---------------- */
+
+const SESSION_COOKIE = 'omni_session';
+
+function readCookie(req: http.IncomingMessage, name: string): string {
+  const raw = new RegExp('(?:^|;\\s*)' + name + '=([^;]*)').exec(req.headers.cookie ?? '')?.[1] ?? '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** 请求是否经 HTTPS（Cloudflare 隧道会带 x-forwarded-proto） */
+function isSecureRequest(req: http.IncomingMessage): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim().toLowerCase();
+  if (proto) return proto === 'https';
+  return Boolean((req.socket as { encrypted?: boolean }).encrypted);
+}
+
+/** 来源 IP（Cloudflare 隧道优先 cf-connecting-ip；LAN 直连退回 socket 地址） */
+function clientIp(req: http.IncomingMessage): string {
+  const cf = String(req.headers['cf-connecting-ip'] ?? '').trim();
+  if (cf) return cf;
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+/** 跨站请求判定（Cookie 认证的写操作必须同源；Bearer/小程序无 Origin 不受影响） */
+function crossOrigin(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== (req.headers.host ?? '');
+  } catch {
+    return true;
+  }
+}
+
+function sessionCookie(token: string, maxAgeSec: number, secure: boolean): string {
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(0, Math.floor(maxAgeSec))}${secure ? '; Secure' : ''}`;
+}
+
+/** 登录页（自包含，无外部资源；深/浅色跟随系统） */
+function loginPageHtml(): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0c">
+<title>登录 · Omni</title>
+<link rel="icon" type="image/png" href="/icon.png">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f6f7; --card:#fff; --fg:#17171a; --muted:#6b6b73; --line:#e4e4e8; --accent:#2f6bff; --err:#c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0b0b0c; --card:#151518; --fg:#f2f2f5; --muted:#9a9aa4; --line:#2a2a30; --accent:#6f9bff; --err:#ff6b6b; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; display: grid; place-items: center; padding: 24px; }
+  .card { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 30px 26px 24px; box-shadow: 0 12px 40px rgb(0 0 0 / 8%); }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .brand img { width: 34px; height: 34px; border-radius: 9px; }
+  .brand b { font-size: 18px; letter-spacing: .2px; }
+  .brand span { color: var(--muted); font-size: 12px; margin-left: auto; }
+  h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+  p.sub { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
+  input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--fg); font-size: 16px; outline: none; }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  button { width: 100%; margin-top: 20px; padding: 12px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .err { min-height: 20px; margin-top: 12px; color: var(--err); font-size: 13px; }
+  .foot { margin-top: 18px; color: var(--muted); font-size: 11.5px; text-align: center; }
+</style>
+</head>
+<body>
+<form class="card" id="f">
+  <div class="brand"><img src="/icon.png" alt=""><b>omni</b><span>本地 Agent</span></div>
+  <h1>登录</h1>
+  <p class="sub">输入在电脑上设置的账号密码</p>
+  <label for="u">用户名</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+  <label for="p">密码</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">进入</button>
+  <div class="err" id="e"></div>
+  <div class="foot">omni web · 账号密码由 <code>omni web auth set</code> 设置</div>
+</form>
+<script>
+  var f = document.getElementById('f'), e = document.getElementById('e'), b = document.getElementById('b');
+  var pq = new URLSearchParams(location.search).get('pair');
+  if (pq) {
+    b.disabled = true;
+    e.textContent = '正在配对…';
+    fetch('/api/auth/pair/redeem', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: pq })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.ok) { location.replace('/'); return; }
+        e.textContent = j.error || '配对失败，请重新生成二维码';
+        b.disabled = false;
+      });
+    }).catch(function () {
+      e.textContent = '无法连接服务，请检查网络';
+      b.disabled = false;
+    });
+  }
+  f.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    e.textContent = '';
+    b.disabled = true;
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: document.getElementById('u').value, password: document.getElementById('p').value })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.ok) { location.replace('/'); return; }
+        e.textContent = j.error || ('登录失败（' + r.status + '）');
+        b.disabled = false;
+      });
+    }).catch(function () {
+      e.textContent = '无法连接服务，请检查网络';
+      b.disabled = false;
+    });
+  });
+</script>
+</body>
+</html>`;
+}
 
 /* ---------------- 服务 ---------------- */
 export interface WebServiceOptions {
@@ -148,6 +282,12 @@ export interface WebServiceOptions {
   overrides?: ConfigOverrides;
   /** 远程接入令牌（--token / OMNI_WEB_TOKEN）；非回环地址必填 */
   token?: string;
+  /** 账号密码认证（webAuth 配置）；配置后所有 /api 请求需登录 */
+  auth?: import('../config/index.js').WebAuthConfig;
+  /** 即使监听回环也要求存在认证方式（--auth / --tunnel 使用） */
+  requireAuth?: boolean;
+  /** 一次性配对码（omni pair 生成）：扫码后免密换取会话；单次使用、限时有效 */
+  pair?: { code: string; expiresAt: number };
 }
 
 export async function startWebService(opts: WebServiceOptions): Promise<http.Server> {
@@ -157,11 +297,19 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   const overrides = opts.overrides ?? {};
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 3080;
-  // 远程接入（2026-09 FLT）：非回环监听必须有令牌（fail-closed，防未授权访问 Agent）
+  // 远程接入（2026-09 FLT）：非回环监听必须有认证方式（fail-closed，防未授权访问 Agent）
   const token = opts.token?.trim() ?? '';
   const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
-  if (!loopback && !token) {
-    throw new Error('非回环监听地址必须设置访问令牌：omni web --host <地址> --token <令牌>（或环境变量 OMNI_WEB_TOKEN）');
+  const webAuth = opts.auth?.username && opts.auth.passwordHash ? new WebAuth(opts.auth) : null;
+  const loginLimiter = new LoginRateLimiter();
+  const pairLimiter = new LoginRateLimiter();
+  const pair = opts.pair && webAuth
+    ? { code: normalizePairCode(opts.pair.code), expiresAt: opts.pair.expiresAt, used: false }
+    : null;
+  if ((!loopback || opts.requireAuth) && !token && !webAuth) {
+    throw new Error(
+      '当前监听方式要求认证：先运行 \`omni web auth set\` 设置账号密码，或使用 --token <令牌>（/ OMNI_WEB_TOKEN）'
+    );
   }
 
   /**
@@ -228,22 +376,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (!file) continue;
       try {
         await sendMessage(job.targetId, job.text, { quiet: true });
-        for (const l of listeners) l('meta.add', { sessionId: job.targetId, text: `[跨会话消息已处理] ${job.text.slice(0, 50)}` });
+        emitEvent('meta.add', { sessionId: job.targetId, text: `[跨会话消息已处理] ${job.text.slice(0, 50)}` });
       } catch {
         // 失败静默（排队任务不打断主流程）
       }
     }
   };
 
-  const broadcast: WebBroadcast = (type, data) => {
-    for (const l of listeners) {
-      try {
-        l(type, data);
-      } catch {
-        // 单个客户端异常不影响其它
-      }
-    }
-  };
+  const broadcast: WebBroadcast = (type, data) => emitEvent(type, data);
 
   /** 子代理记录 → JSON（REST /api/tasks 序列化；transcript 不下发——明细 items 足够展示） */
   const serializeTask = (r: SubagentRecord, reg?: SubagentRegistry): Record<string, unknown> => ({
@@ -582,7 +722,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       s.persisted = 0;
       runOpts.hooks?.resetSessionStart();
       // 广播 clear 事件 → 前端清空消息流
-      for (const l of listeners) l('clear', { sessionId: s.id });
+      emitEvent('clear', { sessionId: s.id });
       add('已清空上下文，开始新一轮对话。');
       return { lines };
     }
@@ -1080,7 +1220,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         s.title = title;
         if (s.file) await updateSessionTitle(s.file, title).catch(() => {});
         // 与 REST 重命名端点对齐：广播 title，前端侧栏/标题即时更新（不再只靠刷新）
-        for (const l of listeners) l('title', { sessionId: s.id, title });
+        emitEvent('title', { sessionId: s.id, title });
       }
       add(`会话标题已改为「${title}」`);
       return { lines };
@@ -1128,7 +1268,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (forkFile) {
         // 与 REST fork 端点对齐：广播 session.created，侧栏即时出现新会话
         const newId = sessionIdFromPath(forkFile);
-        for (const l of listeners) l('session.created', { id: newId, title: `${s?.title || '会话'}（分叉）` });
+        emitEvent('session.created', { id: newId, title: `${s?.title || '会话'}（分叉）` });
         add(`已分叉新会话（${newId} · ${n} 条消息 · 原会话保留，侧栏刷新可见）`);
       } else {
         add('fork 失败');
@@ -1675,31 +1815,190 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     const p = url.pathname;
     const parts = p.split('/').filter(Boolean);
 
-    // 远程接入令牌（2026-09 FLT）：/api 需 Bearer / ?token= / Cookie（页面带 ?token= 时写 Cookie）
-    if (token) {
-      const qToken = url.searchParams.get('token') ?? '';
-      if (qToken === token) {
-        res.setHeader('Set-Cookie', `omni_web_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`);
-      }
-      if (p.startsWith('/api')) {
-        const auth = req.headers.authorization ?? '';
-        const cookieRaw = /(?:^|;\s*)omni_web_token=([^;]*)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
-        const cookieToken = (() => {
-          try {
-            return decodeURIComponent(cookieRaw);
-          } catch {
-            return cookieRaw;
-          }
-        })();
-        const provided = auth.startsWith('Bearer ') ? auth.slice(7) : qToken || cookieToken;
-        if (provided !== token) {
-          json(res, 401, { error: '未授权：需要 Authorization: Bearer <令牌> 或 ?token=<令牌>' });
+    // 接入凭据：--token（Bearer / ?token= / Cookie）或账号登录会话（HttpOnly Cookie / Bearer）
+    const authHeader = req.headers.authorization ?? '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const qToken = url.searchParams.get('token') ?? '';
+    if (token && qToken === token) {
+      res.setHeader('Set-Cookie', `omni_web_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`);
+    }
+    const tokenCookie = readCookie(req, 'omni_web_token');
+    const tokenValid = !!token && (bearer === token || qToken === token || tokenCookie === token);
+    // Bearer 优先（小程序/脚本），浏览器走 Cookie
+    const sessionToken = bearer || readCookie(req, SESSION_COOKIE);
+    const sessionValid = !!webAuth && webAuth.verifyToken(sessionToken);
+    const authed = tokenValid || sessionValid;
+    // 静态资源公开（登录页自身需要图标/样式；不含 index.html 与 API）
+    const publicStatic =
+      req.method === 'GET' &&
+      ['/style.css', '/app.js', '/vendor.js', '/markdown-renderer.js', '/manifest.webmanifest', '/sw.js', '/icon.png', '/favicon.ico'].includes(p);
+
+    if (webAuth) {
+      // ---- 一次性配对码兑换（扫码免密登录；必须在门禁之前）----
+      if (pair && p === '/api/auth/pair/redeem' && req.method === 'POST') {
+        if (crossOrigin(req)) {
+          json(res, 403, { error: '跨站请求被拒绝' });
           return;
         }
+        const ip = clientIp(req);
+        const wait = pairLimiter.lockedFor(ip);
+        if (wait > 0) {
+          json(res, 429, { error: `尝试过多，请 ${wait} 秒后再试` });
+          return;
+        }
+        let body: Record<string, any>;
+        try {
+          body = await readBody(req);
+        } catch {
+          json(res, 400, { error: '请求格式错误' });
+          return;
+        }
+        const code = normalizePairCode(typeof body.code === 'string' ? body.code : '');
+        if (pair.used) {
+          json(res, 401, { error: '配对码已使用，请在电脑上重新运行 omni pair' });
+          return;
+        }
+        if (Date.now() > pair.expiresAt) {
+          json(res, 401, { error: '配对码已过期，请在电脑上重新运行 omni pair' });
+          return;
+        }
+        if (!code || code !== pair.code) {
+          const lock = pairLimiter.fail(ip);
+          json(res, 401, { error: lock > 0 ? `配对码不正确；已锁定 ${lock} 秒` : '配对码不正确' });
+          return;
+        }
+        pair.used = true;
+        pairLimiter.reset(ip);
+        const issued = webAuth.issue();
+        res.setHeader('Set-Cookie', sessionCookie(issued.token, webAuth.sessionDays * 86_400, isSecureRequest(req)));
+        json(res, 200, { ok: true, user: webAuth.user, token: issued.token, expiresAt: issued.expiresAt });
+        return;
       }
+
+      // ---- 登录 / 登出（必须在门禁之前）----
+      if (p === '/api/auth/login' && req.method === 'POST') {
+        if (crossOrigin(req)) {
+          json(res, 403, { error: '跨站请求被拒绝' });
+          return;
+        }
+        const ip = clientIp(req);
+        const wait = loginLimiter.lockedFor(ip);
+        if (wait > 0) {
+          json(res, 429, { error: `尝试过多，请 ${wait} 秒后再试` });
+          return;
+        }
+        let body: Record<string, any>;
+        try {
+          body = await readBody(req);
+        } catch {
+          json(res, 400, { error: '请求格式错误' });
+          return;
+        }
+        loginLimiter.prune();
+        const username = typeof body.username === 'string' ? body.username : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!username || !password || !webAuth.verifyCredentials(username, password)) {
+          const lock = loginLimiter.fail(ip);
+          json(res, 401, { error: lock > 0 ? `用户名或密码错误；已锁定 ${lock} 秒` : '用户名或密码错误' });
+          return;
+        }
+        loginLimiter.reset(ip);
+        const issued = webAuth.issue();
+        res.setHeader('Set-Cookie', sessionCookie(issued.token, webAuth.sessionDays * 86_400, isSecureRequest(req)));
+        json(res, 200, { ok: true, user: webAuth.user, token: issued.token, expiresAt: issued.expiresAt });
+        return;
+      }
+      if (p === '/api/auth/logout' && req.method === 'POST') {
+        webAuth.revoke(sessionToken);
+        res.setHeader('Set-Cookie', [
+          `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+          'omni_web_token=; Path=/; SameSite=Lax; Max-Age=0',
+        ]);
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (!authed && !publicStatic) {
+        if (p.startsWith('/api')) {
+          json(res, 401, { error: '未登录：请先登录', code: 'unauthorized' });
+          return;
+        }
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(loginPageHtml());
+          return;
+        }
+        json(res, 401, { error: '未登录：请先登录', code: 'unauthorized' });
+        return;
+      }
+      // Cookie 会话的写操作做同源校验（Bearer / 小程序无 Origin，不受影响）
+      if (!tokenValid && !bearer && req.method !== 'GET' && crossOrigin(req)) {
+        json(res, 403, { error: '跨站请求被拒绝' });
+        return;
+      }
+      if (p === '/login' && req.method === 'GET') {
+        res.writeHead(302, { location: '/' });
+        res.end();
+        return;
+      }
+      if (p === '/api/auth/me' && req.method === 'GET') {
+        json(res, 200, { user: webAuth.user, method: tokenValid ? 'token' : 'password' });
+        return;
+      }
+    } else if (token && p.startsWith('/api') && !tokenValid) {
+      json(res, 401, { error: '未授权：需要 Authorization: Bearer <令牌> 或 ?token=<令牌>' });
+      return;
     }
 
     try {
+      // ---------- 首页（账号密码认证通过后才返回 SPA）----------
+      if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
+        const asset = getAsset('index.html');
+        if (asset === null) {
+          res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end('资源缺失：web/index.html 不存在（npm run web:sync 重新生成）');
+          return;
+        }
+        res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache' });
+        res.end(asset);
+        return;
+      }
+
+      // ---------- 事件长轮询（SSE 被 Cloudflare Quick Tunnel 等代理缓冲时的回退）----------
+      if (p === '/api/events/poll' && req.method === 'GET') {
+        const sinceRaw = url.searchParams.get('since');
+        // 首次不带 since：只返回当前游标，避免重放历史事件
+        if (sinceRaw === null) {
+          json(res, 200, { seq: currentEventSeq(), events: [] });
+          return;
+        }
+        const since = Number(sinceRaw);
+        if (!Number.isFinite(since) || since < 0) {
+          json(res, 400, { error: 'since 无效' });
+          return;
+        }
+        const waitSec = Math.min(25, Math.max(0, Number(url.searchParams.get('timeout') ?? '20') || 0));
+        let aborted = false;
+        req.on('close', () => {
+          aborted = true;
+        });
+        const deadline = Date.now() + waitSec * 1000;
+        for (;;) {
+          const batch = eventsSince(since);
+          if (batch.events.length > 0) {
+            // 小批聚合：流式 token 不把长轮询打成每 chunk 一次请求
+            await new Promise((r) => setTimeout(r, 250));
+            if (aborted) return;
+            json(res, 200, eventsSince(since));
+            return;
+          }
+          if (Date.now() >= deadline) {
+            if (!aborted) json(res, 200, batch);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+
       // ---------- SSE ----------
       if (p === '/api/events' && req.method === 'GET') {
         res.writeHead(200, {
@@ -1721,8 +2020,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       // ---------- 静态页面 ----------
-      if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js')) {
-        const name = p === '/' ? 'index.html' : p.replace(/^\//, '');
+      if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js' || p === '/manifest.webmanifest' || p === '/sw.js')) {
+        const name = p.replace(/^\//, '');
         const asset = getAsset(name);
         if (asset === null) {
           res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
@@ -2467,7 +2766,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         s0.messages.push({ role: 'system', content: `[已执行 /rewind] 已回滚到检查点 #${n}（${rewindModeLabel(mode)}）。请勿再基于回滚前的文件内容操作。` });
         if (s0.file) await appendSessionMessages(s0.file, s0.messages.slice(-1)).catch(() => {});
         s0.persisted = persistableMessages(s0.messages).length;
-        for (const l of listeners) l('meta.add', { sessionId: sid!, text: `已回滚到检查点 #${n}（${rewindModeLabel(mode)}，${fileResults.length} 个文件处理${mode === 'code' ? '' : `，对话截断 ${dropped} 条`}）` });
+        emitEvent('meta.add', { sessionId: sid!, text: `已回滚到检查点 #${n}（${rewindModeLabel(mode)}，${fileResults.length} 个文件处理${mode === 'code' ? '' : `，对话截断 ${dropped} 条`}）` });
         json(res, 200, { ok: true, results: fileResults, dropped, mode, preview });
         return;
       }

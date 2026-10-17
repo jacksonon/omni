@@ -2,11 +2,23 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ffffff">
   <title>Omni</title>
   <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Omni">
   <link rel="stylesheet" href="/style.css">
+  <script>
+    // PWA：HTTPS（Cloudflare 隧道）下注册 service worker；局域网 HTTP 不注册（非安全上下文）
+    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+    }
+  </script>
 </head>
 <body>
 <svg class="svg-defs" aria-hidden="true">
@@ -330,6 +342,7 @@
           <div class="settings-group">
             <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.version">版本</h4></div><div class="about-value"><code id="about-version" class="mono-value"></code><button id="about-copy-version" class="msg-action-btn" type="button" data-i18n-title="msg.copy" title="复制" aria-label="复制"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></div></div>
             <div class="setting-row"><div class="setting-info"><h4 data-i18n="settings.server">服务地址</h4></div><div class="about-value"><code id="about-server" class="mono-value"></code><button id="about-copy-server" class="msg-action-btn" type="button" data-i18n-title="msg.copy" title="复制" aria-label="复制"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></div></div>
+            <div class="setting-row hidden" id="row-account"><div class="setting-info"><h4 data-i18n="settings.account">账号</h4><p id="about-auth-user"></p></div><div class="about-value"><button id="btn-logout" class="secondary-button" type="button" data-i18n="settings.logout">退出登录</button></div></div>
             <div class="setting-row col"><div class="setting-info"><h4><span data-i18n="settings.tools">可用工具</span> · <span id="about-tools-count"></span></h4></div><div id="about-tools" class="tool-chips"></div></div>
             <div class="setting-row about-jump" id="about-goto-lang" role="button" tabindex="0"><div class="setting-info"><h4 data-i18n="settings.language">界面语言</h4><p data-i18n="settings.languageDesc">设置 → 通用 → 语言 中切换（中文 / English），保存后立即生效。</p></div>
               <div class="about-value"><span id="about-language" class="about-pill">中文</span><svg class="about-chev"><use href="#i-chevron-right"/></svg></div>

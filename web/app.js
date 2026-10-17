@@ -190,6 +190,8 @@ const I18N_ZH = {
   'settings.workspace': '工作区',
   'settings.apikey': '模型配置',
   'settings.about': '关于',
+  'settings.account': '账号',
+  'settings.logout': '退出登录',
   'settings.generalSub': '会话运行的基础行为。',
   'settings.themeSub': '界面配色方案，选择后立即生效并保存。',
   'settings.modelSub': '切换对话使用的模型与思考深度。',
@@ -674,6 +676,8 @@ const I18N_EN = {
   'settings.workspace': 'Workspace',
   'settings.apikey': 'Model config',
   'settings.about': 'About',
+  'settings.account': 'Account',
+  'settings.logout': 'Sign out',
   'settings.generalSub': 'Base behavior for session runs.',
   'settings.themeSub': 'Color scheme. Applies immediately and is saved.',
   'settings.modelSub': 'Switch the model and reasoning depth.',
@@ -3572,9 +3576,56 @@ function modelLabel(m) {
 }
 
 
-/* ---------------- SSE ---------------- */
+/* ---------------- SSE（+ 长轮询回退） ---------------- */
+let eventPollStarted = false;
+
+/**
+ * SSE 回退：Cloudflare Quick Tunnel 等代理会把 text/event-stream 整体缓冲，
+ * 浏览器连 ready 都收不到。改用长轮询 /api/events/poll：事件到达或超时即返回，
+ * 能穿过缓冲代理；代价是流式输出按 ~250ms 批量到达，不是逐 token。
+ */
+function startEventPolling() {
+  if (eventPollStarted) return;
+  eventPollStarted = true;
+  refreshStatus().then(() => {
+    if (!state.session && state.sessions.length) selectSession(state.sessions[0].id, true);
+    // 回退切换前可能有事件落在 SSE 缓冲里：重载当前会话历史补齐
+    else if (state.session) selectSession(state.session.id, true);
+    updateStatusText();
+  }).catch(() => {});
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  (async () => {
+    let cursor = null;
+    for (;;) {
+      try {
+        const q = cursor === null ? '' : `?since=${cursor}&timeout=20`;
+        const r = await fetch('/api/events/poll' + q, { cache: 'no-store' });
+        if (!r.ok) { await wait(2000); continue; }
+        const j = await r.json();
+        if (typeof j.seq === 'number') cursor = j.seq;
+        for (const e of (j.events || [])) {
+          try { bus.emit(e.type, e.data); } catch { /* ignore malformed */ }
+        }
+      } catch {
+        await wait(2000);
+      }
+    }
+  })();
+}
+
 function connectSSE() {
   const es = new EventSource('/api/events');
+  let ready = false;
+  // 3 秒内没有收到 ready（被代理缓冲 / SSE 不可用）→ 切长轮询
+  const fallbackTimer = setTimeout(() => {
+    if (ready) return;
+    try { es.close(); } catch { /* ignore */ }
+    startEventPolling();
+  }, 3000);
+  es.addEventListener('ready', () => {
+    ready = true;
+    clearTimeout(fallbackTimer);
+  });
   const on = (name) => es.addEventListener(name, (m) => {
     try { bus.emit(name, JSON.parse(m.data)); } catch (e) { /* ignore malformed */ }
   });
@@ -3589,6 +3640,11 @@ function connectSSE() {
   es.onerror = () => {
     const topDot = $('#top-status-dot');
     if (topDot) topDot.classList.add('error');
+    if (!ready) {
+      clearTimeout(fallbackTimer);
+      try { es.close(); } catch { /* ignore */ }
+      startEventPolling();
+    }
   };
   es.onopen = () => {
     refreshStatus().then(() => {
@@ -4462,6 +4518,28 @@ function renderAboutTools(tools) {
 }
 $('#about-copy-version').addEventListener('click', () => copyText($('#about-version').textContent || ''));
 $('#about-copy-server').addEventListener('click', () => copyText($('#about-server').textContent || ''));
+/* 关于 → 账号：仅在启用账号密码认证时显示，退出后回到登录页 */
+(async () => {
+  try {
+    const r = await fetch('/api/auth/me');
+    if (!r.ok) return;
+    const me = await r.json();
+    const row = $('#row-account');
+    const user = $('#about-auth-user');
+    if (row) row.classList.remove('hidden');
+    if (user) user.textContent = me.user + (me.method === 'password' ? ' · 密码登录' : ' · 令牌');
+  } catch {
+    /* 未启用认证 */
+  }
+})();
+$('#btn-logout')?.addEventListener('click', async () => {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch {
+    /* 忽略网络错误，仍然回到登录页 */
+  }
+  location.replace('/');
+});
 /* 关于 → 语言行：跳转到通用面板（与通用语言分段同一落点） */
 {
   const gotoLang = $('#about-goto-lang');

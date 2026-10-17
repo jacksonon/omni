@@ -1,0 +1,19 @@
+{
+  "name": "Omni",
+  "short_name": "Omni",
+  "description": "Omni 本地 Agent",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0b0c",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

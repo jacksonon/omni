@@ -84,6 +84,7 @@
     "web:vendor": "bun build ./web/vendor-entry.mjs --target=browser --outfile=web/vendor.js --minify",
     "web:sync": "npm run web:vendor && node scripts/web-sync.mjs",
     "probe:web": "tsx scripts/probe-web.ts",
+    "probe:web:auth": "tsx scripts/probe-web-auth.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && tsc && npm run bundle",
     "start": "node dist/index.js",
@@ -111,6 +112,7 @@
   "dependencies": {
     "markstream-core": "^2.0.6",
     "openai": "^4.0.0",
+    "qrcode-terminal": "^0.12.0",
     "stream-diffs": "^0.0.2",
     "stream-markdown-parser": "^1.2.12"
   },
@@ -119,6 +121,7 @@
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1",
     "@types/node": "^20.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
     "solid-js": "^1.9.0",

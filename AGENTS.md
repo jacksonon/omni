@@ -24,6 +24,9 @@ npm run dev:tui -- "<任务>"   # TUI 全屏模式（bun + 真实 TTY）
 npm run dev:mini             # 纯终端 CLI 模式（Codex CLI 形态；不带参数 = 交互会话；bun/TTY 下也不进全屏 TUI）
 npm run tui:snapshot      # TUI 快照验证（无 TTY，内存渲染断言）
 npm run dev:web           # Web 服务（本地后端 + 网页界面，默认 3080 端口，不自动开浏览器）
+npx tsx src/index.ts web auth set   # 设置 Web 登录账号密码（scrypt 哈希写全局配置）
+npx tsx src/index.ts web --host 0.0.0.0 --tunnel   # 局域网直连 / Cloudflare 快速隧道（需先设置密码）
+npx tsx src/index.ts pair                           # 局域网配对：终端链接 + 二维码（一次性配对码）
 npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
 npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
@@ -85,6 +88,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
   "sandboxFailClosed": true,             // 沙箱启用（read-only/workspace-write）时**默认 true**：无沙箱原语/网络无法内核强制则拒绝执行；显式 false 退回降级（不安全）；sandbox=off / danger-full-access 不受影响
   "repoMap": true,                       // 代码库结构感知：首轮注入紧凑符号地图（函数/类/常量，默认 true）
   "repoMapMaxSymbols": 200,              // repo map 符号上限
+  "webAuth": { "username": "omni", "passwordHash": "scrypt$…", "secret": "…", "sessionDays": 30 }, // Web 账号密码（omni web auth set 生成；局域网/隧道/小程序；口令只存哈希）
   "webFetchDomains": [],                 // web_fetch 工具域名允许列表（空 = 全部允许）
   "webSearchApiKey": "",                 // web_search 工具 API key（Brave Search；缺省回退环境变量 BRAVE_API_KEY）
   "auditLog": true,                       // 写审计日志（~/.config/omni/audit.log；默认 true）

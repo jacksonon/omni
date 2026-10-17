@@ -235,6 +235,34 @@
       "description": "Web 多会话并发上限（默认 3）",
       "default": 3
     },
+    "webAuth": {
+      "type": "object",
+      "description": "Web 账号密码认证（omni web auth set 生成；局域网/隧道/小程序共用）",
+      "required": [
+        "username",
+        "passwordHash"
+      ],
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "登录用户名"
+        },
+        "passwordHash": {
+          "type": "string",
+          "description": "scrypt 口令哈希（勿手动填写明文；用 omni web auth set 生成）"
+        },
+        "secret": {
+          "type": "string",
+          "description": "会话签名密钥（base64url；auth set 自动生成，轮换即吊销全部旧会话）"
+        },
+        "sessionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "description": "登录会话有效期（天，默认 30）"
+        }
+      }
+    },
     "diagnoseAfterEdit": {
       "type": "boolean",
       "description": "write_file 后自动跑快速检查并回传诊断（默认 false）",

@@ -10,7 +10,7 @@ import type { RunContext } from '../main.js';
 import { generateSessionTitle } from '../agent/title.js';
 import { updateSessionTitle } from '../agent/session.js';
 import type { EventRecorder } from '../agent/events.js';
-import { runs, listeners, type WebSession } from './state.js';
+import { emitEvent, runs, type WebSession } from './state.js';
 
 /** 兼容别名：全局是否至少有一个会话在跑 */
 export function anyRunning(): boolean {
@@ -38,7 +38,7 @@ export function maybeAutoTitle(s: WebSession, client: OpenAI, model: string, lan
       if (!title || s.title) return;
       s.title = title;
       if (s.file) void updateSessionTitle(s.file, title);
-      for (const l of listeners) l('title', { sessionId: s.id, title });
+      emitEvent('title', { sessionId: s.id, title });
     })
     .catch(() => {
       // 标题是可选增强，任何异常静默忽略

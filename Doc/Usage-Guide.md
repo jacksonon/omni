@@ -795,6 +795,23 @@ omni web --no-open         # don't auto-open the browser
 omni web --host 0.0.0.0 --token <token>   # remote access (phone/another machine; non-loopback requires a token)
 ```
 
+### LAN, phone, and remote access (password / PWA / Cloudflare tunnel)
+
+```bash
+omni web auth set          # set username + password (hidden prompt; only a scrypt hash is stored)
+omni web --host 0.0.0.0    # LAN access: prints http://192.168.x.x:3080 on startup
+omni web --tunnel          # Cloudflare quick tunnel: also prints a temporary public https URL (needs cloudflared)
+omni pair                  # LAN pairing: prints a URL + terminal QR (one-time code, 5 minutes)
+```
+
+- On the same Wi-Fi, open the printed LAN URL on your phone; the first visit redirects to a login page (username + password). Sessions last 30 days by default (`--days`).
+- `--tunnel` uses Cloudflare's free quick tunnel (no account); the URL changes on every start. Use a named tunnel for a stable domain.
+- The QR from `omni pair` contains a one-time 5-minute pairing code and logs you in automatically; the phone must be on the same Wi-Fi as the computer.
+- Cloudflare Quick Tunnel buffers SSE end-to-end (even `ready` never arrives). The Web UI detects this within 3s and falls back to long-polling via `/api/events/poll`; messages and approvals still arrive, with streaming refreshed in ~250ms batches. For true token-by-token streaming, use LAN or a named Cloudflare tunnel on your own domain.
+- Over HTTPS you can add the page to the home screen as a standalone app (PWA). Over plain LAN HTTP the UI works, but service workers / standalone mode do not.
+- Mini-programs and other clients: `POST /api/auth/login` returns a `token` for `Authorization: Bearer <token>`. WeChat mini-programs do not support SSE; streaming needs a WebSocket or chunked-transfer adapter.
+- Exposing this port exposes an agent that can run commands: use a strong password. `--host 0.0.0.0` / `--tunnel` refuse to start without a password or token.
+
 ### What the UI provides
 
 | Feature | Description |

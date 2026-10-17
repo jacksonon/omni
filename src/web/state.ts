@@ -45,15 +45,13 @@ export const pendingRegistry = {
     const id = `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     return new Promise<boolean>((resolve) => {
       approvals.set(id, { sessionId, resolve });
-      for (const l of listeners) {
-        l('approval.request', {
-          sessionId,
-          approvalId: id,
-          tool: req.tool,
-          summary: req.summary,
-          reason: req.reason,
-        });
-      }
+      emitEvent('approval.request', {
+        sessionId,
+        approvalId: id,
+        tool: req.tool,
+        summary: req.summary,
+        reason: req.reason,
+      });
     });
   },
   addAsk(
@@ -65,9 +63,49 @@ export const pendingRegistry = {
     const id = `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     return new Promise<AskResult | null>((resolve) => {
       asks.set(id, { sessionId, options, multiple, resolve });
-      for (const l of listeners) {
-        l('ask.request', { sessionId, askId: id, question, options, multiple });
-      }
+      emitEvent('ask.request', { sessionId, askId: id, question, options, multiple });
     });
   },
 };
+/* ---------------- 事件缓冲（SSE 受限时的长轮询回退） ---------------- */
+/**
+ * Cloudflare Quick Tunnel 等代理会缓冲 text/event-stream，导致浏览器收不到
+ * ready/answer 等事件。这里保留最近 N 条广播，供 /api/events/poll 按 seq 拉取；
+ * 长轮询请求在事件到达或超时后结束，能穿过这类缓冲代理。
+ */
+export interface BufferedEvent {
+  seq: number;
+  type: Parameters<WebBroadcast>[0];
+  data: Record<string, unknown>;
+  at: number;
+}
+const MAX_BUFFERED_EVENTS = 1000;
+const eventBuffer: BufferedEvent[] = [];
+let lastEventSeq = 0;
+
+/** 广播事件：写入环形缓冲 + 推送给所有 SSE 客户端 */
+export function emitEvent(type: Parameters<WebBroadcast>[0], data: Record<string, unknown>): void {
+  lastEventSeq += 1;
+  eventBuffer.push({ seq: lastEventSeq, type, data, at: Date.now() });
+  if (eventBuffer.length > MAX_BUFFERED_EVENTS) {
+    eventBuffer.splice(0, eventBuffer.length - MAX_BUFFERED_EVENTS);
+  }
+  for (const l of listeners) {
+    try {
+      l(type, data);
+    } catch {
+      // 单个客户端异常不影响其它
+    }
+  }
+}
+
+/** 当前事件序号（新客户端从这里开始拉取，避免重放历史） */
+export function currentEventSeq(): number {
+  return lastEventSeq;
+}
+
+/** 按 seq 取事件；返回最新 seq 供下一次轮询 */
+export function eventsSince(since: number): { seq: number; events: BufferedEvent[] } {
+  if (since >= lastEventSeq) return { seq: lastEventSeq, events: [] };
+  return { seq: lastEventSeq, events: eventBuffer.filter((e) => e.seq > since) };
+}

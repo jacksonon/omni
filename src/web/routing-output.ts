@@ -7,7 +7,7 @@
  */
 import type { ApprovalRequest } from '../safety/index.js';
 import { type WebOutput } from './output.js';
-import { listeners } from './state.js';
+import { emitEvent } from './state.js';
 
 let currentOutput: WebOutput | null = null;
 
@@ -27,11 +27,11 @@ export const routingOutput = {
   askUser: (q: string, opts: string[], multi?: boolean) =>
     currentOutput ? currentOutput.askUser(q, opts, multi ?? false) : Promise.resolve(null),
   onHookOutput: (event: string, lines: string[]) => {
-    for (const l of listeners) l('hook.output', { sessionId: null, event, lines: lines.slice(0, 5) });
+    emitEvent('hook.output', { sessionId: null, event, lines: lines.slice(0, 5) });
   },
   onSubagentEvent: (ev: unknown) => {
     const sid = currentOutput?.sessionId ?? null;
-    for (const l of listeners) l('subagent', { sessionId: sid, ev });
+    emitEvent('subagent', { sessionId: sid, ev });
   },
   onAutoReview: (req: ApprovalRequest, verdict: { approve: boolean; reason: string }) =>
     currentOutput?.onAutoReview?.(req, verdict),

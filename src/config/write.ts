@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { OmniConfig } from './index.js';
+import type { OmniConfig, WebAuthConfig } from './index.js';
 import { parseJsonc } from './jsonc.js';
 import { formatTokenCount } from './model-context.js';
 import type { McpServerConfig, ToolApprovalMode } from '../tools/mcp.js';
@@ -1067,4 +1067,45 @@ export function removeMcpServerFromConfig(name: string, omniCfg: OmniConfig): Pe
     };
   }
   return { ok: true, file: res.file, message: `已从配置移除 MCP 服务器「${name}」→ ${res.file}` };
+}
+
+/**
+ * 持久化 Web 账号密码认证（`omni web auth set` 写全局配置）。
+ * auth=null 等价于清除认证。带注释的 JSONC 不自动改写，返回可直接粘贴的 JSON 片段。
+ */
+export function persistWebAuthToConfig(auth: WebAuthConfig | null): PersistModelResult {
+  const file = globalConfigFile();
+  let obj: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    const text = readFileSync(file, 'utf8');
+    if (text.trim()) {
+      try {
+        obj = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        const snippet = JSON.stringify(auth, null, 2).split('\n').join('\n  ');
+        return {
+          ok: false,
+          file: null,
+          message:
+            `「${file}」带注释（JSONC），未自动修改——请手动添加/替换：\n  "webAuth": ${snippet}`,
+        };
+      }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { ok: false, file: null, message: '全局配置格式异常，未自动修改' };
+  }
+  if (auth) obj.webAuth = auth;
+  else delete obj.webAuth;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(obj, null, 2)}\n`);
+  } catch (err) {
+    return { ok: false, file: null, message: `写入全局配置失败：${(err as Error)?.message ?? err}` };
+  }
+  return {
+    ok: true,
+    file,
+    message: auth ? `已保存 Web 登录账号「${auth.username}」→ ${file}` : `已清除 Web 登录账号 → ${file}`,
+  };
 }

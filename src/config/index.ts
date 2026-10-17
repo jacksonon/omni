@@ -18,6 +18,18 @@ import type { McpServerConfig } from '../tools/mcp.js';
 import { parseJsonc } from './jsonc.js';
 import { findInDir, findProjectConfig } from './discover.js';
 
+/** Web 账号密码认证配置（单账号；口令只存 scrypt 哈希） */
+export interface WebAuthConfig {
+  /** 登录用户名 */
+  username: string;
+  /** scrypt 哈希：scrypt$N$r$p$salt$hash（base64url） */
+  passwordHash: string;
+  /** 会话签名密钥（base64url）；改密码/轮换后所有旧会话失效 */
+  secret?: string;
+  /** 会话有效期（天，1~365，默认 30） */
+  sessionDays?: number;
+}
+
 export interface OmniConfig {
   /** 默认（活动）模型名：从 providers 分组里选一个模型（或环境变量 OMNI_MODEL） */
   model: string;
@@ -240,6 +252,12 @@ export interface OmniConfig {
    * 并发运行）。超过时新发送返回 409 提示等待。0/负数回退默认。
    */
   webConcurrency?: number;
+  /**
+   * Web 账号密码认证（局域网直连 / Cloudflare 隧道 / 小程序共用）：
+   * 单账号，口令只存 scrypt 哈希（`omni web auth set` 写入全局配置）。
+   * 配置后非回环监听与 --tunnel 均要求登录；也可继续用 --token 兼容旧方式。
+   */
+  webAuth?: WebAuthConfig;
   /**
    * LSP 反馈闭环（1.0 P1-3）：write_file 成功后自动跑一次快速项目检查
    * （typecheck→lint，detectCheckCommand），诊断摘要以 `[诊断]` 追加进工具结果，
@@ -719,6 +737,25 @@ function apply(cfg: OmniConfig, data: Record<string, unknown> | null, label: str
   if (typeof data.webConcurrency === 'number' && Number.isFinite(data.webConcurrency)) {
     cfg.webConcurrency = Math.max(1, Math.min(16, Math.floor(data.webConcurrency)));
   }
+  // Web 账号密码认证：只接受结构完整的对象（用户名 + scrypt 哈希），其余字段可选校验
+  if (data.webAuth && typeof data.webAuth === 'object' && !Array.isArray(data.webAuth)) {
+    const a = data.webAuth as Record<string, unknown>;
+    const username = typeof a.username === 'string' ? a.username.trim() : '';
+    const passwordHash = typeof a.passwordHash === 'string' ? a.passwordHash.trim() : '';
+    if (username && /^scrypt\$\d+\$\d+\$\d+\$[\w-]+\$[\w-]+$/.test(passwordHash)) {
+      cfg.webAuth = {
+        username,
+        passwordHash,
+        ...(typeof a.secret === 'string' && a.secret.trim() ? { secret: a.secret.trim() } : {}),
+        ...(typeof a.sessionDays === 'number' && Number.isFinite(a.sessionDays)
+          ? { sessionDays: Math.max(1, Math.min(365, Math.floor(a.sessionDays))) }
+          : {}),
+      };
+    } else {
+      // 结构不完整：明确警告（静默忽略会让用户以为已启用认证）
+      console.warn('⚠️ webAuth 配置不完整，已忽略——请运行 `omni web auth set` 重新生成');
+    }
+  }
   // 诊断闭环开关（1.0 P1-3）与压缩占比（1.0 P1-4）
   if (typeof data.diagnoseAfterEdit === 'boolean') cfg.diagnoseAfterEdit = data.diagnoseAfterEdit;
   if (typeof data.contextCompressRatio === 'number' && Number.isFinite(data.contextCompressRatio)) {
@@ -885,7 +922,7 @@ const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'repoMap', 'repoMapMaxSymbols', 'sandbox', 'sandboxFailClosed', 'sandboxMaskEnv',
   'sandboxNetworkAllow', 'sandboxWritePaths', 'showCost', 'showThinking', 'skills', 'statusline',
   'statuslineAlign', 'summarizeAt', 'summarizeWindow', 'telemetry', 'vimMode',
-  'webConcurrency', 'webFetchDomains', 'webSearchApiKey', 'webTheme', 'webWorkspace',
+  'webAuth', 'webConcurrency', 'webFetchDomains', 'webSearchApiKey', 'webTheme', 'webWorkspace',
   'webWorkspaces',
 ]);
 

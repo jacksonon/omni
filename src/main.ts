@@ -873,6 +873,11 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     await runWeb(taskArgs.slice(1), overrides);
     return;
   }
+  // omni pair：起服务并打印配对链接 + 二维码（局域网）
+  if (taskArgs[0] === 'pair') {
+    await runWeb(['--pair', ...taskArgs.slice(1)], overrides);
+    return;
+  }
   // omni mcp：MCP 服务器只读查看（codex mcp list/get 对等；写操作走 TUI/配置文件）
   if (taskArgs[0] === 'mcp') {
     const { runMcpCommand } = await import('./cli/mcp.js');

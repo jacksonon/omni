@@ -226,6 +226,10 @@ Pure terminal CLI (Codex-style rendering; same runtime and slash commands as int
 Web service (local backend + web UI: CLI and browser share the same backend):
   omni web                       Start backend service (REST + SSE) and serve Web UI (default http://127.0.0.1:3080)
   omni web --host 0.0.0.0 --token <t>   Remote access (non-loopback requires a token; open http://host:port/?token=<t>)
+  omni web auth set              Set username/password for LAN/tunnel access (password hashed in global config)
+  omni web --host 0.0.0.0        LAN access (same Wi-Fi; requires auth set or --token)
+  omni web --tunnel              Cloudflare quick tunnel: temporary public https URL (requires auth set)
+  omni pair                      LAN pairing: prints URL + terminal QR (one-time 5-min code, same Wi-Fi)
   omni plugin                    Plugin manager (install/list/enable/disable/remove; plugin.json bundles skills/agents/hooks/MCP)
   omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
   omni watch                     Watch mode: trigger agent on AI!/AI? comment markers (Aider-style; Ctrl+C to quit)
@@ -324,6 +328,10 @@ Headless（把 omni 变成可组合 Unix 命令，对标 codex exec / claude -p�
 Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访问同一个后端）：
   omni web                       启动后端服务（REST + SSE）并托管 Web UI（默认 http://127.0.0.1:3080）
   omni web --host 0.0.0.0 --token <令牌>   远程接入（非回环地址必须带令牌；浏览器打开 http://地址:端口/?token=<令牌>）
+  omni web auth set              设置账号密码（局域网/隧道登录；口令只存哈希到全局配置）
+  omni web --host 0.0.0.0        局域网直连（同 Wi-Fi；需先设置账号密码或 --token）
+  omni web --tunnel              Cloudflare 快速隧道（临时公网 https 地址；需先设置账号密码）
+  omni pair                      局域网配对：打印链接 + 终端二维码（5 分钟一次性配对码，需同 Wi-Fi）
   omni plugin                    插件管理（install/list/enable/disable/remove；plugin.json 打包 skills/子代理/hooks/MCP）
   omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
   omni watch                     Watch 模式：监听 AI!/AI? 注释标记触发 agent 执行（Aider 同款；Ctrl+C 退出）
