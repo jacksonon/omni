@@ -84,10 +84,11 @@ export function parseWebArgs(args: string[]): WebArgs {
     }
   }
   if (!out.token && process.env.OMNI_WEB_TOKEN) out.token = process.env.OMNI_WEB_TOKEN.trim() || undefined;
-  // 配对模式：默认不自动开浏览器；局域网配对默认监听 0.0.0.0（用户显式 --host 时尊重之）。
+  // 配对模式：默认不自动开浏览器；局域网配对监听 0.0.0.0，隧道模式只监听回环
+  // （cloudflared 只连本机，没有必要同时暴露局域网）。显式 --host 时尊重用户选择。
   if (out.pair) {
     out.open = false;
-    if (!hostExplicit) out.host = '0.0.0.0';
+    if (!hostExplicit) out.host = out.tunnel ? '127.0.0.1' : '0.0.0.0';
   }
   return out;
 }

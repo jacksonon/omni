@@ -230,6 +230,8 @@ Web service (local backend + web UI: CLI and browser share the same backend):
   omni web --host 0.0.0.0        LAN access (same Wi-Fi; requires auth set or --token)
   omni web --tunnel              Cloudflare quick tunnel: temporary public https URL (requires auth set)
   omni pair                      LAN pairing: prints URL + terminal QR (one-time 5-min code, same Wi-Fi)
+  omni service install --tunnel omni   Install local web + Cloudflare tunnel as a login service (macOS)
+  omni service enable|disable|start|stop|status|uninstall   Manage the service lifecycle
   omni plugin                    Plugin manager (install/list/enable/disable/remove; plugin.json bundles skills/agents/hooks/MCP)
   omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
   omni watch                     Watch mode: trigger agent on AI!/AI? comment markers (Aider-style; Ctrl+C to quit)
@@ -332,6 +334,8 @@ Web 服务（本地后端 + 网页端：前端可由 CLI 与浏览器共同访�
   omni web --host 0.0.0.0        局域网直连（同 Wi-Fi；需先设置账号密码或 --token）
   omni web --tunnel              Cloudflare 快速隧道（临时公网 https 地址；需先设置账号密码）
   omni pair                      局域网配对：打印链接 + 终端二维码（5 分钟一次性配对码，需同 Wi-Fi）
+  omni service install --tunnel omni   安装本地 Web + Cloudflare 隧道为登录服务（macOS）
+  omni service enable|disable|start|stop|status|uninstall   管理服务启停与自启
   omni plugin                    插件管理（install/list/enable/disable/remove；plugin.json 打包 skills/子代理/hooks/MCP）
   omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
   omni watch                     Watch 模式：监听 AI!/AI? 注释标记触发 agent 执行（Aider 同款；Ctrl+C 退出）

@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
 
+- **2026-10-17（omni service：用 omni 管理 Web/隧道常驻与自启）**：新增 `omni service` 子命令（`src/cli/service.ts`）——`install --tunnel <名>` 生成 LaunchAgent（本机 `omni web` + `cloudflared tunnel run`），支持 `enable/disable`（只控制登录自启）、`start/stop/restart`（只控制当前进程）、`status`、`uninstall`（不删隧道/DNS）。服务定义存 `~/.config/omni/services/`（plist + service.json），自启开关 = 是否复制到 `~/Library/LaunchAgents`；因此 disable 后仍可手动 start。默认只监听回环，隧道模式强制 127.0.0.1；无 `webAuth` 时拒绝远程/局域网安装。验证：typecheck ✓ · 实测 install --no-enable --no-start / start（本地 200、公网 200）/ stop（公网 530）/ enable（自启 on、未启动）/ start / stop（自启保持）/ disable（自启 off）全部符合预期。
+
 - **2026-10-17（Quick Tunnel 收不到消息：SSE 缓冲 → 长轮询回退）**：用户实测 `omni pair --tunnel` 后远程一直收不到消息。复现：本地 `/api/events` 立即收到 `ready`，同一服务经 Quick Tunnel 时响应头 200/text-event-stream 正常但 body 在 5 秒内 0 字节；最小 SSE 服务加 4KB/64KB 预填充仍 0 字节，确认 Cloudflare Quick Tunnel 对 SSE 整体缓冲（非阈值问题）。修复：① `state.ts` 新增事件环形缓冲（1000 条、自增 seq）+ `emitEvent` 统一广播入口，server/status/routing-output/pendingRegistry 的全部广播改走该入口；② 新 `GET /api/events/poll?since=<seq>&timeout=<s>` 长轮询：有事件立即（250ms 聚合）返回，无事件最多挂 20~25s，穿过缓冲代理；③ Web UI `connectSSE` 3 秒收不到 `ready` 或提前 error 时关闭 SSE，自动切长轮询，事件仍走同一 `bus`；④ `probe:web:auth` 增加游标/事件/超时 4 项。验证：typecheck ✓ · probe 31 项全过（本地 26 个事件含 answer/run.end，250ms 返回）· Quick Tunnel 下长轮询 GET 3s 正常返回（同环境 POST 偶发 TLS 断连属 quick tunnel 稳定性问题，命名隧道更稳）。
 
 - **2026-10-17（omni pair：局域网配对链接 + 终端二维码）**：新增 `omni pair` 子命令（`src/main.ts` 分发 → `runWeb --pair`）：默认监听 0.0.0.0，选首个局域网地址打印链接 + 终端二维码；一次性配对码（8 位去混淆字符、5 分钟、单次使用，`--code` 可指定）经 `POST /api/auth/pair/redeem` 免密换会话，登录页识别 `?pair=` 自动兑换并 `location.replace('/')`（不把码留在历史里），独立 IP 限流；二维码用 `qrcode-terminal`（small 模式）。验证：`probe:web:auth` 24 项全过（二维码输出、错误码、单次使用）· typecheck ✓ · bundle ✓。

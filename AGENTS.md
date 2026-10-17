@@ -27,6 +27,8 @@ npm run dev:web           # Web 服务（本地后端 + 网页界面，默认 30
 npx tsx src/index.ts web auth set   # 设置 Web 登录账号密码（scrypt 哈希写全局配置）
 npx tsx src/index.ts web --host 0.0.0.0 --tunnel   # 局域网直连 / Cloudflare 快速隧道（需先设置密码）
 npx tsx src/index.ts pair                           # 局域网配对：终端链接 + 二维码（一次性配对码）
+npx tsx src/index.ts service install --tunnel omni  # 安装 Web+隧道登录服务（macOS LaunchAgent）
+npx tsx src/index.ts service start|stop|status|enable|disable|uninstall
 npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
 npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）

@@ -873,6 +873,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     await runWeb(taskArgs.slice(1), overrides);
     return;
   }
+  // omni service：本机 Web / Cloudflare 隧道的安装、自启、启停
+  if (taskArgs[0] === 'service') {
+    const { runServiceCommand } = await import('./cli/service.js');
+    process.exitCode = await runServiceCommand(taskArgs.slice(1));
+    return;
+  }
   // omni pair：起服务并打印配对链接 + 二维码（局域网）
   if (taskArgs[0] === 'pair') {
     await runWeb(['--pair', ...taskArgs.slice(1)], overrides);

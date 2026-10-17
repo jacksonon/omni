@@ -807,6 +807,18 @@ omni pair                  # LAN pairing: prints a URL + terminal QR (one-time c
 - On the same Wi-Fi, open the printed LAN URL on your phone; the first visit redirects to a login page (username + password). Sessions last 30 days by default (`--days`).
 - `--tunnel` uses Cloudflare's free quick tunnel (no account); the URL changes on every start. Use a named tunnel for a stable domain.
 - The QR from `omni pair` contains a one-time 5-minute pairing code and logs you in automatically; the phone must be on the same Wi-Fi as the computer.
+### Persistent service (macOS)
+
+```bash
+omni service install --tunnel omni   # install local web + named tunnel; enable at login and start now
+omni service status                  # installed / auto-start / running
+omni service enable | disable        # auto-start only (current process unchanged)
+omni service start | stop | restart  # current process only
+omni service uninstall               # remove service definitions (tunnel/DNS/sessions untouched)
+```
+
+Definitions live in `~/.config/omni/services/`; logs in `~/Library/Logs/com.omni.*.log`. The service runs `dist/omni.cjs`; after source changes run `npm run build` then `omni service restart`.
+
 - Cloudflare Quick Tunnel buffers SSE end-to-end (even `ready` never arrives). The Web UI detects this within 3s and falls back to long-polling via `/api/events/poll`; messages and approvals still arrive, with streaming refreshed in ~250ms batches. For true token-by-token streaming, use LAN or a named Cloudflare tunnel on your own domain.
 - Over HTTPS you can add the page to the home screen as a standalone app (PWA). Over plain LAN HTTP the UI works, but service workers / standalone mode do not.
 - Mini-programs and other clients: `POST /api/auth/login` returns a `token` for `Authorization: Bearer <token>`. WeChat mini-programs do not support SSE; streaming needs a WebSocket or chunked-transfer adapter.
