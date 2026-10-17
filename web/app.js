@@ -2805,16 +2805,19 @@ function updateDetails() {
     const provider = (cur && cur.provider) || '';
     label.textContent = '';
     const m = document.createElement('span');
+    m.className = 'model-name';
     m.textContent = st.model;
     label.appendChild(m);
     if (provider) {
       const p = document.createElement('span');
+      p.className = 'model-provider';
       p.textContent = `· ${provider}`;
       p.style.opacity = '.78'; // provider 组弱化显示，介于模型名与档位色之间
       label.appendChild(p);
     }
     if (eff) {
       const e = document.createElement('span');
+      e.className = 'model-effort';
       e.textContent = `· ${eff}`;
       e.style.color = currentLevelColor(st) || '';
       e.style.fontWeight = '600';
@@ -6652,9 +6655,16 @@ $('.session-search').addEventListener('click', (e) => {
   }
 });
 $('#btn-sidebar-toggle').addEventListener('click', () => {
-  $('#app').classList.toggle('sidebar-collapsed');
+  const app = $('#app');
+  // 移动端：侧栏是抽屉，按钮应关闭它；桌面/平板才是折叠/展开
+  if (window.matchMedia('(max-width: 760px)').matches && app.classList.contains('sidebar-open')) {
+    app.classList.remove('sidebar-open');
+    return;
+  }
+  app.classList.toggle('sidebar-collapsed');
 });
 $('#btn-mobile-sidebar').addEventListener('click', () => $('#app').classList.toggle('sidebar-open'));
+$('#sidebar-scrim').addEventListener('click', () => $('#app').classList.remove('sidebar-open'));
 
 $('#set-concurrency').addEventListener('change', (e) => {
   const val = Math.max(CC_MIN, Math.min(CC_MAX, parseInt(e.target.value) || 3));

@@ -283,6 +283,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .model-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-button svg { width: 12px; height: 12px; }
 .mobile-only { display: none; }
+.sidebar-scrim { display: none; }
 .scroll-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
 
 /* Chat flow. */
@@ -1205,6 +1206,19 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .hero-fish { width: 36px; height: 36px; }
   .preview-badge { display: none; }
   .composer-tools { gap: 4px; }
+  .composer-row { gap: 6px; padding-inline: 6px; }
+  .composer-trailing { flex: 1 1 100%; margin-left: 0; gap: 8px; }
+  .model-pill { flex: 0 1 auto; max-width: 100%; height: auto; min-height: 28px; padding: 3px 10px; flex-wrap: wrap; row-gap: 1px; }
+  .model-pill #composer-model-label { flex: 1 1 auto; }
+  .model-pill #composer-model-label > .model-provider { display: none; }
+  .model-pill .avg-rate { margin-left: auto; }
+  .composer-meta { flex-wrap: wrap; justify-content: flex-end; white-space: normal; column-gap: 10px; row-gap: 2px; overflow: visible; padding-inline: 2px; }
+  .composer-meta > span.sep::before { content: none; }
+  .composer-meta .meta-item { white-space: nowrap; min-width: 0; max-width: 100%; }
+  .composer-meta .meta-ctx { margin-left: 0; }
+  .ctx-track { width: 56px; }
+  .sidebar-scrim { display: none; position: fixed; inset: 0; z-index: 19; background: rgba(0, 0, 0, .28); }
+  .app-frame.sidebar-open .sidebar-scrim { display: block; }
   .mode-button span { display: none; }
   .model-select-face { max-width: 128px; }
   /* 设置弹窗窄屏：导航横排在上，内容在下 */
