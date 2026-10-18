@@ -16,11 +16,10 @@
  * preload 注册 JSX 转换插件，而入口文件在插件注册前就被转换；这里用
  * 命令式 renderable 渲染（见 tui/render.ts），完全不依赖 JSX 转换。
  */
-import { parseArgs, printHelp } from './cli/args.js';
+import { parseArgs } from './cli/args.js';
 import { prepareContext } from './agent/context.js';
 import { runAgent } from './agent/loop.js';
 import { attachRuntime, isConsoleCommand, main, prepareRun, prepareSessionPersistence, printSessions, resolveWorkspaceTrust } from './main.js';
-import { handleExecHelp } from './exec.js';
 import { ConsoleOutput } from './output/console.js';
 import { crashLogPath, logCrash, logLifecycle } from './tui/crashlog.js';
 import { runTuiInteractive } from './tui/interactive.js';
@@ -55,11 +54,10 @@ process.on('exit', (code) => {
 
 async function run(): Promise<void> {
   logLifecycle('start', `omni v${VERSION} pid=${process.pid} args=${JSON.stringify(process.argv.slice(2))}`);
-  const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
-  // `omni exec --help` 打专属帮助（与 index 入口一致；本入口自带 --help 短路，需先拦截）
-  if (handleExecHelp(process.argv.slice(2), lang)) return;
-  if (help) {
-    printHelp(lang ?? 'en');
+  const { taskArgs, overrides, flags, resumeId, help, version } = parseArgs(process.argv.slice(2));
+  // 帮助统一交给 CLI 分发，在配置加载和终端初始化之前返回。
+  if (help || taskArgs[0] === 'help') {
+    await main((cfg) => new ConsoleOutput({ stream: true, showThinking: cfg.showThinking }));
     return;
   }
   if (version) {

@@ -325,7 +325,7 @@ export class ConsoleOutput implements Output {
   }
 
   showHelp(): void {
-    printHelp();
+    printHelp('en', 'interactive');
   }
 
   /** hooks 输出回显（生命周期自动化）：dim 行打印到 stdout（不改写流程，仅提示） */

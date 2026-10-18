@@ -140,6 +140,8 @@ so keys never enter the repository).
 
 ### Single-task mode
 
+Use `omni --help` or `omni help` for common commands and options. The home page lists `omni pair`, `omni web --tunnel`, login setup, and service management under remote access and pairing. Run `omni help <topic>` for details: `exec`, `mini`, `web` (also `remote` or `pair`), `sessions`, `commands` (extensions and utilities), `interactive` (slash commands by category), `options`, or `config`. Use `omni help all` for the full reference, and add `--lang zh` for Chinese. Help does not require an API key.
+
 ```bash
 omni "Inspect src/main.ts and point out issues"
 ```

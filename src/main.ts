@@ -36,7 +36,8 @@ import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
 import { runInteractive } from './cli/interactive.js';
 import { runMiniInteractive, runMiniOneShot, splitMiniOneShotFlags } from './cli/mini.js';
-import { parseArgs, parseResumeArgs, printHelp } from './cli/args.js';
+import { parseArgs, parseResumeArgs } from './cli/args.js';
+import { handleHelp } from './cli/help.js';
 import { loadConfig, type ConfigOverrides, type OmniConfig, type ModelEntryConfig } from './config/index.js';
 import { autoFillLimit, resolveContextLimit, resolveReasoningEffortOptions } from './config/model-context.js';
 import { HookRunner, type HooksConfig } from './hooks/index.js';
@@ -685,8 +686,8 @@ async function pickSessionId(
  * 与下方 main 分发保持同步；`doctor` 仅裸调用算子命令（带参是任务文本）。
  */
 export const CONSOLE_COMMANDS: ReadonlySet<string> = new Set([
-  'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
-  'mcp-server', 'acp', 'web', 'mcp', 'plugin', 'completion', 'preset',
+  'help', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
+  'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset',
   'import', 'watch', 'mini',
 ]);
 
@@ -700,22 +701,13 @@ export function isConsoleCommand(args: string[]): boolean {
 }
 
 export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<void> {
-  const { taskArgs, overrides, flags, resumeId, help, version, lang } = parseArgs(process.argv.slice(2));
+  const parsed = parseArgs(process.argv.slice(2));
+  const { taskArgs, overrides, flags, resumeId, version, lang } = parsed;
   // `e` = `exec` 别名（codex aliases: e；归一化后全链路按 exec 走，含帮助与 TUI 路由）
   if (taskArgs[0] === 'e') taskArgs[0] = 'exec';
   // `omni exec --help` 打专属帮助（codex exec --help 对等；与 tui-entry 共用预检）
   if (handleExecHelp(process.argv.slice(2), lang)) return;
-  // `omni mcp --help` 打子命令专属帮助（codex mcp --help 对等；否则被全局帮助淹没）
-  if (taskArgs[0] === 'mcp' && process.argv.slice(2).some((a) => a === '--help' || a === '-h')) {
-    const { runMcpCommand } = await import('./cli/mcp.js');
-    // taskArgs 已剥掉 --help（进 help 布尔位）：传字面量触发专属帮助分支
-    process.exitCode = await runMcpCommand(['--help'], overrides);
-    return;
-  }
-  if (help) {
-    printHelp(lang ?? 'en');
-    return;
-  }
+  if (await handleHelp(parsed)) return;
   if (version) {
     console.log(`omni v${VERSION}`);
     return;

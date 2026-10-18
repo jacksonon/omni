@@ -14,6 +14,8 @@ Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
 
 ## 常用命令
 
+CLI 帮助：`omni help` / `omni --help` 显示简洁导航，首页单列远程与配对（`web auth set / pair / web --tunnel / service`）；`omni help <主题>` 展开 `exec / mini / web / sessions / commands / interactive / options / config`，`remote / pair` 主题指向 Web 与远程帮助，`omni help all` 查看全部；加 `--lang zh` 查看中文。交互内 `/settings help` 按类别列出斜杠命令。
+
 ```bash
 npm run dev -- "<任务>"   # 开发运行（tsx 直接执行）
 npm run typecheck         # TypeScript 类型检查
@@ -145,7 +147,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 > 完整 `src/`/`scripts/` 逐文件说明、TUI 渲染实现要点、工具与斜杠命令全表见 [`Doc/agents-reference.md`](Doc/agents-reference.md)。
 
-- **入口与客户端**：`src/index.ts`（CLI 调度：main / exec / mcp-server / web / doctor / completion / review / resume / fork / 会话归档 / mcp 子命令）→ `main.ts` 参数调度 → `client.ts` 按模型端点建 OpenAI 客户端（`/model` 切换重建；`ModelRuntime` 共享引用让主循环/子代理同步）；headless `omni exec` 与 MCP server 在 `src/exec.ts`。
+- **入口与客户端**：`src/index.ts`（CLI 调度：main / exec / mcp-server / web / doctor / completion / review / resume / fork / 会话归档 / mcp 子命令）→ `main.ts` 参数调度 → `client.ts` 按模型端点建 OpenAI 客户端（`/model` 切换重建；`ModelRuntime` 共享引用让主循环/子代理同步）；headless `omni exec` 与 MCP server 在 `src/exec.ts`；CLI 分层帮助在 `src/cli/help.ts`，console / TUI 启动入口共用，先于配置加载与终端初始化。
 - **Agent 核心** `src/agent/`：`loop.ts` 主循环；`context.ts` 全局/项目记忆级联注入 + 相关文件预载 + 长对话摘要压缩；`messages.ts` / `thinking.ts`；`session.ts` 会话 JSONL 落盘；`undo.ts` 撤销 + 重做；`subagent.ts` / `subagent-registry.ts` 子代理与 Agent View；`orchestrate.ts` 动态工作流 + `/goal`；`team.ts` 共享看板；`memory.ts` 记忆；`skill.ts` 技能；`redact.ts` 密钥脱敏；`events.ts` / `trace.ts` 轨迹。
 - **工具** `src/tools/`：静态 8 个（read_file / write_file / edit_file / list_directory / search_code / run_command / skill / lsp）+ 运行时注入（delegate / ask_user / task_board / send_message / web_search / web_fetch / MCP `<server>_<tool>`）。
 - **安全** `src/safety/`：`index.ts` 统一闸门（policy 判定 + 审批 + 审计）、`policy.ts` 权限分级与危险命令检测、`trust.ts` 工作区信任、`sandbox.ts` OS 沙箱、`audit.ts` 审计、`auto-review.ts` AI 自动审批。

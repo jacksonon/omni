@@ -12,7 +12,6 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -161,12 +160,13 @@ export function configSuite(): TestSuite {
     }
   });
 
-  suite.test('中英 --help 关键行（多轮 slash/flag 增补回归锁）', async () => {
-    const runHelp = (args: string[]) =>
+  suite.test('帮助首页精简、主题保留中英文完整用法、双入口一致', async () => {
+    const runHelp = (args: string[], tui = false) =>
       new Promise<{ code: number | null; out: string }>((resolve) => {
-        const child = spawn('npx', ['tsx', 'src/index.ts', ...args], {
+        const child = spawn(tui ? 'bun' : process.execPath, tui ? ['src/tui-entry.ts', ...args] : ['--import', 'tsx', 'src/index.ts', ...args], {
           cwd: ROOT,
-          env: { ...process.env },
+          // 帮助不能读取配置、启动 Agent 或因缺少密钥失败。
+          env: { ...process.env, OMNI_CONFIG: '/nonexistent/omni-help-test.json' },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let acc = '';
@@ -180,14 +180,38 @@ export function configSuite(): TestSuite {
       });
     const en = await runHelp(['--help']);
     suite.assert(en.code === 0, '英文帮助退出码 0');
+    suite.assert(en.out.split('\n').length < 45, '首页少于 45 行');
+    suite.assert(en.out.includes('omni help <topic>') && en.out.includes('omni exec'), '首页给出常用入口与主题导航');
+    suite.assert(en.out.includes('Remote access and pairing:') && ['omni pair', 'omni web --tunnel', 'omni web auth set', 'omni service'].every(cmd => en.out.includes(cmd)), '首页直接展示远程接入、扫码配对、认证与服务管理');
+    suite.assert(!en.out.includes('/rewind <N>') && !en.out.includes('"providers"'), '首页不堆砌斜杠命令和配置 JSON');
+    const alias = await runHelp(['help']);
+    const short = await runHelp(['-h']);
+    suite.assert(alias.code === 0 && alias.out === en.out && short.out === en.out, 'help / --help / -h 一致');
+    const enAll = await runHelp(['help', 'all']);
+    suite.assert(enAll.code === 0, '英文完整帮助退出码 0');
     for (const s of ['/stop stop the running turn', '/import import config from Claude Code', '/recap summarize', 'exec fork', 'exec review', '--ephemeral', '--add-dir', '--color', '/clear clear context', '/trace full trace ledger', '/spec spec workflow', '--strict-config', '--ignore-user-config']) {
-      suite.assert(en.out.includes(s), `英文帮助含 ${s}`);
+      suite.assert(enAll.out.includes(s), `英文完整帮助含 ${s}`);
     }
-    const zh = await runHelp(['--help', '--lang', 'zh']);
+    const zh = await runHelp(['help', 'all', '--lang', 'zh']);
     suite.assert(zh.code === 0, '中文帮助退出码 0');
     for (const s of ['/stop 停止当前任务', '/import 从 Claude Code 迁移配置', '/recap 总结当前对话', '分叉出新会话', '非交互代码审查', '不落盘会话文件', '沙箱额外可写目录', '--color', '/clear 清空上下文', '/trace 完整轨迹账本', '/spec 规格工作流', '严格配置校验', '跳过用户级配置文件']) {
       suite.assert(zh.out.includes(s), `中文帮助含 ${s}`);
     }
+    const web = await runHelp(['web', '--help', '--lang', 'zh']);
+    const webTopic = await runHelp(['help', 'web', '--lang', 'zh']);
+    const tuiWeb = await runHelp(['web', '--help', '--lang', 'zh'], true);
+    suite.assert(web.code === 0 && web.out === webTopic.out && tuiWeb.out === web.out, 'web --help / help web / TUI 入口一致');
+    for (const topic of ['remote', 'pair']) {
+      const detail = await runHelp(['help', topic, '--lang', 'zh']);
+      suite.assert(detail.code === 0 && detail.out === web.out, `${topic} 主题指向远程与配对帮助`);
+    }
+    suite.assert(web.out.includes('omni web auth set') && !web.out.includes('omni plugin'), 'Web 主题包含认证，扩展命令独立分类');
+    const tuiAlias = await runHelp(['help', '--lang', 'zh'], true);
+    const zhHome = await runHelp(['--help', '--lang', 'zh']);
+    suite.assert(tuiAlias.code === 0 && tuiAlias.out === zhHome.out, '中文 help 首页在两个入口一致');
+    suite.assert(zhHome.out.includes('远程与配对：') && zhHome.out.includes('omni pair') && zhHome.out.includes('omni web --tunnel'), '中文首页直接展示远程与配对');
+    const unknown = await runHelp(['help', 'unknown-topic']);
+    suite.assert(unknown.code === 1 && unknown.out.includes('Unknown help topic'), '未知主题报错退出，不作为模型任务执行');
   });
 
   suite.test('全局 -i/--image + --approve-for-me（codex 顶层同款）', () => {

@@ -1450,7 +1450,7 @@ export class MiniOutput implements Output {
   }
 
   showHelp(): void {
-    printHelp();
+    printHelp('en', 'interactive');
   }
 
   onHookOutput(event: HookEventName, lines: string[]): void {

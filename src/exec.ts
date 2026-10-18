@@ -45,6 +45,7 @@ import { attachRuntime, prepareRun, type RunContext } from './main.js';
 import type { Output, TokenUsage } from './output/types.js';
 import { dim, parseColorMode, red, setColorOverride, yellow, type ColorMode } from './ui.js';
 import { VERSION } from './version.js';
+import { helpText } from './cli/help.js';
 
 /* ─────────────────────────────── 参数解析 ─────────────────────────────── */
 
@@ -110,37 +111,9 @@ export function handleExecHelp(argv: string[], lang?: string | null): boolean {
   return true;
 }
 
-/** `omni exec --help` 文本（parseExecArgs --help 抛出同文；main 层 exec 分支优先打印，绕过全局 --help 短路）；
- * `--lang en` 出英文版（缺省中文，与 cfg 默认语言一致） */
+/** exec 的直接调用与 CLI 主题帮助共用文本；保留原有缺省中文行为。 */
 export function execHelpText(lang?: string | null): string {
-  if (lang === 'en') return execHelpTextEn();
-
-  return (
-    '用法：omni exec "<任务>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <文件>] [--resume <id>] [--last] [--all] [-m <模型>] [-i <图片> …] [--color always|never|auto] [--ephemeral] [--add-dir <目录> …]\n' +
-            '  exec resume <id|--last> [后续任务]：恢复会话续跑（--last = 当前目录最近一次，无 id 时亦可用 exec --last；--all 取消目录过滤）。\n' +
-            '  exec fork <id|--last> [--all] [后续任务]：分叉出新会话再跑（无后续任务 = 仅分叉，stdout 新会话 id）。\n' +
-            '  exec review [额外要求] [--base <分支> | --commit <SHA> | --uncommitted] [--title <标题>]：非交互代码审查（typecheck + 改动 → 单次 LLM 审查，不建会话；缺省审未提交改动）。\n' +
-            '  --ephemeral：不落盘会话文件（json 的 session_id 为 null；与 resume/fork 互斥）。\n' +
-            '  --add-dir <目录>（可重复）：沙箱额外可写目录。\n' +
-            '  --json：事件 JSONL（codex --json 对等；即 stream-json：逐行轨迹事件，末行结果）。\n' +
-            '  stdout 只输出最终结果（text 纯文本 / json 单对象 / stream-json 轨迹+末行结果），进度（思考/工具）走 stderr；--quiet 静默 stderr 只留结果。\n' +
-            '  --approve-for-me：需要审批的操作先经模型审阅（approve 放行 / deny 拒绝），不改变沙箱与权限边界。'
-  );
-}
-
-/** exec 专属帮助英文版（--lang en；行数与中文版一一对应） */
-function execHelpTextEn(): string {
-  return (
-    'Usage: omni exec "<task>" [--output-format text|json|stream-json] [--json] [--max-turns N] [--allowed-tools a,b] [--output-schema \'{...}\'] [--quiet] [--approve-for-me] [-o <file>] [--resume <id>] [--last] [--all] [-m <model>] [-i <image> ...] [--color always|never|auto] [--ephemeral] [--add-dir <dir> ...]\n' +
-            '  exec resume <id|--last> [follow-up]: resume a session (--last = most recent in cwd; also usable as exec --last; --all disables cwd filtering).\n' +
-            '  exec fork <id|--last> [--all] [follow-up]: fork into a new session, then continue (no follow-up = fork only, prints new id).\n' +
-            '  exec review [focus] [--base <branch> | --commit <SHA> | --uncommitted] [--title <title>]: non-interactive code review (typecheck + changes, single LLM call, no session; default: uncommitted changes).\n' +
-            '  --ephemeral: no session files (json session_id is null; mutually exclusive with resume/fork).\n' +
-            '  --add-dir <dir> (repeatable): extra writable dirs for the sandbox.\n' +
-            '  --json: event JSONL (like codex --json; i.e. stream-json: one trace event per line, last line is the result).\n' +
-            '  stdout carries only the final result (text / single json object / stream-json); progress goes to stderr; --quiet silences stderr.\n' +
-            '  --approve-for-me: review approval requests with the model first (never widens sandbox/permissions).'
-  );
+  return helpText(lang === 'en' ? 'en' : 'zh', 'exec');
 }
 
 /** 解析 exec 子命令参数（exec 专属 flag；--model/-m/-i/--add-dir/--approve-for-me 已被 parseArgs 收进 overrides，此处解析供直接调用；子命令互斥 fail-fast） */
