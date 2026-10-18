@@ -129,7 +129,7 @@ jobs:
           # （平台包走 optionalDependency，装不上 npm 不报错，
           #  用户侧 omni 会以“平台包未安装”暴露）
           # publish 与 install 间隔极短时 registry CDN 未同步会 404（v0.7.13 首跑秒败
-          # 的根因）——区分两种失败：安装失败按同步延迟轮询重试（~4 分钟），
+          # 的根因）——区分两种失败：安装失败按同步延迟轮询重试（最多约 15 分钟），
           # 安装成功但 bin 缺失/不可执行是真打包缺陷，立即失败并打印目录便于诊断
           VER=$(node -p "require('./package.json').version")
           PKG_NAME=$(node -p "require('./packages/npm/${{ matrix.npmPkg }}/package.json').name")
@@ -140,9 +140,9 @@ jobs:
           STEM="$ROOT/$PKG_NAME/bin/${{ matrix.binName }}"
           # v0.7.18 教训：安装失败输出被吞、统一按 404 重试——若失败原因不是 404
           #（平台不匹配/鉴权/包损坏等），重试 16 次纯属浪费且掩盖根因。现在：非 404
-          # 直接打印完整错误退出；404 才按同步延迟重试（registry CDN 曾超过 4 分钟）。
-          for i in $(seq 1 24); do
-            ERR="$(npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org 2>&1)" && {
+          # 直接打印错误退出；404 才按同步延迟重试（v0.9.1 两个 ARM64 包超过 6 分钟）。
+          for i in $(seq 1 60); do
+            ERR="$(npm install -g "$PKG_NAME@$VER" --prefix "$TEST_PREFIX" --registry=https://registry.npmjs.org --prefer-online 2>&1)" && {
               if [ -x "$STEM" ]; then
                 "$STEM" --version
                 exit 0
@@ -157,10 +157,11 @@ jobs:
               printf '%s\n' "$ERR" | tail -20
               exit 1
             fi
-            echo "… registry 未同步（第 $i/24 次），15s 后重试 $PKG_NAME@$VER"
+            echo "… registry 未同步（第 $i/60 次），15s 后重试 $PKG_NAME@$VER"
             sleep 15
           done
-          echo "✘ 重试超时：registry 上始终取不到 $PKG_NAME@$VER"
+          echo "✘ 重试超时：registry 上始终取不到 $PKG_NAME@${VER}，最后一次安装错误："
+          printf '%s\n' "$ERR" | tail -20
           exit 1
 
       - name: npm pack (omni-<version>.tgz, linux-x64 only)

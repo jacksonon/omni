@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
 
+- **2026-10-18（发布验证等待修复）**：v0.9.1 两个 ARM64 平台包因 npm 处理延迟超过 6 分钟，安装验证超时并阻断 Release；后续发布轮询扩至 60 次 × 15s，增加 `--prefer-online` 并保留超时最后一次错误，原版本通过重跑失败任务补发，GitHub Release 与 npm 主包 `@right-ai/omni@0.9.1` 已确认可用。验证：实际 workflow 脚本的延迟成功（第 31 次）、非 404 立即失败、缺失 bin、60 次超时并打印错误四个模拟分支均通过。
+
 - **2026-10-17（Web 移动端适配：侧栏抽屉 / 模型胶囊 / 元信息行）**：① 侧栏：新增 `#sidebar-scrim` 遮罩（z-index 19，低于侧栏 20），移动端点击遮罩关闭；`#btn-sidebar-toggle` 在 ≤760px 且抽屉打开时改为关闭抽屉（桌面仍切换折叠）；选择会话/新建会话/Esc 原有路径继续关闭。② 输入区：≤760px 时 `.composer-row` 分成两行，`.composer-trailing` 占满整行；模型胶囊按内容收窄（无速率时不拉满）、可换行、高度自适应，隐藏 provider 段，优先保证「模型 + 思考级别」，token 速率不够宽时自动换到第二行右侧。③ 元信息行：移动端改为 `flex-wrap` 多行、右对齐、隐藏 `·` 分隔符，上下文进度条缩短到 56px，单项最大宽度 100% 并省略溢出，避免超出底部宽度。验证：`node --check web/app.js` ✓ · `web:sync` ✓ · `typecheck` ✓ · `bundle` ✓；未做真机截图回归（headless Chrome 在本机挂起），建议手机强刷后目检三项。
 
 - **2026-10-17（omni service：用 omni 管理 Web/隧道常驻与自启）**：新增 `omni service` 子命令（`src/cli/service.ts`）——`install --tunnel <名>` 生成 LaunchAgent（本机 `omni web` + `cloudflared tunnel run`），支持 `enable/disable`（只控制登录自启）、`start/stop/restart`（只控制当前进程）、`status`、`uninstall`（不删隧道/DNS）。服务定义存 `~/.config/omni/services/`（plist + service.json），自启开关 = 是否复制到 `~/Library/LaunchAgents`；因此 disable 后仍可手动 start。默认只监听回环，隧道模式强制 127.0.0.1；无 `webAuth` 时拒绝远程/局域网安装。验证：typecheck ✓ · 实测 install --no-enable --no-start / start（本地 200、公网 200）/ stop（公网 530）/ enable（自启 on、未启动）/ start / stop（自启保持）/ disable（自启 off）全部符合预期。

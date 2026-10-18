@@ -61,7 +61,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 - npm 包只发布 `dist/`（`files` 字段），体积约 150K；
 - 全局安装测试：`npm install -g ./omni-0.1.0.tgz --prefix <前缀>`。
 
-**GitHub Actions 自动发布**（`.github/workflows/release.yml`）：推送 `v*` tag → 五平台矩阵构建（原生二进制）+ Electron 四平台打包（zip/exe/AppImage）→ GitHub Release 附 10 产物 + npm 平台子包/主包自动发布（Secrets 需 `NPM_TOKEN`）。**完整流程与关键坑**（musl 补装、Electron 镜像、发布脚本、版本重发策略）见 `Doc/release-guide.md`。
+**GitHub Actions 自动发布**（`.github/workflows/release.yml`）：推送 `v*` tag → 五平台矩阵构建（原生二进制）+ Electron 四平台打包（zip/exe/AppImage）→ GitHub Release 附 10 产物 + npm 平台子包/主包自动发布（Secrets 需 `NPM_TOKEN`）。平台包安装验证对 registry 延迟最多重试约 15 分钟（60 × 15s，不含安装耗时），非 404 类错误立即失败。**完整流程与关键坑**（musl 补装、Electron 镜像、发布脚本、版本重发策略）见 `Doc/release-guide.md`。
 ## 配置（配置文件 + 环境变量 + CLI 参数）
 
 参考 opencode 的配置体系，支持 JSON / **JSONC**（带注释）。
