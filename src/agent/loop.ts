@@ -34,7 +34,7 @@ import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
-import { buildAssistantMessage, estimateTokens, parseArgs, stripNonStandardFields, type ToolCallAccum } from './messages.js';
+import { appendInterruptedToolResults, buildAssistantMessage, estimateTokens, parseArgs, repairToolPairing, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
 import { appendWriteDiff, sessionIdFromPath } from './session.js';
 import { buildStreamParams, extractCachedTokens } from './loop-params.js';
@@ -200,8 +200,10 @@ async function runAgentInner(
     //（/model、/permission 运行时切换即时生效）
     const systemPrompt =
       buildSystemPrompt(model, process.cwd(), opts.permission) + sessionNote + (opts.systemNote ?? '');
-    // 剥离非标准字段（reasoning——已持久化供 web 刷新恢复 thinking，但不能发给 API）
-    const apiMessages = stripNonStandardFields(messages);
+    // 剥离非标准字段（reasoning——已持久化供 web 刷新恢复 thinking，但不能发给 API）；
+    // 再修复 tool_calls ↔ tool 结果配对（中断/旧会话脏历史）——悬空配对会让网关 400，
+    // 且一次污染后该会话每轮都失败，必须在发送前兜底自愈（非破坏性，不改 messages）
+    const apiMessages = repairToolPairing(stripNonStandardFields(messages));
     const requestMessages: ChatCompletionMessageParam[] = [
       { role: 'system', content: planMode ? systemPrompt + PLAN_MODE_NOTE : systemPrompt },
       ...apiMessages,
@@ -877,6 +879,10 @@ async function runAgentInner(
         opts.abortSignal
       );
     } catch (err) {
+      // assistant(tool_calls) 已在执行前入历史（见上方 push），这里无论取消还是异常都必须
+      // 先补齐每个调用的 tool 配对占位——否则下一条 user 消息紧跟悬空 tool_calls，
+      // 网关按 OpenAI 协议直接 400（且脏历史落盘后该会话每轮都失败）。
+      appendInterruptedToolResults(messages, calls);
       // 工具执行阶段 abort：立即结束本轮——打断（steer）取消息**同一轮内继续**；
       // 取消（Esc //stop）优雅结束。工具结果丢弃不回传（后台工具继续跑完）
       if (isAbortLike(err)) {

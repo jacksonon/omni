@@ -73,6 +73,115 @@ export function buildAssistantMessage(
   return assistantMsg;
 }
 
+/** 工具调用被中断（取消/打断/异常）时回传的合成结果文案 */
+export const TOOL_INTERRUPTED_RESULT =
+  '[已中断：该工具调用未返回结果（用户取消、被打断或执行异常）。如需该结果请重新调用。]';
+
+/** 带 id 的工具调用最小形状（assistant.tool_calls 元素） */
+type ToolCallLike = { id?: unknown; [k: string]: unknown };
+
+/** 取 assistant 消息的 tool_calls（非数组/缺失返回 null） */
+function toolCallsOf(m: ChatCompletionMessageParam): ToolCallLike[] | null {
+  if (m.role !== 'assistant') return null;
+  const raw = (m as { tool_calls?: unknown }).tool_calls;
+  return Array.isArray(raw) ? (raw as ToolCallLike[]) : null;
+}
+
+/**
+ * 给一组工具调用补「未返回结果」的合成 tool 消息（配对占位）。
+ * 用于工具执行阶段被 abort / 异常中断：assistant(tool_calls) 已在请求前入历史，
+ * 不补配对的话下一条消息紧跟悬空 tool_calls，网关直接 400
+ * （"An assistant message with 'tool_calls' must be followed by tool messages..."）。
+ */
+export function appendInterruptedToolResults(
+  messages: ChatCompletionMessageParam[],
+  calls: Array<{ id: string }>,
+  content: string = TOOL_INTERRUPTED_RESULT
+): void {
+  for (const call of calls) {
+    messages.push({ role: 'tool', tool_call_id: call.id, content });
+  }
+}
+
+/**
+ * 修复历史消息里的 tool_calls ↔ tool 结果配对（发给 API 前的兜底清洗）。
+ *
+ * 网关约束：带 tool_calls 的 assistant 后面必须紧跟每个 call id 对应的 tool 消息，
+ * 才能出现下一条 user/assistant；tool 消息也必须能对应到尚未回应的 call。
+ * 会话被中断（工具执行期 Esc/停止/插话）、旧版本落盘的脏历史、手工裁剪都可能破坏配对，
+ * 一旦破坏该会话后续每次请求都 400。这里做非破坏性修复（返回新数组，不改原历史）：
+ *
+ * - 悬空 tool_calls（后续消息不再是它的 tool 结果）→ 先补合成 tool 占位；
+ * - 孤儿 tool 消息（无对应未回应调用）/ 重复回应同一 id → 丢弃；
+ * - 结束位置仍悬空 → 补占位（尾部 assistant 也必须被回应）；
+ * - tool_calls 为空数组 → 去掉该字段（部分网关不接受空数组）；
+ * - 老会话缺失 call id → 生成稳定占位 id。
+ *
+ * 只处理结构配对，不改正文与顺序；已合法的历史原样（同引用）返回。
+ */
+export function repairToolPairing(
+  messages: ChatCompletionMessageParam[],
+  placeholder: string = TOOL_INTERRUPTED_RESULT
+): ChatCompletionMessageParam[] {
+  const out: ChatCompletionMessageParam[] = [];
+  const pending = new Set<string>();
+  let repaired = false;
+  let seq = 0;
+  const flush = (): void => {
+    if (pending.size === 0) return;
+    for (const id of pending) out.push({ role: 'tool', tool_call_id: id, content: placeholder });
+    pending.clear();
+    repaired = true;
+  };
+
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      const id = (m as { tool_call_id?: unknown }).tool_call_id;
+      // 孤儿（无主）或重复回应的 tool 消息会让网关 400 → 丢弃
+      if (typeof id !== 'string' || !pending.has(id)) {
+        repaired = true;
+        continue;
+      }
+      pending.delete(id);
+      out.push(m);
+      continue;
+    }
+    // 进入下一条非 tool 消息前，先把仍未回应的调用收尾
+    flush();
+    const calls = toolCallsOf(m);
+    if (!calls) {
+      out.push(m);
+      continue;
+    }
+    if (calls.length === 0) {
+      // 空 tool_calls 数组：删字段（语义等同没有工具调用）
+      const clone = { ...m } as Record<string, unknown>;
+      delete clone.tool_calls;
+      out.push(clone as unknown as ChatCompletionMessageParam);
+      repaired = true;
+      continue;
+    }
+    let changed = false;
+    const normalized = calls.map((tc) => {
+      if (typeof tc?.id === 'string' && tc.id) return tc;
+      changed = true;
+      return { ...tc, id: `call_repair_${++seq}` };
+    });
+    if (changed) {
+      out.push({
+        ...m,
+        tool_calls: normalized,
+      } as unknown as ChatCompletionMessageParam);
+      repaired = true;
+    } else {
+      out.push(m);
+    }
+    for (const tc of normalized) pending.add((tc as { id: string }).id);
+  }
+  flush();
+  return repaired ? out : messages;
+}
+
 const NON_STANDARD_FIELDS = ['reasoning', 'reasoningMs', 'usage', 'model', 'durMs', 'genMs', 'firstTokenMs'];
 
 /** 从消息中剥离非标准字段（reasoning / reasoningMs / usage / model 等），返回新数组（不修改原数组）。

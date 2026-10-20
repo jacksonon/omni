@@ -34,6 +34,7 @@ import {
 import { topicsMatchingTask } from './memory-topics.js';
 import { discoverSkills, skillMessage, SKILL_PREFIX } from './skill.js';
 import { buildRepoMap } from './repomap.js';
+import { repairToolPairing } from './messages.js';
 import type { EventRecorder } from './events.js';
 import type { HookRunner } from '../hooks/index.js';
 
@@ -227,7 +228,11 @@ export function findSummarizeSplit(
 ): number {
   let split = messages.length - keepTail;
   if (split <= 2) return -1; // 太短：头部没有完整回合可压
-  // 切点前一跳是 assistant 工具调用 → 其 tool 结果紧跟其后（在 tail），配对会被切开——
+  // ① 切点落在并行工具组中间（assistant + tool1 | tool2）→ 回退到该组第一条 tool。
+  //    否则 tail 以无主 tool 消息开头，网关 400（"role 'tool' must be a response to a
+  //    preceding message with 'tool_calls'"）。
+  while (split > 0 && messages[split]?.role === 'tool') split--;
+  // ② 切点前一跳是 assistant 工具调用 → 其 tool 结果紧跟其后（在 tail），配对会被切开——
   // 把 assistant 连同结果整组回退留 tail（head 只到上一个完整回合边界）。
   // 只查边界一跳：head 内部更早的完整回合不受影响。
   const prev = messages[split - 1];
@@ -336,7 +341,8 @@ export async function summarizeContext(
   // Hooks：PreCompact——压缩真正发生前 fire-and-forget（可归档/通知；失败静默）
   opts.hooks?.preCompact(messages.length);
   const head = messages.slice(headStart, split);
-  const summary = await summarizeMessages(client, model, head);
+  // 摘要请求本身也不能带悬空配对（旧会话历史可能已损坏）——非破坏性清洗后发送
+  const summary = await summarizeMessages(client, model, repairToolPairing(head));
   if (!summary) return; // 失败静默
   messages.splice(headStart, split - headStart, { role: 'system', content: `[历史对话摘要]\n${summary}` });
   recorder?.compact(split - headStart); // 轨迹：压缩移除 N 条

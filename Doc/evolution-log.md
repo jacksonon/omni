@@ -2,6 +2,8 @@
 
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
 
+- **2026-10-20（tool_calls ↔ tool 配对断裂根治：网关 400）**：用户报 `400 litellm.BadRequestError: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`。根因：主循环在**工具执行前**就把 `assistant(tool_calls)` 写入历史（`loop.ts`），而执行期 abort（Esc / `/stop` / Web 停止 / 插话 steer）或异常直接 `return`/`continue`，未补对应 tool 结果；脏历史又被 TUI/Web 按轮落盘、`loadSession` 原样读回，导致该会话此后**每轮** 400（重启无效）。同类隐患：子代理工具期停止（transcript 悬空，追问续跑 400）、压缩切分落在并行工具组中间（tail 以孤儿 tool 开头）、`/rewind` 截断同类边界。修复：① 新 `messages.ts` `repairToolPairing`（发送前非破坏性自愈：悬空 `tool_calls` 补合成 tool 占位、孤儿/重复 tool 消息丢弃、空 `tool_calls` 去字段、缺失 call id 补齐）+ `appendInterruptedToolResults`；② 主循环请求构造统一走 `repairToolPairing(stripNonStandardFields(...))`，工具执行阶段 abort/异常一律先补配对占位再收尾；③ 子代理请求前同款修复 + 停止时补占位；④ `findSummarizeSplit` / `truncateMessagesToCount` 切点回退到完整工具组。验证：typecheck ✓ · 全量单测 64/64（新增 `messages.test.ts` 12 例、`context.test.ts` 3 例）✓ · `eval:mock` 2/2 ✓ · 本机 373 个会话扫描出的 4 个历史脏会话经修复后配对问题全部归零 ✓。
+
 - **2026-10-18（v0.9.2）**：升级根包、锁文件与 CLI 版本号至 0.9.2，发布分层帮助、远程/配对首页入口及 `pair / service` 终端路由修复；平台子包与主启动包版本由 tag 发布工作流同步。
 
 - **2026-10-18（帮助首页突出远程与配对）**：首页新增「远程与配对」分类，直接展示 `web auth set / pair / web --tunnel / service`，增加 `help remote / help pair` 主题导航与补全；补齐 `pair / service` 的 console 路由，避免 Bun + TTY 下被全屏 TUI 接管。验证：中英帮助与双入口回归、路由断言、typecheck、bundle 通过。

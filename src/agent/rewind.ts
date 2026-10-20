@@ -273,11 +273,13 @@ export function truncateMessagesToCount(
     if (seen > keepCount) { cut = i; break; }
   }
   if (cut >= messages.length) return { dropped: 0 };
-  // 安全回退：截断点紧随 tool_calls assistant → 把该 assistant 也丢掉
-  const prev = messages[cut - 1] as unknown as Record<string, unknown> | undefined;
+  // 安全回退①：截断点若落在并行工具组中间（丢弃区以 tool 开头）→ 回退到该组起点
   let safeCut = cut;
+  while (safeCut > 0 && (messages[safeCut] as { role?: string } | undefined)?.role === 'tool') safeCut--;
+  // 安全回退②：截断点紧随 tool_calls assistant → 把该 assistant 也丢掉
+  const prev = messages[safeCut - 1] as unknown as Record<string, unknown> | undefined;
   if (prev && prev['role'] === 'assistant' && (prev as { tool_calls?: unknown }).tool_calls) {
-    safeCut = cut - 1;
+    safeCut = safeCut - 1;
   }
   const droppedPersistable = countPersistable(messages.slice(safeCut));
   messages.length = safeCut;

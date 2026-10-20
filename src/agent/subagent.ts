@@ -23,7 +23,7 @@ import type { Tool } from '../tools/types.js';
 import type { SubagentEvent } from './types.js';
 import type { SubagentRecord, SubagentRegistry } from './subagent-registry.js';
 import { detailItemFromEvent, SUBAGENT_DETAIL_MAX } from './subagent-registry.js';
-import { buildAssistantMessage, parseArgs, type ToolCallAccum } from './messages.js';
+import { appendInterruptedToolResults, buildAssistantMessage, parseArgs, repairToolPairing, type ToolCallAccum } from './messages.js';
 import {
   chatToolsToResponsesTools,
   chatMessagesToResponsesInput,
@@ -253,6 +253,9 @@ export async function runSubagent(
       }
     }
     emit(opts, { type: 'step', step, maxSteps }); // 思考/请求中（无工具名）
+    // 发送前修复配对：续跑 transcript 可能因上次「工具执行期停止」留下悬空 tool_calls，
+    // 直接发会触发网关 400（与主循环同一兜底）
+    const requestMessages = repairToolPairing(messages);
     // Responses-only 模型（muse-spark 等）走 /responses，显式 protocol 优先于启发式
     const useResponses =
       opts.protocol === 'responses' || (opts.protocol !== 'completions' && /muse-spark/i.test(model));
@@ -261,7 +264,7 @@ export async function runSubagent(
     try {
       if (useResponses) {
         const flatTools = chatToolsToResponsesTools(toolSchemas);
-        const input = chatMessagesToResponsesInput(messages);
+        const input = chatMessagesToResponsesInput(requestMessages);
         const built = buildResponsesParams(undefined, model, input, flatTools, {
           reasoningEffort: opts.effort,
           signal: opts.signal,
@@ -270,7 +273,7 @@ export async function runSubagent(
       } else {
       stream = await client.chat.completions.create({
         model,
-        messages,
+        messages: requestMessages,
         tools: toolSchemas,
         stream: true,
         // 子代理取消：abort 信号透传给 SDK——用户停止后流式请求立即断连
@@ -410,8 +413,12 @@ export async function runSubagent(
         return result;
       })
     );
-    // 停止在工具执行期间到达：工具仍在后台跑（结果丢弃），子代理立即结束
-    if (isStopped(opts)) return finish('', step + 1);
+    // 停止在工具执行期间到达：工具仍在后台跑（结果丢弃），子代理立即结束。
+    // 先补配对占位——assistant(tool_calls) 已入 transcript，续跑（追问）时会原样发送
+    if (isStopped(opts)) {
+      appendInterruptedToolResults(messages, calls);
+      return finish('', step + 1);
+    }
     results.forEach((result, i) => {
       messages.push({ role: 'tool', tool_call_id: calls[i].id, content: truncate(result) });
     });
