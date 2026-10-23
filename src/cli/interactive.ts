@@ -13,7 +13,7 @@ import { describeModelIntelligence } from '../config/model-pricing.js';
 import { stdin as input, stdout as output } from 'node:process';
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { collectImageAttachments, loadImageAttachment, MAX_IMAGE_FILES, prepareContext, recapConversation, userMessageWithImages, type ImageAttachment } from '../agent/context.js';
+import { collectImageAttachments, estimateContextTokens, loadImageAttachment, MAX_IMAGE_FILES, prepareContext, recapConversation, userMessageWithImages, type ImageAttachment } from '../agent/context.js';
 import {
   generateAgentsFile,
   generateGlobalAgentsFile,
@@ -78,7 +78,7 @@ import type { Output } from '../output/types.js';
 import { bold, copyTextToClipboard, cyan, dim, green, red, setTerminalTitle, yellow } from '../ui.js';
 import { printHelp } from './args.js';
 import { applyMentionInsert, commonPrefix, completeMiniLine, fuzzySlashMatch, formatModePrompt, isBangShellCommand, matchMention, pickFromList, installMentionSuggest, installSlashSuggest, stripBangPrefix, hasLineContinuation, stripLineContinuation, contPrompt, joinContinued, historySearchItems, formatModelPickLabel, isShortcutsHelpRequest, formatShortcutsHelp, PasteBurstTracker, ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from './picker.js';
-import type { SlashSuggestHandle } from './picker.js';
+import type { PickerItem, PickerOptions, SlashSuggestHandle } from './picker.js';
 import type { MentionSuggestHandle } from './picker.js';
 
 /** `/stop` 精确匹配（codex /stop：轮内前置拦截与空闲提示共用；`/stop xxx` 带参不认，避免误吞普通消息） */
@@ -100,6 +100,10 @@ export async function runInteractive(
     onRl?: (rl: { pause(): void; resume(): void; write(data: string | null, key?: { ctrl?: boolean; name?: string }): void; line: string; prompt(preserveCursor?: boolean): void }) => void;
   } = {}
 ): Promise<void> {
+  const pickMenu = (stdin: NodeJS.ReadStream, items: PickerItem[], options: PickerOptions): Promise<number> => {
+    if (out instanceof MiniOutput) out.preparePicker();
+    return pickFromList(stdin, items, { ...options, placement: out instanceof MiniOutput ? 'inline' : 'screen' });
+  };
   // Tab 补全（readline 原生 completer，只读行缓冲不提交）：`/mo`→命令名、
   // `/model <片>`→模型名、`/variants <片>`→级别/命名 id。只在 TTY 挂载，
   // 管道保持原行为；数据源经 runOpts 实时读（/model add 后即时可补）。
@@ -405,7 +409,7 @@ export async function runInteractive(
           if (items.length > 0) {
             void (async () => {
               try {
-                const idx = await pickFromList(input, items, {
+                const idx = await pickMenu(input, items, {
                   selected: 0,
                   hint: '↑↓ 导航 · 输入过滤 · Enter 回填 · Esc 取消',
                   filterable: true,
@@ -440,7 +444,7 @@ export async function runInteractive(
       editable.cursor = cursor;
     }
   };
-  const suggest = installSlashSuggest({
+  const suggest = out instanceof MiniOutput && out.hasComposer() ? null : installSlashSuggest({
     stdin: input,
     getLine: () => rl.line,
     isActive: () => !inTurn,
@@ -534,7 +538,7 @@ export async function runInteractive(
                 void (async () => {
                   try {
                     const items = m.cands.slice(0, 15).map((c) => ({ label: `@${c}`, value: c }));
-                    const idx = await pickFromList(input, items, {
+                    const idx = await pickMenu(input, items, {
                       selected: 0,
                       hint: `↑↓ 选择 · Enter 插入 · Esc 取消${m.cands.length > 15 ? '（仅列前 15，继续打字过滤）' : ''}`,
                     });
@@ -570,6 +574,22 @@ export async function runInteractive(
   // 当前模型运行时（/model 切换，会话级）：切换时重建 client 并更新共享引用（子代理同步）
   let currentClient: OpenAI = client;
   let currentModel = runOpts.modelRuntime?.model ?? model;
+  if (out instanceof MiniOutput) {
+    out.setComposerStatus(() => {
+      const endpoint = (runOpts.models ?? []).find(m => m.name === currentModel);
+      const window = describeModelContextWindow(
+        resolveContextLimit(runOpts.cfg?.contextLimit, endpoint?.limit?.context), currentModel, endpoint?.apiModel
+      );
+      return {
+        model: currentModel,
+        effort: runOpts.reasoningEffort,
+        contextLimit: window.source === 'fallback' ? undefined : window.value,
+        contextUsed: out.lastPromptTokens ?? estimateContextTokens(messages),
+        estimated: out.lastPromptTokens === undefined,
+        plan: runOpts.planMode ?? false,
+      };
+    });
+  }
   const switchModel = (name: string): string | null => {
     // 从 runOpts.models 找目标端点（baseURL/apiKey/userAgent 已按配置展开），重建 client
     // 并更新 runOpts.modelRuntime——主循环与 delegate 子代理（闭包持有引用）同步生效
@@ -578,6 +598,7 @@ export async function runInteractive(
     if (name === currentModel) return null; // 已是当前模型，无需切换
     currentClient = createClient(endpoint, endpoint.apiKey ?? '');
     currentModel = name;
+    if (out instanceof MiniOutput) out.lastPromptTokens = undefined;
     if (runOpts.modelRuntime) {
       runOpts.modelRuntime.client = currentClient;
       runOpts.modelRuntime.model = name;
@@ -835,7 +856,7 @@ export async function runInteractive(
             label: `${PERM_LABEL[t]}${permission === t ? ' ✓' : ''}`,
             value: t,
           }));
-          const idx = await pickFromList(input, items, { selected: Math.max(0, tiers.indexOf(permission)) });
+          const idx = await pickMenu(input, items, { selected: Math.max(0, tiers.indexOf(permission)), title: 'Select Permissions', hint: 'enter select · esc back · ↑↓ navigate' });
           if (idx < 0) {
             safePrompt();
             continue;
@@ -932,7 +953,7 @@ export async function runInteractive(
             const tag = tags.length > 0 ? `（${tags.join(' · ')}）` : '';
             return { label: `${s.name} — ${s.description}${tag}`, value: s.name };
           });
-          const idx = await pickFromList(input, items, { selected: 0 });
+          const idx = await pickMenu(input, items, { selected: 0 });
           if (idx < 0) {
             safePrompt();
             continue;
@@ -1018,6 +1039,7 @@ export async function runInteractive(
       const before = messages.length;
       await summarizeContext(currentClient, currentModel, messages, { summarizeAt: 1, summarizeWindow: 8 }, runOpts.events);
       const after = messages.length;
+      if (out instanceof MiniOutput && after < before) out.lastPromptTokens = undefined;
       if (after >= before) {
         console.log(dim('上下文还很短或无可压缩内容（/compact 在长对话中才有明显效果）'));
       } else {
@@ -1276,7 +1298,7 @@ export async function runInteractive(
           ];
           const curValue = runOpts.activeVariant ? `variant:${runOpts.activeVariant}` : (runOpts.reasoningEffort ?? '');
           const curIdx = items.findIndex((it) => it.value === curValue);
-          const idx = await pickFromList(input, items, { selected: curIdx >= 0 ? curIdx : 0 });
+          const idx = await pickMenu(input, items, { selected: curIdx >= 0 ? curIdx : 0, title: 'Select Reasoning Effort / Variant', hint: 'enter select · esc back · ↑↓ navigate' });
           if (idx < 0) {
             safePrompt();
             continue;
@@ -1363,11 +1385,12 @@ export async function runInteractive(
         if (input.isTTY && models.length > 0) {
           // TTY 箭头选择器（文案见 formatModelPickLabel：名称 · provider · 上下文k/输出k · 思考级别 · 智能指数 · 当前✓）
           const items = models.map((m) => ({
-            label: formatModelPickLabel({ ...m, intelligence: describeModelIntelligence(m.name) ?? describeModelIntelligence(m.apiModel) }, m.name === currentModel),
+            label: `${m.displayName ?? m.name}${m.name === currentModel ? ' (current)' : ''}`,
+            description: formatModelPickLabel({ ...m, intelligence: describeModelIntelligence(m.name) ?? describeModelIntelligence(m.apiModel) }, false).split(' · ').slice(1).join(' · '),
             value: m.name,
           }));
           const curIdx = models.findIndex((m) => m.name === currentModel);
-          const idx = await pickFromList(input, items, { selected: curIdx >= 0 ? curIdx : 0 });
+          const idx = await pickMenu(input, items, { selected: curIdx >= 0 ? curIdx : 0, title: 'Select Model', hint: 'enter select · esc back · ↑↓ navigate' });
           if (idx < 0) {
             safePrompt();
             continue;
@@ -1887,7 +1910,7 @@ export async function runInteractive(
               label: `${s.pinned ? '★ ' : ''}${s.title || '（无标题）'}（${s.messages} 条）`,
               value: s.id,
             }));
-            const idx = await pickFromList(input, items, { selected: 0 });
+            const idx = await pickMenu(input, items, { selected: 0 });
             if (idx < 0) {
               safePrompt();
               continue;
@@ -2083,7 +2106,7 @@ export async function runInteractive(
             label: `${s.pinned ? '★ ' : ''}${s.title || '（无标题）'}（${s.messages} 条）`,
             value: s.id,
           }));
-          const idx = await pickFromList(input, items, { selected: 0 });
+          const idx = await pickMenu(input, items, { selected: 0 });
           if (idx < 0) {
             safePrompt();
             continue;
@@ -2175,7 +2198,7 @@ export async function runInteractive(
             label: formatSubagentLine(r),
             value: r.id,
           }));
-          const idx = await pickFromList(input, items, {
+          const idx = await pickMenu(input, items, {
             selected: 0,
             hint: '↑↓ 选择 · Enter 查看明细 · Esc 仅列出',
           });

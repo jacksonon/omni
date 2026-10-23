@@ -889,7 +889,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     // 灰色块顶 = 组顶 + 状态栏 margin(1) + 字标(HERO_LINES) + 间距(1)；底部钉住时的灰块顶 = height - 7 - pendingRows - todoRows - delegateRows - inputLines
     const grayTopCentered = groupTop + 1 + HERO_LINES + 1;
     const grayTopBottom = (height ?? 24) - 7 - pendingRows - todoRows - delegateRows - inputLines;
-    heroOffset = Math.max(0, grayTopBottom - grayTopCentered);
+    // 高点阵在矮窗口中可能把输入区推到原钉底位置下方，必须保留负偏移。
+    // 截成 0 会让联想/菜单浮层比真实输入区高一行。
+    heroOffset = grayTopBottom - grayTopCentered;
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
     tree.omniTitle.visible = true;

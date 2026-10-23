@@ -210,3 +210,9 @@ for step in 1..maxSteps:
 - TUI 空会话首页使用 `src/tui/omni-mark.ts` 的 Braille 点阵编织 O 标识，点击图标随机执行圆心正反转、X/Y/斜轴翻转、翻滚或螺旋旋转，避免连续重复；开始对话后隐藏。
 
 - 品牌标识跨端共用 `src/tui/omni-mark.ts`：Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。
+
+- mini 底部输入区由 `src/cli/mini-composer.ts` 装饰原生 readline：深灰输入块 + 实时模型/思考级别/窗口/剩余上下文/运行状态 + 快捷键。请求前上下文比例使用估算并标 `~`，请求后读取实际 prompt usage；修改须通过 PTY 验证编辑、联想、流中输入保留与窗口换行。
+
+- mini `/` 菜单由 composer 在输入块上方绘制两列命令/说明，蓝底选中，↑↓ 导航、Tab 回填、Enter 执行、Esc 关闭；`/model`、`/variants`、`/permission` 等二级菜单在当前输入区内联展开，复用深灰标题面板与蓝底选择器，不切备用屏跳至顶部；数据来自 Omni 配置。
+
+- mini 思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。

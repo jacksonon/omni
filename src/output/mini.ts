@@ -15,10 +15,12 @@
  *   `+N lines (ctrl+t to view transcript)`（tool_output.rs，与快照逐字一致）；
  * - 运行中状态行：`• Working (12s • esc to interrupt)` 原地计时（status_indicator_widget.rs）；
  * - 回合分隔：`Worked for 12s · 16:41` dim 行，时长仅在 >60s 时出现（history_cell/separators.rs）；
- * - 底部提示：单行（bottom_pane/footer.rs 单行 hint 对等：key 加粗 + 描述 dim，`·` 分隔，
- *   2 空格缩进，超宽按段折叠；`?` 快捷键覆盖层见 picker 快捷键帮助）；
+ * - 输入区：深灰底 + 空行留白，下面两行展示 Omni 实时模型/思考级别/上下文/运行状态与快捷键；
+ *   原生 readline 编辑由 cli/mini-composer.ts 装饰，非 TTY 不输出控制序列；
  * - 全程普通滚动行，不用备用屏；非 TTY（管道）自动退化为"只出最终单元格"。
  */
+import { installMiniComposer, type MiniComposer, type MiniComposerStatus } from '../cli/mini-composer.js';
+import { stripVTControlCharacters } from 'node:util';
 import { homedir } from 'node:os';
 import { stdin as input, stderr as errOut } from 'node:process';
 import readline from 'node:readline/promises';
@@ -486,9 +488,9 @@ const CONT_INDENT = '  ';
  * avail 取 cols()-2（前缀占 2 列），与终端原生换行断点一致——用户回显与
  * 对话流用同一断点，擦回显时行数才对得上。
  */
-export function foldRows(text: string): string[] {
+export function foldRows(text: string, width = cols() - 2): string[] {
   if (text === '') return [''];
-  const avail = Math.max(8, cols() - 2);
+  const avail = Math.max(1, width);
   const out: string[] = [];
   let cur = '';
   let w = 0;
@@ -654,16 +656,17 @@ class LiveBlock {
     }
   }
 
+  /** resize 后旧 live 行可能已被终端重新折行，回退必须按当前物理行数计算。 */
+  private rowCount(): number {
+    const width = Math.max(1, this.out.columns || 80);
+    return this.lines.reduce((total, line) => total + Math.max(1, Math.ceil(visualWidth(stripVTControlCharacters(line)) / width)), 0);
+  }
+
   private render(lines: string[]): void {
-    const prev = this.lines.length;
-    if (prev > 0) this.out.write(`\x1b[${prev}A`); // 回到区块首行
-    const n = Math.max(prev, lines.length);
-    for (let i = 0; i < n; i++) {
-      this.out.write('\r\x1b[2K');
-      if (i < lines.length) this.out.write(lines[i]!);
-      if (i < n - 1) this.out.write('\n');
-    }
-    this.out.write('\n');
+    const prev = this.rowCount();
+    if (prev > 0) this.out.write(`\x1b[${prev}A`);
+    this.out.write('\r\x1b[0J');
+    for (const line of lines) this.out.write(`\r${line}\n`);
     this.lines = lines;
   }
 
@@ -672,7 +675,7 @@ class LiveBlock {
     if (!this.enabled || this.lines.length === 0) return;
     this.pre();
     try {
-      this.out.write(`\x1b[${this.lines.length}A\r\x1b[0J`);
+      this.out.write(`\x1b[${this.rowCount()}A\r\x1b[0J`);
       this.lines = [];
     } finally {
       this.post();
@@ -688,7 +691,7 @@ class LiveBlock {
     this.pre();
     try {
       if (this.lines.length > 0) {
-        this.out.write(`\x1b[${this.lines.length}A\r\x1b[0J`);
+        this.out.write(`\x1b[${this.rowCount()}A\r\x1b[0J`);
         this.lines = [];
       }
       for (const l of lines) this.out.write(l + '\n');
@@ -707,13 +710,18 @@ class StreamingCell {
   private started = false;
   /** end() 后的写视为新单元格（重置 bullet/空行钩子；调用方误复用也不粘连） */
   private ended = false;
+  private watchingResize = false;
+  private onResize = (): void => {
+    this.flushWrapped();
+    if (this.buf) this.renderPartial();
+  };
 
   constructor(
     private live: LiveBlock,
     private style: (line: string) => string,
     /** beforeFirst：首个单元格输出前的空行钩子（codex 相邻 HistoryCell 之间空一行）
      *  afterLine：每提交一行后回调（渲染层据此维护"当前是否已有空行"的状态） */
-    private hooks: { beforeFirst?: () => void; afterLine?: () => void } = {},
+    private hooks: { beforeFirst?: () => void; afterLine?: () => void; wrapStreaming?: boolean; normalize?: (text: string) => string } = {},
     /** 行输出（MiniOutput.print：轮内带输入行擦写协作，不能直接 console.log） */
     private print: (line: string) => void = (line) => console.log(line),
     /** 首行行首：可见 bullet */
@@ -738,6 +746,10 @@ class StreamingCell {
       this.started = false;
       this.buf = '';
     }
+    if (this.hooks.wrapStreaming && !this.watchingResize) {
+      process.stdout.on('resize', this.onResize);
+      this.watchingResize = true;
+    }
     this.buf += chunk;
     let idx: number;
     while ((idx = this.buf.indexOf('\n')) >= 0) {
@@ -745,18 +757,31 @@ class StreamingCell {
       this.buf = this.buf.slice(idx + 1);
       this.commit(line);
     }
+    this.flushWrapped();
     if (this.buf.length > 0) this.renderPartial();
   }
 
-  /** 未完成行：原地重绘 + 光标（截到单行宽，尾部窗口——保证 live 区 1 行 = 屏幕 1 行） */
+  /** 无换行的思考流及时提交完整可见行，只保留最后一行继续接收增量。 */
+  private flushWrapped(): void {
+    if (!this.hooks.wrapStreaming || !this.buf) return;
+    this.buf = this.hooks.normalize?.(this.buf) ?? this.buf;
+    const rows = foldRows(this.buf, this.avail());
+    if (rows.length < 2) return;
+    this.live.clear();
+    this.emitRows(rows.slice(0, -1).map(row => this.style(row)));
+    this.buf = rows[rows.length - 1]!;
+  }
+
+  /** 未完成行：思考流保留当前折行尾部，Markdown 预览使用尾部窗口；为光标预留列宽。 */
   private renderPartial(): void {
     if (!this.live.active) return;
-    const room = Math.max(8, cols() - 6);
+    const room = this.hooks.wrapStreaming ? this.avail() : Math.max(1, cols() - 6);
     const body = this.renderPartialText
       ? this.renderPartialText(this.buf, room)
-      : this.style(tailToWidth(this.buf, room));
+      : this.style(this.hooks.wrapStreaming ? this.buf : tailToWidth(this.buf, room));
     // 首尾垫空行（padLiveLines：和 `› ` 输入行留呼吸位）
-    this.live.update(padLiveLines([`${this.prefix()}${body}${dim(CURSOR)}`]));
+    const line = `${this.prefix()}${body}${dim(CURSOR)}`;
+    this.live.update(this.hooks.wrapStreaming && this.started ? [line, ''] : padLiveLines([line]));
   }
 
   private prefix(): string {
@@ -765,13 +790,15 @@ class StreamingCell {
 
   /** 可用列宽（前缀占 2 列，与 foldRows 断点一致） */
   private avail(): number {
-    return Math.max(8, cols() - 2);
+    return this.hooks.wrapStreaming
+      ? Math.max(1, cols() - visualWidth(stripVTControlCharacters(this.prefix())) - 2)
+      : Math.max(1, cols() - 2);
   }
 
   /** 一个逻辑行 → 已定样式的可见行（'' = 裸空行） */
   private toRows(line: string): string[] {
     if (this.renderLine) return this.renderLine(line, this.avail());
-    return foldRows(line).map((row) => (row === '' ? '' : this.style(row)));
+    return foldRows(this.hooks.normalize?.(line) ?? line, this.avail()).map((row) => (row === '' ? '' : this.style(row)));
   }
 
   /** 提交可见行：仅单元格首行挂 •，其余 2 空格缩进；空数组（围栏标记/表格收集中）直接跳过 */
@@ -798,6 +825,10 @@ class StreamingCell {
 
   /** 收尾：冲掉缓冲区（无换行结尾的最后一行 / 空消息补行）+ 渲染器暂存（表格/表头候选） */
   end(): void {
+    if (this.watchingResize) {
+      process.stdout.off('resize', this.onResize);
+      this.watchingResize = false;
+    }
     this.live.clear();
     const pending: string[] = [];
     if (this.buf.length > 0) {
@@ -872,6 +903,21 @@ export class MiniOutput implements Output {
     /** preserveCursor=true 时不要把光标重置为 0（否则轮内打的字会被推到行首） */
     prompt(preserveCursor?: boolean): void;
   } | null = null;
+  private composer: MiniComposer | null = null;
+  private composerStatus: (() => Omit<MiniComposerStatus, 'running'>) | null = null;
+
+  setComposerStatus(provider: () => Omit<MiniComposerStatus, 'running'>): void {
+    this.composerStatus = provider;
+  }
+
+  hasComposer(): boolean { return this.composer !== null; }
+
+  /** 二级菜单接替输入区时先清受控区域，保留 readline 的文本缓冲。 */
+  preparePicker(): void { this.composer?.clearInput(); }
+
+  /** 最近一次请求用量用于当前上下文展示（不是会话累计 token）。 */
+  lastPromptTokens: number | undefined;
+
   private capturing = false;
   private yieldedInput = false;
   /** 输出协作嵌套深度（成对调用里层直接过，避免重复擦写） */
@@ -880,7 +926,8 @@ export class MiniOutput implements Output {
   /** 轮内输出前：擦掉当前 `› ` 输入行（光标停在行首，后续输出写在它上面） */
   private preOut(): void {
     if (!this.capturing || this.outDepth++ > 0) return;
-    process.stdout.write('\r\x1b[2K');
+    if (this.composer) this.composer.clearInput();
+    else process.stdout.write('\r\x1b[2K');
   }
 
   /** 轮内输出后：在内容末尾把 `› ` + 当前行缓冲原样重画回来 */
@@ -923,12 +970,15 @@ export class MiniOutput implements Output {
   }
 
   dumpLedger(header: string, lines: string[]): void {
+    const redraw = !this.capturing && this.composer !== null;
+    if (redraw) this.composer?.clearInput();
     this.live.clear();
     this.print('');
     this.print('');
     this.print(header);
     for (const l of lines) this.print(l);
     this.print('');
+    if (redraw) this.rl?.prompt(true);
   }
 
   /** Ctrl+O：展开查看最近一次工具的完整输出（避免必须按 Ctrl+T 查全量轨迹） */
@@ -1000,6 +1050,10 @@ export class MiniOutput implements Output {
     prompt(preserveCursor?: boolean): void;
   }): void {
     this.rl = rl;
+    this.composer = installMiniComposer(rl, () => ({
+      ...(this.composerStatus?.() ?? { model: 'Omni', plan: false }),
+      running: this.turnStart !== null,
+    }));
   }
 
   /**
@@ -1014,6 +1068,7 @@ export class MiniOutput implements Output {
     const cmd = resolveEditorCommand();
     if (!cmd) return 'no-editor';
     const initial = this.rl.line;
+    this.composer?.clearInput();
     this.live.clear();
     this.print('');
     this.print(dim('正在打开外部编辑器组稿（存盘退出回填 `:wq`，放弃用 `:q!`）…'));
@@ -1048,11 +1103,6 @@ export class MiniOutput implements Output {
 
   markInteractive(): void {
     this.interactive = true;
-    if (this.opts.stream) {
-      // 单行（codex bottom_pane/footer.rs 单行 hint 对等，超宽按段折叠；更多见 `?` 快捷键帮助）
-      this.print(renderMiniFooter(cols()));
-      this.print('');
-    }
   }
 
   /** 需要时补一个空行（单元格间距）；已有空行则不动 */
@@ -1079,7 +1129,9 @@ export class MiniOutput implements Output {
 
   /** 思考单元格（codex ReasoningSummaryCell：同为 `• ` 单元格，但 dim + italic） */
   private newReasoningCell(): StreamingCell {
-    return new StreamingCell(this.live, (l) => italic(dim(inlineMathToText(l))), {
+    return new StreamingCell(this.live, (l) => italic(dim(l)), {
+      wrapStreaming: true,
+      normalize: text => stripVTControlCharacters(inlineMathToText(text)).replace(/\t/g, '    ').replace(/\r/g, ''),
       beforeFirst: () => this.ensureGap(),
       afterLine: () => {
         this.gapOpen = false;
@@ -1156,6 +1208,7 @@ export class MiniOutput implements Output {
    * 只打标题/版本/目录/YOLO，不带问候语与上手帮助——滚动终端避免刷屏）。
    */
   reprintHeader(cfg: OmniConfig, permission?: string): void {
+    this.lastPromptTokens = undefined;
     const info: MiniBannerInfo = {
       directory: process.cwd(),
       // 会话级档位（/permission 可切换）：调用方传当前值，回退启动配置
@@ -1232,6 +1285,7 @@ export class MiniOutput implements Output {
 
   /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源）+ 成本累加 */
   onUsage(usage: TokenUsage): void {
+    this.lastPromptTokens = usage.prompt;
     this.turnStats.completion = (this.turnStats.completion ?? 0) + Math.max(0, usage.completion ?? 0);
     const c = usage.costUsd ?? 0;
     if (typeof c === 'number' && Number.isFinite(c) && c > 0) {

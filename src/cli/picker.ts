@@ -4,17 +4,24 @@
  */
 import readline from 'node:readline';
 import { stripVTControlCharacters } from 'node:util';
-import { bold, cyan, dim, magenta, red } from '../ui.js';
+import { bold, cyan, dim, magenta, red, useColor } from '../ui.js';
 import { truncateToWidth } from '../output/format.js';
+import { visualWidth } from '../tui/width.js';
 import { detectMention, listMentionCandidates } from '../tui/mention.js';
 
 export interface PickerItem {
   /** 已着色成品行（不含序号；`✓` 当前标记由调用方拼入） */
   label: string;
   value: string;
+  /** 与名称分列展示的能力或说明。 */
+  description?: string;
 }
 
 export interface PickerOptions {
+  /** inline 在当前输入区展开，screen 用临时备用屏。 */
+  placement?: 'inline' | 'screen';
+  /** 面板顶部标题 */
+  title?: string;
   /** 初始高亮下标 */
   selected: number;
   /** 底部提示行（缺省默认文案） */
@@ -40,6 +47,67 @@ export const MINI_SLASH_COMMANDS = [
   '/copy', '/pwd', '/quit', '/stop', '/delete', '/tasks', '/plugin', '/warnings',
   '/skills', '/plugins', '/hooks', '/rollout',
 ];
+
+/** mini 斜杠菜单说明（命令范围仍由 MINI_SLASH_COMMANDS 决定）。 */
+export const MINI_SLASH_DESCRIPTIONS: Record<string, string> = {
+  '/model': '选择模型与推理级别',
+  '/variants': '切换推理级别或命名变体',
+  '/permission': '选择 Omni 可以执行的操作',
+  '/status': '查看当前会话配置',
+  '/context': '查看或调整上下文窗口',
+  '/plan': '切换只读计划模式',
+  '/review': '审查当前代码改动',
+  '/diff': '查看工作区差异',
+  '/init': '生成项目 AGENTS.md',
+  '/agents': '管理子代理定义',
+  '/tasks': '查看后台任务',
+  '/team': '查看团队任务看板',
+  '/mcp': '管理 MCP 服务器与外部工具',
+  '/skill': '查找、安装与管理技能',
+  '/skills': '查看可用技能',
+  '/plugin': '管理插件',
+  '/plugins': '查看插件列表',
+  '/settings': '查看帮助与模型能力设置',
+  '/compact': '压缩当前会话上下文',
+  '/clear': '清空对话并开始新会话',
+  '/new': '开始新会话',
+  '/resume': '恢复已有会话',
+  '/session': '管理已保存的会话',
+  '/fork': '分叉当前会话',
+  '/rewind': '回到会话检查点',
+  '/undo': '撤销上一次文件修改',
+  '/redo': '重做上一次撤销',
+  '/usage': '查看 token 与费用用量',
+  '/export': '导出当前会话',
+  '/import': '导入已有配置或会话',
+  '/rename': '重命名当前会话',
+  '/cd': '切换工作目录',
+  '/pwd': '显示当前工作目录',
+  '/copy': '复制最近的回答',
+  '/recap': '回顾当前会话',
+  '/trace': '查看完整执行轨迹',
+  '/rollout': '查看会话轨迹',
+  '/warnings': '查看会话警告',
+  '/doctor': '检查环境与配置',
+  '/hooks': '查看生命周期 hooks',
+  '/pin': '置顶会话',
+  '/archive': '归档会话',
+  '/unarchive': '取消归档',
+  '/delete': '删除会话',
+  '/goal': '设置持续执行目标',
+  '/loop': '配置循环任务',
+  '/orchestrate': '编排多代理工作流',
+  '/spec': '创建需求、设计与任务规格',
+  '/preset': '应用能力预设',
+  '/btw': '提出不打断当前任务的问题',
+  '/send': '发送会话消息',
+  '/memory-apply': '应用待确认的项目记忆',
+  '/auto': '切换 AI 自动审批',
+  '/vim': '查看 Vim 模式设置',
+  '/stop': '停止当前任务',
+  '/exit': '退出 Omni',
+  '/quit': '退出 Omni',
+};
 
 export interface CompleteContext {
   /** 可用模型名（runOpts.models 实时读） */
@@ -301,7 +369,8 @@ export function stripBangPrefix(text: string): string {
  * TTY 下渲染箭头选择器并等待按键，返回选中下标；Esc / Ctrl+C 取消返回 -1。
  * 非 TTY 直接返回 -1（调用方走原纯文本列表路径）。
  *
- * 菜单临时进入 alternate screen，按窗口宽高截断/分页；确认和取消都恢复主屏与光标。
+ * mini 在当前输入区顺序绘制临时面板；其它入口可用 alternate screen。
+ * 两种布局都按窗口分页，确认/取消后清理自己的区域。
  * 按键协议：保存全部 keypress 监听 → 先挂自己的 → 逐个摘掉保存的
  * （计数恒≥1；只动 keypress，解码器的 data 不动；绝不用 removeAllListeners）
  * → 收尾摘掉自己的、按原序装回。raw mode 全程不动。
@@ -320,6 +389,7 @@ export async function pickFromList(
   }
 
   const out = process.stdout;
+  const inline = opts.placement === 'inline';
   const isFilter = opts.filterable === true;
   let query = '';
 
@@ -335,20 +405,33 @@ export async function pickFromList(
   let sel = Math.min(Math.max(opts.selected, 0), Math.max(0, curItems.length - 1));
   const hint = opts.hint ?? (isFilter ? '↑↓ 导航 · 输入过滤 · Enter 回填 · Esc 取消' : DEFAULT_HINT);
 
+  const panelBg = () => useColor ? '\x1b[48;2;27;27;27m' : '';
   const renderRow = (i: number, width: number): string => {
     const it = curItems[i]!.item;
-    const prefix = i === sel ? bold(cyan('› ')) : '  ';
-    // 每条只占一个物理行：调用方着色不能计入宽度，换行也不能突破窗口。
-    const label = truncateToWidth(stripVTControlCharacters(it.label).replace(/[\r\n\t]/g, ' '), Math.max(1, width - 2));
-    const body = i === sel ? bold(cyan(label)) : label;
-    return `${prefix}${body}`;
+    const selected = i === sel;
+    const prefix = `${selected ? '›' : ' '} ${i + 1}. `;
+    const label = stripVTControlCharacters(it.label).replace(/[\r\n\t]/g, ' ');
+    const labelWidth = Math.min(38, Math.max(12, Math.floor(width * 0.4)));
+    let body = prefix + truncateToWidth(label, Math.max(1, width - prefix.length - 1));
+    let muted = '';
+    if (it.description && width >= 48) {
+      const name = truncateToWidth(label, labelWidth);
+      body = prefix + name + ' '.repeat(Math.max(0, labelWidth - visualWidth(name))) + '  ';
+      muted = truncateToWidth(it.description.replace(/[\r\n\t]/g, ' '), Math.max(1, width - 1 - visualWidth(body)));
+    }
+    if (selected && useColor) return `\x1b[48;2;88;151;245m\x1b[30m${body}${muted}\x1b[K\x1b[0m`;
+    return `${panelBg()}${body}${dim(muted)}${panelBg()}\x1b[K\x1b[0m`;
   };
 
   const paint = (): void => {
     const width = Math.max(3, out.columns || 80);
-    const height = Math.max(2, out.rows || 24);
+    const height = Math.max(1, (out.rows || 24) - (inline ? 1 : 0));
     const rows: string[] = [];
     const showFilter = isFilter && height >= 3;
+    if (height >= 6) {
+      rows.push(`${panelBg()}${bold(truncateToWidth(`  ${opts.title ?? '选择操作'}`, width - 1))}${panelBg()}\x1b[K\x1b[0m`);
+      rows.push(`${panelBg()}\x1b[K\x1b[0m`);
+    }
     if (showFilter) rows.push(dim(truncateToWidth(`  filter: ${query}▌`, width)));
     const maxVisible = Math.max(1, Math.min(12, height - rows.length - 1));
     const start = Math.max(0, Math.min(sel - Math.floor(maxVisible / 2), curItems.length - maxVisible));
@@ -356,13 +439,18 @@ export async function pickFromList(
     if (slice.length === 0) rows.push(dim(truncateToWidth('  (无匹配项)', width)));
     else for (let i = 0; i < slice.length; i++) rows.push(renderRow(start + i, width));
     const position = curItems.length > maxVisible ? `${sel + 1}/${curItems.length} · ` : '';
-    rows.push(dim(truncateToWidth(position + hint, width)));
-    // 临时屏幕按绝对行定位，不发换行，不用项目数猜光标回退距离。
-    // 主屏的聊天内容和输入光标由终端保存；菜单永远不会滚入聊天 scrollback。
-    out.write('\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join(''));
+    if (height >= 2) rows.push(`${panelBg()}${dim(truncateToWidth('  ' + position + hint, width - 1))}${panelBg()}\x1b[K\x1b[0m`);
+    if (inline) {
+      // 光标始终归位到面板首行；用换行在页底分配空间，避免绝对定位跳到屏幕顶部。
+      // resize/过滤变短直接清光标以下，不按旧宽度猜测需要删除多少行。
+      out.write('\r\x1b[0J' + rows.map(row => row + '\r\n').join(''));
+      out.write(`\x1b[${rows.length}A\r`);
+    } else {
+      out.write('\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join(''));
+    }
   };
 
-  out.write('\x1b[?1049h\x1b[?25l');
+  out.write(inline ? '\x1b[?25l' : '\x1b[?1049h\x1b[?25l');
   paint();
 
   return new Promise<number>((resolve) => {
@@ -373,7 +461,7 @@ export async function pickFromList(
       if (settled) return;
       settled = true;
       try {
-        out.write('\x1b[?1049l\x1b[?25h');
+        out.write(inline ? '\x1b[0m\r\x1b[0J\x1b[?25h' : '\x1b[?1049l\x1b[?25h');
       } catch {
         /* 清场失败不影响结果 */
       }

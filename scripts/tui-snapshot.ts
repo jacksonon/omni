@@ -4449,9 +4449,8 @@ async function main(): Promise<void> {
   const t37h = await createTestRenderer({ width: 64, height: 20 });
   const tree37h = mountTree(t37h.renderer, s37h, { withInput: true });
   await repaintTree(t37h.renderer, tree37h, s37h, { withInput: true });
-  // 会话列表 20 项 + 无对话（hero 居中）→ footerTop = 12 - heroOffset(2) = 10 →
-  // 窗口 max(2, min(12, 10-6)) = 4；选中项 15 收敛到窗口底（scrollTop 12，选项 12..15）
-  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, -1, 12, 13, 14, 15, -1, -1])) {
+  // 9 行点阵 hero 下会话窗口可显示 7 项，保持 scrollTop 11（选项 11..17）。
+  if (JSON.stringify(tree37h.menuRowMap) !== JSON.stringify([-1, -1, -1, 11, 12, 13, 14, 15, 16, 17, -1, -1])) {
     console.error(`✗ 场景 37 渲染层 menuRowMap 错误: ${JSON.stringify(tree37h.menuRowMap)}`);
     process.exit(1);
   }
@@ -4462,20 +4461,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   // h6) 帧级断言：窗口内选项、上下提示全部真实渲染（池容量足够的直接证据；扁平无底边）。
-  //     注意 hero 居中下窗口 = options[12..15] = 会话 7..4（升序 title 与降序 updated 反向映射）——
+  //     hero 窗口 = options[11..17] = 会话 8..2（升序 title 与降序 updated 反向映射）——
   //     「会话 15/9/0」等窗口外标签不得泄漏进帧
   await t37h.renderOnce();
   const frame37h = t37h.captureCharFrame() as string;
-  // hero 居中窗口 4 个选项（12..15 = 会话 7..4）→ 上下提示「↑ 还有 12 个 / ↓ 还有 4 个」
+  // hero 窗口 7 个选项（11..17 = 会话 8..2）→ 上下提示「↑ 还有 11 个 / ↓ 还有 2 个」
   //（标题居左 + 条数右对齐的新格式：断言标题在窗内，不再带 `·`）
-  for (const expect of ['会话 7', '会话 4', '↑ 还有 12 个', '↓ 还有 4 个']) {
+  for (const expect of ['会话 8', '会话 2', '↑ 还有 11 个', '↓ 还有 2 个']) {
     if (!frame37h.includes(expect)) {
       console.error(`✗ 场景 37 菜单帧缺「${expect}」: frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
     }
   }
-  // 窗口 4 行（12..15），窗口外为 15/9/2
-  for (const outside of ['会话 9', '会话 2', '会话 15']) {
+  // 窗口 7 行（11..17），窗口外为 15/9/1
+  for (const outside of ['会话 9', '会话 1', '会话 15']) {
     if (frame37h.includes(outside)) {
       console.error(`✗ 场景 37 窗口外选项泄漏进帧（池/窗口不收敛）: ${outside} frame=${JSON.stringify(frame37h)}`);
       process.exit(1);
