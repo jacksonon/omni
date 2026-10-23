@@ -237,6 +237,7 @@ async function createWindow() {
     minWidth: 640,
     minHeight: 480,
     title: 'omni',
+    icon: path.join(__dirname, 'icon.png'),
     backgroundColor: '#111113',
     webPreferences: {
       contextIsolation: true,
@@ -310,6 +311,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && app.dock) app.dock.setIcon(path.join(__dirname, 'icon.png'));
     buildMenu();
     try {
       await createWindow();

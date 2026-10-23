@@ -60,7 +60,7 @@
           ]
         }
       ],
-      "icon": "electron/icon.png"
+      "icon": "electron/icon.ico"
     },
     "linux": {
       "target": [
@@ -82,7 +82,9 @@
     "dev:web": "tsx src/index.ts web --no-open",
     "dev:mini": "tsx src/index.ts mini",
     "web:vendor": "bun build ./web/vendor-entry.mjs --target=browser --outfile=web/vendor.js --minify",
-    "web:sync": "npm run web:vendor && node scripts/web-sync.mjs",
+    "web:mark": "bun build src/web/omni-mark.ts --target=browser --format=iife --outfile=web/omni-mark.js --minify",
+    "icons:generate": "bun run scripts/generate-brand-icons.ts",
+    "web:sync": "npm run web:vendor && npm run web:mark && node scripts/web-sync.mjs",
     "probe:web": "tsx scripts/probe-web.ts",
     "probe:web:auth": "tsx scripts/probe-web-auth.ts",
     "typecheck": "tsc --noEmit",

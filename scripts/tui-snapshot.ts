@@ -6243,9 +6243,9 @@ async function main(): Promise<void> {
     const tree47 = mountTree(t47.renderer, s47, { withInput: true });
     await t47.renderOnce();
     const frame47 = t47.captureCharFrame();
-    // 大号字标可见：4 行高的 █ 粗字标（含 OMNI 首行『 ███ …』），旧 5 行 figlet 已废弃
-    if (!frame47.includes('███') || !tree47.omniTitle || !tree47.omniTitle.visible || tree47.omniCells.length !== 4) {
-      console.error(`✗ 场景 47 hero 大号字标未显示（应 4 行）:\n${frame47}`);
+    // 编织 O 点阵可见：9 行高的 Braille 标识。
+    if (!/[\u2801-\u28ff]/u.test(frame47) || !tree47.omniTitle || !tree47.omniTitle.visible || tree47.omniCells.length !== 9) {
+      console.error(`✗ 场景 47 hero 点阵标识未显示（应 9 行）:\n${frame47}`);
       process.exit(1);
     }
     if (frame47.includes('_ __ ___')) {

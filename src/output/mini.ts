@@ -31,6 +31,7 @@ import type { AskResult } from '../tools/ask.js';
 import { composeInEditor, flattenComposedText, resolveEditorCommand } from '../cli/external-editor.js';
 import { truncateMiddle } from '../tui/layout.js';
 import { inlineMathToText } from '../tui/markdown.js';
+import { omniMarkFrame, OMNI_MARK_COLS } from '../tui/omni-mark.js';
 import { visualWidth } from '../tui/width.js';
 import { bold, cyan, dim, green, isTTY, italic, magenta, red, useColor, yellow } from '../ui.js';
 import { VERSION } from '../version.js';
@@ -1128,6 +1129,12 @@ export class MiniOutput implements Output {
       permission: cfg.permission ?? 'safe',
       sandbox: cfg.sandbox,
     };
+    // 品牌标识只在首次启动展示，紧凑会话头重印仍沿用原有布局。
+    if (cols() >= OMNI_MARK_COLS + 2) {
+      const pad = ' '.repeat(Math.max(0, Math.floor((cols() - OMNI_MARK_COLS) / 2)));
+      this.print('');
+      for (const line of omniMarkFrame()) this.print(`${pad}${cyan(line)}`);
+    }
     for (const line of renderMiniBanner(info, cols(), null)) this.print(line);
     this.print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
     this.print('');

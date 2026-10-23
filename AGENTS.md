@@ -206,3 +206,7 @@ for step in 1..maxSteps:
 | `config.schema.json` · `schemas/` | 配置 JSON Schema / 协议冻结 Schema |
 | `Doc/agents-reference.md` | 详细架构参考（完整 `src/`/`scripts/` 文件树 / TUI 实现要点 / 工具与斜杠命令全表） |
 | `Doc/specs/` | 功能规格历史文档（从仓库根目录迁入，见 `Doc/specs/README.md`） |
+
+- TUI 空会话首页使用 `src/tui/omni-mark.ts` 的 Braille 点阵编织 O 标识，点击图标随机执行圆心正反转、X/Y/斜轴翻转、翻滚或螺旋旋转，避免连续重复；开始对话后隐藏。
+
+- 品牌标识跨端共用 `src/tui/omni-mark.ts`：Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。

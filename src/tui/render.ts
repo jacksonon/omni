@@ -104,22 +104,10 @@ export {
 } from './rows.js';
 export { themeColor, themeFor, isLightTheme, type TuiTheme } from './theme.js';
 
-/**
- * hero 大号品牌字标「OMNI」：4 行高的粗体方块字（█，几何现代风格，阅读清晰且
- * 明显比单行文字大——用户反馈单行 Omni 太小）。纯 ASCII/BLOCK 判宽与雪字符一致，
- * 避免个别终端按全角渲染导致错位。每行固定 23 列等宽（可整体居中）；渲染时按
- * 行号错相彩虹色渐变（bannerHue 驱动，竖向流动）。行数 = OMNI_BANNER.length
- *（hero 垂直居中预算用）；无 subtitle（用户要求去掉）。
- */
-const OMNI_BANNER = [
-  ' ███  █   █ █   █ █████',
-  '█   █ ██ ██ ██  █   █  ',
-  '█   █ █ █ █ █ █ █   █  ',
-  ' ███  █   █ █  ██ █████',
-];
+import { randomOmniMarkAxis, omniMarkFrame, OMNI_MARK_ROWS, OMNI_MARK_SPIN_MS } from './omni-mark.js';
 
-/** hero 品牌头行数（用于垂直居中预算） */
-const HERO_LINES = OMNI_BANNER.length;
+const OMNI_BANNER = omniMarkFrame();
+const HERO_LINES = OMNI_MARK_ROWS;
 
 export interface TuiSession {
   /** 立即重绘一帧（状态变更后调用） */
@@ -905,12 +893,14 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     tree.root.justifyContent = 'center';
     tree.bottomBlock.marginTop = 0; // 去掉 auto：让根 justifyContent 平分上下空间
     tree.omniTitle.visible = true;
-    // 彩虹流动（用户要求：按行错相渐变 + bannerHue 驱动，颜色沿字标竖向流动）。
-    // 亮色主题压暗（浅底上高亮色对比不足）；深色主题提亮。每行一个实色 fg。
-    const isLight = isLightTheme(theme);
+    // 点击后缓出旋转一圈，结束回到精确静止帧。
+    const elapsed = Date.now() - state.markSpinStartedAt;
+    const spinning = state.markSpinStartedAt > 0 && elapsed < OMNI_MARK_SPIN_MS;
+    const t = spinning ? Math.max(0, elapsed / OMNI_MARK_SPIN_MS) : 0;
+    const frame = omniMarkFrame(spinning ? 1 - Math.pow(1 - t, 3) : 0, state.markSpinAxis);
     for (let i = 0; i < tree.omniCells.length; i++) {
-      const hue = (state.bannerHue + i * 26) % 360;
-      tree.omniCells[i]!.fg = parseColor(hslToHex(hue, 0.85, isLight ? 0.42 : 0.64));
+      tree.omniCells[i]!.content = frame[i]!;
+      tree.omniCells[i]!.fg = parseColor(isLightTheme(theme) ? '#476479' : '#7893a5');
     }
     (tree.status as { visible?: boolean }).visible = false; // hero 下隐藏「就绪」状态栏
     // 无对话（hero）时输入区宽度：用户要求可用宽的 0.75（不到满宽、留两侧白）。
@@ -1975,6 +1965,19 @@ export function handleTuiMouseEvent(
   /** 点击本地文件链接时的回调（startTui 注入：挂起 TUI → $EDITOR 打开 → 恢复 + 重绘）；未注入则命中链接不消费 */
   onOpenFile?: (path: string) => void,
 ): void {
+  const mark = tree.omniTitle;
+  if (e.type === 'down' && e.button === 0 && mark?.visible &&
+      !state.menu && !state.ask && !tree.suggestBox?.visible && !tree.cmdPanelOverlay?.visible &&
+      typeof e.x === 'number' && typeof e.y === 'number') {
+    const cell = tree.omniCells[0];
+    if (cell && e.x >= cell.screenX && e.x < cell.screenX + cell.width &&
+        e.y >= cell.screenY && e.y < cell.screenY + HERO_LINES) {
+      state.markSpinAxis = randomOmniMarkAxis(state.markSpinStartedAt > 0 ? state.markSpinAxis : null);
+      state.markSpinStartedAt = Date.now();
+      void paint();
+      return;
+    }
+  }
   // —— 拖选复制（字符级精选取中，见 AGENTS.md）——
   // 状态机：down（左键落在内容行）→ 建立选区起点 tree.sel；drag → 移动焦点行/列；
   // up → 若发生了真正拖动（selectionMoved）则提取选区文本写系统剪贴板并清空选区，

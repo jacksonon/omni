@@ -7,6 +7,7 @@
 import type { PermissionTier } from '../safety/policy.js';
 import type { TokenUsage } from '../output/types.js';
 import type { WriteDiff } from '../output/format.js';
+import type { OmniMarkAxis } from './omni-mark.js';
 import type { TuiLang } from './i18n.js';
 import type { AskResult } from '../tools/ask.js';
 
@@ -379,6 +380,10 @@ export interface TuiState {
    * 旋转（每行按行号错相 → 竖向流动渐变）。由 interactive 的动画定时器推进。
    */
   bannerHue: number;
+  /** 点阵标志点击旋转的起始时间；0 为静止。 */
+  markSpinStartedAt: number;
+  /** 每次点击随机选择动作，记录上次动作避免连续重复。 */
+  markSpinAxis: OmniMarkAxis;
   /**
    * 模型行 loading + esc 打断提示（会话进行中一直转；Esc 取消/会话结束消失）：
    * loading = 是否显示；loadingIndex = 当前帧（-1 = 隐藏）。由 TuiOutput
@@ -712,6 +717,8 @@ export function createTuiState(): TuiState {
     shortcutPrefix: false,
     spinnerIndex: -1,
     bannerHue: 0,
+    markSpinStartedAt: 0,
+    markSpinAxis: 'center',
     loading: false,
     loadingIndex: -1,
     generating: false,

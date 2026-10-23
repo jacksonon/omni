@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const webDir = path.join(root, 'web');
-const names = ['index.html', 'app.js', 'style.css', 'vendor.js', 'markdown-renderer.js', 'manifest.webmanifest', 'sw.js'];
+const names = ['index.html', 'app.js', 'style.css', 'vendor.js', 'markdown-renderer.js', 'omni-mark.js', 'manifest.webmanifest', 'sw.js'];
 
 const entries = [];
 for (const n of names) {

@@ -380,10 +380,13 @@ export async function runTuiInteractive(
   // 定时器常驻交互全程，退出时 clearInterval（见文末）。
   let bannerTick = 0;
   const bannerAnimTimer = setInterval(() => {
-    state.bannerHue = (state.bannerHue + 4) % 360;
     bannerTick++;
-    if (state.lines.length === 0 || bannerTick % 8 === 0) void session.paint().catch(() => {});
-  }, 150);
+    if (bannerTick % 5 === 0) state.bannerHue = (state.bannerHue + 4) % 360;
+    const markSpinning = state.markSpinStartedAt > 0 && Date.now() - state.markSpinStartedAt < 1250;
+    if (markSpinning || bannerTick % 40 === 0 || (state.lines.length === 0 && bannerTick % 5 === 0)) {
+      void session.paint().catch(() => {});
+    }
+  }, 30);
   const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
     // 让输入框先插入字符、repaintTree 再读到最新文本。合并 pending：连发按键只挂一个定时器。

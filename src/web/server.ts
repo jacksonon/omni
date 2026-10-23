@@ -1831,7 +1831,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     // 静态资源公开（登录页自身需要图标/样式；不含 index.html 与 API）
     const publicStatic =
       req.method === 'GET' &&
-      ['/style.css', '/app.js', '/vendor.js', '/markdown-renderer.js', '/manifest.webmanifest', '/sw.js', '/icon.png', '/favicon.ico'].includes(p);
+      ['/style.css', '/app.js', '/vendor.js', '/markdown-renderer.js', '/omni-mark.js', '/manifest.webmanifest', '/sw.js', '/icon.png', '/favicon.ico'].includes(p);
 
     if (webAuth) {
       // ---- 一次性配对码兑换（扫码免密登录；必须在门禁之前）----
@@ -2020,7 +2020,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       // ---------- 静态页面 ----------
-      if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js' || p === '/manifest.webmanifest' || p === '/sw.js')) {
+      if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js' || p === '/omni-mark.js' || p === '/manifest.webmanifest' || p === '/sw.js')) {
         const name = p.replace(/^\//, '');
         const asset = getAsset(name);
         if (asset === null) {

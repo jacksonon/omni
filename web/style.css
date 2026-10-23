@@ -112,7 +112,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .logo-row { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 60px; padding: 8px 0 8px 4px; margin-bottom: 8px; overflow: hidden; }
 .brand { flex: 1; min-width: 0; height: 28px; display: inline-flex; align-items: center; gap: 8px; padding: 0; overflow: hidden; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .fish-logo { display: inline-block; flex: none; color: var(--text); }
-.brand-fish { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
+.brand-mark { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
 .brand-name { overflow: hidden; font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
 .build-revision { flex: none; height: 16px; padding: 0 4px; border-radius: 3px; color: var(--bg); background: var(--text); font: 500 8px/16px var(--mono); white-space: nowrap; }
 .icon-button { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
@@ -541,7 +541,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .empty-session .messages { display: none; }
 .empty-session .composer-wrap { position: relative; bottom: auto; width: 100%; padding: 0 16px 32px; background: none; overflow: visible; }
 .empty-session .hero-heading { z-index: 1; display: grid; grid-template-columns: 34px auto auto; align-items: center; justify-content: center; column-gap: 10px; width: 100%; max-width: var(--composer-width); margin-bottom: 12px; color: var(--text); font-size: 26px; line-height: 32px; font-weight: 500; }
-.hero-fish { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; }
+.hero-mark { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; }
 .preview-badge { align-self: start; margin: 2px 0 0 -3px; padding: 1px 7px 0; border: 1px solid var(--surface-hover); border-radius: 24px; background: #edf3fe; color: #34415b; font: 500 12px/18px var(--mono); white-space: nowrap; }
 .empty-session .hero-workspace { z-index: 1; display: inline-flex; align-self: center; align-items: center; justify-content: flex-start; gap: 4px; width: 100%; max-width: var(--composer-width); min-height: 28px; margin-bottom: 5px; padding: 0 8px; border-radius: 16px; color: var(--text); font-size: 13px; line-height: 20px; font-weight: 500; }
 .empty-session .hero-workspace svg { width: 16px; height: 16px; }
@@ -1203,7 +1203,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .composer-wrap { padding-inline: 8px; }
   .empty-session .composer-wrap { padding-inline: 8px; }
   .empty-session .hero-heading { grid-template-columns: 30px auto; column-gap: 8px; font-size: 22px; line-height: 28px; }
-  .hero-fish { width: 36px; height: 36px; }
+  .hero-mark { width: 36px; height: 36px; }
   .preview-badge { display: none; }
   .composer-tools { gap: 4px; }
   .composer-row { gap: 6px; padding-inline: 6px; }
@@ -1605,15 +1605,15 @@ body.cmd-open::before {
 }
 
 /* ---- 品牌图标 hover 动画 ---- */
-.brand-fish {
+.brand-mark {
   transition: transform .2s var(--ease);
 }
-.brand:hover .brand-fish {
+.brand:hover .brand-mark {
   transform: rotate(-6deg) scale(1.06);
 }
 
 /* ---- Hero 图标入场 ---- */
-.hero-fish {
+.hero-mark {
   animation: msg-in .4s var(--ease);
 }
 
@@ -2034,15 +2034,15 @@ body.cmd-open::before {
 }
 
 /* ---- 品牌图标 hover ---- */
-.brand-fish {
+.brand-mark {
   transition: transform .25s var(--ease-spring);
 }
-.brand:hover .brand-fish {
+.brand:hover .brand-mark {
   transform: rotate(-6deg) scale(1.06);
 }
 
 /* ---- Hero 图标入场 ---- */
-.hero-fish {
+.hero-mark {
   animation: msg-enter .4s var(--ease);
 }
 
@@ -2175,3 +2175,13 @@ body.cmd-open::before {
 .scs-label { flex: 1; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scs-desc { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cheatsheet-hint { flex: none; margin: 0; padding: 10px 16px; border-top: 1px solid var(--line-2); color: var(--text-tertiary); font-size: 12px; text-align: center; }
+
+/* Omni 编织 O：与终端共享 Braille 点阵，按钮支持键盘与触屏。 */
+.empty-session .hero-heading { display: flex; flex-direction: column; gap: 10px; }
+.omni-mark-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 12px; background: transparent; color: #476479; cursor: pointer; touch-action: manipulation; }
+.omni-mark-button:focus-visible { outline: 2px solid var(--text); outline-offset: 6px; }
+.omni-mark-dots { display: block; width: 200px; height: 200px; aspect-ratio: 1; user-select: none; }
+.omni-mark-dots svg { display: block; width: 100%; height: 100%; fill: currentColor; stroke: none; }
+@media (prefers-color-scheme: dark) { :root:not(.theme-light) .omni-mark-button { color: #7893a5; } }
+:root.theme-dark .omni-mark-button { color: #7893a5; }
+@media (max-width: 600px) { .omni-mark-dots { width: 160px; height: 160px; } }
