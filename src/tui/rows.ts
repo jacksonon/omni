@@ -697,7 +697,7 @@ export function buildBody(state: TuiState, width: number): Row[] {
       const durStr = line.tokens.durMs ? formatToolDur(line.tokens.durMs) : '';
       const model = line.tokens.model || state.model || 'Omni';
       const compSum = usages.reduce((acc, u) => acc + u.completion, 0);
-      const sample = sumGeneration(usages, compSum, line.tokens.genMs ?? 0);
+      const sample = sumGeneration(usages, compSum, line.tokens.durMs ?? 0);
       const rate = tokenRate(sample.tokens, sample.ms);
       const ftAvg = line.tokens.firstTokenAvg;
       const ftStr = ftAvg != null && ftAvg > 0 ? tf(state.language, 'turn.firstToken', { dur: (ftAvg / 1000).toFixed(1) }) : '';

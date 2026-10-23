@@ -217,4 +217,4 @@ for step in 1..maxSteps:
 
 - mini 思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。
 
-- token 速率统一由 `src/output/token-rate.ts` 计算：流中按累计字符权重与时间窗口估算并标 `~`，结束后累计 API token 与该请求生成耗时的配对样本；短于 300ms 的突发隐藏，不按 chunk 取整、不封顶 999。隐藏思考未完整流出时计速剔除其 token，计费用量保持完整；Web vendor 打包共享同一函数。
+- token 速率统一由 `src/output/token-rate.ts` 计算，采用 OpenCode 口径：输出（含思考）token / 每步请求开始至流结束的累计耗时，包含首 token 等待、排除工具执行；OpenAI completion/output tokens 已含思考，不重复加。流中估算标 `~`，请求口径记录带 `generation.basis=request`；旧历史按 durMs 重建，不复用纯生成分母。Web vendor 打包共享同一函数。

@@ -17,7 +17,7 @@ import type { EditDiff, WriteDiff } from './format.js';
 
 /** 响应流式的实时生成进度（实时 tok/s 速率与用量） */
 export interface StreamProgress {
-  /** 当前纯生成耗时（now - firstTokenAt，毫秒） */
+  /** 当前请求已用时（now - requestStart，毫秒；字段名保留兼容） */
   liveGenMs: number;
   /** 当前流式响应已生成的累计 token 估算/实际数 */
   streamTokens: number;
@@ -33,7 +33,7 @@ export interface StreamProgress {
 export interface TokenUsage {
   prompt: number;
   completion: number;
-  /** 与本次 completion 严格配对的生成计时，供各端统一计速。 */
+  /** 与本次 completion 严格配对的请求计时（含首 token 等待），供各端统一计速。 */
   generation?: GenerationUsage;
   total: number;
   /** 缓存命中 token 数（prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens；网关不支持时缺省） */

@@ -1,4 +1,4 @@
-const { tokenRate, sumGeneration, validRateSample } = globalThis.__omniRates;
+const { tokenRate, sumGeneration, validRateSample, requestGeneration, MIN_RATE_SAMPLE_MS } = globalThis.__omniRates;
 /**
  * omni web 前端（vanilla JS，无框架）。
  *
@@ -526,10 +526,10 @@ const I18N_ZH = {
   'composer.ctxTitleShort': '上下文: {used}',
   // 输入区下方元信息行：首 token / 瞬时速率（同 TUI statusline.speed 段）
   'composer.ft': '首 token {dur}',
-  'composer.instant': '瞬时 {n} tok/s',
+  'composer.instant': '请求 {n} tok/s',
   'composer.ftTitle': '本次会话首 token 平均延迟（TTFT）',
-  'composer.instantTitle': '客户端最近一秒的接收速率估算；~ 非精确 tokenizer 计数，停流后隐藏',
-  'composer.avgTitle': '客户端接收均速；~ 为流中估算，结束后使用 API 用量与配对生成耗时',
+  'composer.instantTitle': '当前请求吞吐估算（含首 token 等待）；~ 非精确 tokenizer 计数，停流后隐藏',
+  'composer.avgTitle': 'OpenCode 口径：输出含思考 token / 请求开始至流结束耗时；包含首 token 等待，排除工具执行',
   'turn.firstToken': ' · 首 token {dur}',
   'turn.priceDetail': '单价 input ${input} · output ${output} · cache ${cache} /1M（{source}）',
   'turn.priceSrcConfig': '自定义配置',
@@ -1010,10 +1010,10 @@ const I18N_EN = {
   'composer.ctxTitleShort': 'Context: {used}',
   // Composer meta row: first token / instantaneous rate (same as TUI statusline.speed)
   'composer.ft': 'First token {dur}',
-  'composer.instant': 'Instant {n} tok/s',
+  'composer.instant': 'Request {n} tok/s',
   'composer.ftTitle': 'Average first-token latency (TTFT) this session',
-  'composer.instantTitle': 'Estimated client receive rate over the last second; ~ indicates an estimate; hides after stalls',
-  'composer.avgTitle': 'Client receive average; ~ is estimated while streaming; completed samples pair API usage with generation time',
+  'composer.instantTitle': 'Estimated current request throughput including first-token wait; hides after stalls',
+  'composer.avgTitle': 'OpenCode convention: output including reasoning / request-to-stream-end duration; includes first-token wait, excludes tool execution',
   'turn.firstToken': ' · first token {dur}',
   'turn.priceDetail': 'prices input ${input} · output ${output} · cache ${cache} /1M ({source})',
   'turn.priceSrcConfig': 'custom config',
@@ -2840,7 +2840,7 @@ function updatePillAvg() {
   const u = state.session ? state.sessionUsage.get(state.session) : null;
   const rate = (s && u) ? sessionAvgRate(s, u) : 0;
   if (rate > 0) {
-    tag.textContent = `· ${state.liveStream && validRateSample(state.liveStream.streamTokens, state.liveStream.liveGenMs) ? '~' : ''}${rate} tok/s`;
+    tag.textContent = `· ${state.liveStream && state.liveStream.liveGenMs >= MIN_RATE_SAMPLE_MS && validRateSample(state.liveStream.streamTokens, state.liveStream.liveGenMs) ? '~' : ''}${rate} tok/s`;
     tag.classList.remove('hidden');
     tag.title = t('composer.avgTitle');
   } else {
@@ -2999,7 +2999,7 @@ function renderTurnFooter(sessionId, data) {
   const durStr = formatDuration(durMs);
   const genMs = data.genMs || 0;
   const compTok = data.completion || usages.reduce((acc, u) => acc + (u.completion || 0), 0);
-  const sample = sumGeneration(usages, compTok, genMs);
+  const sample = sumGeneration(usages, compTok, durMs);
   const rate = tokenRate(sample.tokens, sample.ms);
   const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';
   const ftAvg = data.firstTokenAvg;
@@ -3163,7 +3163,7 @@ function paintHistoryFromCache(id, keepPosition = false) {
       const parsed = parseUserContent(m.content);
       userBlock(id, parsed.text, parsed.attachments);
     } else if (m.role === 'assistant') {
-      if (m.usage) currentTurnUsages.push(m.usage);
+      if (m.usage) currentTurnUsages.push({ ...m.usage, generation: requestGeneration(m.usage, m.durMs || 0) });
       if (m.model) currentTurnModel = m.model;
       if (typeof m.durMs === 'number') currentTurnDurMs += m.durMs;
       if (typeof m.genMs === 'number') currentTurnGenMs += m.genMs;
@@ -3417,7 +3417,7 @@ function noteTokenChunk(len) {
  * 每会话独立累计（sessionStats/sessionUsage Map，SSE 事件驱动 + 历史重建）。 */
 function sessionAvgRate(s, u) {
   const live = (state.liveStream && state.liveStream.sessionId === state.session) ? state.liveStream : null;
-  const validLive = live && validRateSample(live.streamTokens, live.liveGenMs) ? live : null;
+  const validLive = live && live.liveGenMs >= MIN_RATE_SAMPLE_MS && validRateSample(live.streamTokens, live.liveGenMs) ? live : null;
   return tokenRate((s.rateTokens || 0) + (validLive?.streamTokens || 0), (s.rateMs || 0) + (validLive?.liveGenMs || 0));
 }
 /** 当前模型 context 上限（/context 手动覆盖优先 → status.contextLimit；回退模型 limit.context；未知返回 0）——输入框模型胶囊内 context 环用 */
@@ -3475,7 +3475,7 @@ function rebuildSessionStats(id, messages) {
       // 会话累计成本（只读；当前落盘 usage 尚无该字段时保持 0 即隐藏）
       if (typeof um.costUsd === 'number' && um.costUsd > 0) u.costUsd += um.costUsd;
       u.lastPrompt = um.prompt || 0;
-      const sample = um.generation || { tokens: um.completion || 0, ms: m.genMs || 0 };
+      const sample = requestGeneration(um, m.durMs || 0);
       if (validRateSample(sample.tokens, sample.ms)) { s.rateTokens += sample.tokens; s.rateMs += sample.ms; }
     }
     if (typeof m.durMs === 'number') s.llmMs += m.durMs;
@@ -3506,7 +3506,7 @@ function updateComposerMeta() {
   // 首 token：会话级均值（lap 累计 + 历史持久化重建）；会话尚无 lap 时回退当前流式请求的实时 TTFT
   const ftAvg = (s && s.ftCount > 0) ? s.ftSum / s.ftCount : ((live && live.firstTokenMs > 0) ? live.firstTokenMs : 0);
   set('#composer-ft', ftAvg > 0 ? t('composer.ft', { dur: fmtToolDur(ftAvg) }) : '');
-  // 瞬时速率：仅流式生成中显示（时间窗口估算 tps；>2.5s 无 chunk 视为停滞，回退隐藏旧值）
+  // 瞬时速率：仅流式生成中显示（请求吞吐估算 tps；>2.5s 无 chunk 视为停滞，回退隐藏旧值）
   const liveTps = (live && typeof live.tps === 'number' && Date.now() - _liveStreamAt <= 2500) ? live.tps : 0;
   set('#composer-speed', liveTps > 0 ? t('composer.instant', { n: `${live.estimated ? '~' : ''}${Math.round(liveTps)}` }) : '');
   let cache = '';
@@ -4116,7 +4116,7 @@ bus.on('turn.step', (ev) => {
   if (ev.sessionId !== state.session) return;
 });
 
-// stream.progress：流式生成实时速率与用量（tps=时间窗口估算速率；_liveStreamAt 用于停滞后回退）
+// stream.progress：流式生成实时速率与用量（tps=请求吞吐估算速率；_liveStreamAt 用于停滞后回退）
 let _liveStreamAt = 0;
 bus.on('stream.progress', (ev) => {
   if (ev.sessionId !== state.session) return;

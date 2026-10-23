@@ -19,5 +19,5 @@ globalThis.__markstream = {
 };
 
 // Web/Electron 与终端共用 token 速率计算，避免各端口径漂移。
-import { tokenRate, sumGeneration, validRateSample } from '../src/output/token-rate.ts';
-globalThis.__omniRates = { tokenRate, sumGeneration, validRateSample };
+import { tokenRate, sumGeneration, validRateSample, requestGeneration, MIN_RATE_SAMPLE_MS } from '../src/output/token-rate.ts';
+globalThis.__omniRates = { tokenRate, sumGeneration, validRateSample, requestGeneration, MIN_RATE_SAMPLE_MS };

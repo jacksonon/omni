@@ -15,7 +15,7 @@ class Capture extends ExecOutput {
 }
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 for (const protocol of ['chat', 'responses'] as const) {
-  test(`${protocol}: usage 延迟不算生成时间，隐藏思考不除以正文耗时`, async () => {
+  test(`${protocol}: 请求吞吐包含首 token 等待与完整流耗时、思考 token 不重复加`, async () => {
     const create = async () => (async function* () {
       if (protocol === 'chat') yield { choices: [{ delta: { role: 'assistant' } }] };
       else yield { type: 'response.created' };
@@ -36,9 +36,10 @@ for (const protocol of ['chat', 'responses'] as const) {
     assert.equal(out.progress.length, 2, 'role-only 和 usage-only 不能生成速率样本');
     assert.equal(out.progress[1]!.streamTokens, 2);
     assert.equal(out.usages[0]!.completion, 100, '计费用量完整保留');
-    assert.equal(out.usages[0]!.generation!.tokens, 30);
+    assert.equal(out.usages[0]!.generation!.tokens, 100);
+    assert.equal(out.usages[0]!.generation!.basis, 'request');
     const ms = out.usages[0]!.generation!.ms;
-    assert.ok(ms >= 300 && ms < 650, `ms=${ms} 必须只含两个正文块之间的时间`);
+    assert.ok(ms >= 700 && ms < 1300, `ms=${ms} 必须包含首 token 等待及流结束前延迟`);
     const saved = messages[messages.length - 1] as unknown as { usage: TokenUsage };
     assert.deepEqual(saved.usage.generation, out.usages[0]!.generation);
   });

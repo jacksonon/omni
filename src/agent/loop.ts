@@ -411,19 +411,14 @@ async function runAgentInner(
     let content = '';
     let reasoning = '';
     let streamTokens = 0;
-    let firstOutputAt: number | null = null;
-    let lastOutputAt: number | null = null;
-    let fullReasoningStream = false;
-    const streamRate = new StreamingRate();
+    let streamEndedAt: number | null = null;
+    const streamRate = new StreamingRate(llmT0);
     let lastUsage: OpenAI.Completions.CompletionUsage | null = null;
-    const generationUsage = () => {
-      const total = lastUsage?.completion_tokens ?? 0;
-      const hiddenReasoning = lastUsage?.completion_tokens_details?.reasoning_tokens ?? 0;
-      const omitHidden = hiddenReasoning > 0 && !fullReasoningStream;
-      const first = omitHidden ? firstOutputAt : firstTokenAt;
-      const last = omitHidden ? lastOutputAt : lastContentAt;
-      return { tokens: Math.max(0, total - (omitHidden ? hiddenReasoning : 0)), ms: first !== null && last !== null ? Math.max(0, last - first) : 0 };
-    };
+    const generationUsage = () => ({
+      tokens: lastUsage?.completion_tokens ?? 0, // OpenAI completion/output tokens 已含 reasoning，不能再加一次。
+      ms: Math.max(0, (streamEndedAt ?? Date.now()) - llmT0),
+      basis: 'request' as const,
+    });
     const toolCalls = new Map<number, ToolCallAccum>();
     let streamStarted = false;
     const thinking = output.thinking;
@@ -460,15 +455,13 @@ async function runAgentInner(
             const now = Date.now();
             firstTokenAt ??= now;
             lastContentAt = now;
-            if (inc.text || inc.tokenText) { firstOutputAt ??= now; lastOutputAt = now; }
-            if (ev.type === 'response.reasoning_text.delta') fullReasoningStream = true;
             let deltaText = '';
             if (inc.text) deltaText += inc.text;
             if (inc.reasoning) deltaText += inc.reasoning;
             deltaText += inc.tokenText ?? '';
             const sample = streamRate.add(deltaText, now);
             streamTokens = sample.tokens;
-            const liveGenMs = lastContentAt - firstTokenAt;
+            const liveGenMs = now - llmT0;
             const firstTokenMs = firstTokenAt - llmT0;
             output.onStreamProgress?.({ liveGenMs, streamTokens, tps: sample.tps, firstTokenMs, estimated: true });
           }
@@ -536,8 +529,6 @@ async function runAgentInner(
           const now = Date.now();
           firstTokenAt ??= now;
           lastContentAt = now;
-          if (delta?.content || delta?.tool_calls?.some(tc => tc.function?.name || tc.function?.arguments)) { firstOutputAt ??= now; lastOutputAt = now; }
-          if (piece) fullReasoningStream = true;
 
           // 累积生成 token 估算（按实际估算值累加，不设单 chunk 保底——
           // 小 chunk 密集时保底 1 会虚增峰值）
@@ -552,7 +543,7 @@ async function runAgentInner(
           }
           const sample = streamRate.add(deltaText, now);
           streamTokens = chunk.usage?.completion_tokens ?? sample.tokens;
-          const liveGenMs = lastContentAt - firstTokenAt;
+          const liveGenMs = now - llmT0;
           output.onStreamProgress?.({
             liveGenMs, streamTokens, tps: sample.tps,
             firstTokenMs: firstTokenAt - llmT0, estimated: true,
@@ -577,6 +568,7 @@ async function runAgentInner(
         }
       }
       } // end Chat 分支 else
+      streamEndedAt = Date.now(); // 流结束立即定格，后续工具执行/思考落盘不计入请求吞吐。
     } catch (err) {
       // 用户点击「取消」（abort 中断流式响应）：优雅结束本轮——已输出的内容保留，
       // 半截 assistant 消息不入上下文（push 在流结束后），下一轮不受污染
@@ -613,7 +605,7 @@ async function runAgentInner(
     if (thinking.shown) finishThinking(); // 流结束仍展开 → 兜底结束思考区
     if (content) output.onAnswerEnd();
     output.onLlmLap?.(
-      Date.now() - llmT0,
+      (streamEndedAt ?? Date.now()) - llmT0,
       firstTokenAt !== null ? firstTokenAt - llmT0 : null,
       firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined
     );
@@ -663,7 +655,7 @@ async function runAgentInner(
           cached: cachedTokens,
         }
       : undefined;
-    const durMs = Date.now() - llmT0;
+    const durMs = (streamEndedAt ?? Date.now()) - llmT0;
     const genMs = firstTokenAt !== null && lastContentAt !== null ? Math.max(0, lastContentAt - firstTokenAt) : undefined;
 
     // 组装 assistant 消息并追加进历史（reasoning + reasoningMs + usage + model 一并持久化——

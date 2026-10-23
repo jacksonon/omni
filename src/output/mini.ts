@@ -346,17 +346,17 @@ export interface TurnStats {
   completion?: number;
   rateTokens?: number;
   rateMs?: number;
-  /** 本轮纯生成耗时合计（onLlmLap 的 genMs 累加；tok/s 段分母，缺省 0） */
+  /** 本轮纯生成耗时合计（仅保留作明细；速率分母使用配对请求耗时） */
   genMs?: number;
   /** 本轮成本估算合计（美元；onUsage 的 costUsd 累加，缺省 0） */
   costUsd?: number;
 }
 
-/** 本轮平均速率只累加配对的有效生成样本，短突发隐藏，不回退请求等待时间或封顶。 */
+/** 本轮平均速率只累加配对的有效生成样本，包含首 token 等待、排除工具执行时间，不人为封顶。 */
 export function turnTokenRate(stats: TurnStats): number | null {
   const rate = stats.rateMs !== undefined
     ? tokenRate(stats.rateTokens ?? 0, stats.rateMs)
-    : tokenRate(stats.completion ?? 0, stats.genMs ?? 0);
+    : tokenRate(stats.completion ?? 0, stats.llmMs);
   return rate > 0 ? rate : null;
 }
 

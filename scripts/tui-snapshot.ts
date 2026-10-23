@@ -776,9 +776,9 @@ async function main(): Promise<void> {
   out13.onUsage({ prompt: 300, completion: 150, total: 450, cached: 30 });
   await out13.flush();
   const frame13 = t13b.captureCharFrame();
-  // 模型行 = 会话平均（输出 350 / 生成耗时 0.5s = 700 tok/s，排除首 token 等待）；
+  // 模型行 = 会话平均（输出 350 / 请求耗时 1s = 350 tok/s，包含首 token 等待）；
   // 灰块外底行右侧 = 输入/输出 · 缓存 77% + 迷你条 + 上下文（最后一次请求 prompt 300，无上限只显示用量）
-  for (const want of ['700 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '░░░░░░░░░░ 300']) {
+  for (const want of ['350 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '░░░░░░░░░░ 300']) {
     if (!frame13.includes(want)) {
       console.error(`✗ 场景 13 统计累计不符，缺少「${want}」\n实际 tokens: ${JSON.stringify(s13b.tokens)}\n实际 stats: ${JSON.stringify(s13b.stats)}`);
       process.exit(1);
@@ -792,7 +792,7 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 13 turn-footer 缺少首 token 段`);
     process.exit(1);
   }
-  // 用户示例格式验证（底行右侧 + 模型行；均值 = 输出 44.2K / 生成耗时 349.1s ≈ 127）
+  // 用户示例格式验证（底行右侧 + 模型行；均值 = 输出 44.2K / 请求耗时 394.642s ≈ 112）
   const s13c = createTuiState();
   s13c.model = 'mock';
   s13c.cwd = '/w/s13';
@@ -805,7 +805,7 @@ async function main(): Promise<void> {
   const tree13c = mountTree(t13c.renderer, s13c, { withInput: true });
   await t13c.renderOnce();
   const frame13c = t13c.captureCharFrame();
-  for (const want of ['127 tok/s', '缓存 97%', '输入 3M', '输出 44.2K', '████░░░░░░ 45K/128K (35%)']) {
+  for (const want of ['112 tok/s', '缓存 97%', '输入 3M', '输出 44.2K', '████░░░░░░ 45K/128K (35%)']) {
     if (!frame13c.includes(want)) {
       console.error(`✗ 场景 13 示例格式不符，缺少「${want}」\n实际帧:\n${frame13c}`);
       process.exit(1);
@@ -816,7 +816,7 @@ async function main(): Promise<void> {
   out13.clearScrollback();
   await fakeSession13.paint();
   const frame13d = t13b.captureCharFrame();
-  for (const gone of ['700 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '/w/s13']) {
+  for (const gone of ['350 tok/s', '缓存 77%', '输入 1.3K', '输出 350', '/w/s13']) {
     if (frame13d.includes(gone)) {
       console.error(`✗ 场景 13 /clear 后仍残留「${gone}」\n实际帧:\n${frame13d}`);
       process.exit(1);
@@ -4632,8 +4632,8 @@ async function main(): Promise<void> {
     { prompt: 10000, completion: 73700, total: 83700 },
     null
   );
-  if (avg39 !== 115) { // 73700 / 638.5s ≈ 115（排除首 token 等待的纯生成口径）
-    console.error(`✗ 场景 39 sessionAvgRate 错误: ${avg39}（应 115）`);
+  if (avg39 !== 112) { // 73700 / 658s ≈ 112（包含首 token 等待的请求口径）
+    console.error(`✗ 场景 39 sessionAvgRate 错误: ${avg39}（应 112）`);
     process.exit(1);
   }
   // 全无计时数据 → 0（调用方隐藏，不造离谱峰值）
@@ -4646,14 +4646,14 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 39 零数据均值应为 0: ${avg039}`);
     process.exit(1);
   }
-  // live 增量纳入均值：(73700+1500)/(638.5+2)s ≈ 117
+  // live 增量纳入均值：(73700+1500)/(658+2)s ≈ 113.9
   const avgLive39 = layout39.sessionAvgRate(
     { turns: 7, steps: 41, llmMs: 658000, toolsMs: 8600, firstTokenSum: 19500, firstTokenCount: 3, genMs: 638500, cached: 9700 },
     { prompt: 10000, completion: 73700, total: 83700 },
     { streamTokens: 1500, liveGenMs: 2000 }
   );
-  if (avgLive39 !== 117) {
-    console.error(`✗ 场景 39 live 增量均值错误: ${avgLive39}（应 117）`);
+  if (avgLive39 !== 113.9) {
+    console.error(`✗ 场景 39 live 增量均值错误: ${avgLive39}（应 113.9）`);
     process.exit(1);
   }
   if (layout39.formatMiniBar(0) !== '░░░░░░░░░░' || layout39.formatMiniBar(100) !== '██████████' || layout39.formatMiniBar(35) !== '████░░░░░░') {
@@ -5401,13 +5401,13 @@ async function main(): Promise<void> {
   const s43f = createTuiState();
   s43f.cwd = '/w/s43';
   pushLine(s43f, { kind: 'user', text: '你好' });
-  s43f.stats = { turns: 1, steps: 2, llmMs: 1000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 2000, cached: 900 };
+  s43f.stats = { turns: 1, steps: 2, llmMs: 3000, toolsMs: 500, firstTokenSum: 1000, firstTokenCount: 2, genMs: 2000, cached: 900 };
   s43f.tokens = { prompt: 3000, completion: 500, total: 3500, cached: 900 };
   const t43f = await createTestRenderer({ width: 120, height: 20 });
   const tree43f = mountTree(t43f.renderer, s43f, { withInput: true });
   await t43f.renderOnce();
   const zhLine43 = t43f.captureCharFrame();
-  if (!zhLine43.includes('250 tok/s') || !zhLine43.includes('缓存 30%') || !zhLine43.includes('输入 3K') || !zhLine43.includes('输出 500')) {
+  if (!zhLine43.includes('166.7 tok/s') || !zhLine43.includes('缓存 30%') || !zhLine43.includes('输入 3K') || !zhLine43.includes('输出 500')) {
     console.error(`✗ 场景 43 中文模型行中部错误`);
     process.exit(1);
   }
@@ -6426,18 +6426,19 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // 2. sessionAvgRate：沉淀 100tok/2s=50；live 增量 (100+150)/(2+1)s=83
+    // 2. sessionAvgRate：沉淀 100tok/3s=33.3；live 增量 (100+150)/(3+1)s=62.5
     const s49 = createTuiState();
     s49.stats.firstTokenCount = 1;
     s49.stats.firstTokenSum = 1000;
     s49.stats.genMs = 2000;
+    s49.stats.llmMs = 3000;
     s49.tokens.completion = 100;
-    if (layout49.sessionAvgRate(s49.stats, s49.tokens, null) !== 50) {
-      console.error('✗ 场景 49 沉淀均值错误（应 50）');
+    if (layout49.sessionAvgRate(s49.stats, s49.tokens, null) !== 33.3) {
+      console.error('✗ 场景 49 沉淀均值错误（应 33.3）');
       process.exit(1);
     }
-    if (layout49.sessionAvgRate(s49.stats, s49.tokens, { streamTokens: 150, liveGenMs: 1000 }) !== 83) {
-      console.error('✗ 场景 49 live 增量均值错误（应 83）');
+    if (layout49.sessionAvgRate(s49.stats, s49.tokens, { streamTokens: 150, liveGenMs: 1000 }) !== 62.5) {
+      console.error('✗ 场景 49 live 增量均值错误（应 62.5）');
       process.exit(1);
     }
 
