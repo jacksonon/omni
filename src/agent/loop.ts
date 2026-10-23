@@ -1,3 +1,4 @@
+import { StreamingRate } from '../output/token-rate.js';
 /**
  * Agent 主循环（整个系统的核心）：
  *
@@ -34,7 +35,7 @@ import type { Output, ToolResultDetail } from '../output/types.js';
 import { Safety, type PermissionTier } from '../safety/index.js';
 import { truncate, type Tool } from '../tools/index.js';
 import { extractReasoning, saveThinking } from './thinking.js';
-import { appendInterruptedToolResults, buildAssistantMessage, estimateTokens, parseArgs, repairToolPairing, stripNonStandardFields, type ToolCallAccum } from './messages.js';
+import { appendInterruptedToolResults, buildAssistantMessage, parseArgs, repairToolPairing, stripNonStandardFields, type ToolCallAccum } from './messages.js';
 import type { RunOptions } from './types.js';
 import { appendWriteDiff, sessionIdFromPath } from './session.js';
 import { buildStreamParams, extractCachedTokens } from './loop-params.js';
@@ -410,9 +411,19 @@ async function runAgentInner(
     let content = '';
     let reasoning = '';
     let streamTokens = 0;
-    let emaTps: number | null = null; // 瞬时速率 EMA（按 chunk 递推平滑，消毛刺）
-    let prevContentAt = 0; // 上一个内容 chunk 到达时间（chunk 间隔速率用）
+    let firstOutputAt: number | null = null;
+    let lastOutputAt: number | null = null;
+    let fullReasoningStream = false;
+    const streamRate = new StreamingRate();
     let lastUsage: OpenAI.Completions.CompletionUsage | null = null;
+    const generationUsage = () => {
+      const total = lastUsage?.completion_tokens ?? 0;
+      const hiddenReasoning = lastUsage?.completion_tokens_details?.reasoning_tokens ?? 0;
+      const omitHidden = hiddenReasoning > 0 && !fullReasoningStream;
+      const first = omitHidden ? firstOutputAt : firstTokenAt;
+      const last = omitHidden ? lastOutputAt : lastContentAt;
+      return { tokens: Math.max(0, total - (omitHidden ? hiddenReasoning : 0)), ms: first !== null && last !== null ? Math.max(0, last - first) : 0 };
+    };
     const toolCalls = new Map<number, ToolCallAccum>();
     let streamStarted = false;
     const thinking = output.thinking;
@@ -444,26 +455,22 @@ async function runAgentInner(
             output.onStreamStart();
           }
           const inc = accum.consume(ev);
-          const hasContent = Boolean(inc.text || inc.reasoning || inc.toolDelta || inc.usage);
+          const hasContent = Boolean(inc.text || inc.reasoning || inc.tokenText);
           if (hasContent) {
             const now = Date.now();
             firstTokenAt ??= now;
             lastContentAt = now;
+            if (inc.text || inc.tokenText) { firstOutputAt ??= now; lastOutputAt = now; }
+            if (ev.type === 'response.reasoning_text.delta') fullReasoningStream = true;
             let deltaText = '';
             if (inc.text) deltaText += inc.text;
             if (inc.reasoning) deltaText += inc.reasoning;
-            const chunkTokens = estimateTokens(deltaText);
-            streamTokens += chunkTokens;
+            deltaText += inc.tokenText ?? '';
+            const sample = streamRate.add(deltaText, now);
+            streamTokens = sample.tokens;
             const liveGenMs = lastContentAt - firstTokenAt;
             const firstTokenMs = firstTokenAt - llmT0;
-            const dt = prevContentAt > 0 ? now - prevContentAt : 0;
-            prevContentAt = now;
-            if (dt > 0 && liveGenMs >= 300) {
-              const inst = chunkTokens / (dt / 1000);
-              emaTps = emaTps == null ? streamTokens / (liveGenMs / 1000) : 0.3 * inst + 0.7 * emaTps;
-            }
-            const tps = liveGenMs >= 300 && emaTps != null && emaTps > 0 ? emaTps : 0;
-            output.onStreamProgress?.({ liveGenMs, streamTokens, tps, firstTokenMs });
+            output.onStreamProgress?.({ liveGenMs, streamTokens, tps: sample.tps, firstTokenMs, estimated: true });
           }
           if (inc.reasoning) {
             reasoning += inc.reasoning;
@@ -482,6 +489,7 @@ async function runAgentInner(
               completion_tokens: u.output_tokens ?? 0,
               total_tokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
               prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens ?? 0 },
+            completion_tokens_details: { reasoning_tokens: u.output_tokens_details?.reasoning_tokens ?? 0 },
             } as unknown as OpenAI.Completions.CompletionUsage;
             if (u.output_tokens) streamTokens = u.output_tokens;
           }
@@ -494,6 +502,7 @@ async function runAgentInner(
             completion_tokens: u.output_tokens ?? 0,
             total_tokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
             prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens ?? 0 },
+            completion_tokens_details: { reasoning_tokens: u.output_tokens_details?.reasoning_tokens ?? 0 },
           } as unknown as OpenAI.Completions.CompletionUsage;
         }
       } else {
@@ -522,11 +531,13 @@ async function runAgentInner(
         // 而非首个 chunk——有些网关先发 role-only 空 delta，会让 TTFT 偏小。
         // lastContentAt 同步刷新到最后一个内容 chunk：生成耗时 = lastContentAt - firstTokenAt
         // （排除首 token 等待，tok/s 才是真实生成速率而非含 prefill 的平均吞吐）。
-        const hasContent = Boolean(piece || delta?.content || (delta?.tool_calls && delta.tool_calls.length > 0));
+        const hasContent = Boolean(piece || delta?.content || delta?.tool_calls?.some(tc => tc.function?.name || tc.function?.arguments));
         if (hasContent) {
           const now = Date.now();
           firstTokenAt ??= now;
           lastContentAt = now;
+          if (delta?.content || delta?.tool_calls?.some(tc => tc.function?.name || tc.function?.arguments)) { firstOutputAt ??= now; lastOutputAt = now; }
+          if (piece) fullReasoningStream = true;
 
           // 累积生成 token 估算（按实际估算值累加，不设单 chunk 保底——
           // 小 chunk 密集时保底 1 会虚增峰值）
@@ -535,40 +546,16 @@ async function runAgentInner(
           if (delta?.content) deltaText += delta.content;
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
-              if (tc.id) deltaText += tc.id;
               if (tc.function?.name) deltaText += tc.function.name;
               if (tc.function?.arguments) deltaText += tc.function.arguments;
             }
           }
-          const chunkTokens = estimateTokens(deltaText);
-          streamTokens += chunkTokens;
-
-          // 若网关在流式 chunk 中携带了 usage，优先对齐官方精准 completion_tokens
-          if (chunk.usage?.completion_tokens) {
-            streamTokens = chunk.usage.completion_tokens;
-          }
-
+          const sample = streamRate.add(deltaText, now);
+          streamTokens = chunk.usage?.completion_tokens ?? sample.tokens;
           const liveGenMs = lastContentAt - firstTokenAt;
-          const firstTokenMs = firstTokenAt - llmT0;
-          // 瞬时速率 EMA 平滑（α=0.3 按 chunk 递推）：累计口径在流刚开始分母极小，
-          // 一两个 chunk 就冲出虚假峰值；EMA 只反映近期生成速度，贴轮均值走。
-          // 官方 usage 到达时按累计真值校准一次；300ms 起显门限内报 0（调用方隐藏）。
-          const dt = prevContentAt > 0 ? now - prevContentAt : 0;
-          prevContentAt = now;
-          if (chunk.usage?.completion_tokens && liveGenMs > 0) {
-            emaTps = streamTokens / (liveGenMs / 1000);
-          } else if (dt > 0 && liveGenMs >= 300) {
-            // 预热期（<300ms）内的 chunk 不参与递推——突发投递会污染 EMA 记忆；
-            // 首个有效采样用累计均值播种，之后按近期速度走
-            const inst = chunkTokens / (dt / 1000);
-            emaTps = emaTps == null ? streamTokens / (liveGenMs / 1000) : 0.3 * inst + 0.7 * emaTps;
-          }
-          const tps = liveGenMs >= 300 && emaTps != null && emaTps > 0 ? emaTps : 0;
           output.onStreamProgress?.({
-            liveGenMs,
-            streamTokens,
-            tps,
-            firstTokenMs,
+            liveGenMs, streamTokens, tps: sample.tps,
+            firstTokenMs: firstTokenAt - llmT0, estimated: true,
           });
         }
         if (piece) {
@@ -651,6 +638,7 @@ async function runAgentInner(
       output.onUsage({
         prompt: promptTokens,
         completion: completionTokens,
+        generation: generationUsage(),
         total: lastUsage.total_tokens ?? 0,
         cached: extractCachedTokens(lastUsage),
         ...(costUsd !== undefined ? { costUsd } : {}),
@@ -670,6 +658,7 @@ async function runAgentInner(
       ? {
           prompt: lastUsage.prompt_tokens ?? 0,
           completion: lastUsage.completion_tokens ?? 0,
+          generation: generationUsage(),
           total: lastUsage.total_tokens ?? ((lastUsage.prompt_tokens ?? 0) + (lastUsage.completion_tokens ?? 0)),
           cached: cachedTokens,
         }

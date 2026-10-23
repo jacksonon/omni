@@ -1145,7 +1145,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   const avg = sessionAvgRate(state.stats, state.tokens, state.liveTokens > 0 || state.liveGenMs > 0
     ? { streamTokens: state.liveTokens, liveGenMs: state.liveGenMs }
     : null);
-  const avgText = avg > 0 ? `· ${avg} tok/s` : '';
+  const avgText = avg > 0 ? `· ${state.liveTokens > 0 && state.liveGenMs >= 300 ? '~' : ''}${avg} tok/s` : '';
   // loading 段：`· ⠹ esc interrupt`（spinner 帧 accentBlue，其余 dim；整段仅会话进行中显示）
   const loadHint = t(state.language, 'footer.escInterrupt');
   const loadSpinner = SPINNER_FRAMES[Math.max(0, state.loadingIndex) % SPINNER_FRAMES.length];

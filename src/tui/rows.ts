@@ -1,3 +1,4 @@
+import { tokenRate, sumGeneration } from '../output/token-rate.js';
 /**
  * TUI 内容行构建：状态 → 全部内容行（buildBody）→ 可见窗口（computeRows）。
  *
@@ -696,8 +697,8 @@ export function buildBody(state: TuiState, width: number): Row[] {
       const durStr = line.tokens.durMs ? formatToolDur(line.tokens.durMs) : '';
       const model = line.tokens.model || state.model || 'Omni';
       const compSum = usages.reduce((acc, u) => acc + u.completion, 0);
-      const genMs = line.tokens.genMs ?? line.tokens.durMs ?? 0;
-      const rate = genMs > 0 ? Math.round(compSum / (genMs / 1000)) : 0;
+      const sample = sumGeneration(usages, compSum, line.tokens.genMs ?? 0);
+      const rate = tokenRate(sample.tokens, sample.ms);
       const ftAvg = line.tokens.firstTokenAvg;
       const ftStr = ftAvg != null && ftAvg > 0 ? tf(state.language, 'turn.firstToken', { dur: (ftAvg / 1000).toFixed(1) }) : '';
       const rateStr = rate > 0 ? ` · ${rate} tok/s` : '';

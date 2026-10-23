@@ -216,3 +216,5 @@ for step in 1..maxSteps:
 - mini `/` 菜单由 composer 在输入块上方绘制两列命令/说明，蓝底选中，↑↓ 导航、Tab 回填、Enter 执行、Esc 关闭；`/model`、`/variants`、`/permission` 等二级菜单在当前输入区内联展开，复用深灰标题面板与蓝底选择器，不切备用屏跳至顶部；数据来自 Omni 配置。
 
 - mini 思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。
+
+- token 速率统一由 `src/output/token-rate.ts` 计算：流中按累计字符权重与时间窗口估算并标 `~`，结束后累计 API token 与该请求生成耗时的配对样本；短于 300ms 的突发隐藏，不按 chunk 取整、不封顶 999。隐藏思考未完整流出时计速剔除其 token，计费用量保持完整；Web vendor 打包共享同一函数。

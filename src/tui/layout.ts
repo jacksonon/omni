@@ -1,3 +1,4 @@
+import { tokenRate, validRateSample } from '../output/token-rate.js';
 /**
  * TUI 布局与文本工具：常量（内容区宽/蓝色细线/生成光标）+ 按显示列数的
  * 折行/截断/行数估算。从 render.ts 拆出（业务划分）——行式渲染的核心数学
@@ -45,19 +46,19 @@ export function formatToolDur(ms: number): string {
 
 /**
  * 会话累计平均速率（输入区中间段用；含正在生成的 token/耗时，保证回答中与回答完同一口径）：
- * completion 累计 / 纯生成耗时累计（genMs，无则回退 llmMs - 首 token 等待，1ms 下限防除零）。
+ * 使用配对的生成 token / 耗时；旧历史只使用 genMs，短突发隐藏。
  */
 export function sessionAvgRate(
   s: SessionStats,
   t: TokenUsage,
   live?: { streamTokens: number; liveGenMs: number } | null
 ): number {
-  // 全无计时数据（无请求、无 live）→ 无法计算，报 0（调用方隐藏），避免 1ms 下限造出离谱峰值
-  if (s.llmMs <= 0 && s.genMs <= 0 && (!live || live.liveGenMs <= 0)) return 0;
-  const comp = t.completion + (live?.streamTokens ?? 0);
-  const baseGen = s.genMs > 0 ? s.genMs : Math.max(1, s.llmMs - s.firstTokenSum);
-  const gen = baseGen + (live?.liveGenMs ?? 0);
-  return gen > 0 ? Math.round(comp / (gen / 1000)) : 0;
+  const paired = s.rateMs !== undefined;
+  const baseTokens = paired ? (s.rateTokens ?? 0) : t.completion;
+  const baseMs = paired ? s.rateMs! : s.genMs;
+  // 估算中的 token 与耗时一起参与；采样不足的 live 不混入已完成请求。
+  const validLive = live && validRateSample(live.streamTokens, live.liveGenMs) ? live : null;
+  return tokenRate(baseTokens + (validLive?.streamTokens ?? 0), baseMs + (validLive?.liveGenMs ?? 0));
 }
 
 /** 根据当前上下文 token 与上限计算用量百分比（无用量/未知上限返回 0） */

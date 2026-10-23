@@ -1,3 +1,4 @@
+import type { GenerationUsage } from './token-rate.js';
 /**
  * Output：Agent 循环的输出目标抽象。
  *
@@ -20,8 +21,10 @@ export interface StreamProgress {
   liveGenMs: number;
   /** 当前流式响应已生成的累计 token 估算/实际数 */
   streamTokens: number;
-  /** 当前流式的实时速率（tok/s） */
+  /** 当前流式客户端接收速率估算（tok/s） */
   tps: number;
+  /** 流中由文本估算，不是模型 tokenizer 的精确计数。 */
+  estimated?: boolean;
   /** 首 token 延迟（firstTokenAt - llmT0，毫秒） */
   firstTokenMs: number;
 }
@@ -30,6 +33,8 @@ export interface StreamProgress {
 export interface TokenUsage {
   prompt: number;
   completion: number;
+  /** 与本次 completion 严格配对的生成计时，供各端统一计速。 */
+  generation?: GenerationUsage;
   total: number;
   /** 缓存命中 token 数（prompt_tokens_details.cached_tokens / prompt_cache_hit_tokens；网关不支持时缺省） */
   cached?: number;

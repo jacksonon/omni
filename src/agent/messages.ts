@@ -1,3 +1,4 @@
+import type { GenerationUsage } from '../output/token-rate.js';
 /**
  * 消息组装：把流式累积的正文与工具调用组装成 assistant 消息，解析工具参数。
  */
@@ -11,6 +12,7 @@ export interface ToolCallAccum {
 }
 
 export interface AssistantUsage {
+  generation?: GenerationUsage;
   prompt: number;
   completion: number;
   total?: number;

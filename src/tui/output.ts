@@ -1,3 +1,4 @@
+import { tokenRate, validRateSample } from '../output/token-rate.js';
 /**
  * TuiOutput：把 Agent 循环事件写入 TUI 状态，并调度一次重绘。
  *
@@ -301,6 +302,14 @@ export class TuiOutput implements Output {
   }
 
   onUsage(usage: TokenUsage): void {
+    if (usage.generation) {
+      this.state.stats.rateTokens ??= 0;
+      this.state.stats.rateMs ??= 0;
+      if (validRateSample(usage.generation.tokens, usage.generation.ms)) {
+        this.state.stats.rateTokens += usage.generation.tokens;
+        this.state.stats.rateMs += usage.generation.ms;
+      }
+    }
     // 会话累计 token 用量（footer 统计行展示；usage 来自流末 chunk，网关不支持时为 0）
     this.state.tokens.prompt += usage.prompt;
     this.state.tokens.completion += usage.completion;

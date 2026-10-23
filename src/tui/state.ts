@@ -280,13 +280,16 @@ export interface TuiAsk {
  *   · cached —— 缓存命中 token 累计（onUsage；命中率 = cached / prompt）
  */
 export interface SessionStats {
+  /** 仅累计 token 与生成计时配对、采样充分的请求。 */
+  rateTokens?: number;
+  rateMs?: number;
   turns: number;
   steps: number;
   llmMs: number;
   toolsMs: number;
   firstTokenSum: number;
   firstTokenCount: number;
-  /** 纯生成耗时累计（lastContentAt - firstTokenAt，排除首 token 等待；tok/s = completion / genMs） */
+  /** 纯生成耗时累计（lastContentAt - firstTokenAt，排除首 token 等待；速率单独使用配对样本） */
   genMs: number;
   cached: number;
 }

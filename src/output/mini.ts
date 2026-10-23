@@ -1,3 +1,4 @@
+import { tokenRate, validRateSample } from './token-rate.js';
 /**
  * MiniOutput：`omni mini` 纯终端 CLI 模式的渲染层。
  *
@@ -343,25 +344,20 @@ export interface TurnStats {
   llmMs: number;
   /** 本轮 completion token 合计（onUsage 累加；tok/s 段数据源，缺省 0） */
   completion?: number;
+  rateTokens?: number;
+  rateMs?: number;
   /** 本轮纯生成耗时合计（onLlmLap 的 genMs 累加；tok/s 段分母，缺省 0） */
   genMs?: number;
   /** 本轮成本估算合计（美元；onUsage 的 costUsd 累加，缺省 0） */
   costUsd?: number;
 }
 
-/**
- * 本轮 token 速率（tok/s）= completion / 生成耗时。
- * 分母优先用纯生成耗时 genMs（排除首 token 等待，与 TUI 同口径）；genMs 过小
- *（<100ms，多为 mock/瞬时流假象）时回退分隔行同源的分段墙钟 llmMs；两者都不可用则不展示。
- */
+/** 本轮平均速率只累加配对的有效生成样本，短突发隐藏，不回退请求等待时间或封顶。 */
 export function turnTokenRate(stats: TurnStats): number | null {
-  const completion = stats.completion ?? 0;
-  if (completion <= 0) return null;
-  const gen = stats.genMs ?? 0;
-  const denom = gen >= 100 ? gen : stats.llmMs > 0 ? stats.llmMs : 0;
-  if (!(denom > 0)) return null;
-  // 上限 999：mock/瞬时流（生成耗时趋近 0）会算出四位数，钳到合理上限避免误导
-  return Math.max(1, Math.min(999, Math.round((completion / denom) * 1000)));
+  const rate = stats.rateMs !== undefined
+    ? tokenRate(stats.rateTokens ?? 0, stats.rateMs)
+    : tokenRate(stats.completion ?? 0, stats.genMs ?? 0);
+  return rate > 0 ? rate : null;
 }
 
 /** 分隔行统计段（codex runtime_metrics_label：`Local tools: 3 calls (1.2s)` 形态；零调用省略） */
@@ -1285,6 +1281,14 @@ export class MiniOutput implements Output {
 
   /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源）+ 成本累加 */
   onUsage(usage: TokenUsage): void {
+    if (usage.generation) {
+      this.turnStats.rateTokens ??= 0;
+      this.turnStats.rateMs ??= 0;
+      if (validRateSample(usage.generation.tokens, usage.generation.ms)) {
+        this.turnStats.rateTokens += usage.generation.tokens;
+        this.turnStats.rateMs += usage.generation.ms;
+      }
+    }
     this.lastPromptTokens = usage.prompt;
     this.turnStats.completion = (this.turnStats.completion ?? 0) + Math.max(0, usage.completion ?? 0);
     const c = usage.costUsd ?? 0;

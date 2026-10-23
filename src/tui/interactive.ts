@@ -207,6 +207,7 @@ export async function runTuiInteractive(
             completion: ext.usage.completion,
             total: ext.usage.total ?? (ext.usage.prompt + ext.usage.completion),
             cached: ext.usage.cached ?? 0,
+            generation: ext.usage.generation ?? { tokens: ext.usage.completion, ms: ext.genMs ?? 0 },
           });
           if (ext.durMs) out.onLlmLap(ext.durMs, typeof ext.firstTokenMs === 'number' ? ext.firstTokenMs : null, ext.genMs);
         }

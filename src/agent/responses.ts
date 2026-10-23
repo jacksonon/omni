@@ -169,7 +169,7 @@ export function buildResponsesParams(
 
 /** Responses 用量 → 通用计数（供 onUsage / 持久化，与 Chat 侧同口径） */
 export function responsesUsageToCounts(
-  usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number; input_tokens_details?: { cached_tokens?: number } } | null | undefined
+  usage: { input_tokens?: number; output_tokens?: number; output_tokens_details?: { reasoning_tokens?: number }; total_tokens?: number; input_tokens_details?: { cached_tokens?: number } } | null | undefined
 ): { prompt: number; completion: number; total: number; cached: number } | undefined {
   if (!usage) return undefined;
   const prompt = usage.input_tokens ?? 0;
@@ -193,7 +193,7 @@ export class ResponsesAccumulator {
   content = '';
   reasoning = '';
   toolCalls = new Map<number, ToolCallAccum>();
-  usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number; input_tokens_details?: { cached_tokens?: number } } | null = null;
+  usage: { input_tokens?: number; output_tokens?: number; output_tokens_details?: { reasoning_tokens?: number }; total_tokens?: number; input_tokens_details?: { cached_tokens?: number } } | null = null;
   /** output_index → toolCalls key（Responses 并行调用按 output_index 区分） */
   private indexKey = new Map<number, number>();
   private nextKey = 0;
@@ -210,7 +210,7 @@ export class ResponsesAccumulator {
    * 消费单个流事件，返回增量（调用方据此写 Output/计时）。
    * 未知事件返回空增量（忽略，不中断）。
    */
-  consume(ev: Record<string, unknown>): { text?: string; reasoning?: string; toolDelta?: boolean; usage?: boolean } {
+  consume(ev: Record<string, unknown>): { text?: string; reasoning?: string; toolDelta?: boolean; tokenText?: string; usage?: boolean } {
     const type = String((ev as { type?: string }).type ?? '');
     if (type === 'response.output_text.delta' && typeof (ev as { delta?: unknown }).delta === 'string') {
       const d = (ev as { delta: string }).delta;
@@ -234,10 +234,11 @@ export class ResponsesAccumulator {
         const cur = this.toolCalls.get(key) ?? { id: '', name: '', args: '' };
         const callId = String(item.call_id ?? item.id ?? '');
         if (callId && !cur.id) cur.id = callId;
-        if (typeof item.name === 'string' && item.name && !cur.name) cur.name = item.name;
-        if (typeof item.arguments === 'string' && item.arguments && !cur.args) cur.args = item.arguments;
+        let tokenText = '';
+        if (typeof item.name === 'string' && item.name && !cur.name) { cur.name = item.name; tokenText += item.name; }
+        if (typeof item.arguments === 'string' && item.arguments && !cur.args) { cur.args = item.arguments; tokenText += item.arguments; }
         this.toolCalls.set(key, cur);
-        return { toolDelta: true };
+        return { toolDelta: true, tokenText };
       }
       return {};
     }
@@ -249,7 +250,7 @@ export class ResponsesAccumulator {
         const cur = this.toolCalls.get(key) ?? { id: '', name: '', args: '' };
         cur.args += d;
         this.toolCalls.set(key, cur);
-        return { toolDelta: true };
+        return { toolDelta: true, tokenText: d };
       }
       return {};
     }
@@ -259,10 +260,11 @@ export class ResponsesAccumulator {
       const itemId = (ev as { item_id?: unknown }).item_id;
       const key = this.keyFor(idx);
       const cur = this.toolCalls.get(key) ?? { id: '', name: '', args: '' };
+      const tokenText = typeof args === 'string' && args.startsWith(cur.args) ? args.slice(cur.args.length) : '';
       if (typeof args === 'string' && args) cur.args = args;
       if (typeof itemId === 'string' && itemId && !cur.id) cur.id = itemId;
       this.toolCalls.set(key, cur);
-      return { toolDelta: true };
+      return { toolDelta: true, tokenText };
     }
     if (type === 'response.output_item.done') {
       const item = (ev as { item?: Record<string, unknown>; output_index?: number }).item;
@@ -270,12 +272,13 @@ export class ResponsesAccumulator {
       if (item?.type === 'function_call') {
         const key = this.keyFor(idx);
         const cur = this.toolCalls.get(key) ?? { id: '', name: '', args: '' };
+        const tokenText = (cur.name ? '' : String(item.name ?? '')) + (typeof item.arguments === 'string' && item.arguments.startsWith(cur.args) ? item.arguments.slice(cur.args.length) : '');
         const callId = String(item.call_id ?? item.id ?? cur.id);
         if (callId) cur.id = callId;
         if (typeof item.name === 'string' && item.name) cur.name = item.name;
         if (typeof item.arguments === 'string' && item.arguments) cur.args = item.arguments;
         this.toolCalls.set(key, cur);
-        return { toolDelta: true };
+        return { toolDelta: true, tokenText };
       }
       return {};
     }
