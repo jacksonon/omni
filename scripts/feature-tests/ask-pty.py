@@ -73,16 +73,16 @@ def main() -> int:
     try:
         prompted = wait_for('›'.encode(), 60)
         send('need your advice\n'.encode())
-        asked = wait_for('接下来怎么做'.encode(), 40)
+        asked = wait_for('自定义回答…'.encode(), 40)
         if asked:
-            send(b'1\n')
+            send(b'\r')
         done = wait_for('mock 端到端验证通过'.encode(), 60) if asked else False
         if done:
             drain(8.0)  # 幽灵锁定：答案 '1' 若漏进主循环，8s 内必再弹提问
             # 提问行计数口径：问题文本每轮出现 3 次（工具卡/提问/结果），输入行只出现 1 次
             noGhost = (
                 out.count('mock 端到端验证通过'.encode()) == 1
-                and out.count('回车确认；空输入取消'.encode()) == 1
+                and out.count('自定义回答…'.encode()) == 1
             )
             n_before = out.count(b'/pwd')
             send(b'/pwd\n')

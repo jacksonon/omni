@@ -104,6 +104,16 @@ export async function runInteractive(
     if (out instanceof MiniOutput) out.preparePicker();
     return pickFromList(stdin, items, { ...options, placement: out instanceof MiniOutput ? 'inline' : 'screen' });
   };
+  const confirmAction = async (title: string): Promise<boolean> => {
+    if (out instanceof MiniOutput) {
+      return await pickMenu(input, [
+        { label: '取消', value: 'cancel' },
+        { label: '确认', value: 'confirm' },
+      ], { title, selected: 0 }) === 1;
+    }
+    const answer = (await rl.question(dim(`${title} [y/N] `))).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  };
   // Tab 补全（readline 原生 completer，只读行缓冲不提交）：`/mo`→命令名、
   // `/model <片>`→模型名、`/variants <片>`→级别/命名 id。只在 TTY 挂载，
   // 管道保持原行为；数据源经 runOpts 实时读（/model add 后即时可补）。
@@ -1754,8 +1764,8 @@ export async function runInteractive(
           safePrompt();
           continue;
         }
-        const ans = (await rl.question(dim(`确认回滚到 #${parsed.index}（${rewindModeLabel(parsed.mode)}）？[y/N] `))).trim().toLowerCase();
-        if (ans !== 'y' && ans !== 'yes') {
+        const confirmed = await confirmAction(`确认回滚到 #${parsed.index}（${rewindModeLabel(parsed.mode)}）？`);
+        if (!confirmed) {
           console.log(dim('已取消'));
           safePrompt();
           continue;
@@ -2021,8 +2031,8 @@ export async function runInteractive(
         console.log(red('非交互模式拒绝删除会话（防误触）'));
       } else {
         const loaded = await loadSession(target.file);
-        const ans = (await rl.question(dim(`永久删除会话 ${loaded?.meta.id ?? target.file}？不可恢复。[y/N] `))).trim().toLowerCase();
-        if (ans !== 'y' && ans !== 'yes') {
+        const confirmed = await confirmAction(`永久删除会话 ${loaded?.meta.id ?? target.file}？不可恢复。`);
+        if (!confirmed) {
           console.log(dim('已取消'));
         } else {
           const r = await deleteSessionFile(target.file);

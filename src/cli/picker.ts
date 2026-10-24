@@ -1,3 +1,4 @@
+import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /**
  * mini/console 共用的上下箭头选择器（/model、/variants 无参 TTY 分支用）。
  * 调用方拼好 items（label 为已着色成品行，不含序号），picker 只负责导航渲染。
@@ -28,6 +29,8 @@ export interface PickerOptions {
   hint?: string;
   /** 是否支持打字即时过滤（如 Ctrl+R 历史搜索） */
   filterable?: boolean;
+  /** 多选面板：空格勾选，Enter 提交；索引对应原始 items。 */
+  marked?: Set<number>;
 }
 
 /** 终端 Bracketed Paste 开启/关闭转义序列 */
@@ -405,11 +408,12 @@ export async function pickFromList(
   let sel = Math.min(Math.max(opts.selected, 0), Math.max(0, curItems.length - 1));
   const hint = opts.hint ?? (isFilter ? '↑↓ 导航 · 输入过滤 · Enter 回填 · Esc 取消' : DEFAULT_HINT);
 
-  const panelBg = () => useColor ? '\x1b[48;2;27;27;27m' : '';
+  const panelBg = miniPanelBackground;
   const renderRow = (i: number, width: number): string => {
     const it = curItems[i]!.item;
     const selected = i === sel;
-    const prefix = `${selected ? '›' : ' '} ${i + 1}. `;
+    const check = opts.marked ? (opts.marked.has(curItems[i]!.origIdx) ? '[✓] ' : '[ ] ') : '';
+    const prefix = `${selected ? '›' : ' '} ${i + 1}. ${check}`;
     const label = stripVTControlCharacters(it.label).replace(/[\r\n\t]/g, ' ');
     const labelWidth = Math.min(38, Math.max(12, Math.floor(width * 0.4)));
     let body = prefix + truncateToWidth(label, Math.max(1, width - prefix.length - 1));
@@ -419,7 +423,7 @@ export async function pickFromList(
       body = prefix + name + ' '.repeat(Math.max(0, labelWidth - visualWidth(name))) + '  ';
       muted = truncateToWidth(it.description.replace(/[\r\n\t]/g, ' '), Math.max(1, width - 1 - visualWidth(body)));
     }
-    if (selected && useColor) return `\x1b[48;2;88;151;245m\x1b[30m${body}${muted}\x1b[K\x1b[0m`;
+    if (selected && useColor) return `${miniSelection()}${body}${muted}\x1b[K\x1b[0m`;
     return `${panelBg()}${body}${dim(muted)}${panelBg()}\x1b[K\x1b[0m`;
   };
 
@@ -488,6 +492,15 @@ export async function pickFromList(
       if (name === 'down') {
         if (count > 0) {
           sel = (sel + 1) % count;
+          paint();
+        }
+        return;
+      }
+      if (opts.marked && name === 'space') {
+        const idx = curItems[sel]?.origIdx;
+        if (idx !== undefined) {
+          if (opts.marked.has(idx)) opts.marked.delete(idx);
+          else opts.marked.add(idx);
           paint();
         }
         return;

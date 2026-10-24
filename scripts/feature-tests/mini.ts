@@ -1947,22 +1947,22 @@ export function miniSuite(): TestSuite {
         v = JSON.parse(lastLine);
       } catch { /* 非 JSON 则下面断言失败 */ }
       suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
-      suite.assert(v.approvalAsked === true, 'safe 档位危险命令弹出审批（y/a/N）');
-      suite.assert(v.approvedDone === true, '回答 a 后放行执行、回合完成');
+      suite.assert(v.approvalAsked === true, 'safe 档位危险命令弹出审批选择器');
+      suite.assert(v.approvedDone === true, '选择会话记住后放行执行、回合完成');
       suite.assert(v.remembered === true, '第二轮同命令免询问（本会话记住）');
       suite.assert(v.noGhost === true, '答案行未漏进主循环（无幽灵第三轮）');
       suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
-      // 审批块版式顺序锁（真终端 transcript 实测：⚠ 工具 → $ 命令 → 原因 → 三选项 → 记住确认；只弹一次）
+      // 审批块版式顺序锁（工具 → 命令 → 原因 → 三选项 → 记住确认；菜单导航可重画）
       try {
         const raw = fs.readFileSync(log, 'utf8');
         const plain = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r\n?/g, '\n');
-        const iWarn = plain.indexOf('⚠ run_command');
-        const iCmd = plain.indexOf('$ git push origin main');
-        const iAsk = plain.indexOf('批准执行？');
+        const iWarn = plain.indexOf('run_command ·');
+        const iCmd = plain.indexOf('$ git push origin main', iWarn);
+        const iAsk = plain.indexOf('操作审批');
         const iRemembered = plain.indexOf('会话已记住 run_command');
         suite.assert(iWarn >= 0 && iWarn < iCmd && iCmd < iAsk && iAsk < iRemembered, '审批块顺序：工具→命令→三选项→记住确认');
-        suite.assert(plain.split('批准执行？').length - 1 === 1, '审批只弹一次（第二轮走记住）');
+        suite.assert(plain.split('run_command · $ git push origin main').length - 1 === 1, '审批只弹一次（第二轮走记住）');
       } catch (err) {
         suite.assert(false, `审批 transcript 读取失败：${(err as Error)?.message ?? err}`);
       }
@@ -2011,7 +2011,7 @@ export function miniSuite(): TestSuite {
       } catch { /* 非 JSON 则下面断言失败 */ }
       suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
       suite.assert(v.asked === true, 'ask_user 提问卡弹出');
-      suite.assert(v.answeredDone === true, '回序号后放行、回合完成');
+      suite.assert(v.answeredDone === true, '确认选项后回合完成');
       suite.assert(v.noGhost === true, '答案 1 未漏进主循环（无第二轮提问）');
       suite.assert(v.pwdAlive === true, '提问后 stdin 存活（input.resume 生效）');
       suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
@@ -2020,10 +2020,10 @@ export function miniSuite(): TestSuite {
       try {
         const raw = fs.readFileSync(log, 'utf8');
         const plain = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r\n?/g, '\n');
-        const seq = ['? 接下来怎么做？', '1. 继续执行', '输入选项序号', '• Asked', '用户选择了选项'];
+        const seq = ['接下来怎么做？', '1. 继续执行', '自定义回答…', '• Asked', '用户选择了选项'];
         const idx = seq.map((s) => plain.indexOf(s));
-        suite.assert(idx.every((v, k) => v >= 0 && (k === 0 || idx[k - 1] < v)), '提问卡顺序：问题→选项→输入提示→Asked 回显');
-        suite.assert(plain.split('? 接下来怎么做？').length - 1 === 1, '提问只弹一次（答案未触发第二轮）');
+        suite.assert(idx.every((v, k) => v >= 0 && (k === 0 || idx[k - 1] < v)), '提问卡顺序：问题→选项→自定义入口→Asked 回显');
+        suite.assert(plain.split('自定义回答…').length - 1 === 1, '提问只弹一次（答案未触发第二轮）');
       } catch (err) {
         suite.assert(false, `提问 transcript 读取失败：${(err as Error)?.message ?? err}`);
       }
@@ -2962,7 +2962,7 @@ export function miniSuite(): TestSuite {
     }
   });
 
-  suite.test('端到端：/delete y 确认删除旧会话（PTY 真终端）', async () => {
+  suite.test('端到端：/delete 选择器确认删除旧会话（PTY 真终端）', async () => {
     // y 确认分支只在 TTY 下可达（管道一律拒绝，见上一个用例）：走 PTY 真终端覆盖
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-delpty-'));
     fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
@@ -3003,7 +3003,7 @@ export function miniSuite(): TestSuite {
       suite.assert(v.firstDone === true, '首轮任务完成');
       suite.assert(v.newOk === true, '/new 开新会话');
       suite.assert(v.confirmAsked === true, '/delete 弹出不可恢复确认');
-      suite.assert(v.deleted === true, '回 y 后打印已删除会话');
+      suite.assert(v.deleted === true, '选择确认后打印已删除会话');
       suite.assert(v.fileGone === true, '旧会话文件已移除');
       suite.assert(v.quit0 === true, `干净退出（exit ${v.exitCode}）`);
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);

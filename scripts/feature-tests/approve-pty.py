@@ -2,7 +2,7 @@
 
 mock MOCK_DANGEROUS=1 首轮发 `git push origin main`（safe 档位触发审批）；
 空目录 cwd 下执行必 fast-fail，无副作用。
-时序：等 › → 发任务 → 等审批提示 → 回 y → 等 mock 最终回答 → /quit。
+时序：等 › → 发任务 → 等审批提示 → ↑ 选择会话记住并回车 → 等 mock 最终回答 → /quit。
 verdict：prompted / approvalAsked / approvedDone / quit0。
 """
 import os
@@ -66,23 +66,23 @@ def main() -> int:
         prompted = wait_for('›'.encode(), 60)
         os.write(fd, 'do the dangerous task\n'.encode())
         time.sleep(0.3)
-        asked = wait_for('批准执行'.encode(), 40)
+        asked = wait_for('操作审批'.encode(), 40)
         answered = False
         if asked:
             try:
-                os.write(fd, b'a\n')  # 本会话记住（第二轮同命令应免询问）
+                os.write(fd, b'\x1b[A\r')  # 本会话记住（第二轮同命令应免询问）
                 answered = True
             except OSError:
                 pass
         done = wait_for('mock 端到端验证通过'.encode(), 60) if answered else False
-        # 第二轮同任务：记住后不再弹审批（批准执行出现次数保持 1）
+        # 第二轮同任务：记住后不再弹审批（操作审批出现次数保持 1）
         def trace(msg):
             with open(os.environ.get('OMNI_FT_TRACE', '/tmp/ap-trace.log'), 'a') as tf:
                 tf.write('%s done=%s outlen=%d\n' % (msg, done, len(out)))
         trace('T2-ENTER')
         if done:
             drain(2.0)
-            prompts_before = out.count('批准执行'.encode())
+            prompts_before = out.count('操作审批'.encode())
             trace('T2-PREWRITE prompts=%d' % prompts_before)
             try:
                 n = os.write(fd, 'do the dangerous task\n'.encode())
@@ -96,10 +96,10 @@ def main() -> int:
                     break
             trace('T2-AFTER ans=%d prompts=%d' % (
                 out.count('mock 端到端验证通过'.encode()),
-                out.count('批准执行'.encode())))
+                out.count('操作审批'.encode())))
             remembered = (
                 out.count('mock 端到端验证通过'.encode()) >= 2
-                and out.count('批准执行'.encode()) == prompts_before
+                and out.count('操作审批'.encode()) == prompts_before
             )
             # 幽灵消息锁定：答案 'y' 若漏进主循环会再开一轮（8s 内必现第三个回答）
             drain(8.0)

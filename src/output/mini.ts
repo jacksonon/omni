@@ -1,3 +1,5 @@
+import { miniPanelBackground } from '../cli/mini-theme.js';
+import { pickFromList } from '../cli/picker.js';
 import { tokenRate, validRateSample } from './token-rate.js';
 /**
  * MiniOutput：`omni mini` 纯终端 CLI 模式的渲染层。
@@ -6,7 +8,7 @@ import { tokenRate, validRateSample } from './token-rate.js';
  * status_indicator_widget.rs、bottom_pane/footer.rs），不是"看着截图猜"：
  * - 会话头：无框 compact（history_cell/session.rs SessionHeader：空行 / 2 空格标题 /
  *   5 空格目录 / 仅 YOLO 时权限行；首事件 7 行帮助块直连，无额外空行；问候语与 Tip 不在头里）；
- * - 正文/思考：`• ` 开头 + 续行 2 空格缩进（history_cell/messages.rs AgentMessageCell /
+ * - 正文：`• ` 开头 + 续行 2 空格缩进；思考用蓝色 `• Think` 标题区分（history_cell/messages.rs AgentMessageCell /
  *   ReasoningSummaryCell：思考为 dim + italic 纯文本；正文走 MiniMarkdownRenderer ——
  *   复用 tui/markdown.ts 同一套解析（加粗/行内代码/标题/引用/列表/任务/围栏隐藏 +
  *   代码着色/GFM 表格框线）输出 ANSI，行级状态机见 markdown-ansi.ts）；
@@ -23,7 +25,7 @@ import { tokenRate, validRateSample } from './token-rate.js';
 import { installMiniComposer, type MiniComposer, type MiniComposerStatus } from '../cli/mini-composer.js';
 import { stripVTControlCharacters } from 'node:util';
 import { homedir } from 'node:os';
-import { stdin as input, stderr as errOut } from 'node:process';
+import { stdin as input } from 'node:process';
 import readline from 'node:readline/promises';
 import type { ThinkingDisplay } from '../agent/types.js';
 import type { OmniConfig } from '../config/index.js';
@@ -272,8 +274,8 @@ export function renderWorkingTip(tip: string): string {
 }
 
 /** live 块首尾垫空行（纯函数：和 `› ` 输入行留呼吸位，首帧补偿被吃掉的分隔行） */
-export function padLiveLines(lines: string[]): string[] {
-  return ['', ...lines, ''];
+export function padLiveLines(lines: string[], leading = true): string[] {
+  return [...(leading ? [''] : []), ...lines, ''];
 }
 
 /** working live 块内容组装（状态行；出过 tip 则下方附一条，LiveBlock 按行数伸缩） */
@@ -922,6 +924,9 @@ export class MiniOutput implements Output {
   /** 轮内输出前：擦掉当前 `› ` 输入行（光标停在行首，后续输出写在它上面） */
   private preOut(): void {
     if (!this.capturing || this.outDepth++ > 0) return;
+    // 把清输入、正文更新、恢复输入合成同一帧，避免终端显示中间的空白输入区。
+    process.stdout.cork();
+    process.stdout.write('\x1b[?2026h\x1b[?25l');
     if (this.composer) this.composer.clearInput();
     else process.stdout.write('\r\x1b[2K');
   }
@@ -929,7 +934,12 @@ export class MiniOutput implements Output {
   /** 轮内输出后：在内容末尾把 `› ` + 当前行缓冲原样重画回来 */
   private postOut(): void {
     if (!this.capturing || --this.outDepth > 0) return;
-    this.rl?.prompt(true);
+    try {
+      this.rl?.prompt(true);
+    } finally {
+      process.stdout.write('\x1b[?25h\x1b[?2026l');
+      process.stdout.uncork();
+    }
   }
 
   /**
@@ -1123,7 +1133,7 @@ export class MiniOutput implements Output {
     md ? (text, room) => md.partial(text, room) : undefined);
   }
 
-  /** 思考单元格（codex ReasoningSummaryCell：同为 `• ` 单元格，但 dim + italic） */
+  /** 思考使用明确标签与独立缩进；不依赖终端是否支持 dim/italic 区分正文。 */
   private newReasoningCell(): StreamingCell {
     return new StreamingCell(this.live, (l) => italic(dim(l)), {
       wrapStreaming: true,
@@ -1132,7 +1142,8 @@ export class MiniOutput implements Output {
       afterLine: () => {
         this.gapOpen = false;
       },
-    }, (line) => this.print(line));
+    }, (line) => this.print(line),
+    `${useColor ? '\x1b[38;2;88;151;245m•\x1b[0m' : '•'} ${bold('Think')} `, '        ');
   }
 
   /** 收尾并重置单元格（每轮/每个工具边界都是一段独立内容，不能续用上一条的前缀） */
@@ -1153,18 +1164,28 @@ export class MiniOutput implements Output {
       },
       write: (text: string) => {
         if (!this.opts.showThinking || !this.opts.stream) return;
-        // 一个 reasoning 块 = 一个单元格：块结束后重新 `• ` 起头（codex 同款）
-        if (!this.reasoning) {
-          this.stopWorking();
-          this.reasoning = this.newReasoningCell();
+        this.preOut();
+        try {
+          // 一个 reasoning 块 = 一个单元格：块结束后重新 `• ` 起头（codex 同款）
+          if (!this.reasoning) {
+            this.stopWorking();
+            this.reasoning = this.newReasoningCell();
+          }
+          reasoningShown = true;
+          this.reasoning.write(text);
+        } finally {
+          this.postOut();
         }
-        reasoningShown = true;
-        this.reasoning.write(text);
       },
       finish: () => {
         if (!this.reasoning) return;
-        this.reasoning.end();
-        this.reasoning = null;
+        this.preOut();
+        try {
+          this.reasoning.end();
+          this.reasoning = null;
+        } finally {
+          this.postOut();
+        }
       },
     } as ThinkingDisplay;
   }
@@ -1172,32 +1193,39 @@ export class MiniOutput implements Output {
   /** 会话头 + 上手帮助 + Tip 行（codex new_session_info 首事件 7 行块；问候语不在头里；
    * Tip 是 scrollback 保留的 tooltip 行，fullscreen 下 codex 会省略它） */
   banner(cfg: OmniConfig): void {
+    let rows = 0;
+    const print = (line: string) => {
+      rows += Math.max(1, Math.ceil(visualWidth(line) / Math.max(1, cols())));
+      this.print(line);
+    };
+    if (isTTY) process.stdout.write('\x1b[H\x1b[2J');
     const info: MiniBannerInfo = {
       directory: process.cwd(),
       permission: cfg.permission ?? 'safe',
       sandbox: cfg.sandbox,
     };
     // 品牌标识只在首次启动展示，紧凑会话头重印仍沿用原有布局。
-    if (cols() >= OMNI_MARK_COLS + 2) {
+    if (cols() >= OMNI_MARK_COLS + 2 && (!isTTY || (process.stdout.rows || 24) >= 36)) {
       const pad = ' '.repeat(Math.max(0, Math.floor((cols() - OMNI_MARK_COLS) / 2)));
-      this.print('');
-      for (const line of omniMarkFrame()) this.print(`${pad}${cyan(line)}`);
+      print('');
+      for (const line of omniMarkFrame()) print(`${pad}${cyan(line)}`);
     }
-    for (const line of renderMiniBanner(info, cols(), null)) this.print(line);
-    this.print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
-    this.print('');
+    for (const line of renderMiniBanner(info, cols(), null)) print(line);
+    print(`${PREFIX}${dim('To get started, describe a task or try one of these commands:')}`);
+    print('');
     const helps: Array<[string, string]> = [
-      ['/init', 'create an AGENTS.md file with instructions for Codex'],
+      ['/init', 'create an AGENTS.md file with instructions for Omni'],
       ['/status', 'show current session configuration'],
       ['/permission', 'choose what Omni is allowed to do'],
       ['/model', 'choose what model and reasoning effort to use'],
       ['/review', 'review any changes and find issues'],
     ];
-    for (const [cmd, desc] of helps) this.print(`${PREFIX}${cmd}${dim(` - ${desc}`)}`);
-    this.print('');
+    for (const [cmd, desc] of helps) print(`${PREFIX}${cmd}${dim(` - ${desc}`)}`);
+    print('');
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
-    this.print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
-    this.print('');
+    print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
+    print('');
+    if (isTTY) while (rows < (process.stdout.rows || 24) - 5) print('');
   }
 
   /** 会话中重打 compact 头（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜会话头；
@@ -1217,18 +1245,18 @@ export class MiniOutput implements Output {
   // ── 运行中状态行 ───────────────────────────────────────────────
   onRound(_step: number, _maxSteps: number): void {
     if (!this.opts.stream) return;
-    this.resetCells(); // 每次 LLM 请求 = 一条独立消息/思考块
-    this.startWorking();
+    this.preOut();
+    try {
+      this.resetCells(); // 每次 LLM 请求 = 一条独立消息/思考块
+      this.startWorking();
+    } finally {
+      this.postOut();
+    }
   }
 
-  /**
-   * live 区更新统一入口：首尾各垫一空行。live 块画在光标处，`› ` 输入行经
-   * pre 擦除/post 紧贴重画钉在块正下方，不垫则进行时 Working/流式/Running
-   * 与输入行挤在一起；首帧 pre 会吃掉当前分隔空行，块必须自带上间距。
-   * （只影响进行时 transient 展示；commit 落盘数组与 gap 纪律保持原样。）
-   */
+  /** live 上方复用已有的单元格间距，下方保留一行外部空白，避免重复留白。 */
   private liveUpdate(lines: string[]): void {
-    this.live.update(padLiveLines(lines));
+    this.live.update(padLiveLines(lines, !this.gapOpen));
   }
 
   private startWorking(hint = 'esc to interrupt'): void {
@@ -1263,20 +1291,31 @@ export class MiniOutput implements Output {
   }
 
   onStreamStart(): void {
-    this.stopWorking();
+    // role-only/usage 等首事件可能还没有可见内容，保持 Working，
+    // 由正文、思考或工具在同一显示帧内接替，避免先清空导致输入区上移。
   }
 
   // ── 正文 / 思考 ────────────────────────────────────────────────
   onAnswer(text: string): void {
     if (!this.opts.stream) return;
-    this.stopWorking();
-    this.answer.write(text);
+    this.preOut();
+    try {
+      this.stopWorking();
+      this.answer.write(text);
+    } finally {
+      this.postOut();
+    }
   }
 
   onAnswerEnd(): void {
     if (!this.opts.stream) return;
-    this.answer.end();
-    this.answerEnded = true;
+    this.preOut();
+    try {
+      this.answer.end();
+      this.answerEnded = true;
+    } finally {
+      this.postOut();
+    }
   }
 
   /** token 用量：折入本轮 completion 合计（分隔行 tok/s 段数据源）+ 成本累加 */
@@ -1345,18 +1384,23 @@ export class MiniOutput implements Output {
     toolSeq?: number
   ): void {
     if (!this.opts.stream) return;
-    this.stopWorking();
-    this.resetCells();
-    this.tool = {
-      id: toolSeq ?? this.toolSeq++,
-      name,
-      verb: verbForTool(name),
-      detail: toolDetail(name, args, argsPreview),
-      running: true,
-      out: [],
-      userShell: (args as Record<string, unknown> | undefined)?.[USER_SHELL_FLAG] === true,
-    };
-    this.renderTool();
+    this.preOut();
+    try {
+      this.stopWorking();
+      this.resetCells();
+      this.tool = {
+        id: toolSeq ?? this.toolSeq++,
+        name,
+        verb: verbForTool(name),
+        detail: toolDetail(name, args, argsPreview),
+        running: true,
+        out: [],
+        userShell: (args as Record<string, unknown> | undefined)?.[USER_SHELL_FLAG] === true,
+      };
+      this.renderTool();
+    } finally {
+      this.postOut();
+    }
   }
 
   /** 运行中：`⠋ Running <cmd>`（codex exec cell 活动态）+ 已流出的输出尾部 */
@@ -1430,7 +1474,7 @@ export class MiniOutput implements Output {
         lines.push(dim(`    +${hidden} ${hidden === 1 ? 'line' : 'lines'} (${TRANSCRIPT_HINT})`));
       }
     }
-    this.live.commit(['', ...lines]); // 前置空行 = 与上一个单元格的间距
+    this.live.commit(this.gapOpen ? lines : ['', ...lines]); // 相邻单元格恰好一行间距
     this.gapOpen = false;
   }
 
@@ -1454,11 +1498,17 @@ export class MiniOutput implements Output {
     // 让"输入 → 提交 → 落进对话流"只出现一次（回显与对话流用同一断点，行数一致）。
     const rows = text.split('\n').flatMap((l) => foldRows(l));
     if (this.interactive && this.live.active) {
-      process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
+      if (!this.composer?.clearSubmitted()) process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
     }
     // 轮末已补过输入区间距（gapOpen=true）→ 不再重复补行；否则沿用原「前后空行」行为
     if (!this.gapOpen) this.print('');
-    rows.forEach((l, i) => this.print(l === '' ? '' : `${i === 0 ? `${bold(dim('›'))} ` : CONT_INDENT}${l}`));
+    const messageRow = (row: string) => {
+      this.print(isTTY && useColor ? `${miniPanelBackground()}${row}\x1b[K\x1b[0m` : row);
+    };
+    // 历史用户消息与编辑区一样，上下各保留一行同色内边距。
+    if (isTTY) messageRow('');
+    rows.forEach((line, i) => messageRow(`${i === 0 ? '› ' : CONT_INDENT}${line}`));
+    if (isTTY) messageRow('');
     this.print('');
     this.gapOpen = true;
   }
@@ -1497,8 +1547,7 @@ export class MiniOutput implements Output {
       this.turnTipsShown += 1;
       this.lastTipTurn = this.turnCount;
     }
-    // 输入区间距（用户实测：分隔行/统计行紧贴 `› ` 太挤）：补一个空行再交给输入行；
-    // gapOpen=true 让下一轮 onUserMessage 不再重复补行（保持恰好一行间距）。
+    // 统计行与输入块之间保留一行终端底色空白，输入块内部仍保留自己的 padding。
     if (printedTail && !this.gapOpen) {
       this.print('');
       this.gapOpen = true;
@@ -1624,17 +1673,18 @@ export class MiniOutput implements Output {
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
-    const rl = readline.createInterface({ input, output: errOut });
+    this.preparePicker();
     try {
-      const ans = await rl.question(formatApprovalPrompt(req));
-      // 答案字节同时进了主 rl 行缓冲：记下来给主循环吞掉，否则下一轮误发给模型
-      this.recordSwallowedQa(ans);
-      return parseApprovalAnswer(ans);
+      this.print(`${PREFIX}${bold(req.tool)} · ${req.summary}`);
+      for (const line of req.reason.split('\n')) this.print(`${PREFIX}${dim(line)}`);
+      const selected = await pickFromList(input, [
+        { label: '允许本次', value: 'once' },
+        { label: '本会话记住此操作', value: 'session' },
+        { label: '拒绝', value: 'deny' },
+      ], { placement: 'inline', title: '操作审批', selected: 2 });
+      return selected === 0 ? 'once' : selected === 1 ? 'session' : 'deny';
     } finally {
-      rl.close();
       this.resumeInput();
-      // 次 readline 的 close() 会 pause 共享 stdin，主循环自此饿死（PTY 实证：
-      // 审批后一切输入无响应、退出码却是“干净”的假象）——显式恢复流动
       input.resume();
     }
   }
@@ -1659,15 +1709,32 @@ export class MiniOutput implements Output {
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
-    const rl = readline.createInterface({ input, output: errOut });
+    this.preparePicker();
+    if (options.length) {
+      const marked = multiple ? new Set<number>() : undefined;
+      const selected = await pickFromList(input, [
+        ...options.map(label => ({ label, value: label })),
+        { label: '自定义回答…', value: '__custom__' },
+      ], { placement: 'inline', title: question, selected: 0, marked,
+        hint: multiple ? '↑↓ 导航 · 空格勾选 · Enter 确认 · Esc 取消' : undefined });
+      if (selected < options.length) {
+        this.resumeInput();
+        input.resume();
+        return selected < 0 ? null : parseAskAnswer(marked?.size
+          ? [...marked].filter(i => i < options.length).map(i => i + 1).join(',')
+          : String(selected + 1), options);
+      }
+    }
+    this.print(`${PREFIX}${question}`);
+    this.print(`${PREFIX}${dim('输入自定义回答，空输入取消')}`);
+    const rl = readline.createInterface({ input, output: process.stdout });
+    const composer = this.composerStatus ? installMiniComposer(rl, () => ({ ...this.composerStatus!(), running: false })) : null;
     try {
-      const lines = options.map((o, i) => `${PREFIX}${i + 1}. ${o}`);
-      const ans = await rl.question(
-        `${PREFIX}${dim('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n${PREFIX}${dim('自定义：直接输入内容')}\n${PREFIX}输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
-      );
+      const ans = await rl.question('› ');
       this.recordSwallowedQa(ans);
       return parseAskAnswer(ans, options);
     } finally {
+      composer?.dispose();
       rl.close();
       this.resumeInput();
       input.resume();

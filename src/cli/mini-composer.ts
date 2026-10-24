@@ -1,7 +1,8 @@
+import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /** mini 输入区装饰：原生 readline 负责编辑，显示层补灰底、占位与两行状态。 */
 import { fuzzySlashMatch, MINI_SLASH_DESCRIPTIONS } from './picker.js';
 import { formatTokenCount } from '../config/model-context.js';
-import { dim, useColor } from '../ui.js';
+import { bold, dim, useColor } from '../ui.js';
 import { visualWidth } from '../tui/width.js';
 import { truncateToWidth } from '../output/format.js';
 
@@ -50,6 +51,8 @@ function methodKey(rl: object, name: string): string | symbol | undefined {
 
 export interface MiniComposer {
   clearInput(): void;
+  /** 提交后清除完整编辑块（含上下留白），供消息流重新排版。 */
+  clearSubmitted(): boolean;
   dispose(): void;
 }
 
@@ -63,11 +66,14 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   if (!refreshKey || !ttyKey || !writeKey) return null;
   const refresh = rl[refreshKey], ttyWrite = rl[ttyKey], write = rl[writeKey];
   const out = process.stdout;
-  const bg = () => useColor ? '\x1b[48;2;27;27;27m' : '';
+  const bg = miniPanelBackground;
+  let padded = false;
+  let submittedRows = 0;
   let drawing = false;
   let visible = false;
   let disposed = false;
   let generation = 0;
+  let renderedWidth = out.columns || 80;
   let menuHeight = 0;
   let selected = 0;
   let lastQuery = '';
@@ -96,39 +102,59 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   const hideFooter = () => {
     if (!visible) return;
     const { pos, end } = positions();
+    if (padded) out.write(`${move(-(pos.rows + 1))}\r\x1b[0m\x1b[2K${move(pos.rows + 1)}${restoreColumn(pos.cols)}`);
     const down = end.rows - pos.rows + 1;
     out.write(`\x1b[0m${move(down)}\r\x1b[0J${move(-down)}${restoreColumn(pos.cols)}`);
     visible = false;
   };
   rl[writeKey] = function(text: string) {
-    return write.call(this, drawing ? text.replace(/\x1b\[0m/g, `\x1b[0m${bg()}`) : text);
+    return write.call(this, drawing ? bg() + text.replace(/\x1b\[0m/g, `\x1b[0m${bg()}`) : text);
   };
   rl[refreshKey] = function() {
     if (disposed) return refresh.call(this);
+    const width = out.columns || 80;
+    if (width !== renderedWidth) {
+      renderedWidth = width;
+      // 终端已按新宽度重排，readline 的旧 prevRows 不能继续用来回退。
+      rl.prevRows = rl.getCursorPos().rows;
+    }
     const commands = suggestions();
     selected = Math.min(selected, Math.max(0, commands.length - 1));
-    const height = Math.max(0, Math.min(8, (out.rows || 24) - rl.getCursorPos().rows - 5, commands.length));
+    const height = Math.max(0, Math.min(8, (out.rows || 24) - rl.getCursorPos().rows - 8, commands.length));
     // 面板与输入共用一块受控区域；行数变更先清旧块，再顺序重画，不覆盖聊天记录。
-    if (menuHeight || height) {
-      out.write(`\x1b[0m${move(-((rl.prevRows || 0) + menuHeight))}\r\x1b[0J`);
+    const rebuild = menuHeight > 0 || height > 0;
+    if (rebuild) {
+      out.write(`\x1b[0m${move(-((rl.prevRows || 0) + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
+      const nextHeight = height ? height + 2 : 0;
+      // 收起/过滤菜单时保留输入区所在的物理行，避免输入框向上跳。
+      if (menuHeight > nextHeight) out.write('\n\r'.repeat(menuHeight - nextHeight));
       rl.prevRows = 0;
       const width = out.columns || 80;
       const start = Math.max(0, Math.min(selected - Math.floor(height / 2), commands.length - height));
       const nameWidth = Math.min(18, Math.max(8, Math.floor(width / 3)));
+      if (height) out.write(`${bg()}${bold(truncateToWidth('  命令', Math.max(1, width - 1)))}${bg()}\x1b[K\x1b[0m\n\r${bg()}\x1b[K\x1b[0m\n\r`);
       for (let i = start; i < start + height; i++) {
         const command = commands[i]!;
         const label = width >= 36 ? truncateToWidth(command, nameWidth).padEnd(nameWidth) + '  ' + (MINI_SLASH_DESCRIPTIONS[command] ?? '') : command;
         const row = truncateToWidth(`${i === selected ? '› ' : '  '}${label}`, Math.max(1, width - 1));
-        const color = i === selected && useColor ? '\x1b[48;2;88;151;245m\x1b[30m' : '';
+        const color = i === selected ? miniSelection() : bg();
         out.write(`${color}${row}\x1b[K\x1b[0m\n\r`);
       }
-      menuHeight = height;
+      menuHeight = height ? height + 2 : 0;
+    }
+    if (!padded || rebuild) {
+      out.write(`${bg()}\x1b[K\n\r\x1b[0m`);
+      padded = true;
+    } else {
+      // 重画顶部留白，不改变 readline 的行内位置。
+      const pos = rl.getCursorPos();
+      out.write(`${move(-(pos.rows + 1))}\r${bg()}\x1b[K\x1b[0m${move(pos.rows + 1)}${restoreColumn(pos.cols)}`);
     }
     drawing = true;
-    out.write(bg());
+    // readline 自己的 ED 清屏必须使用终端底色；只在真正写文本时附加灰底。
+    out.write('\x1b[0m');
     try { refresh.call(this); } finally { drawing = false; }
     const { pos, end } = positions();
-    const width = out.columns || 80;
     const tailRows = end.rows - pos.rows;
     out.write(`${move(tailRows)}${restoreColumn(end.cols)}${bg()}\x1b[K`);
     if (!rl.line) out.write(dim(truncateToWidth('Ask Omni to do anything', Math.max(0, width - end.cols - 1))));
@@ -165,6 +191,10 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     const leave = submit || (key?.ctrl && ['c', 'd', 'z'].includes(key.name ?? ''));
     if (leave) {
       if (menuHeight) { dismissedFor = rl.line; rl[refreshKey](); }
+      if (submit && visible) {
+        const { end } = positions();
+        submittedRows = end.rows + 1 + (padded ? 1 : 0);
+      }
       hideFooter();
     }
     const before = generation;
@@ -173,7 +203,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     if (!leave && !rl.closed && generation === before) rl[refreshKey]();
     return result;
   };
-  const onLine = () => { visible = false; out.write('\x1b[0m'); };
+  const onLine = () => { padded = false; visible = false; out.write('\x1b[0m'); };
   rl.on('line', onLine);
   const dispose = () => {
     if (disposed) return;
@@ -182,13 +212,23 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     rl.off('line', onLine);
     out.write('\x1b[0m');
   };
+  // readline 已订阅 resize 并调用被装饰的 refresh；不再二次绘制。
   rl.once('close', dispose);
   return {
+    clearSubmitted() {
+      if (!submittedRows) return false;
+      out.write(`\x1b[0m${move(-submittedRows)}\r\x1b[0J`);
+      submittedRows = 0;
+      padded = false;
+      rl.prevRows = 0;
+      return true;
+    },
     clearInput() {
       if (!visible) { out.write('\r\x1b[2K'); return; }
       const { pos } = positions();
-      out.write(`\x1b[0m${move(-(pos.rows + menuHeight))}\r\x1b[0J`);
+      out.write(`\x1b[0m${move(-(pos.rows + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
       menuHeight = 0;
+      padded = false;
       rl.prevRows = 0;
       visible = false;
     },

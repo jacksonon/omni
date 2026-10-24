@@ -113,7 +113,7 @@ def main() -> int:
                 asked = wait_for('不可恢复'.encode(), 30)
                 if asked:
                     try:
-                        os.write(fd, b'y\n')
+                        os.write(fd, b'\x1b[B\r')
                     except OSError:
                         pass
                     deleted = wait_for('已删除会话'.encode(), 30)

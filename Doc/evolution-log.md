@@ -1,5 +1,17 @@
 # Omni 演进日志
 
+- **v0.9.5（2026-10-24）**：mini 终端主题自适应、灰底输入与历史消息留白、蓝色 Think 标识；命令与审批/提问面板统一；修复流式闪动、Working 切换上移及窗口缩放错位，保留费用统计与草稿编辑。
+
+- 2026-10-24：修复 Working 首事件清空导致输入区临时上移：保留状态直至可见内容同帧接替；工具与新请求切换合并绘制。修复 mini resize 重复刷新、旧宽度回退和灰底整屏清除，保留长草稿编辑位置。
+
+- 2026-10-24：mini Working/Running 复用上一消息已有空行，避免重复上间距，状态行到上下灰底块均为一行外部留白。
+
+- 2026-10-24：mini 思考使用蓝色圆点与 `Think` 标题（与工具调用标题同款），续行与内容对齐，正式回答保留 `•`；回合统计与输入块之间恢复一行外部留白。
+
+- 2026-10-24：修复 mini 首条消息发送后输入区闪动：轮内刷新合并同步显示帧，正文与思考增量合并清除/提交/预览，保留流中草稿编辑。
+
+- 2026-10-24：mini 输入区与命令面板共用终端亮暗配色，输入上下等距留白、启动布局填满窗口；提交时清除整个编辑块，历史用户消息使用灰底块，上下各一行同色留白，与回答前缀对齐，保留价格等回合统计；审批、提问（含多选）及回滚/删除确认统一内联选择器。
+
 > 自 2026-08-10 首次提交以来的全部迭代记录（按时间倒序，第一次 ~ 第二百六十六次）。
 
 - **2026-10-20（tool_calls ↔ tool 配对断裂根治：网关 400）**：用户报 `400 litellm.BadRequestError: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`。根因：主循环在**工具执行前**就把 `assistant(tool_calls)` 写入历史（`loop.ts`），而执行期 abort（Esc / `/stop` / Web 停止 / 插话 steer）或异常直接 `return`/`continue`，未补对应 tool 结果；脏历史又被 TUI/Web 按轮落盘、`loadSession` 原样读回，导致该会话此后**每轮** 400（重启无效）。同类隐患：子代理工具期停止（transcript 悬空，追问续跑 400）、压缩切分落在并行工具组中间（tail 以孤儿 tool 开头）、`/rewind` 截断同类边界。修复：① 新 `messages.ts` `repairToolPairing`（发送前非破坏性自愈：悬空 `tool_calls` 补合成 tool 占位、孤儿/重复 tool 消息丢弃、空 `tool_calls` 去字段、缺失 call id 补齐）+ `appendInterruptedToolResults`；② 主循环请求构造统一走 `repairToolPairing(stripNonStandardFields(...))`，工具执行阶段 abort/异常一律先补配对占位再收尾；③ 子代理请求前同款修复 + 停止时补占位；④ `findSummarizeSplit` / `truncateMessagesToCount` 切点回退到完整工具组。验证：typecheck ✓ · 全量单测 64/64（新增 `messages.test.ts` 12 例、`context.test.ts` 3 例）✓ · `eval:mock` 2/2 ✓ · 本机 373 个会话扫描出的 4 个历史脏会话经修复后配对问题全部归零 ✓。

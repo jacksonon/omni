@@ -70,7 +70,7 @@ def main() -> int:
     try:
         prompted = wait_for('›'.encode(), 60)
         send(b'do the dangerous task\n')
-        asked = wait_for('批准执行'.encode(), 40)
+        asked = wait_for('操作审批'.encode(), 40)
         if asked:
             drain(1.0)
             send(b'\x03')  # Ctrl+C：取消问题 → deny

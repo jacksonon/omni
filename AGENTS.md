@@ -211,10 +211,12 @@ for step in 1..maxSteps:
 
 - 品牌标识跨端共用 `src/tui/omni-mark.ts`：Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。
 
-- mini 底部输入区由 `src/cli/mini-composer.ts` 装饰原生 readline：深灰输入块 + 实时模型/思考级别/窗口/剩余上下文/运行状态 + 快捷键。请求前上下文比例使用估算并标 `~`，请求后读取实际 prompt usage；修改须通过 PTY 验证编辑、联想、流中输入保留与窗口换行。
+- mini 底部输入区由 `src/cli/mini-composer.ts` 装饰原生 readline：自动检测终端亮暗背景的输入块（未知背景沿用终端默认色），文本上下各一行留白；启动时输入区位于窗口底部，下方展示实时模型/思考级别/窗口/剩余上下文/运行状态与快捷键。提交后完整清除编辑区及留白，历史用户消息以灰底块展示，文本上下各一行同色留白，保留每轮统计。请求前上下文比例使用估算并标 `~`，请求后读取实际 prompt usage；窗口 resize 由 readline 单独驱动刷新，回退行数使用新宽度；readline 清屏使用终端默认背景，灰底只施加于输入文本与留白。修改须通过 PTY 验证编辑、联想、流中输入保留与窗口换行。
 
-- mini `/` 菜单由 composer 在输入块上方绘制两列命令/说明，蓝底选中，↑↓ 导航、Tab 回填、Enter 执行、Esc 关闭；`/model`、`/variants`、`/permission` 等二级菜单在当前输入区内联展开，复用深灰标题面板与蓝底选择器，不切备用屏跳至顶部；数据来自 Omni 配置。
+- mini `/` 菜单由 composer 在输入块上方绘制两列命令/说明，蓝底选中，↑↓ 导航、Tab 回填、Enter 执行、Esc 关闭；`/model`、`/variants`、`/permission` 等二级菜单在当前输入区内联展开，复用主题自适应标题面板与蓝底选择器；审批、单选/多选提问及回滚/删除确认共用此样式（多选用空格勾选），不切备用屏跳至顶部；数据来自 Omni 配置。
 
-- mini 思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。
+- mini 轮内刷新把清除输入、更新正文、恢复输入合成同步显示帧（stdout cork + DEC 2026）；同一流式增量的 clear/commit/update 共用最外层帧，禁止暴露空白输入区的中间状态。
+
+- mini 思考显示蓝色圆点与 `Think` 标题，续行与思考内容对齐，正式回答继续使用 `•`；统计行与输入块之间保留一行外部留白。思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。
 
 - token 速率统一由 `src/output/token-rate.ts` 计算，采用 OpenCode 口径：输出（含思考）token / 每步请求开始至流结束的累计耗时，包含首 token 等待、排除工具执行；OpenAI completion/output tokens 已含思考，不重复加。流中估算标 `~`，请求口径记录带 `generation.basis=request`；旧历史按 durMs 重建，不复用纯生成分母。Web vendor 打包共享同一函数。

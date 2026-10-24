@@ -15,6 +15,7 @@ import { MiniOutput, TRANSCRIPT_HINT } from '../output/mini.js';
 import type { Output } from '../output/types.js';
 import { bold, dim } from '../ui.js';
 import { runInteractive } from './interactive.js';
+import { detectMiniTheme } from './mini-theme.js';
 
 /** stdin 的 keypress 事件类型（readline 接口激活后由解码器派发） */
 type KeypressHandler = (str: string, key: { name?: string; ctrl?: boolean }) => void;
@@ -100,6 +101,7 @@ export async function runMiniInteractive(
   runOpts: RunOptions,
   out: Output
 ): Promise<void> {
+  await detectMiniTheme();
   const uninstall = installTranscriptViewer(
     runOpts,
     out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined,
