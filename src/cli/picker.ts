@@ -1,3 +1,4 @@
+import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
 import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /**
  * mini/console 共用的上下箭头选择器（/model、/variants 无参 TTY 分支用）。
@@ -393,6 +394,7 @@ export async function pickFromList(
 
   const out = process.stdout;
   const inline = opts.placement === 'inline';
+  let inlineVisible = false;
   const isFilter = opts.filterable === true;
   let query = '';
 
@@ -445,10 +447,15 @@ export async function pickFromList(
     const position = curItems.length > maxVisible ? `${sel + 1}/${curItems.length} · ` : '';
     if (height >= 2) rows.push(`${panelBg()}${dim(truncateToWidth('  ' + position + hint, width - 1))}${panelBg()}\x1b[K\x1b[0m`);
     if (inline) {
-      // 光标始终归位到面板首行；用换行在页底分配空间，避免绝对定位跳到屏幕顶部。
-      // resize/过滤变短直接清光标以下，不按旧宽度猜测需要删除多少行。
-      out.write('\r\x1b[0J' + rows.map(row => row + '\r\n').join(''));
-      out.write(`\x1b[${rows.length}A\r`);
+      out.cork();
+      out.write('\x1b[?2026h');
+      if (inlineVisible) restoreMiniViewport(out);
+      const top = dockMiniViewport(out, rows.length);
+      inlineVisible = true;
+      // 最后一行不输出换行，避免面板在页底绘制时额外滚屏。
+      out.write(rows.map((row, i) => `\x1b[${top + i};1H${row}`).join(''));
+      out.write(`\x1b[${top};1H\x1b[?2026l`);
+      out.uncork();
     } else {
       out.write('\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join(''));
     }
@@ -465,7 +472,10 @@ export async function pickFromList(
       if (settled) return;
       settled = true;
       try {
-        out.write(inline ? '\x1b[0m\r\x1b[0J\x1b[?25h' : '\x1b[?1049l\x1b[?25h');
+        if (inline) {
+          if (inlineVisible) restoreMiniViewport(out);
+          out.write('\x1b[?25h');
+        } else out.write('\x1b[?1049l\x1b[?25h');
       } catch {
         /* 清场失败不影响结果 */
       }

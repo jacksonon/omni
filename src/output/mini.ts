@@ -1,5 +1,5 @@
 import { miniPanelBackground } from '../cli/mini-theme.js';
-import { pickFromList } from '../cli/picker.js';
+import { pickFromList, type PickerItem, type PickerOptions } from '../cli/picker.js';
 import { tokenRate, validRateSample } from './token-rate.js';
 /**
  * MiniOutput：`omni mini` 纯终端 CLI 模式的渲染层。
@@ -910,8 +910,32 @@ export class MiniOutput implements Output {
 
   hasComposer(): boolean { return this.composer !== null; }
 
-  /** 二级菜单接替输入区时先清受控区域，保留 readline 的文本缓冲。 */
-  preparePicker(): void { this.composer?.clearInput(); }
+  private pickerActive = false;
+
+  /** 面板拥有页底期间暂停主 readline 绘制，避免 resize 抢占同一光标锚点。 */
+  preparePicker(): void {
+    if (this.pickerActive) return;
+    this.composer?.clearInput();
+    this.composer?.suspend();
+    this.pickerActive = true;
+  }
+
+  private finishPicker(): void {
+    this.composer?.resume();
+    this.pickerActive = false;
+  }
+
+  async pickMenu(stdin: NodeJS.ReadStream, items: PickerItem[], options: PickerOptions): Promise<number> {
+    this.preparePicker();
+    try {
+      return await pickFromList(stdin, items, { ...options, placement: 'inline' });
+    } finally {
+      this.finishPicker();
+    }
+  }
+
+  /** slash 输入只负责触发命令，不能作为消息留在历史里。 */
+  clearCommandInput(): void { this.composer?.clearSubmitted(); }
 
   /** 最近一次请求用量用于当前上下文展示（不是会话累计 token）。 */
   lastPromptTokens: number | undefined;
@@ -1058,7 +1082,7 @@ export class MiniOutput implements Output {
     this.rl = rl;
     this.composer = installMiniComposer(rl, () => ({
       ...(this.composerStatus?.() ?? { model: 'Omni', plan: false }),
-      running: this.turnStart !== null,
+      running: this.capturing || this.turnStart !== null,
     }));
   }
 
@@ -1070,7 +1094,7 @@ export class MiniOutput implements Output {
    */
   openExternalEditor(): 'done' | 'empty' | 'no-editor' | 'failed' | 'busy' {
     // 空闲门控用 turnStart（轮内 true，含审批/提问；live.active 只是 live 渲染总开关，恒为 true，不能当空闲判据）
-    if (!this.interactive || !this.rl || !process.stdin.isTTY || this.turnStart != null) return 'busy';
+    if (!this.interactive || !this.rl || !process.stdin.isTTY || this.turnStart != null || this.capturing) return 'busy';
     const cmd = resolveEditorCommand();
     if (!cmd) return 'no-editor';
     const initial = this.rl.line;
@@ -1193,11 +1217,7 @@ export class MiniOutput implements Output {
   /** 会话头 + 上手帮助 + Tip 行（codex new_session_info 首事件 7 行块；问候语不在头里；
    * Tip 是 scrollback 保留的 tooltip 行，fullscreen 下 codex 会省略它） */
   banner(cfg: OmniConfig): void {
-    let rows = 0;
-    const print = (line: string) => {
-      rows += Math.max(1, Math.ceil(visualWidth(line) / Math.max(1, cols())));
-      this.print(line);
-    };
+    const print = this.print;
     if (isTTY) process.stdout.write('\x1b[H\x1b[2J');
     const info: MiniBannerInfo = {
       directory: process.cwd(),
@@ -1225,7 +1245,6 @@ export class MiniOutput implements Output {
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? TIPS[0]!;
     print(`${PREFIX}${dim(`Tip: ${tip}`)}`);
     print('');
-    if (isTTY) while (rows < (process.stdout.rows || 24) - 5) print('');
   }
 
   /** 会话中重打 compact 头（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜会话头；
@@ -1511,6 +1530,11 @@ export class MiniOutput implements Output {
     if (isTTY) messageRow('');
     this.print('');
     this.gapOpen = true;
+    if (this.interactive) {
+      // 检查点与上下文准备可能异步等待，提交后立即恢复页底输入。
+      this.beginInputCapture();
+      this.rl?.prompt(true);
+    }
   }
 
   /** 回合结束：dim 的 `Worked for Xs · 16:41` 分隔行（codex separators.rs） */
@@ -1677,13 +1701,14 @@ export class MiniOutput implements Output {
     try {
       this.print(`${PREFIX}${bold(req.tool)} · ${req.summary}`);
       for (const line of req.reason.split('\n')) this.print(`${PREFIX}${dim(line)}`);
-      const selected = await pickFromList(input, [
+      const selected = await this.pickMenu(input, [
         { label: '允许本次', value: 'once' },
         { label: '本会话记住此操作', value: 'session' },
         { label: '拒绝', value: 'deny' },
       ], { placement: 'inline', title: '操作审批', selected: 2 });
       return selected === 0 ? 'once' : selected === 1 ? 'session' : 'deny';
     } finally {
+      this.finishPicker();
       this.resumeInput();
       input.resume();
     }
@@ -1712,7 +1737,7 @@ export class MiniOutput implements Output {
     this.preparePicker();
     if (options.length) {
       const marked = multiple ? new Set<number>() : undefined;
-      const selected = await pickFromList(input, [
+      const selected = await this.pickMenu(input, [
         ...options.map(label => ({ label, value: label })),
         { label: '自定义回答…', value: '__custom__' },
       ], { placement: 'inline', title: question, selected: 0, marked,
@@ -1725,6 +1750,7 @@ export class MiniOutput implements Output {
           : String(selected + 1), options);
       }
     }
+    this.preparePicker();
     this.print(`${PREFIX}${question}`);
     this.print(`${PREFIX}${dim('输入自定义回答，空输入取消')}`);
     const rl = readline.createInterface({ input, output: process.stdout });
@@ -1736,6 +1762,7 @@ export class MiniOutput implements Output {
     } finally {
       composer?.dispose();
       rl.close();
+      this.finishPicker();
       this.resumeInput();
       input.resume();
     }

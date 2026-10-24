@@ -1,3 +1,4 @@
+import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
 import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /** mini 输入区装饰：原生 readline 负责编辑，显示层补灰底、占位与两行状态。 */
 import { fuzzySlashMatch, MINI_SLASH_DESCRIPTIONS } from './picker.js';
@@ -51,6 +52,8 @@ function methodKey(rl: object, name: string): string | symbol | undefined {
 
 export interface MiniComposer {
   clearInput(): void;
+  suspend(): void;
+  resume(): void;
   /** 提交后清除完整编辑块（含上下留白），供消息流重新排版。 */
   clearSubmitted(): boolean;
   dispose(): void;
@@ -69,11 +72,17 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   const bg = miniPanelBackground;
   let padded = false;
   let submittedRows = 0;
+  let submittedCleared = false;
+  let anchorNext = false;
+  let contentAnchor = false;
+  let anchoredHeight = 0;
   let drawing = false;
   let visible = false;
   let disposed = false;
+  let suspended = false;
   let generation = 0;
   let renderedWidth = out.columns || 80;
+  let renderedHeight = out.rows || 24;
   let menuHeight = 0;
   let selected = 0;
   let lastQuery = '';
@@ -99,6 +108,16 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   };
   const move = (rows: number) => rows ? `\x1b[${Math.abs(rows)}${rows > 0 ? 'B' : 'A'}` : '';
   const restoreColumn = (cols: number) => `\r${cols ? `\x1b[${cols}C` : ''}`;
+  const restoreContent = (): boolean => {
+    if (!contentAnchor) return false;
+    restoreMiniViewport(out);
+    contentAnchor = false;
+    padded = false;
+    menuHeight = 0;
+    rl.prevRows = 0;
+    visible = false;
+    return true;
+  };
   const hideFooter = () => {
     if (!visible) return;
     const { pos, end } = positions();
@@ -112,22 +131,46 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   };
   rl[refreshKey] = function() {
     if (disposed) return refresh.call(this);
+    if (suspended) return;
+    // 无论启动、流式输出还是命令结束，新显示的输入区都走同一个页底布局。
+    if (!visible) anchorNext = true;
     const width = out.columns || 80;
-    if (width !== renderedWidth) {
+    const resized = width !== renderedWidth || (out.rows || 24) !== renderedHeight;
+    if (resized) {
       renderedWidth = width;
+      renderedHeight = out.rows || 24;
       // 终端已按新宽度重排，readline 的旧 prevRows 不能继续用来回退。
       rl.prevRows = rl.getCursorPos().rows;
     }
     const commands = suggestions();
+    const endRows = positions().end.rows;
+    const height = Math.max(0, Math.min(8, (out.rows || 24) - endRows - 8, commands.length));
+    const inputHeight = endRows + 5 + (height ? height + 2 : 0);
+    if (contentAnchor && (resized || inputHeight !== anchoredHeight)) anchorNext = true;
+    const anchorFrame = anchorNext && out.writableCorked === 0;
+    if (anchorNext) {
+      anchorNext = false;
+      if (anchorFrame) {
+        out.cork();
+        out.write('\x1b[?2026h');
+      }
+      if (!restoreContent() && visible) {
+        const { pos } = positions();
+        out.write(`${move(-(pos.rows + menuHeight + (padded ? 1 : 0)))}\r\x1b[0m\x1b[0J`);
+      }
+      anchoredHeight = inputHeight;
+      dockMiniViewport(out, inputHeight);
+      contentAnchor = true;
+      menuHeight = 0;
+      padded = false;
+      visible = false;
+      rl.prevRows = 0;
+    }
     selected = Math.min(selected, Math.max(0, commands.length - 1));
-    const height = Math.max(0, Math.min(8, (out.rows || 24) - rl.getCursorPos().rows - 8, commands.length));
     // 面板与输入共用一块受控区域；行数变更先清旧块，再顺序重画，不覆盖聊天记录。
     const rebuild = menuHeight > 0 || height > 0;
     if (rebuild) {
       out.write(`\x1b[0m${move(-((rl.prevRows || 0) + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
-      const nextHeight = height ? height + 2 : 0;
-      // 收起/过滤菜单时保留输入区所在的物理行，避免输入框向上跳。
-      if (menuHeight > nextHeight) out.write('\n\r'.repeat(menuHeight - nextHeight));
       rl.prevRows = 0;
       const width = out.columns || 80;
       const start = Math.max(0, Math.min(selected - Math.floor(height / 2), commands.length - height));
@@ -165,6 +208,10 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     out.write(`${move(-(end.rows - pos.rows + 3))}${restoreColumn(pos.cols)}\x1b[0m`);
     visible = true;
     generation++;
+    if (anchorFrame) {
+      out.write('\x1b[?2026l');
+      out.uncork();
+    }
   };
   rl[ttyKey] = function(text: string, key?: { name?: string; ctrl?: boolean }) {
     const commands = suggestions();
@@ -190,6 +237,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     const submit = key?.name === 'return' || key?.name === 'enter';
     const leave = submit || (key?.ctrl && ['c', 'd', 'z'].includes(key.name ?? ''));
     if (leave) {
+      if (submit) submittedCleared = false;
       if (menuHeight) { dismissedFor = rl.line; rl[refreshKey](); }
       if (submit && visible) {
         const { end } = positions();
@@ -203,11 +251,20 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     if (!leave && !rl.closed && generation === before) rl[refreshKey]();
     return result;
   };
-  const onLine = () => { padded = false; visible = false; out.write('\x1b[0m'); };
+  const onLine = () => {
+    if (restoreContent()) {
+      submittedRows = 0;
+      submittedCleared = true;
+    }
+    padded = false;
+    visible = false;
+    out.write('\x1b[0m');
+  };
   rl.on('line', onLine);
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    restoreContent();
     rl[refreshKey] = refresh; rl[ttyKey] = ttyWrite; rl[writeKey] = write;
     rl.off('line', onLine);
     out.write('\x1b[0m');
@@ -215,7 +272,14 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   // readline 已订阅 resize 并调用被装饰的 refresh；不再二次绘制。
   rl.once('close', dispose);
   return {
+    suspend() { suspended = true; },
+    resume() { suspended = false; },
     clearSubmitted() {
+      if (submittedCleared) {
+        submittedCleared = false;
+        restoreContent(); // 排队消息之间可能已经重画过新的页底输入。
+        return true;
+      }
       if (!submittedRows) return false;
       out.write(`\x1b[0m${move(-submittedRows)}\r\x1b[0J`);
       submittedRows = 0;
@@ -224,6 +288,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       return true;
     },
     clearInput() {
+      if (restoreContent()) return;
       if (!visible) { out.write('\r\x1b[2K'); return; }
       const { pos } = positions();
       out.write(`\x1b[0m${move(-(pos.rows + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);

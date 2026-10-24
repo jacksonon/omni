@@ -31,6 +31,7 @@ def screen(data, width, height):
     history = []
     row = col = 0
     normal = None
+    saved_cursor = (0, 0)
     text = OSC.sub('', data.decode('utf-8', errors='replace'))
 
     def newline():
@@ -53,6 +54,16 @@ def screen(data, width, height):
     while i < len(text):
         ch = text[i]
         if ch == '\x1b':
+            if text[i + 1:i + 2] == '7':
+                saved_cursor = (row, col)
+                i += 2
+                continue
+            if text[i + 1:i + 2] == '8':
+                row, col = saved_cursor
+                row = min(height - 1, row)
+                col = min(width - 1, col)
+                i += 2
+                continue
             m = CSI.match(text, i)
             if m:
                 nums = [int(p) for p in m[1].replace('?', '').split(';') if p] or [0]

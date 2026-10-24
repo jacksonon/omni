@@ -1534,6 +1534,21 @@ export function miniSuite(): TestSuite {
     }
   });
 
+  suite.test('端到端：mini 页底输入覆盖对话、流式与命令，取消不污染历史（PTY）', async () => {
+    const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+      const child = spawn('python3', ['scripts/feature-tests/mini-command-anchor-pty.py'], {
+        cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      child.stdout.on('data', data => output += data);
+      child.stderr.on('data', data => output += data);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
+    });
+    suite.assert(result.code === 0, '普通/短窄窗口：普通对话、流式、工具、中断、命令取消与草稿编辑', result.output);
+  });
+
   suite.test('端到端：mini -i 交互首轮图片附件（codex -i，全局通道）', async () => {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-mini-gi-'));
     fs.mkdirSync(path.join(xdg, 'omni'), { recursive: true });
@@ -2556,7 +2571,7 @@ export function miniSuite(): TestSuite {
     try {
       await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
       child.stdin.write('/model mock-b\n');
-      await waitFor(async () => out.includes('已切换模型') && out.includes('mock-b'), 15000, '/model 切换');
+      await waitFor(async () => out.includes('Model changed to mock-b'), 15000, '/model 切换');
       child.stdin.write('/status\n');
       await waitFor(async () => out.includes('mock-b'), 15000, '/status 跟随新模型');
       child.stdin.write('/model no-such-model\n');
@@ -2595,7 +2610,7 @@ export function miniSuite(): TestSuite {
     try {
       await waitFor(async () => out.includes('›'), 15000, 'mini 提示符');
       child.stdin.write('/variants low\n');
-      await waitFor(async () => out.includes('已切换思考级别'), 15000, '/variants 切换');
+      await waitFor(async () => out.includes('Reasoning effort changed to'), 15000, '/variants 切换');
       child.stdin.write('/variants bogus\n');
       await waitFor(async () => out.includes('未知思考级别'), 15000, '/variants 非法报错');
       child.stdin.write('/status\n');

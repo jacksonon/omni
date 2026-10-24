@@ -101,8 +101,8 @@ export async function runInteractive(
   } = {}
 ): Promise<void> {
   const pickMenu = (stdin: NodeJS.ReadStream, items: PickerItem[], options: PickerOptions): Promise<number> => {
-    if (out instanceof MiniOutput) out.preparePicker();
-    return pickFromList(stdin, items, { ...options, placement: out instanceof MiniOutput ? 'inline' : 'screen' });
+    if (out instanceof MiniOutput) return out.pickMenu(stdin, items, options);
+    return pickFromList(stdin, items, { ...options, placement: 'screen' });
   };
   const confirmAction = async (title: string): Promise<boolean> => {
     if (out instanceof MiniOutput) {
@@ -731,6 +731,7 @@ export async function runInteractive(
     // bang（`!`）保留反斜杠交 sh 原生续行；其余去标记拼接（见 joinContinued）
     const full = joinContinued(rawParts, isBangShellCommand(rawParts.join('\n')));
     const cmd = full.trim();
+    if (cmd.startsWith('/') && out instanceof MiniOutput) out.clearCommandInput();
     // 回车后光标已在输入下一行；输出之前清掉下方的临时联想面板，不向上擦除回显。
     suggestRef?.confirmSubmit(cmd);
     if (input.isTTY && cmd !== '') {
@@ -855,7 +856,7 @@ export async function runInteractive(
           permission = next;
           runOpts.permission = next;
           runOpts.safetyGate?.setTier(next); // 共用闸门（子代理）同步
-          console.log(green(`已切换安全权限 → ${PERM_LABEL[next]}`));
+          console.log(out instanceof MiniOutput ? dim(`• Permissions changed to ${next}`) : green(`已切换安全权限 → ${PERM_LABEL[next]}`));
         }
       };
       if (!want) {
@@ -1258,29 +1259,29 @@ export async function runInteractive(
           console.log(red(`未知思考级别「${name}」——可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`));
         } else if (namedIds.includes(name) && !opts.includes(name)) {
           runOpts.activeVariant = name;
-          console.log(green(`已切换命名变体 → ${name}`));
+          console.log(out instanceof MiniOutput ? dim(`• Variant changed to ${name}`) : green(`已切换命名变体 → ${name}`));
           const cfg = runOpts.cfg;
           if (cfg) {
             const res = persistVariantToConfig(name, cfg, currentModel);
-            console.log(res.ok ? dim(res.message) : yellow(res.message));
+            if (!(out instanceof MiniOutput) || !res.ok) console.log(res.ok ? dim(res.message) : yellow(res.message));
           }
         } else if (!namedIds.includes(name) && runOpts.activeVariant && !ep?.variants?.[runOpts.activeVariant]?.reasoningEffort) {
           // 字符串级别 + 当前叠加层无自带 effort → 切级别同时清除命名叠加（避免语义打架）
           runOpts.reasoningEffort = name;
           runOpts.activeVariant = undefined;
-          console.log(green(`已切换思考级别 → ${name}（已退出命名变体）`));
+          console.log(out instanceof MiniOutput ? dim(`• Reasoning effort changed to ${name}`) : green(`已切换思考级别 → ${name}（已退出命名变体）`));
           const cfg = runOpts.cfg;
           if (cfg) {
             const res = persistReasoningEffortToConfig(name, cfg, currentModel);
-            console.log(res.ok ? dim(res.message) : yellow(res.message));
+            if (!(out instanceof MiniOutput) || !res.ok) console.log(res.ok ? dim(res.message) : yellow(res.message));
           }
         } else {
           runOpts.reasoningEffort = name;
-          console.log(green(`已切换思考级别 → ${name}`));
+          console.log(out instanceof MiniOutput ? dim(`• Reasoning effort changed to ${name}`) : green(`已切换思考级别 → ${name}`));
           const cfg = runOpts.cfg;
           if (cfg) {
             const res = persistReasoningEffortToConfig(name, cfg, currentModel);
-            console.log(res.ok ? dim(res.message) : yellow(res.message));
+            if (!(out instanceof MiniOutput) || !res.ok) console.log(res.ok ? dim(res.message) : yellow(res.message));
           }
         }
       };
@@ -1378,17 +1379,22 @@ export async function runInteractive(
         const ep = models.find((m) => m.name === name);
         if (!ep) {
           console.log(red(`未知模型「${name}」——可用：${models.map((m) => m.name).join(' / ')}（/model add <名称> [--base-url] [--api-key] 添加，config models 可配不同端点）`));
-        } else if (name === currentModel) {
-          console.log(dim(`已是当前模型 ${name}`));
+          return;
+        }
+        const changed = name !== currentModel;
+        if (changed) switchModel(name);
+        const cfg = runOpts.cfg;
+        if (out instanceof MiniOutput) {
+          const effort = runOpts.reasoningEffort ?? ep.reasoningEffort ?? cfg?.reasoningEffort;
+          console.log(dim(`• Model ${changed ? 'changed' : 'set'} to ${name}${effort ? ` ${effort}` : ''}`));
         } else {
-          switchModel(name); // 重建 client + 更新 modelRuntime（子代理同步）
-          console.log(green(`已切换模型 → ${name}${ep.baseURL ? `（${ep.baseURL}）` : ''}${ep.reasoningEffort ? `（思考级别 ${ep.reasoningEffort}）` : ''}`));
-          // 持久化：切换后下次启动默认就是新模型（纯 JSON 配置文件自动改写；JSONC 提示手动）
-          const cfg = runOpts.cfg;
-          if (cfg) {
-            const res = persistModelDefaultToConfig(name, cfg);
-            console.log(res.ok ? dim(res.message) : yellow(res.message));
-          }
+          console.log(changed
+            ? green(`已切换模型 → ${name}${ep.baseURL ? `（${ep.baseURL}）` : ''}${ep.reasoningEffort ? `（思考级别 ${ep.reasoningEffort}）` : ''}`)
+            : dim(`已是当前模型 ${name}`));
+        }
+        if (changed && cfg) {
+          const res = persistModelDefaultToConfig(name, cfg);
+          if (!(out instanceof MiniOutput) || !res.ok) console.log(res.ok ? dim(res.message) : yellow(res.message));
         }
       };
       if (!want) {
@@ -1766,7 +1772,7 @@ export async function runInteractive(
         }
         const confirmed = await confirmAction(`确认回滚到 #${parsed.index}（${rewindModeLabel(parsed.mode)}）？`);
         if (!confirmed) {
-          console.log(dim('已取消'));
+          if (!(out instanceof MiniOutput)) console.log(dim('已取消'));
           safePrompt();
           continue;
         }
@@ -2033,7 +2039,7 @@ export async function runInteractive(
         const loaded = await loadSession(target.file);
         const confirmed = await confirmAction(`永久删除会话 ${loaded?.meta.id ?? target.file}？不可恢复。`);
         if (!confirmed) {
-          console.log(dim('已取消'));
+          if (!(out instanceof MiniOutput)) console.log(dim('已取消'));
         } else {
           const r = await deleteSessionFile(target.file);
           console.log(r.ok ? green(`已删除会话 ${r.id}`) : red(r.error));
