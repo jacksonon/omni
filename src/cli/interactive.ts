@@ -1,3 +1,4 @@
+import { MiniInputBuffer, type MiniInputKey } from './mini-input.js';
 /**
  * 交互模式：readline 循环，消息跨轮次保留（上下文连续）。
  * 支持 /exit、/clear、/settings help 等命令。
@@ -254,6 +255,7 @@ export async function runInteractive(
   }
   // 空闲提示符下的打 / 联想面板（纯显示被动监听；轮内 inTurn 一律不渲染不擦除）
   let inTurn = false;
+  const miniBuffer = out instanceof MiniOutput ? new MiniInputBuffer() : undefined;
   // `!` shell 模式提示符态（codex composer bash mode）：函数作用域——TTY 监听器与主循环共用
   let bangPrompt = false;
   const basePrompt = opts.prompt ?? cyan('omni> ');
@@ -274,8 +276,39 @@ export async function runInteractive(
   };
   runOpts.rearmAbort = () => {
     rearmTurnAbort();
+    if (miniBuffer?.hasInterrupt()) queueMicrotask(() => turnAbort?.abort());
   };
   rearmTurnAbort();
+  if (miniBuffer && out instanceof MiniOutput) {
+    runOpts.interruptPending = () => miniBuffer.hasInterrupt();
+    runOpts.takeInterrupt = () => miniBuffer.takeInterrupt()?.text ?? null;
+    out.setInputActions({
+      busy: () => inTurn,
+      pending: () => miniBuffer.pending(),
+      submit: (text, mode) => {
+        if (hasLineContinuation(text)) {
+          contBuf.push(text);
+          rl.setPrompt(contPrompt());
+          return true;
+        }
+        const message = joinContinued([...contBuf, text], false).trim();
+        contBuf = [];
+        applyPrompt();
+        if (!message) return true;
+        miniBuffer.enqueue(message, mode);
+        const history = (rl as unknown as { history: string[] }).history;
+        if (history[0] !== message) history.unshift(message);
+        try { saveInputHistory(history); } catch { /* 输入历史失败不丢待发送消息 */ }
+        if (mode === 'steer') turnAbort?.abort();
+        return true;
+      },
+      editLastQueued: () => miniBuffer.editLastQueued(),
+      continueLine: text => {
+        contBuf.push(hasLineContinuation(text) ? text : `${text}\\`);
+        rl.setPrompt(contPrompt());
+      },
+    });
+  }
   // /stop 拦截器接线（rl/contBuf 就绪后；触发时清续行累积防旧文本混入空行提交）
   stopHook = {
     isActive: () => inTurn && !!turnAbort && !turnAbort.signal.aborted,
@@ -298,8 +331,9 @@ export async function runInteractive(
       classicReadline.emitKeypressEvents(input);
       flagged.__omniKeypressOn = true;
     }
-    input.on('keypress', (_ch: unknown, key?: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string }) => {
+    input.on('keypress', (_ch: unknown, key?: MiniInputKey) => {
       try {
+        if (key?.miniHandled) return;
         if (key?.name === 'paste-start') {
           inBracketedPaste = true;
           pasteBuf.length = 0;
@@ -331,7 +365,10 @@ export async function runInteractive(
         }
         if (!inTurn || !turnAbort || turnAbort.signal.aborted) return;
         // Esc 中断（codex status 行 `esc to interrupt`）；Ctrl+C 同样中断而非退出
-        if (key?.name === 'escape' || (key?.ctrl && key?.name === 'c')) turnAbort.abort();
+        if (key?.name === 'escape' || (key?.ctrl && key?.name === 'c')) {
+          miniBuffer?.deferInterrupts();
+          turnAbort.abort();
+        }
       } catch {
         /* 中断失败忽略，本轮自然结束 */
       }
@@ -703,7 +740,12 @@ export async function runInteractive(
       await removeEmptySession(runOpts.sessionPath).catch(() => {});
     }
   };
-  for await (const line of rl) {
+  const lineIterator = rl[Symbol.asyncIterator]();
+  for (;;) {
+    const queuedSubmission = miniBuffer?.shift();
+    const next = queuedSubmission ? { done: false, value: queuedSubmission.text } : await lineIterator.next();
+    if (next.done) break;
+    const line = next.value;
     if (inBracketedPaste) {
       pasteBuf.push(line);
       continue;
@@ -740,7 +782,7 @@ export async function runInteractive(
     }
     if (isShortcutsHelpRequest(cmd)) {
       // 单行 `?`：快捷键帮助（codex `?` 覆盖层；问句照常进模型，不建检查点不调 LLM）
-      for (const l of formatShortcutsHelp()) console.log(dim(`  ${l}`));
+      for (const l of formatShortcutsHelp(out instanceof MiniOutput)) console.log(dim(`  ${l}`));
       safePrompt();
       continue;
     }
@@ -2452,57 +2494,61 @@ export async function runInteractive(
       safePrompt();
       continue;
     }
-    // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
-    let userText = cmd;
-    if (runOpts.hooks?.has('UserPromptSubmit')) {
-      userText = (await runOpts.hooks.userPromptSubmit(cmd)).prompt;
-    }
-    // 图片提及（codex composer 图片附件）：`@图.png` 转 vision parts 随本轮发出
-    //（无 vision 模型由 loop modalities 校验明确报错；文本 @引用 照常回显）
-    const images: ImageAttachment[] = await collectImageAttachments(userText, process.cwd()).catch(() => []);
-    // 全局 -i/--image 初始附件：首个用户回合合并（@提及合并去重；消费即清，不污染后续轮）
-    const initial = runOpts.initialImages;
-    runOpts.initialImages = undefined;
-    if (initial?.length) {
-      const seen = new Set(images.map((a) => path.resolve(process.cwd(), a.path)));
-      for (const f of initial) {
-        if (images.length >= MAX_IMAGE_FILES) break;
-        const abs = path.resolve(process.cwd(), f);
-        if (seen.has(abs)) continue;
-        seen.add(abs);
-        const att = await loadImageAttachment(abs, f).catch(() => null);
-        if (att) images.push(att);
-      }
-    }
-    if (images.length > 0) {
-      console.log(dim(`（已附加 ${images.length} 张图片：${images.map((i) => i.path).join('、')}）`));
-    }
-    messages.push(userMessageWithImages(userText, images));
-    out.onUserMessage(cmd); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
-    runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
-    // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
-    // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
-    await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
-    // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
-    // recorder 传下去——压缩成功时记 compact 轨迹事件）。
-    // 自动压缩可见反馈（codex compact 单元格对等；与手动 /compact 文案同口径）：
-    // 以本轮新增 compact 事件为准（prepareContext 本身不返回值）。
-    const evCount = runOpts.events?.events.length ?? 0;
-    await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
-    const autoCompacted = compactedSince(runOpts.events?.events ?? [], evCount);
-    if (autoCompacted > 0) console.log(dim(`（上下文已自动压缩：${autoCompacted} 条旧消息收拢为摘要）`));
-    runOpts.planMode = planMode; // 每轮同步计划模式（/plan 切换即时生效）
-    runOpts.permission = permission; // 每轮同步权限档位（/permission 切换即时生效）
-    runOpts.safetyGate?.setTier(permission); // 共用闸门（子代理）同步，与 TUI 路径一致
-    // 请求失败（网络/401/端点错误）时 runAgent 已提示并正常返回；这里再兜底捕获意外异常，
-    // 只在控制台提示、不把交互循环打崩
     inTurn = true;
+    rearmTurnAbort();
     try {
+      // Hooks：UserPromptSubmit——hook 返回 updatedPrompt 可改写 prompt（补上下文/策略）
+      let userText = cmd;
+      if (runOpts.hooks?.has('UserPromptSubmit')) {
+        userText = (await runOpts.hooks.userPromptSubmit(cmd)).prompt;
+      }
+      // 图片提及（codex composer 图片附件）：`@图.png` 转 vision parts 随本轮发出
+      //（无 vision 模型由 loop modalities 校验明确报错；文本 @引用 照常回显）
+      const images: ImageAttachment[] = await collectImageAttachments(userText, process.cwd()).catch(() => []);
+      // 全局 -i/--image 初始附件：首个用户回合合并（@提及合并去重；消费即清，不污染后续轮）
+      const initial = runOpts.initialImages;
+      runOpts.initialImages = undefined;
+      if (initial?.length) {
+        const seen = new Set(images.map((a) => path.resolve(process.cwd(), a.path)));
+        for (const f of initial) {
+          if (images.length >= MAX_IMAGE_FILES) break;
+          const abs = path.resolve(process.cwd(), f);
+          if (seen.has(abs)) continue;
+          seen.add(abs);
+          const att = await loadImageAttachment(abs, f).catch(() => null);
+          if (att) images.push(att);
+        }
+      }
+      if (images.length > 0) {
+        console.log(dim(`（已附加 ${images.length} 张图片：${images.map((i) => i.path).join('、')}）`));
+      }
+      messages.push(userMessageWithImages(userText, images));
+      out.onUserMessage(cmd, queuedSubmission?.mode); // 回显用户原文（改写不替换 UI 回显，hook 输出已回显）
+      runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
+      // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
+      // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
+      await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
+      // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口注入 runOpts.context；
+      // recorder 传下去——压缩成功时记 compact 轨迹事件）。
+      // 自动压缩可见反馈（codex compact 单元格对等；与手动 /compact 文案同口径）：
+      // 以本轮新增 compact 事件为准（prepareContext 本身不返回值）。
+      const evCount = runOpts.events?.events.length ?? 0;
+      await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
+      const autoCompacted = compactedSince(runOpts.events?.events ?? [], evCount);
+      if (autoCompacted > 0) console.log(dim(`（上下文已自动压缩：${autoCompacted} 条旧消息收拢为摘要）`));
+      runOpts.planMode = planMode; // 每轮同步计划模式（/plan 切换即时生效）
+      runOpts.permission = permission; // 每轮同步权限档位（/permission 切换即时生效）
+      runOpts.safetyGate?.setTier(permission); // 共用闸门（子代理）同步，与 TUI 路径一致
+      // 请求失败（网络/401/端点错误）时 runAgent 已提示并正常返回；这里再兜底捕获意外异常，
+      // 只在控制台提示、不把交互循环打崩
       await runAgent(currentClient, currentModel, messages, runOpts, out);
     } catch (err) {
-      console.log(red(`运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`));
+      const message = red(`运行出错：${(err as Error)?.message ?? String(err)}（可修正配置后重发）`);
+      if (out instanceof MiniOutput) out.print(message); else console.log(message);
+    } finally {
+      inTurn = false;
+      miniBuffer?.deferInterrupts();
     }
-    inTurn = false;
     await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件
     // 自动 git commit（config autoCommit，Aider 原子提交）：有改动则提交（消息 = 本轮用户消息）
     if (runOpts.cfg?.autoCommit) {

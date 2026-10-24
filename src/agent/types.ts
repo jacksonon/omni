@@ -76,13 +76,13 @@ export interface RunOptions {
    */
   abortSignal?: AbortSignal;
   /**
-   * 运行中打断（steer，Cmd/Ctrl+Enter）消息槽：交互层（TUI interactive）在运行中按
+   * 运行中打断（steer，Cmd/Ctrl+Enter）消息槽：交互层（TUI / mini）在运行中按
    * 修饰键+Enter 时把消息写进槽并 abort 当前流；loop 在流中断（AbortError）后经
    * takeInterrupt 取走消息、push 进 messages（作为当前轮的新 user 消息）并在
    * **同一轮内继续**——模型直接回答打断消息，不结束本轮（轮数不增）。
    * interruptPending 为只读探测（判断 abort 是打断还是取消：Esc 取消时
    * 槽为空 → 优雅结束本轮）。回合自然结束时槽中残留的消息由交互层转入待发送
-   * 列表（steer 插最前，下一轮发送）——不丢失。console 端不设置（无打断入口）。
+   * 列表（steer 插最前，下一轮发送）——不丢失。普通 console 端不设置。
    */
   interruptPending?: () => boolean;
   takeInterrupt?: () => string | null;

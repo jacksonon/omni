@@ -1,7 +1,8 @@
+import { isMiniSteerKey, miniExtendedKey, type MiniInputActions, type MiniInputKey, type MiniPendingInput } from './mini-input.js';
 import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
 import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /** mini 输入区装饰：原生 readline 负责编辑，显示层补灰底、占位与两行状态。 */
-import { fuzzySlashMatch, MINI_SLASH_DESCRIPTIONS } from './picker.js';
+import { fuzzySlashMatch, matchMention, MINI_SLASH_DESCRIPTIONS } from './picker.js';
 import { formatTokenCount } from '../config/model-context.js';
 import { bold, dim, useColor } from '../ui.js';
 import { visualWidth } from '../tui/width.js';
@@ -41,6 +42,27 @@ export function miniComposerStatus(status: MiniComposerStatus, width: number): s
   return `\x1b[38;2;215;180;124m${colored}\x1b[0m`;
 }
 
+/** 跟进消息属于输入区上方的临时对话流；消费后由正式用户消息接替。 */
+export function miniPendingRows(items: readonly MiniPendingInput[], width: number, limit: number): string[] {
+  if (items.length === 0 || limit < 2) return [];
+  const rows: string[] = [];
+  const steering = items.filter(item => item.mode === 'steer');
+  const queued = items.filter(item => item.mode === 'queue');
+  if (steering.length) {
+    rows.push(bold('• Steering current turn'));
+    for (const item of steering) rows.push(dim(`  ↳ ${item.text.replace(/\s+/g, ' ')}`));
+  }
+  if (queued.length) {
+    rows.push(bold('• Queued follow-up inputs'));
+    for (const item of queued) rows.push(dim(`  ↳ ${item.text.replace(/\s+/g, ' ')}`));
+    rows.push(dim('  ↑ edit last queued message'));
+  }
+  const visible = rows.length > limit
+    ? [rows[0]!, dim(`  … ${items.length} pending messages`), ...(limit > 2 ? rows.slice(-(limit - 2)) : [])]
+    : rows;
+  return visible.map(row => truncateToWidth(row, Math.max(1, width - 1)));
+}
+
 /** Node promises readline 用 Symbol 方法，旧运行时用字符串别名。 */
 function methodKey(rl: object, name: string): string | symbol | undefined {
   for (let proto: object | null = rl; proto; proto = Object.getPrototypeOf(proto)) {
@@ -59,7 +81,7 @@ export interface MiniComposer {
   dispose(): void;
 }
 
-export function installMiniComposer(input: object, getStatus: () => MiniComposerStatus): MiniComposer | null {
+export function installMiniComposer(input: object, getStatus: () => MiniComposerStatus, getActions: () => MiniInputActions | undefined = () => undefined): MiniComposer | null {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
   // readline 的内部绘制方法仅用于包裹渲染，不修改 line/cursor 的编辑语义。
   const rl = input as Record<string | symbol, any>;
@@ -84,6 +106,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   let renderedWidth = out.columns || 80;
   let renderedHeight = out.rows || 24;
   let menuHeight = 0;
+  let pendingHeight = 0;
   let selected = 0;
   let lastQuery = '';
   let dismissedFor: string | null = null;
@@ -114,6 +137,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     contentAnchor = false;
     padded = false;
     menuHeight = 0;
+    pendingHeight = 0;
     rl.prevRows = 0;
     visible = false;
     return true;
@@ -145,7 +169,8 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     const commands = suggestions();
     const endRows = positions().end.rows;
     const height = Math.max(0, Math.min(8, (out.rows || 24) - endRows - 8, commands.length));
-    const inputHeight = endRows + 5 + (height ? height + 2 : 0);
+    const pendingRows = miniPendingRows(getActions()?.pending() ?? [], width, Math.max(0, (out.rows || 24) - endRows - 8 - (height ? height + 2 : 0)));
+    const inputHeight = endRows + 5 + (height ? height + 2 : 0) + pendingRows.length;
     if (contentAnchor && (resized || inputHeight !== anchoredHeight)) anchorNext = true;
     const anchorFrame = anchorNext && out.writableCorked === 0;
     if (anchorNext) {
@@ -156,21 +181,22 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       }
       if (!restoreContent() && visible) {
         const { pos } = positions();
-        out.write(`${move(-(pos.rows + menuHeight + (padded ? 1 : 0)))}\r\x1b[0m\x1b[0J`);
+        out.write(`${move(-(pos.rows + menuHeight + pendingHeight + (padded ? 1 : 0)))}\r\x1b[0m\x1b[0J`);
       }
       anchoredHeight = inputHeight;
       dockMiniViewport(out, inputHeight);
       contentAnchor = true;
       menuHeight = 0;
+      pendingHeight = 0;
       padded = false;
       visible = false;
       rl.prevRows = 0;
     }
     selected = Math.min(selected, Math.max(0, commands.length - 1));
     // 面板与输入共用一块受控区域；行数变更先清旧块，再顺序重画，不覆盖聊天记录。
-    const rebuild = menuHeight > 0 || height > 0;
+    const rebuild = menuHeight > 0 || height > 0 || pendingHeight > 0 || pendingRows.length > 0;
     if (rebuild) {
-      out.write(`\x1b[0m${move(-((rl.prevRows || 0) + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
+      out.write(`\x1b[0m${move(-((rl.prevRows || 0) + menuHeight + pendingHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
       rl.prevRows = 0;
       const width = out.columns || 80;
       const start = Math.max(0, Math.min(selected - Math.floor(height / 2), commands.length - height));
@@ -184,6 +210,8 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
         out.write(`${color}${row}\x1b[K\x1b[0m\n\r`);
       }
       menuHeight = height ? height + 2 : 0;
+      for (const row of pendingRows) out.write(`\x1b[0m${row}\x1b[K\n\r`);
+      pendingHeight = pendingRows.length;
     }
     if (!padded || rebuild) {
       out.write(`${bg()}\x1b[K\n\r\x1b[0m`);
@@ -204,7 +232,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     // 用换行分配页底空间，再按相对行归位；终端滚屏后仍停在原输入字符上。
     out.write(`${bg()}\n\r\x1b[K\x1b[0m\n\r\x1b[0J`);
     out.write(miniComposerStatus(getStatus(), width));
-    out.write(`\n\r${dim(truncateToWidth(menuHeight ? '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭' : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 轨迹', Math.max(1, width - 1)))}`);
+    out.write(`\n\r${dim(truncateToWidth(menuHeight ? '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭' : getStatus().running ? '  tab queue · cmd/ctrl+enter steer · ↑ 编辑最后一条 queue' : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 轨迹', Math.max(1, width - 1)))}`);
     out.write(`${move(-(end.rows - pos.rows + 3))}${restoreColumn(pos.cols)}\x1b[0m`);
     visible = true;
     generation++;
@@ -213,9 +241,70 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       out.uncork();
     }
   };
-  rl[ttyKey] = function(text: string, key?: { name?: string; ctrl?: boolean }) {
+  const clearInput = () => {
+    if (restoreContent()) return;
+    if (!visible) { out.write('\r\x1b[2K'); return; }
+    const { pos } = positions();
+    out.write(`\x1b[0m${move(-(pos.rows + menuHeight + pendingHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
+    menuHeight = 0;
+    pendingHeight = 0;
+    padded = false;
+    rl.prevRows = 0;
+    visible = false;
+  };
+  rl[ttyKey] = function(text: string, key?: MiniInputKey) {
+    if (key?.miniBuffered) return;
+    const decoded = miniExtendedKey(key?.sequence ?? text ?? '');
+    if (decoded?.release) {
+      if (key) Object.assign(key, { name: undefined, ctrl: false, meta: false, super: false, miniHandled: true });
+      return;
+    }
+    if (decoded) {
+      key ??= {};
+      Object.assign(key, decoded);
+      text = decoded.super && decoded.name !== 'return' ? '' : decoded.text;
+    }
+    const actions = suspended ? undefined : getActions();
+    const enter = key?.name === 'return' || key?.name === 'enter';
+    const line = rl.line as string;
+    const resetDraft = () => {
+      clearInput();
+      rl.line = ''; rl.cursor = 0; rl.prevRows = 0;
+    };
+    if (actions && enter && (key?.shift || key?.meta) && !isMiniSteerKey(key)) {
+      if (key) key.miniHandled = true;
+      resetDraft();
+      actions.continueLine(line);
+      rl[refreshKey]();
+      return;
+    }
+    if (actions && key?.name === 'up' && !line && !key.ctrl && !key.meta && !key.super) {
+      const previous = actions.editLastQueued();
+      if (previous !== null) {
+        resetDraft();
+        rl.line = previous; rl.cursor = previous.length;
+        rl[refreshKey]();
+        return;
+      }
+    }
+    const tabMessage = actions && key?.name === 'tab' && !key.ctrl && !key.shift && !key.meta && !key.super && !!line.trim() &&
+      !line.trimStart().startsWith('/') && !matchMention(line, process.cwd(), rl.cursor);
+    const steer = actions && isMiniSteerKey(key);
+    if (actions && actions.busy() &&
+        (steer || tabMessage || (enter && !line.trimStart().startsWith('/')))) {
+      if (key) key.miniHandled = true;
+      resetDraft();
+      actions.submit(line, steer ? 'steer' : 'queue');
+      rl[refreshKey]();
+      return;
+    }
+    if (tabMessage || steer) {
+      key ??= {};
+      key.name = 'return'; key.ctrl = false; key.super = false;
+      text = '\r';
+    }
     const commands = suggestions();
-    if (commands.length && !key?.ctrl) {
+    if (commands.length && !key?.ctrl && !key?.super) {
       if (key?.name === 'up' || key?.name === 'down') {
         selected = (selected + (key.name === 'up' ? -1 : 1) + commands.length) % commands.length;
         rl[refreshKey]();
@@ -287,16 +376,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       rl.prevRows = 0;
       return true;
     },
-    clearInput() {
-      if (restoreContent()) return;
-      if (!visible) { out.write('\r\x1b[2K'); return; }
-      const { pos } = positions();
-      out.write(`\x1b[0m${move(-(pos.rows + menuHeight + (padded ? 1 : 0)))}\r\x1b[0J`);
-      menuHeight = 0;
-      padded = false;
-      rl.prevRows = 0;
-      visible = false;
-    },
+    clearInput,
     dispose,
   };
 }

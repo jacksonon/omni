@@ -332,7 +332,7 @@ async function runAgentInner(
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
-          output.onUserMessage(interrupt);
+          output.onUserMessage(interrupt, 'steer');
           opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue;
@@ -586,7 +586,7 @@ async function runAgentInner(
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
-          output.onUserMessage(interrupt);
+          output.onUserMessage(interrupt, 'steer');
           opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue; // 下一轮循环：模型看到打断消息并回答
@@ -712,6 +712,7 @@ async function runAgentInner(
     // 安全护栏（审批/审计）逐调用独立。
     const calls = assistantMsg.tool_calls!;
     const toolsT0 = Date.now();
+    const batchSignal = opts.abortSignal;
     // 工具配对序号（跨 step 递增，会话内唯一）：并行工具结果可能乱序到达，
     // 前端按 toolSeq 把 tool.start/tool.result 配到同一张卡片（不能靠到达顺序）
     let toolSeq = 0;
@@ -732,6 +733,7 @@ async function runAgentInner(
             if (!parsed.ok) {
               return `错误：工具参数不是合法 JSON：${call.function.arguments}`;
             }
+            if (batchSignal?.aborted) return '已取消：工具调用所属回合已中断';
             const seq = ++toolSeq;
             output.onToolStep(step, maxSteps, tool.name, formatToolCall(tool.name, parsed.args), parsed.args, seq);
             // 轨迹：工具调用（callId = OpenAI 调用 id，与 tool/result 天然配对）
@@ -751,6 +753,7 @@ async function runAgentInner(
             // 安全护栏过闸：拒绝 → 结果回传模型（自我纠错）；需要审批 → 用户决定
             //（hook 已拦截则跳过闸门与执行——规则型拦截是硬性的）
             const gate = hookBlocked ? null : await safety.gate(tool, args);
+            if (batchSignal?.aborted) return '已取消：工具调用所属回合已中断';
             let result: string;
             if (hookBlocked) {
               result = `已拦截（hook）：${hookBlocked}\n请向用户说明情况，由其决定如何继续。`;
@@ -768,13 +771,16 @@ async function runAgentInner(
                   ...(opts.sessionPath ? { sessionPath: opts.sessionPath } : {}),
                   ...(tool.name === 'run_command' && output.onCommandOutput
                     ? {
-                        onCommandOutput: (line: string, isErr: boolean) =>
-                          output.onCommandOutput!(line, isErr, seq),
+                        onCommandOutput: (line: string, isErr: boolean) => {
+                          if (!batchSignal?.aborted) output.onCommandOutput!(line, isErr, seq);
+                        },
                       }
                     : {}),
                 };
                 result = await tool.execute(args, toolCtx);
+                if (batchSignal?.aborted) return result;
               } catch (err: any) {
+                if (batchSignal?.aborted) return '已取消：工具调用所属回合已中断';
                 // 自我纠错：把错误信息喂回模型，让它自己修正
                 result = `执行失败：${err?.message ?? err}`;
                 // PostToolUseFailure（1.0 P1-1）：失败诊断提示追加回传，加速自修复
@@ -844,6 +850,7 @@ async function runAgentInner(
                 },
               };
             }
+            if (batchSignal?.aborted) return result;
             output.onToolResult(
               !TOOL_ERROR_PREFIX.test(result),
               result.length,
@@ -870,7 +877,7 @@ async function runAgentInner(
         const interrupt = opts.takeInterrupt?.() ?? null;
         if (interrupt) {
           messages.push({ role: 'user', content: interrupt });
-          output.onUserMessage(interrupt);
+          output.onUserMessage(interrupt, 'steer');
           opts.events?.user(interrupt, 'interrupt'); // 轨迹：打断消息进当前轮
           opts.rearmAbort?.(); // 换新信号：abort 已消费，后续请求/取消用新信号
           continue; // 打断：下一轮循环，模型看到打断消息并回答

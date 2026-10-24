@@ -654,6 +654,9 @@ export function miniSuite(): TestSuite {
     const rows = formatShortcutsHelp();
     suite.assert(rows.length >= 5 && rows.some((l) => l.includes('Ctrl+R')), '覆盖主要按键');
     suite.assert(rows.some((l) => l.includes('\\ 续行')), '续行反斜杠字面正确（非转义吞字）');
+    const miniRows = formatShortcutsHelp(true).join('\n');
+    suite.assert(miniRows.includes('queue') && miniRows.includes('steer') && miniRows.includes('Cmd+Enter'), 'mini 帮助展示 queue / steer 快捷键');
+    suite.assert(!rows.join('\n').includes('steer'), '普通 console 帮助不展示 mini 专属功能');
   });
 
   suite.test('omni completion：脚本内容 + 真解释器语法校验', () => {
@@ -1547,6 +1550,24 @@ export function miniSuite(): TestSuite {
       child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
     });
     suite.assert(result.code === 0, '普通/短窄窗口：普通对话、流式、工具、中断、命令取消与草稿编辑', result.output);
+  });
+
+  suite.test('端到端：mini queue 列表编辑与同轮 steer（PTY）', async () => {
+    for (const [width, height] of [[100, 40], [50, 24]]) {
+      const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+        const child = spawn('python3', ['scripts/feature-tests/mini-follow-up-pty.py'], {
+          cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, OMNI_FT_WIDTH: String(width), OMNI_FT_HEIGHT: String(height) },
+        });
+        let output = '';
+        child.stdout.on('data', data => output += data);
+        child.stderr.on('data', data => output += data);
+        const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
+      });
+      suite.assert(result.code === 0, `${width}x${height}：FIFO/编辑、请求/流式/工具阶段 steer、连续插话、取消、补全与组合键`, result.output);
+    }
   });
 
   suite.test('端到端：mini -i 交互首轮图片附件（codex -i，全局通道）', async () => {

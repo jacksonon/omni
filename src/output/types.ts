@@ -135,7 +135,7 @@ export interface Output {
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
   /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */
-  onUserMessage(text: string): void;
+  onUserMessage(text: string, mode?: 'queue' | 'steer'): void;
   /** 交互模式：一轮对话结束（TUI 插入分隔空行；console 补空行；可选 reason: 'completed' | 'aborted'） */
   onTurnEnd(reason?: 'completed' | 'aborted' | string): void;
   /** 交互模式：正在等待用户输入（TUI 更新状态栏；console 无操作） */

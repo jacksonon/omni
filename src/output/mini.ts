@@ -1,3 +1,4 @@
+import { ENABLE_MINI_KEYBOARD, DISABLE_MINI_KEYBOARD, type MiniInputActions, type MiniSubmitMode } from '../cli/mini-input.js';
 import { miniPanelBackground } from '../cli/mini-theme.js';
 import { pickFromList, type PickerItem, type PickerOptions } from '../cli/picker.js';
 import { tokenRate, validRateSample } from './token-rate.js';
@@ -898,10 +899,14 @@ export class MiniOutput implements Output {
     resume(): void;
     write(data: string | null, key?: { ctrl?: boolean; name?: string }): void;
     line: string;
+    closed?: boolean;
     /** preserveCursor=true 时不要把光标重置为 0（否则轮内打的字会被推到行首） */
     prompt(preserveCursor?: boolean): void;
   } | null = null;
   private composer: MiniComposer | null = null;
+  private inputActions?: MiniInputActions;
+
+  setInputActions(actions: MiniInputActions): void { this.inputActions = actions; }
   private composerStatus: (() => Omit<MiniComposerStatus, 'running'>) | null = null;
 
   setComposerStatus(provider: () => Omit<MiniComposerStatus, 'running'>): void {
@@ -947,6 +952,7 @@ export class MiniOutput implements Output {
 
   /** 轮内输出前：擦掉当前 `› ` 输入行（光标停在行首，后续输出写在它上面） */
   private preOut(): void {
+    if (this.rl?.closed) { this.endInputCapture(); return; }
     if (!this.capturing || this.outDepth++ > 0) return;
     // 把清输入、正文更新、恢复输入合成同一帧，避免终端显示中间的空白输入区。
     process.stdout.cork();
@@ -1026,7 +1032,7 @@ export class MiniOutput implements Output {
 
   private beginInputCapture(): void {
     if (this.capturing || this.yieldedInput) return;
-    if (!this.rl || !this.live.active) return;
+    if (!this.rl || this.rl.closed || !this.live.active) return;
     this.capturing = true;
     // 输入侧零接管：首个输出到达时 preOut/postOut 会自然画出输入行。
     this.live.pre = () => this.preOut();
@@ -1060,8 +1066,8 @@ export class MiniOutput implements Output {
     // 审批/提问用的是另一个 readline：确认回车若同时进主 rl，会被 for-await
     // 缓冲成下一轮自动发送（实锤过的真 bug）。这里把主 rl 的 keypress 请走，
     // 审批结束后 resumeInput 原样装回（解码器靠自管理恢复，raw 不动）。
-    this.savedKeypress = (process.stdin.listeners('keypress') as unknown as ((...args: any[]) => void)[]);
-    process.stdin.removeAllListeners('keypress');
+    this.savedKeypress = process.stdin.listeners('keypress').filter(fn => !(fn as { miniKeyNormalizer?: boolean }).miniKeyNormalizer) as ((...args: any[]) => void)[];
+    for (const listener of this.savedKeypress) process.stdin.off('keypress', listener);
   }
 
   private resumeInput(): void {
@@ -1077,13 +1083,14 @@ export class MiniOutput implements Output {
     resume(): void;
     write(data: string | null, key?: { ctrl?: boolean; name?: string }): void;
     line: string;
+    closed?: boolean;
     prompt(preserveCursor?: boolean): void;
   }): void {
     this.rl = rl;
     this.composer = installMiniComposer(rl, () => ({
       ...(this.composerStatus?.() ?? { model: 'Omni', plan: false }),
-      running: this.capturing || this.turnStart !== null,
-    }));
+      running: !!this.inputActions?.busy() || this.capturing || this.turnStart !== null,
+    }), () => this.inputActions);
   }
 
   /**
@@ -1102,7 +1109,10 @@ export class MiniOutput implements Output {
     this.live.clear();
     this.print('');
     this.print(dim('正在打开外部编辑器组稿（存盘退出回填 `:wq`，放弃用 `:q!`）…'));
-    const res = composeInEditor(initial, cmd);
+    if (this.interactive) process.stdout.write(DISABLE_MINI_KEYBOARD);
+    let res: ReturnType<typeof composeInEditor>;
+    try { res = composeInEditor(initial, cmd); }
+    finally { if (this.interactive) process.stdout.write(ENABLE_MINI_KEYBOARD); }
     if (!res.ok) {
       this.print(dim(`外部编辑器：${res.error}`));
       this.rl.prompt();
@@ -1447,13 +1457,13 @@ export class MiniOutput implements Output {
     toolSeq?: number,
     totalLines?: number
   ): void {
-    this.turnStats.toolCalls += 1;
-    if (!this.opts.stream) return;
+    if (!this.opts.stream) { this.turnStats.toolCalls += 1; return; }
     const t = this.tool;
+    if (!t || (toolSeq != null && toolSeq !== t.id)) return;
     this.tool = null;
+    this.turnStats.toolCalls += 1;
     this.reasoning?.end();
     this.reasoning = null;
-    if (!t || (toolSeq != null && toolSeq !== t.id)) return;
 
     const width = termWidth();
     // 记录最近工具完整输出（供 Ctrl+O 查看，避免 Ctrl+T 全量轨迹刷屏）
@@ -1509,31 +1519,37 @@ export class MiniOutput implements Output {
 
   // ── 用户消息 / 回合收尾 ────────────────────────────────────────
   /** 用户消息：首行 `› ` + 续行 2 空格缩进 + 前后空行 */
-  onUserMessage(text: string): void {
-    this.answer.end();
-    this.turnCount += 1;
-    this.answerEnded = false;
-    // 折行后回显可能多行：先算出折后行数，一次擦掉 readline 回显的整块——
-    // 让"输入 → 提交 → 落进对话流"只出现一次（回显与对话流用同一断点，行数一致）。
-    const rows = text.split('\n').flatMap((l) => foldRows(l));
-    if (this.interactive && this.live.active) {
-      if (!this.composer?.clearSubmitted()) process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
-    }
-    // 轮末已补过输入区间距（gapOpen=true）→ 不再重复补行；否则沿用原「前后空行」行为
-    if (!this.gapOpen) this.print('');
-    const messageRow = (row: string) => {
-      this.print(isTTY && useColor ? `${miniPanelBackground()}${row}\x1b[K\x1b[0m` : row);
-    };
-    // 历史用户消息与编辑区一样，上下各保留一行同色内边距。
-    if (isTTY) messageRow('');
-    rows.forEach((line, i) => messageRow(`${i === 0 ? '› ' : CONT_INDENT}${line}`));
-    if (isTTY) messageRow('');
-    this.print('');
-    this.gapOpen = true;
-    if (this.interactive) {
-      // 检查点与上下文准备可能异步等待，提交后立即恢复页底输入。
-      this.beginInputCapture();
-      this.rl?.prompt(true);
+  onUserMessage(text: string, mode?: MiniSubmitMode): void {
+    const framed = this.capturing;
+    if (framed) this.preOut();
+    try {
+      this.answer.end();
+      this.tool = null;
+      if (mode !== 'steer') this.turnCount += 1;
+      this.answerEnded = false;
+      const prefix = mode ? `› [${mode === 'queue' ? 'Queue' : 'Steer'}] ` : '› ';
+      const indent = ' '.repeat(visualWidth(prefix));
+      const rows = text.split('\n').flatMap(line => foldRows(line, Math.max(1, cols() - visualWidth(prefix))));
+      if (this.interactive && this.live.active) {
+        // Queue/steer 由 composer 接收，没有 readline 提交回显可擦除。
+        if (mode) this.composer?.clearInput();
+        else if (!this.composer?.clearSubmitted()) process.stdout.write(`\x1b[${rows.length}A\r\x1b[0J`);
+      }
+      if (!this.gapOpen) this.print('');
+      const messageRow = (row: string) => {
+        this.print(isTTY && useColor ? `${miniPanelBackground()}${row}\x1b[K\x1b[0m` : row);
+      };
+      if (isTTY) messageRow('');
+      rows.forEach((line, i) => messageRow(`${i === 0 ? prefix : indent}${line}`));
+      if (isTTY) messageRow('');
+      this.print('');
+      this.gapOpen = true;
+      if (this.interactive) {
+        this.beginInputCapture();
+        if (!framed && !this.rl?.closed) this.rl?.prompt(true);
+      }
+    } finally {
+      if (framed) this.postOut();
     }
   }
 

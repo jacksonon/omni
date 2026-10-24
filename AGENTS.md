@@ -215,6 +215,8 @@ for step in 1..maxSteps:
 
 - mini `/` 菜单由 composer 在输入块上方绘制两列命令/说明，蓝底选中，↑↓ 导航、Tab 回填、Enter 执行、Esc 关闭；`/model`、`/variants`、`/permission` 等二级菜单在页底输入区内联展开，输入块与面板共用 `src/cli/mini-viewport.ts` 定位；打开、导航、过滤和 resize 均贴底，面板期间暂停主 readline 绘制；复用主题自适应标题面板与蓝底选择器；审批、单选/多选提问及回滚/删除确认共用此样式（多选用空格勾选），不切备用屏跳至顶部；数据来自 Omni 配置。输入区每次显示均由 composer 统一定位页底，覆盖普通对话、准备阶段、流式输出、工具、结束/取消及 slash 命令，正文保留独立输出锚点；命令输入和菜单均为临时区域，Esc 取消不写入任何记录，模型/思考级别/权限确认只追加一行圆点结果；启动与菜单收起禁止用真实空行撑高历史。
 
+- mini 运行中 Tab / Enter 将普通文本加入显式 queue，Cmd+Enter（macOS）/ Ctrl+Enter 发送同轮 steer；`src/cli/mini-input.ts` 管理 FIFO 与增强键盘解码。待发送列表在输入区上方显示，空输入 ↑ 编辑最后一条 queue，实际发送以 `[Queue]` / `[Steer]` 写入对话流；`/` 与 `@` 的 Tab 补全保留。修改须通过 `mini-follow-up-pty.py` 验证流式/工具阶段、连续 steer、取消与键盘释放事件。
+
 - mini 轮内刷新把清除输入、更新正文、恢复输入合成同步显示帧（stdout cork + DEC 2026）；同一流式增量的 clear/commit/update 共用最外层帧，禁止暴露空白输入区的中间状态。
 
 - mini 思考显示蓝色圆点与 `Think` 标题，续行与思考内容对齐，正式回答继续使用 `•`；统计行与输入块之间保留一行外部留白。思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。

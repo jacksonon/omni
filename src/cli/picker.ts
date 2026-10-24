@@ -1,3 +1,4 @@
+import { miniExtendedKey } from './mini-input.js';
 import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
 import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /**
@@ -323,12 +324,15 @@ export function isShortcutsHelpRequest(text: string): boolean {
 }
 
 /** 快捷键帮助行（codex shortcut overlay 的 mini 版：只列本终端实际生效的键） */
-export function formatShortcutsHelp(): string[] {
+export function formatShortcutsHelp(mini = false): string[] {
   return [
     'Enter 发送 · \\ 续行（行尾反斜杠拼多行）',
     '! 开头直跑 shell（bash mode，不进模型）',
     '@ 提及文件/图片（Tab 补全），/ 斜杠命令（Tab 补全）',
-    'Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）',
+    ...(mini ? [
+      '运行中 Tab / Enter 加入 queue · Cmd+Enter（macOS）/ Ctrl+Enter steer 当前回合',
+      '空输入 ↑ 编辑最后一条 queue · / 与 @ 中 Tab 补全 · Ctrl+R 历史搜索',
+    ] : ['Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）']),
     'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹 · Ctrl+G 外部编辑器组稿 · 空行 Esc 取回上一条',
     'Ctrl+D 退出（与 /exit 同一收尾） · /quit 也是退出',
   ];
@@ -466,7 +470,7 @@ export async function pickFromList(
 
   return new Promise<number>((resolve) => {
     // 先挂自己的，再逐个摘掉保存的（own 占位，计数恒≥1）
-    const saved = [...stdin.listeners('keypress')] as ((...args: unknown[]) => void)[];
+    const saved = stdin.listeners('keypress').filter(fn => !(fn as { miniKeyNormalizer?: boolean }).miniKeyNormalizer) as ((...args: unknown[]) => void)[];
     let settled = false;
     const done = (n: number): void => {
       if (settled) return;
@@ -485,7 +489,11 @@ export async function pickFromList(
       for (const fn of saved) stdin.on('keypress', fn as (...args: unknown[]) => void);
       resolve(n);
     };
-    const onKey = (ch: unknown, key?: { name?: string; ctrl?: boolean; meta?: boolean }): void => {
+    const onKey = (ch: unknown, key?: { name?: string; ctrl?: boolean; meta?: boolean; sequence?: string; miniBuffered?: boolean }): void => {
+      if (key?.miniBuffered) return;
+      const decoded = miniExtendedKey(key?.sequence ?? (typeof ch === 'string' ? ch : ''));
+      if (decoded?.release) return;
+      if (decoded) { key = { ...key, ...decoded }; ch = decoded.text; }
       const name = key?.name ?? '';
       if (key?.ctrl && (name === 'c' || name === 'd')) {
         done(-1);

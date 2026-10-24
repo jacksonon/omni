@@ -1,3 +1,4 @@
+import { ENABLE_MINI_KEYBOARD, DISABLE_MINI_KEYBOARD, installMiniKeyNormalizer } from './mini-input.js';
 /**
  * omni mini：纯终端 CLI 模式（Codex CLI 形态）。
  *
@@ -102,6 +103,13 @@ export async function runMiniInteractive(
   out: Output
 ): Promise<void> {
   await detectMiniTheme();
+  const uninstallKeys = installMiniKeyNormalizer(process.stdin);
+  let keyboardEnabled = !!(process.stdin.isTTY && process.stdout.isTTY);
+  const restoreKeyboard = () => {
+    if (keyboardEnabled) { keyboardEnabled = false; process.stdout.write(DISABLE_MINI_KEYBOARD); }
+  };
+  if (keyboardEnabled) process.stdout.write(ENABLE_MINI_KEYBOARD);
+  process.once('exit', restoreKeyboard);
   const uninstall = installTranscriptViewer(
     runOpts,
     out instanceof MiniOutput ? (...a) => out.dumpLedger(...a) : undefined,
@@ -123,6 +131,9 @@ export async function runMiniInteractive(
   } finally {
     uninstall();
     uninstallEditor();
+    restoreKeyboard();
+    uninstallKeys();
+    process.off('exit', restoreKeyboard);
   }
 }
 
