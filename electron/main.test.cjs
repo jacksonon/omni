@@ -39,6 +39,9 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
     setFullScreenable(value) { this.fullScreenable = value; }
     setMaximizable(value) { this.maximizable = value; }
     setMinimizable(value) { this.minimizable = value; }
+    minimize() { this.minimized = true; }
+    maximize() { this.maximized = true; }
+    unmaximize() { this.maximized = false; }
   }
   class Tray extends EventEmitter { constructor() { super(); tray = this; } isDestroyed() { return false; } setToolTip(t) { this.tooltip = t; } setTitle() {} setContextMenu(menu) { this.menu = menu; } destroy() {} }
   class Note extends EventEmitter {
@@ -85,6 +88,7 @@ test('bot hidden startup, global shortcut, close-to-tray, full window share one 
     assert.equal(h.win.options.alwaysOnTop, true);
     assert.equal(h.win.options.skipTaskbar, true);
     assert.equal(h.win.options.roundedCorners, true);
+    assert.ok(h.win.bounds.height < 220, '初始窗口是单输入框高度');
     assert.equal(h.win.cookie.httpOnly, true);
     assert.equal(h.win.cookie.value, 'private-test-token');
     assert.match(h.win.webContents.mainFrame.url, /\/w\/abcd\/\?bot=1$/);
@@ -99,6 +103,12 @@ test('bot hidden startup, global shortcut, close-to-tray, full window share one 
     h.win.emit('close', { preventDefault() { prevented = true; } });
     assert.equal(prevented, true); assert.equal(h.win.visible, false);
     const sender = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    assert.equal(h.handlers.get('omni:desktop-info')(sender).compact, true);
+    await h.handlers.get('omni:bot-expand')(sender);
+    assert.ok(h.win.bounds.height > 300, '发送后展开为对话高度');
+    assert.equal(h.win.action.compact, false);
+    await h.handlers.get('omni:bot-compact')(sender);
+    assert.ok(h.win.bounds.height < 220, '新会话/隐藏回到单输入框');
     await h.handlers.get('omni:open-full')(sender);
     assert.equal(h.app.policy, 'regular'); assert.equal(h.win.skipTaskbar, false);
     assert.equal(h.win.alwaysOnTop, false);

@@ -3237,6 +3237,8 @@ async function newSession() {
   clearPendingMessages();
   clearMessages();
   $('#chat-title').textContent = t('session.new');
+  const cwd = state.status?.cwd;
+  if (cwd) $('#hero-workspace-name').textContent = cwd.split('/').filter(Boolean).pop() || t('ws.current');
   renderSessionList();
   renderWelcome();
   updateComposer();
@@ -5496,6 +5498,8 @@ document.addEventListener('keydown', (e) => {
 
 /* 纯发送（不检查 running 状态，由调用方保证）；text 为空但带附件也可发送 */
 async function doSend(text) {
+  // 快速输入框发出第一条消息时展开成对话卡片；主进程同步调整窗口高度。
+  if (desktopMode) { applyDesktopCompact(false); desktop?.expandBotWindow?.(); }
   input.value = '';
   autoResize();
   const atts = state.attachments.slice();
@@ -7595,7 +7599,15 @@ async function restoreServerSnapshot(reloadHistory) {
   await restorePending(snap);
 }
 
-function applyDesktopMode(bot) {
+function applyDesktopCompact(compact) {
+  document.body.classList.toggle('omni-bot-compact', desktopMode && compact === true);
+  requestAnimationFrame(() => {
+    if (state.autoFollow && !compact) scrollBottom(true);
+    if (compact) input.focus();
+  });
+}
+
+function applyDesktopMode(bot, compact = false) {
   desktopMode = bot === true;
   // `?bot=1` 表示这个 renderer 由 --bot 的无边框透明窗口创建；切到完整视图后
   // 仍沿用自定义窗口控件（frame 不能在运行时切换）。
@@ -7603,6 +7615,7 @@ function applyDesktopMode(bot) {
   document.body.classList.toggle('omni-bot', desktopMode);
   document.body.classList.toggle('omni-desktop-custom', customChrome);
   document.body.classList.toggle('omni-desktop-full', customChrome && !desktopMode);
+  applyDesktopCompact(compact);
   requestAnimationFrame(() => { if (state.autoFollow) scrollBottom(true); });
   input.focus();
 }
@@ -7625,6 +7638,19 @@ function initDesktopBridge() {
   $('#bot-open-full')?.addEventListener('click', () => desktop.openFullWindow());
   $('#bot-hide')?.addEventListener('click', () => desktop.hide());
   $('#bot-desktop-settings')?.addEventListener('click', openDesktopSettings);
+  $('#bot-expand')?.addEventListener('click', () => {
+    applyDesktopCompact(false);
+    desktop.expandBotWindow?.();
+  });
+  $('#bot-new')?.addEventListener('click', () => {
+    newSession()
+      .then(() => {
+        applyDesktopCompact(true);
+        desktop.compactBotWindow?.();
+        input.focus();
+      })
+      .catch((error) => notify(error.message, 'error'));
+  });
   $('#win-min')?.addEventListener('click', () => desktop.minimizeWindow?.());
   $('#win-max')?.addEventListener('click', () => desktop.toggleMaximizeWindow?.());
   $('#win-close')?.addEventListener('click', () => desktop.closeWindow?.());
@@ -7641,13 +7667,14 @@ function initDesktopBridge() {
     finally { button.disabled = false; }
   });
   desktop.onDesktopAction?.((action) => {
-    if (action.type === 'mode') applyDesktopMode(action.bot);
+    if (action.type === 'mode') applyDesktopMode(action.bot, action.compact === true);
+    if (action.type === 'compact') applyDesktopCompact(action.compact === true);
     if (action.type === 'focus') input.focus();
     if (action.type === 'settings') openSettings();
     if (action.type === 'desktop-settings') openDesktopSettings();
     if (action.type === 'session' && action.sessionId) selectSession(action.sessionId).then(() => input.focus()).catch((error) => notify(error.message, 'error'));
   });
-  desktop.desktopInfo().then((info) => applyDesktopMode(info.bot)).catch(() => {});
+  desktop.desktopInfo().then((info) => applyDesktopMode(info.bot, info.compact === true)).catch(() => {});
 }
 
 /* ---------------- 启动 ---------------- */

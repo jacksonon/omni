@@ -11,6 +11,8 @@ test('拔掉外接屏后窗口仍完整位于主屏可用区域', () => {
   assert.deepEqual(fitBounds({ x: 4000, y: -200, width: 1900, height: 1200 }, area, true), area);
   const small = fitBounds(undefined, { x: -1920, y: 0, width: 1920, height: 1080 }, true);
   assert.ok(small.x < 0 && small.x + small.width <= 0);
+  const compact = fitBounds(undefined, { x: 0, y: 25, width: 1280, height: 695 }, true, true);
+  assert.ok(compact.width <= 720 && compact.height >= 150 && compact.height < 220, 'compact bot 是单输入框高度');
 });
 test('IPC 仅信任同源 workspace 页面，拒绝外站和伪造前缀', () => {
   const server = 'http://127.0.0.1:3080';

@@ -13,6 +13,8 @@ const ROOT = path.join(__dirname, '..');
 const DIST_CJS = path.join(ROOT, 'dist', 'omni.cjs');
 let botMode = process.argv.includes('--bot');
 let resident = botMode;
+// 快速窗口初始只显示输入区；发送后展开为对话卡片，隐藏再唤起又回到输入态。
+let botCompact = botMode;
 let quitting = false;
 let mainWindow = null;
 let tray = null;
@@ -246,7 +248,7 @@ function setLogin(enabled) {
   } else app.setLoginItemSettings({ openAtLogin: enabled, ...(process.platform === 'win32' ? { path: process.execPath, args: ['--bot', '--hidden'], enabled } : {}) });
 }
 function desktopInfo() {
-  return { bot: botMode, shortcut: settings.shortcut, shortcutRegistered, openAtLogin: loginEnabled(), loginSupported: app.isPackaged, notifications: settings.notifications, platform: process.platform, connected };
+  return { bot: botMode, compact: botMode && botCompact, shortcut: settings.shortcut, shortcutRegistered, openAtLogin: loginEnabled(), loginSupported: app.isPackaged, notifications: settings.notifications, platform: process.platform, connected };
 }
 async function setBotSettings(input) {
   if (!input || typeof input !== 'object') throw new Error('设置格式无效');
@@ -279,20 +281,31 @@ async function setBotSettings(input) {
     updateTray(); throw err;
   }
 }
-function boundsForMode(bot, nearPointer) {
+function boundsForMode(bot, nearPointer, compact = false) {
   const saved = settings[bot ? 'botBounds' : 'fullBounds'];
   const display = nearPointer ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) : saved ? screen.getDisplayMatching(saved) : screen.getPrimaryDisplay();
-  return fitBounds(nearPointer ? saved && { ...saved, x: undefined, y: undefined } : saved, display.workArea, bot);
+  return fitBounds(nearPointer ? saved && { ...saved, x: undefined, y: undefined } : saved, display.workArea, bot, compact);
 }
 function rememberBounds() {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || mainWindow.isMaximized()) return;
+  // 快速输入态不是用户想要的对话尺寸，不能覆盖已保存的展开窗口位置。
+  if (botMode && botCompact) return;
   settings[botMode ? 'botBounds' : 'fullBounds'] = mainWindow.getBounds();
   try { saveSettings(); } catch (err) { logError(err.message); }
+}
+function setBotCompact(compact) {
+  if (!mainWindow || !botMode) return;
+  if (compact && !botCompact) { botCompact = false; rememberBounds(); }
+  botCompact = compact;
+  const target = boundsForMode(true, false, compact);
+  const current = mainWindow.getBounds();
+  mainWindow.setBounds(fitBounds({ ...target, x: current.x, y: current.y }, screen.getDisplayMatching(current).workArea, true, compact));
+  emitAction({ type: 'compact', compact });
 }
 async function createWindow() {
   const bot = botMode;
   mainWindow = new BrowserWindow({
-    ...boundsForMode(bot, false), minWidth: bot ? 380 : 640, minHeight: bot ? 340 : 480,
+    ...boundsForMode(bot, false, bot && botCompact), minWidth: bot ? 360 : 640, minHeight: bot ? 150 : 480,
     title: bot ? 'Omni Bot' : 'Omni', icon: path.join(__dirname, 'icon.png'), show: false,
     // ChatGPT 式快速窗口：无系统边框/标题栏，透明窗口画圆角卡片，置顶且不占任务栏。
     frame: !bot,
@@ -320,22 +333,39 @@ async function createWindow() {
     const scoped = workspaceUrl(url);
     if (scoped && connection && scoped !== connection.url) { connection = { ...connection, url: scoped }; observed = false; startEventObserver(); void pollServer(); }
   });
-  mainWindow.webContents.on('did-finish-load', () => emitAction({ type: 'mode', bot: botMode }));
+  mainWindow.webContents.on('did-finish-load', () => {
+    emitAction({ type: 'mode', bot: botMode });
+    emitAction({ type: 'compact', compact: botMode && botCompact });
+  });
   if (!connection) await connectWorkspace(workspace);
   else { await setConnectionCookie(); await mainWindow.loadURL(`${connection.url}/?bot=${botMode ? '1' : '0'}`); }
 }
 async function showWindow(bot = botMode, action) {
   try {
     if (connectPromise) await connectPromise;
+    const enteringBot = bot !== botMode;
+    const wasHidden = !mainWindow || !mainWindow.isVisible();
+    const wasBot = botMode, wasCompact = botCompact;
     if (!mainWindow) {
-      botMode = bot; connectPromise = createWindow();
+      botMode = bot; botCompact = bot;
+      connectPromise = createWindow();
       try { await connectPromise; } finally { connectPromise = null; }
+    } else if (bot && (enteringBot || wasHidden)) {
+      botCompact = true; // 每次从托盘/快捷键唤起都回到单输入框；展开态隐藏后也一样
+    } else if (!bot) {
+      botCompact = false;
     }
-    rememberBounds();
-    if (bot !== botMode) {
-      botMode = bot; mainWindow.setMinimumSize(bot ? 380 : 640, bot ? 340 : 480);
-      mainWindow.setBounds(boundsForMode(bot, bot)); mainWindow.setTitle(bot ? 'Omni Bot' : 'Omni'); emitAction({ type: 'mode', bot });
-    } else if (!mainWindow.isVisible()) mainWindow.setBounds(boundsForMode(bot, bot));
+    // 只保存用户真正调整过的展开视图；compact 高度不能覆盖 botBounds。
+    if (!wasBot && bot) rememberBounds();
+    if (wasBot && !bot && !wasCompact) rememberBounds();
+    if (enteringBot) {
+      botMode = bot;
+      mainWindow.setMinimumSize(bot ? 360 : 640, bot ? 150 : 480);
+      mainWindow.setTitle(bot ? 'Omni Bot' : 'Omni');
+    }
+    if (enteringBot || !mainWindow.isVisible()) {
+      mainWindow.setBounds(boundsForMode(bot, bot, bot && botCompact));
+    }
     if (bot) resident = true;
     mainWindow.setSkipTaskbar(bot);
     mainWindow.setAlwaysOnTop(bot, bot ? 'floating' : 'normal');
@@ -348,7 +378,10 @@ async function showWindow(bot = botMode, action) {
       if (!bot) app.dock?.show();
     }
     if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show(); mainWindow.focus(); emitAction(action || { type: 'focus' });
+    mainWindow.show(); mainWindow.focus();
+    emitAction({ type: 'mode', bot });
+    emitAction({ type: 'compact', compact: bot && botCompact });
+    if (action) emitAction(action);
   } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
 }
 async function reconnect() {
@@ -374,6 +407,8 @@ function installIPC() {
   handle('omni:window-minimize', () => mainWindow?.minimize());
   handle('omni:window-maximize', () => { if (!mainWindow) return; if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize(); });
   handle('omni:window-close', () => mainWindow?.close());
+  handle('omni:bot-expand', () => setBotCompact(false));
+  handle('omni:bot-compact', () => setBotCompact(true));
 }
 function createTray() {
   const file = process.platform === 'darwin' ? 'trayTemplate.png' : process.platform === 'win32' ? 'icon.ico' : 'icon.png';
@@ -417,7 +452,7 @@ else {
     updateTray();
     if (!process.argv.includes('--hidden') && !loginLaunch && mainWindow) await showWindow(botMode);
     pollTimer = setInterval(() => void pollServer(), 2000); powerMonitor.on('resume', () => void reconnect());
-    screen.on('display-removed', () => { if (mainWindow?.isVisible()) mainWindow.setBounds(boundsForMode(botMode, false)); });
+    screen.on('display-removed', () => { if (mainWindow?.isVisible()) mainWindow.setBounds(boundsForMode(botMode, false, botMode && botCompact)); });
     app.on('activate', () => void showWindow(botMode));
   });
   app.on('before-quit', () => { quitting = true; rememberBounds(); });

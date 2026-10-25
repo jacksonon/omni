@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）+ 纯终端 CLI 模式（`omni mini`，Codex CLI 形态）+ 统一共享 Server（`omni server`，TUI/mini/exec/Web/Electron 共用 broker，`--local` 回退）+ `omni bot` 菜单栏/托盘常驻、全局快捷键唤起（无边框透明圆角悬浮窗）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
+当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）+ 纯终端 CLI 模式（`omni mini`，Codex CLI 形态）+ 统一共享 Server（`omni server`，TUI/mini/exec/Web/Electron 共用 broker，`--local` 回退）+ `omni bot` 菜单栏/托盘常驻、全局快捷键唤起（无边框透明圆角悬浮窗，初始为单输入框）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；

@@ -14,10 +14,18 @@ function normalizeSettings(value) {
   }
   return result;
 }
-/** 显示器拔插或缩放改变后仍保证窗口完整位于可用区域。 */
-function fitBounds(saved, area, bot) {
-  const width = Math.min(Math.max(saved?.width || (bot ? 720 : 1200), bot ? 380 : 640), area.width);
-  const height = Math.min(Math.max(saved?.height || (bot ? 640 : 800), bot ? 340 : 480), area.height);
+/** 显示器拔插或缩放改变后仍保证窗口完整位于可用区域。compact = 只有输入框的快速窗口。 */
+function fitBounds(saved, area, bot, compact = false) {
+  const minWidth = compact ? 360 : bot ? 380 : 640;
+  const maxWidth = compact ? Math.min(area.width, 720) : area.width;
+  const defaultWidth = compact ? 640 : bot ? 720 : 1200;
+  const minHeight = compact ? 150 : bot ? 340 : 480;
+  const defaultHeight = compact ? 196 : bot ? 640 : 800;
+  const width = Math.min(Math.max(saved?.width || defaultWidth, minWidth), maxWidth);
+  // compact 是固定高度态：不能被上次展开保存的 640px 覆盖。
+  const height = compact
+    ? Math.min(Math.max(defaultHeight, minHeight), area.height)
+    : Math.min(Math.max(saved?.height || defaultHeight, minHeight), area.height);
   const x = Math.min(Math.max(saved?.x ?? Math.round(area.x + (area.width - width) / 2), area.x), area.x + area.width - width);
   const y = Math.min(Math.max(saved?.y ?? Math.round(area.y + (area.height - height) / 3), area.y), area.y + area.height - height);
   return { x, y, width, height };
