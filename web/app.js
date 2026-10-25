@@ -7669,6 +7669,9 @@ function initDesktopBridge() {
   desktop.onDesktopAction?.((action) => {
     if (action.type === 'mode') applyDesktopMode(action.bot, action.compact === true);
     if (action.type === 'compact') applyDesktopCompact(action.compact === true);
+    if (action.type === 'new-session') {
+      newSession().then(() => { applyDesktopCompact(true); input.focus(); }).catch((error) => notify(error.message, 'error'));
+    }
     if (action.type === 'focus') input.focus();
     if (action.type === 'settings') openSettings();
     if (action.type === 'desktop-settings') openDesktopSettings();

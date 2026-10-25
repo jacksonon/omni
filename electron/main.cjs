@@ -207,7 +207,9 @@ function updateTray() {
   if (process.platform === 'darwin') tray.setTitle(pendingCount ? '•' : status?.running ? '·' : '');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Omni · ${trayStatus()}`, enabled: false },
+    { label: '新建会话', click: () => newBotSession() },
     { label: `快速对话${shortcutRegistered ? ` (${settings.shortcut})` : ''}`, click: () => void showWindow(true) },
+    { label: '查看当前会话', click: () => revealBotSession() },
     { label: '打开完整窗口', click: () => void showWindow(false) },
     { label: '最近会话', enabled: recentSessions.length > 0, submenu: recentSessions.map(s => ({ label: (s.title || '未命名会话').slice(0, 70), click: () => void openSession(s.id, s.scope).catch(err => logError(err.message)) })) },
     { type: 'separator' },
@@ -384,6 +386,12 @@ async function showWindow(bot = botMode, action) {
     if (action) emitAction(action);
   } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
 }
+function newBotSession() {
+  void showWindow(true).then(() => { setBotCompact(true); emitAction({ type: 'new-session' }); });
+}
+function revealBotSession() {
+  void showWindow(true).then(() => setBotCompact(false));
+}
 async function reconnect() {
   if (connectPromise) return connectPromise;
   connectPromise = connectWorkspace(workspace, false);
@@ -420,7 +428,9 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: '文件', submenu: [
-      { label: '快速对话', click: () => void showWindow(true) }, { label: '打开完整窗口', click: () => void showWindow(false) },
+      { label: '新建会话', click: () => newBotSession() },
+      { label: '快速对话', click: () => void showWindow(true) }, { label: '查看当前会话', click: () => revealBotSession() },
+      { label: '打开完整窗口', click: () => void showWindow(false) },
       { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
       { label: '托盘与快捷键设置…', click: () => void showWindow(botMode, { type: 'desktop-settings' }) },
       { type: 'separator' }, { role: 'close' }, { role: 'quit', label: '退出 Omni' },

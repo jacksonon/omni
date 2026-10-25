@@ -20,7 +20,7 @@ function fitBounds(saved, area, bot, compact = false) {
   const maxWidth = compact ? Math.min(area.width, 720) : area.width;
   const defaultWidth = compact ? 640 : bot ? 720 : 1200;
   const minHeight = compact ? 150 : bot ? 340 : 480;
-  const defaultHeight = compact ? 196 : bot ? 640 : 800;
+  const defaultHeight = compact ? 214 : bot ? 640 : 800;
   const width = Math.min(Math.max(saved?.width || defaultWidth, minWidth), maxWidth);
   // compact 是固定高度态：不能被上次展开保存的 640px 覆盖。
   const height = compact

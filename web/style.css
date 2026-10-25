@@ -88,27 +88,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .bot-toolbar { display: none; }
 #bot-shell { display: contents; }
 body.omni-bot { display: flex; flex-direction: column; background: transparent; }
-/* ChatGPT 式悬浮卡片：窗口透明，10px 外留白露出桌面；圆角/阴影/裁切都在 shell 上。 */
+/* ChatGPT 式悬浮卡片：窗口透明，10px 外留白露出桌面。 */
 body.omni-bot #bot-shell {
+  position: relative;
   display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 10px;
-  overflow: hidden; border: 1px solid var(--line-2); border-radius: 20px;
+  overflow: hidden; border: 0; border-radius: 20px;
   background: var(--bg);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, .34), 0 3px 14px rgba(0, 0, 0, .18);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, .30), 0 3px 14px rgba(0, 0, 0, .16);
+  -webkit-app-region: drag;
   animation: bot-float-in .16s var(--ease-out);
 }
 @keyframes bot-float-in { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: none; } }
 html:has(body.omni-bot) { background: transparent; }
-body.omni-bot .bot-toolbar { display: flex; flex: 0 0 44px; align-items: center; gap: 14px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); background: var(--surface); -webkit-app-region: drag; user-select: none; }
-body.omni-bot .bot-brand { cursor: default; }
-body.omni-bot #bot-expand { display: none; }
-/* 快速输入态：窗口只有 196px 高，只保留工作区选择 + 输入框。 */
-body.omni-bot.omni-bot-compact #bot-shell { border-radius: 20px; }
-body.omni-bot.omni-bot-compact .bot-toolbar { flex-basis: 38px; }
-body.omni-bot.omni-bot-compact .bot-toolbar-hint { display: none; }
-body.omni-bot.omni-bot-compact #bot-expand { display: inline-flex; }
+/* Bot 不需要顶部导航栏；拖动由卡片空白/对话标题栏承担，操作走托盘菜单。 */
+body.omni-bot .bot-toolbar { display: none !important; }
+body.omni-bot button, body.omni-bot input, body.omni-bot textarea, body.omni-bot select,
+body.omni-bot .hero-workspace, body.omni-bot .composer-card, body.omni-bot .messages,
+body.omni-bot #chat-header, body.omni-bot .modal { -webkit-app-region: no-drag; }
+body.omni-bot #chat-header { -webkit-app-region: drag; }
+body.omni-bot #chat-header button { -webkit-app-region: no-drag; }
+/* 快速输入态：透明外壳，只有工作区选择 + 输入卡片，不再有外层黑色边框。 */
+body.omni-bot.omni-bot-compact #bot-shell { background: transparent; box-shadow: none; overflow: visible; border-radius: 0; }
+body.omni-bot.omni-bot-compact #bot-shell::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 10px;
+  z-index: 5; -webkit-app-region: drag;
+}
+body.omni-bot.omni-bot-compact .app-frame,
+body.omni-bot.omni-bot-compact .conversation-shell,
+body.omni-bot.omni-bot-compact .scroll-body { background: transparent; }
 body.omni-bot.omni-bot-compact #chat-header,
 body.omni-bot.omni-bot-compact .messages,
-body.omni-bot.omni-bot-compact .composer-meta,
 body.omni-bot.omni-bot-compact .composer-note,
 body.omni-bot.omni-bot-compact .hero-heading,
 body.omni-bot.omni-bot-compact .hero-glow,
@@ -124,13 +133,13 @@ body.omni-bot.omni-bot-compact .hero-workspace {
 body.omni-bot.omni-bot-compact .hero-workspace:hover { background: var(--surface-hover); }
 body.omni-bot.omni-bot-compact .hero-workspace svg { width: 14px; height: 14px; flex: none; }
 body.omni-bot.omni-bot-compact .hero-workspace svg:last-child { width: 11px; height: 11px; color: var(--text-caption); }
-body.omni-bot.omni-bot-compact .composer-card { min-height: 58px; border-radius: 16px; }
+body.omni-bot.omni-bot-compact .composer-card {
+  min-height: 0; border: 1px solid var(--line); border-radius: 18px;
+  background: var(--surface); box-shadow: 0 18px 52px rgba(0, 0, 0, .30);
+}
+body.omni-bot.omni-bot-compact .composer-meta { display: flex !important; }
 body.omni-bot.omni-bot-compact .composer-row { flex-wrap: nowrap; gap: 6px; padding: 2px 6px 6px; }
 body.omni-bot.omni-bot-compact .composer-trailing { flex: 0 0 auto; margin-left: auto; }
-body.omni-bot.omni-bot-compact #input { min-height: 28px; max-height: 72px; }
-body.omni-bot.omni-bot-compact .composer-tools .perm-pill,
-body.omni-bot.omni-bot-compact .composer-tools .plan-toggle,
-body.omni-bot.omni-bot-compact #composer-model { display: none; }
 /* 自定义无边框窗口的完整视图：顶栏可拖动，右侧提供最小化/最大化/关闭。 */
 .desktop-window-actions { display: none; align-items: center; gap: 2px; }
 body.omni-desktop-custom.omni-desktop-full #chat-header { -webkit-app-region: drag; }
