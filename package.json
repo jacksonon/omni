@@ -105,6 +105,7 @@
     "prepack": "npm run web:sync && npm run build",
     "electron:dev": "npm run bundle && electron .",
     "electron:bot": "npm run bundle && electron . --bot",
+    "dev:bot": "npm run bundle && electron . --bot",
     "test:desktop": "node --test electron/*.test.cjs",
     "electron:pack": "npm run web:sync && npm run bundle && electron-builder --dir",
     "electron:build": "npm run web:sync && npm run bundle && electron-builder",

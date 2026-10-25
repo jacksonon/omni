@@ -38,7 +38,7 @@ npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审�
 npm run probe:bot         # 共享 Server + bot e2e（broker/工作区隔离/SSE 重放/审批恢复/远程代理，21 项）
 npm run test:desktop      # Electron bot 单元测试（托盘/快捷键/窗口/通知/路径）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
-npm run electron:bot      # 开发模式启动菜单栏/托盘 bot（electron . --bot）
+npm run dev:bot           # 开发模式启动菜单栏/托盘 bot（electron . --bot；别名 electron:bot）
 npm run electron:build    # Electron 桌面应用打包（npm run web:sync + bundle + electron-builder）
 omni bot                  # 安装版：唤起桌面托盘助手（OMNI_DESKTOP_PATH 可指定安装位置）
 omni server status|start|stop   # 共享 Server 生命周期（--force 可取消运行中任务后停止）

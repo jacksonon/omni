@@ -895,6 +895,7 @@ npm run probe:web      # offline e2e probe (mock API): sessions / streaming / ap
 # Electron desktop app
 npm run build          # dist/omni.cjs — the packaged app runs this as its backend via Electron's bundled Node
 npm run electron:dev   # open the desktop window against the backend (dev mode)
+npm run dev:bot        # start the menu-bar/tray bot in dev mode (alias: electron:bot)
 npm run electron:build # electron-builder package → release-electron/ (current platform; other platforms via CI)
 npm run web:sync       # regenerate src/web/assets.ts after editing web/ (before bundling)
 
