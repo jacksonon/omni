@@ -87,7 +87,8 @@ test('bot hidden startup, global shortcut, close-to-tray, full window share one 
     assert.equal(h.win.options.transparent, true);
     assert.equal(h.win.options.alwaysOnTop, true);
     assert.equal(h.win.options.skipTaskbar, true);
-    assert.equal(h.win.options.roundedCorners, true);
+    assert.equal(h.win.options.roundedCorners, false);
+    assert.equal(h.win.options.hasShadow, false);
     assert.ok(h.win.bounds.height < 220, '初始窗口是单输入框高度');
     assert.ok(h.tray.menu.some(item => item.label === '新建会话'), '托盘提供快速新建会话');
     assert.ok(h.tray.menu.some(item => item.label === '查看当前会话'), '托盘可展开当前会话');

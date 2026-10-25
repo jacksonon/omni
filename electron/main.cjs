@@ -313,8 +313,9 @@ async function createWindow() {
     frame: !bot,
     transparent: bot,
     backgroundColor: bot ? '#00000000' : '#111113',
-    hasShadow: true,
-    roundedCorners: true,
+    // 透明无边框窗口在 macOS 上叠加原生阴影/圆角会画出一圈黑线；改用 CSS 阴影。
+    hasShadow: !bot,
+    roundedCorners: !bot,
     alwaysOnTop: bot,
     skipTaskbar: bot,
     fullscreenable: !bot,
