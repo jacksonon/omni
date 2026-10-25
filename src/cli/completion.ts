@@ -8,6 +8,7 @@
 /** 顶层子命令（main.ts 分发口径） */
 const SUBCOMMANDS = [
   'help',
+  'update',
   'exec',
   'review',
   'doctor',
@@ -55,7 +56,8 @@ const GLOBAL_FLAGS = [
 
 /** 分命令 flags（常用子集；exec/mini/web 为补全重点） */
 const COMMAND_FLAGS: Record<string, string[]> = {
-  help: ['commands', 'exec', 'mini', 'web', 'remote', 'pair', 'sessions', 'interactive', 'options', 'config', 'all', 'mcp', 'plugin', 'service'],
+  help: ['commands', 'exec', 'mini', 'web', 'remote', 'pair', 'sessions', 'interactive', 'options', 'config', 'all', 'mcp', 'plugin', 'service', 'update'],
+  update: ['--check', '--help'],
   exec: ['--output-format', '--json', '--max-turns', '--allowed-tools', '--output-schema', '--quiet', '--approve-for-me', '-o', '--output-last-message', '-m', '--model', '-i', '--image', '--resume', '--last', '--all', '--color', '--ephemeral', '--add-dir', '--base', '--commit', '--uncommitted', '--title', 'resume', 'fork', 'review'],
   review: ['-i', '--image', '-m', '--model', '-o', '--output-last-message', '--quiet', '--color', '--approve-for-me', '--base', '--commit', '--uncommitted', '--title'],
   resume: ['--last', '--all'],
@@ -102,6 +104,7 @@ function zshScript(): string {
   const globals = GLOBAL_FLAGS.map((f) => (f.startsWith('--') ? `${f}[global option]` : `${f}[global option]`)).join(' ');
   const execFlags = COMMAND_FLAGS.exec!.map((f) => (f.startsWith('-') ? `'${f}[exec option]'` : `': :->args'`)).join(' ');
   const miniFlags = COMMAND_FLAGS.mini!.map((f) => `'${f}[mini option]'`).join(' ');
+  const updateFlags = COMMAND_FLAGS.update!.map((f) => `'${f}[update option]'`).join(' ');
   return `# omni zsh completion: 写入 \$fpath 某目录（如 ~/.zsh/completion/_omni）后 compinit
 #compdef omni
 _omni() {
@@ -116,6 +119,9 @@ _omni() {
       ;;
     args)
       case $line[1] in
+        update)
+          _arguments ${updateFlags} && return 0
+          ;;
         exec)
           _arguments ${execFlags} '*:task:_files' && return 0
           ;;

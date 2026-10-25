@@ -21,6 +21,10 @@ curl -fsSL https://raw.githubusercontent.com/jacksonon/omni/main/scripts/install
 npm install -g ./omni-<version>.tgz   # built via `npm pack`
 ```
 
+Update a global `@right-ai/omni` npm installation or standalone binary with `omni update`.
+Use `omni update --check` to check without installing. Config and sessions are preserved; restart existing processes manually.
+Source checkouts, Electron, and other package managers use their original update method.
+
 2. Set your API key (any OpenAI-compatible endpoint works):
 
 ```bash

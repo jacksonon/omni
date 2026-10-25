@@ -837,7 +837,7 @@ export function execSuite(): TestSuite {
   });
 
   suite.test('isConsoleCommand 双入口路由表（子命令恒 console，不被 TUI 吞）', () => {
-    for (const c of ['help', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete', 'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset', 'import', 'watch', 'mini', 'doctor']) {
+    for (const c of ['help', 'update', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete', 'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset', 'import', 'watch', 'mini', 'doctor']) {
       suite.assert(isConsoleCommand([c]) === true, `${c} 走 console`);
     }
     suite.assert(isConsoleCommand(['e']) === true, 'exec 别名 e 同样 console（不被 TUI 吞）');

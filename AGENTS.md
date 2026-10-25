@@ -18,6 +18,8 @@ CLI 帮助：`omni help` / `omni --help` 显示简洁导航，首页单列远程
 
 ```bash
 npm run dev -- "<任务>"   # 开发运行（tsx 直接执行）
+omni update                 # 更新最新稳定版（npm 保留原前缀；独立二进制校验后替换）
+omni update --check         # 只检查版本；不需要 API Key，不修改安装
 npm run typecheck         # TypeScript 类型检查
 npm run build             # typecheck + tsc 编译 + bun 打包单文件（dist/）
 npm start -- "<任务>"     # 运行 tsc 产物（node dist/index.js）

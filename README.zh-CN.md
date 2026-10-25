@@ -21,6 +21,9 @@ curl -fsSL https://raw.githubusercontent.com/jacksonon/omni/main/scripts/install
 npm install -g ./omni-<version>.tgz   # 经 `npm pack` 构建
 ```
 
+全局 npm 包 `@right-ai/omni` 与独立二进制可用 `omni update` 更新，`omni update --check` 只检查版本。
+更新保留配置与会话，已有进程需手动重启；源码、Electron 及其他包管理器按原安装方式更新。
+
 2. 配置 API Key（兼容所有 OpenAI 协议的服务端点）：
 
 ```bash

@@ -162,7 +162,8 @@ async function run(): Promise<void> {
 run()
   .then(() => {
     logLifecycle('exit-clean', `pid=${process.pid}`);
-    process.exit(0);
+    // console 子命令（含 update）用 exitCode 返回失败，不能被入口统一覆盖为成功。
+    process.exit(process.exitCode ?? 0);
   })
   .catch((err) => {
     logCrash('fatal', err);

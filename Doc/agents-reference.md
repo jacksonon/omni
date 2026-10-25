@@ -66,6 +66,7 @@ src/
                         #   长会话分页（historyLimit 60 + “加载更多”顶 pill，视口稳定补偿滚动；统计用全量）
   cli/
     plugin.ts           # omni plugin CLI：install/list/enable/disable/remove（2026-09）
+    update.ts           # omni update / --check：npm 原前缀更新、GitHub 独立二进制校验替换；Windows 退出后更新并记录日志
     completion.ts       # omni completion <bash|zsh|fish|powershell>：shell 补全脚本（codex 对等 4/5，elvish 无解释器可验暂缺；bash -n/zsh -n 校验，fish/ps 内容断言）
     args.ts             # 参数解析（-m/-c/-h/-v）+ 帮助文本
     banner.ts           # 启动 banner（版本/模型/工具/权限/配置来源）

@@ -688,7 +688,7 @@ async function pickSessionId(
 export const CONSOLE_COMMANDS: ReadonlySet<string> = new Set([
   'help', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
   'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset',
-  'import', 'watch', 'mini',
+  'import', 'watch', 'mini', 'update',
 ]);
 
 /** tui-entry 路由判定：子命令恒 console；其余（空/任务文本）按 TTY 进 TUI */
@@ -710,6 +710,12 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   if (await handleHelp(parsed)) return;
   if (version) {
     console.log(`omni v${VERSION}`);
+    return;
+  }
+  // 自更新不加载配置、API Key、会话或工作区信任，也不进入全屏 TUI。
+  if (taskArgs[0] === 'update') {
+    const { runUpdateCommand } = await import('./cli/update.js');
+    process.exitCode = await runUpdateCommand(taskArgs.slice(1));
     return;
   }
   if (flags.listSessions) {

@@ -8,6 +8,7 @@ export type HelpTopic = 'commands' | 'exec' | 'mini' | 'web' | 'sessions' | 'int
 const HELP_DETAILS = {
   en: {
     commands: `Extensions and utilities:
+  omni update [--check]          Update Omni to the latest stable version; --check only checks
   omni plugin                    Plugin manager (install/list/enable/disable/remove; plugin.json bundles skills/agents/hooks/MCP)
   omni import                    Migrate config from Claude Code (CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents; additive only)
   omni watch                     Watch AI!/AI? comment markers; Ctrl+C to quit
@@ -173,6 +174,7 @@ Example: cp omni.example.jsonc omni.json then edit as needed.`,
   },
   zh: {
     commands: `扩展与实用命令：
+  omni update [--check]          更新 Omni 到最新稳定版；--check 只检查版本
   omni plugin                    插件管理（install/list/enable/disable/remove；plugin.json 打包 skills/子代理/hooks/MCP）
   omni import                    从 Claude Code 迁移配置（CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills · .claude/agents → .agents/subagents；只增不改）
   omni watch                     监听 AI!/AI? 注释标记并执行任务；Ctrl+C 退出
@@ -350,6 +352,7 @@ function overview(lang: 'zh' | 'en'): string {
   omni web                打开 Web 界面
   omni exec "任务"        非交互执行，适合脚本和管道
   omni review             审查未提交的代码改动
+  omni update             更新 Omni（--check 只检查版本）
 
 远程与配对：
   omni web auth set       设置远程登录账号密码
@@ -391,6 +394,7 @@ Get started:
   omni web                Open the Web UI
   omni exec "task"        Run non-interactively for scripts and pipes
   omni review             Review uncommitted code changes
+  omni update             Update Omni (--check only checks for updates)
 
 Remote access and pairing:
   omni web auth set       Set a remote login username and password
@@ -448,6 +452,9 @@ export async function handleHelp(args: ParsedArgs): Promise<boolean> {
   // 复用已有子命令帮助，避免 --help 被全局首页吞掉。
   if (topic === 'exec' || topic === 'e' || topic === 'review') {
     printHelp(lang, !explicit && args.taskArgs.includes('--') ? undefined : 'exec');
+  } else if (topic === 'update') {
+    const { updateHelp } = await import('./update.js');
+    console.log(updateHelp(lang));
   } else if (topic === 'mcp') {
     const { runMcpCommand } = await import('./mcp.js');
     process.exitCode = await runMcpCommand(['--help'], args.overrides);

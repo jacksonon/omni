@@ -2,6 +2,14 @@
 
 > 2026-08-26 从 `AGENTS.md` 迁移。三种产物 + GitHub Actions 自动发布 + npm 发布 + 关键坑。
 
+## 用户更新
+
+`omni update` 更新到最新稳定版；`omni update --check` 只检查版本，两者均无需 API Key。
+全局 npm 安装 `@right-ai/omni` 从官方 registry 查询稳定版，使用原前缀中的 Node/npm 安装指定版本并验证新版本。
+独立二进制从 GitHub 最新稳定版下载当前平台产物，校验 Release asset 的 SHA-256、文件大小和 `--version` 后替换，保留符号链接目标路径与权限；校验失败不替换原文件。
+Windows 由后台 PowerShell 等当前进程退出后执行 npm 安装或独立二进制替换，结果写入安装目录的 `omni-update.log`；命令返回表示已安排更新。
+更新不改配置与会话、不自动中断现有进程，已有会话或 Web 服务需手动重启。源码、Electron、Homebrew、本地 npm 等安装按提示使用原更新方式。
+
 ## 构建与发布（三种产物）
 
 | 产物 | 命令 | 说明 |
