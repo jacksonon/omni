@@ -105,12 +105,15 @@ body.omni-bot .bot-toolbar { display: none !important; }
 body.omni-bot button, body.omni-bot input, body.omni-bot textarea, body.omni-bot select,
 body.omni-bot .hero-workspace, body.omni-bot .composer-card, body.omni-bot .messages,
 body.omni-bot #chat-header, body.omni-bot .modal { -webkit-app-region: no-drag; }
-body.omni-bot #chat-header { -webkit-app-region: drag; }
+body.omni-bot #chat-header,
+body.omni-bot #chat-header .title-row,
+body.omni-bot #chat-header .title-cluster { -webkit-app-region: drag; }
 body.omni-bot #chat-header button { -webkit-app-region: no-drag; }
 /* 快速输入态：透明外壳，只有工作区选择 + 输入卡片，不再有外层黑色边框。 */
 body.omni-bot.omni-bot-compact #bot-shell { background: transparent; box-shadow: none; overflow: visible; border-radius: 0; }
-#bot-drag { display: none; position: absolute; top: 0; left: 0; right: 0; height: 14px; z-index: 20; -webkit-app-region: drag; }
-body.omni-bot.omni-bot-compact #bot-drag { display: block; }
+#bot-drag { display: none; position: absolute; top: 0; left: 0; right: 0; height: 10px; z-index: 20; -webkit-app-region: drag; }
+body.omni-bot #bot-drag { display: block; }
+body.omni-bot.omni-bot-compact #bot-drag { height: 14px; }
 body.omni-bot.omni-bot-compact .app-frame,
 body.omni-bot.omni-bot-compact .conversation-shell,
 body.omni-bot.omni-bot-compact .scroll-body { background: transparent; }

@@ -816,7 +816,7 @@ OMNI_LOCAL=1 omni "<task>"       # same as --local for scripts/CI
 
 `omni bot` requires the desktop app (or a source checkout for development). It opens a frameless,
 transparent, rounded floating card that stays above other apps. The initial state is a compact input-only box with a workspace selector and the normal composer
-(model, reasoning level, context usage); sending expands it into the conversation card. The tray
+(model, reasoning level, context usage); sending expands it into the conversation card. Drag from the top blank strip (compact) or the conversation title bar (expanded). The tray
 menu provides New Session, View Current Session, Open Full Window, and settings. Press Esc to hide
 while tasks continue, and reopen into the same session. "Open full window" switches to the regular
 layout (with custom minimize/maximize/close controls). Tray settings (toggle shortcut, launch at
