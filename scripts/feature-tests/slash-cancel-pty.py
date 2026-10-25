@@ -70,12 +70,17 @@ def screen(data, width, height):
                 n = nums[0] or 1
                 cmd = m[3]
                 if m[1] == '?1049' and cmd == 'h' and normal is None:
-                    normal = (grid, history, row, col)
+                    # 1049 = DECSC + 切备用屏，复用主屏 ESC 7 的保存槽。
+                    # 旧模拟器为它单独留槽，漏掉了 composer 锚点被覆盖的真实故障。
+                    saved_cursor = (row, col)
+                    normal = (grid, history, saved_cursor)
+                    saved_cursor = (0, 0)
                     grid = [[' '] * width for _ in range(height)]
                     history = []
                     row = col = 0
                 elif m[1] == '?1049' and cmd == 'l' and normal is not None:
-                    grid, history, row, col = normal
+                    grid, history, saved_cursor = normal
+                    row, col = saved_cursor
                     normal = None
                 elif cmd == 'A': row = max(0, row - n)
                 elif cmd == 'B': row = min(height - 1, row + n)

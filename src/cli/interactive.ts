@@ -2487,6 +2487,7 @@ export async function runInteractive(
       for (const l of shellResult.split('\n')) {
         if (l.trim() !== '' && !isExitCodeZeroLine(l)) shellLines++;
       }
+      out.onToolOutput?.(shellResult);
       out.onToolResult(shellOk, shellResult.length, previewOutput(shellResult), undefined, undefined, shellLines);
       runOpts.events?.toolResult(bangCallId, shellOk, shellResult.length);
       runOpts.events?.turnEnd('completed');

@@ -333,7 +333,7 @@ export function formatShortcutsHelp(mini = false): string[] {
       '运行中 Tab / Enter 加入 queue · Cmd+Enter（macOS）/ Ctrl+Enter steer 当前回合',
       '空输入 ↑ 编辑最后一条 queue · / 与 @ 中 Tab 补全 · Ctrl+R 历史搜索',
     ] : ['Tab 补全 · Ctrl+R 历史搜索（选中回填，不提交）']),
-    'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 完整轨迹 · Ctrl+G 外部编辑器组稿 · 空行 Esc 取回上一条',
+    'Esc 或 /stop 中断当前任务 · Ctrl+C 中断/清行 · Ctrl+T 展开/收起工具输出 · Ctrl+G 外部编辑器组稿 · 空行 Esc 取回上一条',
     'Ctrl+D 退出（与 /exit 同一收尾） · /quit 也是退出',
   ];
 }
@@ -955,7 +955,7 @@ export function installMentionSuggest(opts: MentionSuggestOptions): MentionSugge
   const onKey = (_ch: unknown, key?: { name?: string; ctrl?: boolean }): void => {
     try {
       // Ctrl+C / Ctrl+T / Ctrl+L：放弃旧块（不碰屏）——不干扰 readline 默认行为；
-      // Ctrl+T 会直接打印轨迹账本把面板顶出视口、Ctrl+L 清屏（readline 原生），
+      // Ctrl+T 暂时切换工具展开视图、Ctrl+L 清屏（readline 原生），
       // 此时 H 已过期，擦除会清掉别人的行
       if (key?.ctrl && (key?.name === 'c' || key?.name === 't' || key?.name === 'l')) {
         forget();

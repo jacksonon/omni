@@ -851,6 +851,7 @@ async function runAgentInner(
               };
             }
             if (batchSignal?.aborted) return result;
+            output.onToolOutput?.(result, seq);
             output.onToolResult(
               !TOOL_ERROR_PREFIX.test(result),
               result.length,

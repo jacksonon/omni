@@ -5,7 +5,7 @@
  *
  * 分两层：
  * - 纯函数/渲染层：banner 版式（各列宽一致、长文本截断）、动词与摘要映射、
- *   工具输出预览的「3 行 + +N lines (ctrl+t to view transcript)」折叠、失败/空输出形态；
+ *   工具输出预览的「3 行 + +N lines (ctrl+t to expand)」折叠、失败/空输出形态；
  * - 端到端：mock OpenAI 服务 + 真实 CLI 入口（tsx src/index.ts mini "<任务>"），
  *   断言 mini 的终端形态（信息框 / › 用户行 / • 正文行 / • Ran + └ 工具单元格 / 分隔行）。
  */
@@ -209,6 +209,25 @@ export function miniSuite(): TestSuite {
     suite.assert(text.includes('└ boom'), '失败单元格仍用 `└ `（bullet 颜色区分状态）');
     suite.assert(text.includes('└ +2 −1'), 'write_file 显示紧凑 diff 统计');
     suite.assert(!/• Read src\/a\.ts\n\s+└/.test(text), 'read_file 不铺输出内容');
+  });
+
+  suite.test('工具展开内容：完整 diff 与并行结果按序号配对，不使用截断预览', () => {
+    const out = new MiniOutput({ showThinking: false, stream: true });
+    const full = 'raw-first\n' + 'X'.repeat(600) + '\nraw-final';
+    const content = Array.from({ length: 28 }, (_, i) => `added-${i}`).join('\n');
+    const compact = renderAt(80, () => {
+      out.onToolStep(1, 50, 'run_command', '$ cmd', { command: 'cmd' }, 1);
+      out.onToolStep(1, 50, 'write_file', 'file.txt', { path: 'file.txt' }, 2);
+      out.onToolOutput('已写入', 2);
+      out.onToolResult(true, 3, ['已写入'], { diff: { original: null, content } }, 2, 1);
+      out.onToolOutput(full, 1);
+      out.onToolResult(true, full.length, ['raw-first'], undefined, 1, 3);
+    });
+    const expanded = out.expandedRows(50).join('\n').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    suite.assert(expanded.includes('added-27') && !compact.includes('added-27'), '展开显示预览上限以外的 diff');
+    suite.assert(expanded.includes('raw-final') && !compact.includes('raw-final'), '完整工具原文独立于 preview');
+    suite.assert(expanded.indexOf('• Ran cmd') < expanded.indexOf('• Wrote file.txt'), '乱序完成仍按调用顺序展开');
+    suite.assert(!expanded.includes('完整轨迹'), '工具展开不含轨迹账本');
   });
 
   suite.test('回合完成 tip 节奏（codex turn tips：3 轮起/间隔 3/全会话 2 条）', () => {
@@ -574,7 +593,7 @@ export function miniSuite(): TestSuite {
     suite.assert(bullets[1]!.includes('第二段'), '第二段挂在第二个 • 下');
   });
 
-  suite.test('Ctrl+T 账本落盘格式（先清 live 块再打印，轮内不抢区域）', () => {
+  suite.test('Ctrl+O 最近工具输出打印格式（保留独立入口）', () => {
     const out = new MiniOutput({ showThinking: false, stream: true });
     const text = renderAt(80, () => {
       out.dumpLedger('  头部', ['  行一', '  行二']);
@@ -1370,7 +1389,7 @@ export function miniSuite(): TestSuite {
       suite.assert(!out.includes('› 续行乙'), '续行不产生第二次 › 提交（单条消息）');
       suite.assert(out.includes(ROOT), '/pwd 输出工作目录');
       suite.assert(out.includes('不能删除当前会话'), '/delete 当前会话保护');
-      // 落盘账本：会话 JSONL 含 bang 工具调用（Ctrl+T 同源）
+      // 落盘账本：会话 JSONL 含 bang 工具调用（/trace 同源）
       let ledger = '';
       try {
         const dir = path.join(xdg, 'omni', 'sessions');
@@ -1419,7 +1438,7 @@ export function miniSuite(): TestSuite {
         });
       });
       const lastLine = verdict.out.split('\n').filter(Boolean).pop() ?? '{}';
-      let v: { prompted?: boolean; swallowed?: boolean; aborted?: boolean; alive?: boolean; exitCode?: number | null; idleHint?: boolean; helpStop?: boolean; introStop?: boolean; ledgerDumped?: boolean } = {};
+      let v: { prompted?: boolean; swallowed?: boolean; aborted?: boolean; alive?: boolean; exitCode?: number | null; idleHint?: boolean; helpStop?: boolean; introShown?: boolean; expansionToggled?: boolean } = {};
       try {
         v = JSON.parse(lastLine);
       } catch { /* 非 JSON 则下面断言失败 */ }
@@ -1429,8 +1448,8 @@ export function miniSuite(): TestSuite {
       suite.assert(v.alive === true, `中断后循环存活且干净退出（exit ${v.exitCode}，/pwd 生效）`);
       suite.assert(v.idleHint === true, '空闲 /stop 提示无执行中任务');
       suite.assert(v.helpStop === true, '? 帮助含 /stop 中断行');
-      suite.assert(v.introStop === true, '开场 hint 含 /stop 停止');
-      suite.assert(v.ledgerDumped === true, '轮内 Ctrl+T 账本落盘（live.clear 后打印）');
+      suite.assert(v.introShown === true, '开场显示命令导航与随机 Tip（不锁定某一条文案）');
+      suite.assert(v.expansionToggled === true, '轮内 Ctrl+T 展开/收起，不追加轨迹账本');
       suite.assert(verdict.code === 0, `pty 脚本退出码 0（实际 ${verdict.code}）`);
     } finally {
       mock.kill();
@@ -1550,6 +1569,24 @@ export function miniSuite(): TestSuite {
       child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
     });
     suite.assert(result.code === 0, '普通/短窄窗口：普通对话、流式、工具、中断、命令取消与草稿编辑', result.output);
+  });
+
+  suite.test('端到端：mini 工具输出完整展开/收起与草稿恢复（PTY）', async () => {
+    for (const [width, height] of [[100, 40], [50, 24]]) {
+      const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+        const child = spawn('python3', ['scripts/feature-tests/mini-expand-pty.py'], {
+          cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, OMNI_FT_WIDTH: String(width), OMNI_FT_HEIGHT: String(height) },
+        });
+        let output = '';
+        child.stdout.on('data', data => output += data);
+        child.stderr.on('data', data => output += data);
+        const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
+      });
+      suite.assert(result.code === 0, `${width}x${height}：完整输出、并行工具、折行/滚动、DECSC 锚点/草稿恢复、流式表格和提问`, result.output);
+    }
   });
 
   suite.test('端到端：mini queue 列表编辑与同轮 steer（PTY）', async () => {

@@ -68,8 +68,10 @@ def main() -> int:
     prompted = wait_for('›'.encode(), 60)
     send('讲个故事')
     time.sleep(0.5)
-    os.write(fd, b'\x14')  # 轮内 Ctrl+T：账本经 dumpLedger 落盘（先清 live 块，不与 Working 抢区域）
-    time.sleep(0.5)  # turn 已跑 ~0.9s，深处 slow-first 2s 窗口
+    os.write(fd, b'\x14')  # 轮内展开，随后收起再输入 /stop
+    time.sleep(0.3)
+    os.write(fd, b'\x14')
+    time.sleep(0.2)  # turn 已跑 ~0.9s，深处 slow-first 2s 窗口
     send('/stop')
     time.sleep(5)  # 中止落定（slow 窗口已过： abort 成功则无回答）
     send('/pwd')
@@ -113,11 +115,11 @@ def main() -> int:
         'exitCode': code,
         'idleHint': '当前没有正在执行的任务'.encode() in clean,
         'helpStop': 'Esc 或 /stop'.encode() in clean,
-        'introStop': '/stop 停止'.encode() in clean,
-        'ledgerDumped': '完整轨迹'.encode() in clean,
+        'introShown': b'To get started' in clean and b'/model' in clean and b'Tip:' in clean,
+        'expansionToggled': b'ctrl+t collapse' in clean and b'\x1b[?1049l' in out and '完整轨迹'.encode() not in clean,
     }
     sys.stdout.write(json.dumps(verdict) + '\n')
-    ok = prompted and verdict['swallowed'] and verdict['aborted'] and verdict['alive'] and verdict['idleHint'] and verdict['helpStop'] and verdict['introStop'] and verdict['ledgerDumped']
+    ok = prompted and verdict['swallowed'] and verdict['aborted'] and verdict['alive'] and verdict['idleHint'] and verdict['helpStop'] and verdict['introShown'] and verdict['expansionToggled']
     return 0 if ok else 1
 
 

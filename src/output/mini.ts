@@ -1,3 +1,4 @@
+import { MiniHistory, miniExpandedRows, openMiniExpansion } from '../cli/mini-expand.js';
 import { ENABLE_MINI_KEYBOARD, DISABLE_MINI_KEYBOARD, type MiniInputActions, type MiniSubmitMode } from '../cli/mini-input.js';
 import { miniPanelBackground } from '../cli/mini-theme.js';
 import { pickFromList, type PickerItem, type PickerOptions } from '../cli/picker.js';
@@ -16,14 +17,14 @@ import { tokenRate, validRateSample } from './token-rate.js';
  * - 用户消息：`› ` 前缀（bold dim）+ 前后空行（UserHistoryCell）；
  * - 工具调用：`• Ran <cmd>`（用户 `!` 直跑为 `• You ran <cmd>`，codex is_user_shell_command），`•` 是状态色（成功绿/失败红/运行中动画），标题
  *   运行中为 `Running`、结束为 `Ran`（exec_cell/render.rs）；输出预览取前 3 行 +
- *   `+N lines (ctrl+t to view transcript)`（tool_output.rs，与快照逐字一致）；
+ *   `+N lines (ctrl+t to expand)`（tool_output.rs，与快照逐字一致）；
  * - 运行中状态行：`• Working (12s • esc to interrupt)` 原地计时（status_indicator_widget.rs）；
  * - 回合分隔：`Worked for 12s · 16:41` dim 行，时长仅在 >60s 时出现（history_cell/separators.rs）；
  * - 输入区：深灰底 + 空行留白，下面两行展示 Omni 实时模型/思考级别/上下文/运行状态与快捷键；
  *   原生 readline 编辑由 cli/mini-composer.ts 装饰，非 TTY 不输出控制序列；
  * - 全程普通滚动行，不用备用屏；非 TTY（管道）自动退化为"只出最终单元格"。
  */
-import { installMiniComposer, type MiniComposer, type MiniComposerStatus } from '../cli/mini-composer.js';
+import { installMiniComposer, miniComposerStatus, type MiniComposer, type MiniComposerStatus } from '../cli/mini-composer.js';
 import { stripVTControlCharacters } from 'node:util';
 import { homedir } from 'node:os';
 import { stdin as input } from 'node:process';
@@ -60,7 +61,7 @@ const PREFIX = '  ';
 /** 工具输出预览行数（codex: tool_output.rs PREVIEW_LINES = 3） */
 const PREVIEW_LINES = 3;
 /** 折叠提示（与 codex ui_consts::TRANSCRIPT_HINT 同字面量） */
-export const TRANSCRIPT_HINT = 'ctrl+t to view transcript';
+export const TRANSCRIPT_HINT = 'ctrl+t to expand';
 /** onToolStep 展示参数中的用户 shell 标记（interactive `!` 直跑命令时置位 → 标题 `You ran`） */
 export const USER_SHELL_FLAG = '__userShell';
 
@@ -246,7 +247,7 @@ const TIPS = [
   '用 /plan 进入只读调研模式，不会修改任何文件。',
   '用 /review 审查当前改动，/diff 查看改动明细。',
   '用 -c 或 /session 恢复历史会话。',
-  'Ctrl+T 打印完整轨迹账本（工具输出默认只显示前 3 行）。',
+  'Ctrl+T 展开/收起工具输出（默认只显示前 3 行）。',
   '打 / 后按 Tab 看全部命令；/model 与 /variants 支持 ↑↓ 选择。',
   '行首 ! 直跑 shell（如 !git status），不经过模型（codex bash mode）。',
   '用 @ 提及文件：打字过滤，Tab 选择（单候选直插，多候选 ↑↓+Enter）。',
@@ -455,7 +456,7 @@ const MINI_FOOTER_SEGS: ReadonlyArray<readonly [string, string]> = [
   ['@', '文件'],
   ['!', 'shell'],
   ['?', '帮助'],
-  ['ctrl+t', '轨迹'],
+  ['ctrl+t', '展开'],
 ];
 
 /**
@@ -643,6 +644,8 @@ class LiveBlock {
   get active(): boolean {
     return this.enabled;
   }
+
+  snapshot(): readonly string[] { return this.lines; }
 
   /** 用新内容替换当前区块（光标停在区块下一行行首） */
   update(lines: string[]): void {
@@ -847,6 +850,20 @@ class StreamingCell {
   }
 }
 
+interface MiniToolState {
+  id: number;
+  name: string;
+  verb: string;
+  detail: string;
+  fullDetail: string;
+  running: boolean;
+  out: string[];
+  result?: string;
+  ok?: boolean;
+  extra?: ToolResultDetail;
+  userShell: boolean;
+}
+
 export class MiniOutput implements Output {
   readonly thinking: ThinkingDisplay;
   private live: LiveBlock;
@@ -858,16 +875,10 @@ export class MiniOutput implements Output {
   /** 本轮是否已出过 working tip（出过则跳过同轮 completion tip，codex ca41ed3 同规则） */
   private workingTipShown = false;
   /** 当前工具的 live 单元格状态（bullet 标题 + 已流出的输出行） */
-  private tool: {
-    id: number;
-    name: string;
-    verb: string;
-    detail: string;
-    running: boolean;
-    out: string[];
-    /** 用户直跑 shell（codex is_user_shell_command）：标题用 `You ran` 而非 `Ran` */
-    userShell: boolean;
-  } | null = null;
+  private tool: MiniToolState | null = null;
+  private tools = new Map<number, MiniToolState>();
+  private history = new MiniHistory();
+  private expansion?: () => void;
   private toolSeq = 0;
   private turnStart: number | null = null;
   /** turn tip 节奏状态（onUserMessage 计轮，onAnswerEnd 记最终回答） */
@@ -907,6 +918,74 @@ export class MiniOutput implements Output {
   private inputActions?: MiniInputActions;
 
   setInputActions(actions: MiniInputActions): void { this.inputActions = actions; }
+
+  closeExpansion(): void { this.expansion?.(); }
+
+  /** Ctrl+T 切换的是原对话的完整工具单元格，不打印事件账本。 */
+  toggleExpansion(): void {
+    if (this.expansion) { this.closeExpansion(); return; }
+    if (!this.interactive || !this.live.active || this.pickerActive || this.yieldedInput) return;
+    // 1049 切屏会覆盖主屏 DECSC 槽；必须先回正文锚点，再让它保存。
+    // 否则它保存的是页底输入光标，收起后 ESC 8 会把 live 输出推到错误位置。
+    this.composer?.clearInput();
+    this.expansion = openMiniExpansion({
+      rows: width => this.expandedRows(width),
+      footer: width => {
+        const bg = miniPanelBackground();
+        const draft = truncateToWidth(`› ${this.rl?.line || 'Ask Omni to do anything'}`, width);
+        const status = { ...(this.composerStatus?.() ?? { model: 'Omni', plan: false }), running: !!this.inputActions?.busy() || this.turnStart !== null };
+        return [bg + '\x1b[K', bg + draft + '\x1b[K', bg + '\x1b[K', miniComposerStatus(status, width), dim(truncateToWidth('  键入返回编辑 · ctrl+t 收起', width))];
+      },
+      onClose: () => {
+        this.expansion = undefined;
+        if (!this.rl?.closed) this.rl?.prompt(true);
+      },
+    });
+  }
+
+  expandedRows(width: number): string[] {
+    const rows = this.history.rows(width);
+    if (!this.tool) for (const line of this.live.snapshot()) rows.push(...miniExpandedRows(line, width));
+    return rows;
+  }
+
+  private toolOutput(t: MiniToolState): string {
+    if (t.name === 'run_command' && t.out.length) {
+      const exit = t.result?.split('\n')[0] ?? '';
+      return (/^退出码:/.test(exit) && !isExitCodeZeroLine(exit) ? exit + '\n' : '') + t.out.join('\n');
+    }
+    return t.result ?? t.out.join('\n');
+  }
+
+  private expandedToolRows(t: MiniToolState, width: number): string[] {
+    const bullet = t.running ? dim('•') : t.ok ? green(bold('•')) : red(bold('•'));
+    const verb = t.running ? 'Running' : t.userShell ? 'You ran' : t.verb;
+    const title = `${bullet} ${bold(verb)} `;
+    const rows = miniExpandedRows(stripVTControlCharacters(t.fullDetail), width, title, '  ');
+    const extra = t.extra;
+    const diff = extra?.diff ? unifiedDiff(extra.diff.original ?? '', extra.diff.content)
+      : extra?.edit ? editToUnifiedDiff(extra.edit.oldLines, extra.edit.newLines) : null;
+    if (diff) {
+      const stat = diffStatLine(extra);
+      if (stat) rows.push(stat);
+      const digits = Math.max(2, ...diff.lines.map(line => String(line.oldNo ?? line.newNo ?? 0).length));
+      for (const line of diff.lines) {
+        const formatted = formatUnifiedDiffLine(line, digits);
+        const colored = line.kind === 'add' ? green(formatted) : line.kind === 'rem' ? red(formatted) : dim(formatted);
+        rows.push(...miniExpandedRows(colored, width, '    ', '    '));
+      }
+      if (diff.truncated) {
+        // 通用 diff 算法的预览上限不限制展开内容：超大改动仍提供原始前后文本。
+        const before = extra?.diff?.original ?? extra?.edit?.oldLines.join('\n') ?? '';
+        const after = extra?.diff?.content ?? extra?.edit?.newLines.join('\n') ?? '';
+        rows.push(...miniExpandedRows(dim('Before:\n' + before + '\nAfter:\n' + after), width, '    ', '    '));
+      }
+    } else {
+      const text = stripVTControlCharacters(this.toolOutput(t)).replace(/^退出码: 0\n?/, '').replace(/\n$/, '');
+      rows.push(...miniExpandedRows(dim(text || (t.running ? '(running)' : NO_OUTPUT)), width, '  └ ', '    '));
+    }
+    return rows;
+  }
   private composerStatus: (() => Omit<MiniComposerStatus, 'running'>) | null = null;
 
   setComposerStatus(provider: () => Omit<MiniComposerStatus, 'running'>): void {
@@ -919,6 +998,7 @@ export class MiniOutput implements Output {
 
   /** 面板拥有页底期间暂停主 readline 绘制，避免 resize 抢占同一光标锚点。 */
   preparePicker(): void {
+    this.closeExpansion();
     if (this.pickerActive) return;
     this.composer?.clearInput();
     this.composer?.suspend();
@@ -977,6 +1057,7 @@ export class MiniOutput implements Output {
    * 本类里所有 console.log 一律走这里（直接 console.log 会与输入行交错）。
    */
   print = (line: string): void => {
+    this.history.line(line);
     this.preOut();
     try {
       process.stdout.write(line + '\n');
@@ -985,13 +1066,7 @@ export class MiniOutput implements Output {
     }
   };
 
-  /**
-   * Ctrl+T 账本落盘（codex 6a39914 mini 版）：先清 live 块再打印——
-   * 轮内（Working/流式/双行 tip）按 Ctrl+T 时，不与 live 重绘抢同一区域；
-   * 清掉后 live 下次 update 从光标新位置起画，旧状态行不残留不重影。
-   * 调用方传已组装好的 header/lines（含缩进与着色），这里只管落盘顺序。
-   */
-  /** 最近一次执行工具的完整输出（供 Ctrl+O 查看，避免 Ctrl+T 全量轨迹刷屏） */
+  /** 最近一次执行工具的完整输出（供 Ctrl+O 查看，独立查看最近一次工具输出） */
   private lastToolResult: {
     name: string;
     verb: string;
@@ -1017,7 +1092,7 @@ export class MiniOutput implements Output {
     if (redraw) this.rl?.prompt(true);
   }
 
-  /** Ctrl+O：展开查看最近一次工具的完整输出（避免必须按 Ctrl+T 查全量轨迹） */
+  /** Ctrl+O：展开查看最近一次工具的完整输出（保留最近工具的独立入口） */
   dumpLastToolOutput(): boolean {
     if (!this.lastToolResult) {
       this.dumpLedger(`  ${dim('暂无最近工具输出记录')}`, []);
@@ -1060,6 +1135,7 @@ export class MiniOutput implements Output {
   private savedKeypress: ((...args: any[]) => void)[] | null = null;
 
   private yieldInput(): void {
+    this.closeExpansion();
     if (!this.capturing) return;
     this.yieldedInput = true;
     this.endInputCapture();
@@ -1227,6 +1303,8 @@ export class MiniOutput implements Output {
   /** 会话头 + 上手帮助 + Tip 行（codex new_session_info 首事件 7 行块；问候语不在头里；
    * Tip 是 scrollback 保留的 tooltip 行，fullscreen 下 codex 会省略它） */
   banner(cfg: OmniConfig): void {
+    this.closeExpansion();
+    this.history.clear();
     const print = this.print;
     if (isTTY) process.stdout.write('\x1b[H\x1b[2J');
     const info: MiniBannerInfo = {
@@ -1261,6 +1339,8 @@ export class MiniOutput implements Output {
    * 只打标题/版本/目录/YOLO，不带问候语与上手帮助——滚动终端避免刷屏）。
    */
   reprintHeader(cfg: OmniConfig, permission?: string): void {
+    this.closeExpansion();
+    this.history.clear();
     this.lastPromptTokens = undefined;
     const info: MiniBannerInfo = {
       directory: process.cwd(),
@@ -1417,15 +1497,27 @@ export class MiniOutput implements Output {
     try {
       this.stopWorking();
       this.resetCells();
-      this.tool = {
+      const t: MiniToolState = {
         id: toolSeq ?? this.toolSeq++,
         name,
         verb: verbForTool(name),
         detail: toolDetail(name, args, argsPreview),
+        fullDetail: name === 'run_command' && typeof args?.command === 'string' ? args.command : toolDetail(name, args, argsPreview),
         running: true,
         out: [],
         userShell: (args as Record<string, unknown> | undefined)?.[USER_SHELL_FLAG] === true,
       };
+      this.tool = t;
+      this.tools.set(t.id, t);
+      const gap = !this.gapOpen;
+      let cachedWidth = 0, cachedRows: string[] = [];
+      this.history.cell(width => {
+        if (t.running || cachedWidth !== width) {
+          cachedRows = [...(gap ? [''] : []), ...this.expandedToolRows(t, width)];
+          cachedWidth = t.running ? 0 : width;
+        }
+        return cachedRows;
+      });
       this.renderTool();
     } finally {
       this.postOut();
@@ -1458,17 +1550,19 @@ export class MiniOutput implements Output {
     totalLines?: number
   ): void {
     if (!this.opts.stream) { this.turnStats.toolCalls += 1; return; }
-    const t = this.tool;
-    if (!t || (toolSeq != null && toolSeq !== t.id)) return;
-    this.tool = null;
+    const t = toolSeq == null ? this.tool : this.tools.get(toolSeq);
+    if (!t) return;
+    this.tools.delete(t.id);
+    if (this.tool === t) this.tool = [...this.tools.values()].at(-1) ?? null;
+    t.running = false; t.ok = ok; t.extra = detail;
+    t.result ??= (preview ?? []).filter(line => !line.includes(OMITTED_MARK)).join('\n');
     this.turnStats.toolCalls += 1;
     this.reasoning?.end();
     this.reasoning = null;
 
     const width = termWidth();
-    // 记录最近工具完整输出（供 Ctrl+O 查看，避免 Ctrl+T 全量轨迹刷屏）
-    const recordedOutput = (detail?.diff ? diffPreviewBody(detail, width).body.join('\n') : null)
-      ?? (t.out.length ? t.out.join('\n') : (preview ?? []).join('\n'));
+    // 记录最近工具完整输出（供 Ctrl+O 查看，独立查看最近一次工具输出）
+    const recordedOutput = this.toolOutput(t) || (preview ?? []).join('\n');
     this.lastToolResult = {
       name: t.name,
       verb: t.userShell ? 'You ran' : t.verb,
@@ -1485,7 +1579,9 @@ export class MiniOutput implements Output {
       lines.push(diff.replace(new RegExp(`^${PREFIX}`), PREFIX));
       const prev = diffPreviewBody(detail, width);
       lines.push(...prev.body);
-      if (prev.truncated) lines.push(`${' '.repeat(4)}${dim('…（diff 较长，仅显示变更附近）')}`);
+      if (prev.truncated || prev.body.some(row => stripVTControlCharacters(row).trim() === '…')) {
+        lines.push(`${' '.repeat(4)}${dim(`+ Show details (${TRANSCRIPT_HINT})`)}`);
+      }
     } else if (t.name !== 'read_file') {
       const raw = (preview ?? [])
         .filter((l) => !l.includes(OMITTED_MARK) && !isExitCodeZeroLine(l))
@@ -1501,20 +1597,29 @@ export class MiniOutput implements Output {
       const hidden = totalLines != null ? Math.max(0, totalLines - raw.length) : 0;
       if (hidden > 0) {
         lines.push(dim(`    +${hidden} ${hidden === 1 ? 'line' : 'lines'} (${TRANSCRIPT_HINT})`));
+      } else if (raw.some(line => line.endsWith('…')) || recordedOutput.split('\n').some(line => visualWidth(line) > width) || visualWidth(t.fullDetail) > width) {
+        lines.push(dim(`    + Show details (${TRANSCRIPT_HINT})`));
       }
+    } else if (recordedOutput) {
+      lines.push(dim(`    + Show details (${TRANSCRIPT_HINT})`));
     }
     this.live.commit(this.gapOpen ? lines : ['', ...lines]); // 相邻单元格恰好一行间距
     this.gapOpen = false;
+    if (this.tool) this.renderTool();
+  }
+
+  onToolOutput(text: string, toolSeq?: number): void {
+    const t = toolSeq == null ? this.tool : this.tools.get(toolSeq);
+    if (t) t.result = text;
   }
 
   /** 命令实时输出：保留尾部 3 行原地重绘（codex 在单元格里滚最后几行） */
-  onCommandOutput(chunk: string, _isError: boolean, _toolSeq?: number): void {
-    if (!this.opts.stream || !this.live.active || !this.tool) return;
-    for (const line of chunk.split('\n')) {
-      if (!line) continue;
-      this.tool.out.push(line);
-    }
-    this.renderTool();
+  onCommandOutput(chunk: string, _isError: boolean, toolSeq?: number): void {
+    if (!this.opts.stream || !this.live.active) return;
+    const t = toolSeq == null ? this.tool : this.tools.get(toolSeq);
+    if (!t) return;
+    t.out.push(...chunk.replace(/\r/g, '').split('\n'));
+    if (t === this.tool) this.renderTool();
   }
 
   // ── 用户消息 / 回合收尾 ────────────────────────────────────────
@@ -1524,6 +1629,8 @@ export class MiniOutput implements Output {
     if (framed) this.preOut();
     try {
       this.answer.end();
+      for (const tool of this.tools.values()) { tool.running = false; tool.ok = false; }
+      this.tools.clear();
       this.tool = null;
       if (mode !== 'steer') this.turnCount += 1;
       this.answerEnded = false;
@@ -1555,6 +1662,9 @@ export class MiniOutput implements Output {
 
   /** 回合结束：dim 的 `Worked for Xs · 16:41` 分隔行（codex separators.rs） */
   onTurnEnd(reason?: string): void {
+    for (const tool of this.tools.values()) { tool.running = false; tool.ok = false; }
+    this.tools.clear();
+    this.tool = null;
     const skipCompletionTip = this.workingTipShown;
     this.workingTipShown = false;
     this.workingTipMemo = null;
@@ -1597,7 +1707,7 @@ export class MiniOutput implements Output {
 
   onWaitForInput(): void {}
 
-  clearScrollback(): void {}
+  clearScrollback(): void { this.closeExpansion(); this.history.clear(); }
 
   onMaxSteps(max: number): void {
     this.print(`\n${yellow('⚠ 已达到最大步数')}（${max}），任务可能未完成。可增大 OMNI_MAX_STEPS 重试。`);

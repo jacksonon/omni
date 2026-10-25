@@ -217,6 +217,8 @@ for step in 1..maxSteps:
 
 - mini 运行中 Tab / Enter 将普通文本加入显式 queue，Cmd+Enter（macOS）/ Ctrl+Enter 发送同轮 steer；`src/cli/mini-input.ts` 管理 FIFO 与增强键盘解码。待发送列表在输入区上方显示，空输入 ↑ 编辑最后一条 queue，实际发送以 `[Queue]` / `[Steer]` 写入对话流；`/` 与 `@` 的 Tab 补全保留。修改须通过 `mini-follow-up-pty.py` 验证流式/工具阶段、连续 steer、取消与键盘释放事件。
 
+- mini Ctrl+T 展开/收起原对话中的完整工具单元格（`src/cli/mini-expand.ts`），不打印轨迹账本。工具最终原文通过可选 `Output.onToolOutput` 提供，命令流式输出和并行调用按 toolSeq 保存；默认前 3 行与 `+N lines (ctrl+t to expand)`，展开可 ↑↓/PgUp/PgDn 滚动，Ctrl+T/Esc 收起恢复历史与草稿，键入直接回到编辑。审批/提问优先收起展开视图。1049 切屏与 ESC 7 共用 DECSC 保存槽，展开前必须先撤下输入块、回到正文锚点，收起后再恢复输入，不能从页底光标直接切屏。修改须通过 `mini-expand-pty.py` 验证展开、收起、后台流式/工具与弹窗往返。
+
 - mini 轮内刷新把清除输入、更新正文、恢复输入合成同步显示帧（stdout cork + DEC 2026）；同一流式增量的 clear/commit/update 共用最外层帧，禁止暴露空白输入区的中间状态。
 
 - mini 思考显示蓝色圆点与 `Think` 标题，续行与思考内容对齐，正式回答继续使用 `•`；统计行与输入块之间保留一行外部留白。思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。

@@ -42,7 +42,7 @@ omni                             # 交互会话
 | 命令 | 说明 |
 |---|---|
 | `omni` | 全屏 TUI：可滚动历史、Markdown 渲染、可点击展开的工具卡片、`/` 命令 + `@` 文件提及 |
-| `omni mini` | 纯终端 CLI（Codex CLI 风格）：同一套运行时，普通滚动行，`Ctrl+T` 查看完整轨迹 |
+| `omni mini` | 纯终端 CLI（Codex CLI 风格）：同一套运行时，普通滚动行，`Ctrl+T` 展开/收起工具输出 |
 | `omni exec "<任务>"` | Headless 模式（脚本/管道/CI）：stdout 只出结果（`--output-format text\|json\|stream-json`） |
 | `omni web` | 本地后端（REST + SSE）+ 浏览器界面，多会话侧栏 |
 | 桌面应用 | 独立 Electron 应用（mac/win/linux），见 GitHub Releases，无需 Node |

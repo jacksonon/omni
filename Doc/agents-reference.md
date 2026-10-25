@@ -73,8 +73,8 @@ src/
     mini.ts             # **纯终端 CLI 模式（`omni mini`）**：复用 runInteractive（全部斜杠命令/审批/会话/撤销栈），
                         #   只换渲染层（output/mini.ts，版面逐条对齐 codex-rs/tui：无框会话头（标题/目录/YOLO/问候） / `› ` 用户行 /
                         #   `• ` 正文（MiniMarkdownRenderer：复用 tui/markdown 解析输出 ANSI，围栏隐藏/表格框线）+续行 2 空格 / dim italic 思考 / `• Ran` 状态色 bullet + 前 3 行 `└` 预览 +
-                        #   `+N lines (ctrl+t to view transcript)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
-                        #   + Ctrl+T 完整轨迹账本（dumpLedger 先清 live 块：轮内 Working/流式不与账本抢区域）；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
+                        #   `+N lines (ctrl+t to expand)` 折叠 / `• Working (12s • esc to interrupt)` 原地计时）
+                        #   + Ctrl+T 展开/收起工具输出（mini-expand.ts 缓存对话单元格；临时屏幕可滚动，收起恢复原历史/草稿，后台继续流式输出）；@ 提及选文件（固定联想面板 + Tab 单选直插/多选 picker，复用 tui/mention 检索）；
                         #   `!` shell 模式（行首 `!` 直跑命令→`• You ran`，提示符变红；只读/未信任档位拒绝）+ Esc/Ctrl+C/轮内 /stop 中断（回车 KP 只发给建接口前挂载的监听，发射前置，pty 实证）、空闲 Ctrl+C 清行（codex clear_for_ctrl_c）
                         #   + 审批三选项 `[y]本次 / [a]本会话记住 / [N]拒绝`（codex allow-for-session：同工具同命令自动放行，`/new` 新会话清掉）；
                         #   审批问答 PTY e2e（MOCK_DANGEROUS 危险命令→提示→y 放行→回合完成；空目录 fast-fail 无副作用；写 pty 字节必 try 包 transcripts 必落盘 finally）；
@@ -84,7 +84,7 @@ src/
                         #   /delete 双覆盖（管道非 TTY 拒绝防误触 + PTY 真终端 y 确认删旧会话）；
                         #   会话头重打（codex e8fdbf1：/new・/clear・/fork・/resume 统一新鲜 compact 头，只标题行不带问候/帮助；档位读会话级当前值）；
                         #   审批双 readline 实锤两 bug（次 close() 会 pause 共享 stdin 致主循环饿死→input.resume()；答案字节同时进主 rl→swallowedQa 队列主循环命中吞掉；PTY 证 pwd 存活+无幽灵轮）；
-                        #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（Ctrl+T 与会话 JSONL 可见）；
+                        #   `!` 直跑同样落 turn/user/tool-call/tool-result 账本（/trace 与会话 JSONL 可见）；
                         #   /review 与 /btw 答案走正文单元格（`• ` + Markdown，各端一致；StreamingCell end 后复写另起新格）；
                         #   开场问候语（codex greeting 全量复刻：全会话 compact 头+随机问候，信息框已随上游删除）；
                         #   模式提示符（codex footer 模式指示：plan 品红前缀，bang 红 `!` 优先）；

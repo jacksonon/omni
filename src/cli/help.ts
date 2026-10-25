@@ -43,7 +43,7 @@ const HELP_DETAILS = {
   omni exec review --commit <SHA>     Review a commit (--uncommitted for local changes)
   headless exit code: 0 = done; 1 = request failed / max steps reached / schema mismatch (use &&/|| to branch)`,
     mini: `Terminal mode:
-  omni mini                      Start a terminal session; Ctrl+T shows the full trace
+  omni mini                      Start a terminal session; Ctrl+T expands/collapses tool output
   omni mini "<task>"             One-shot task rendered in the same terminal style
   omni mini "<task>" --approve-for-me  One-shot with AI auto-review of approvals
   omni mini "<task>" -o <file>      One-shot task + write final answer to a file
@@ -208,7 +208,7 @@ Example: cp omni.example.jsonc omni.json then edit as needed.`,
   omni exec review --commit <SHA>     审查指定提交（--uncommitted 审查未提交改动）
   headless exit code：0 = 完成；1 = 请求失败 / 触达步数上限 / schema 不符（可 &&/|| 分支）`,
     mini: `纯终端模式：
-  omni mini                      进入终端会话；Ctrl+T 查看完整轨迹
+  omni mini                      进入终端会话；Ctrl+T 展开/收起工具输出
   omni mini "<任务>"             单次任务（同一终端形态）
   omni mini "<任务>" --approve-for-me  单次任务 + AI 自动审批
   omni mini "<任务>" -o <文件>      单次任务 + 最终回答落盘

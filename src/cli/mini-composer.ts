@@ -232,7 +232,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     // 用换行分配页底空间，再按相对行归位；终端滚屏后仍停在原输入字符上。
     out.write(`${bg()}\n\r\x1b[K\x1b[0m\n\r\x1b[0J`);
     out.write(miniComposerStatus(getStatus(), width));
-    out.write(`\n\r${dim(truncateToWidth(menuHeight ? '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭' : getStatus().running ? '  tab queue · cmd/ctrl+enter steer · ↑ 编辑最后一条 queue' : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 轨迹', Math.max(1, width - 1)))}`);
+    out.write(`\n\r${dim(truncateToWidth(menuHeight ? '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭' : getStatus().running ? '  tab queue · cmd/ctrl+enter steer · ↑ 编辑最后一条 queue' : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 展开', Math.max(1, width - 1)))}`);
     out.write(`${move(-(end.rows - pos.rows + 3))}${restoreColumn(pos.cols)}\x1b[0m`);
     visible = true;
     generation++;

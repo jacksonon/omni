@@ -111,9 +111,11 @@ export interface Output {
     /** 与 onToolStep 相同的工具配对序号（并行工具结果乱序时前端据此配对） */
     toolSeq?: number,
     /** 展示层可见行数（非空 + 非「退出码: 0」，与 preview 同口径、含被截掉的部分）：
-     *  mini 用它渲染精确的 `+N lines (ctrl+t to view transcript)` 折叠提示；其余渲染端忽略 */
+     *  mini 用它渲染精确的 `+N lines (ctrl+t to expand)` 折叠提示；其余渲染端忽略 */
     totalLines?: number
   ): void;
+  /** 工具最终输出原文（预览截断之前）；mini 用于展开完整单元格，其它端可忽略。 */
+  onToolOutput?(text: string, toolSeq?: number): void;
   /**
    * 工具调用审批（安全护栏，权限分级需要确认时调用）：返回 true = 允许执行。
    * 实现方负责 UI——console 用 readline 询问、TUI 用审批卡片（y/n 或鼠标左右半区）；
