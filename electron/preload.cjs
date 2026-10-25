@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('omni', {
   setBotSettings: (settings) => ipcRenderer.invoke('omni:bot-settings', settings),
   hide: () => ipcRenderer.invoke('omni:hide'),
   openFullWindow: () => ipcRenderer.invoke('omni:open-full'),
+  minimizeWindow: () => ipcRenderer.invoke('omni:window-minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('omni:window-maximize'),
+  closeWindow: () => ipcRenderer.invoke('omni:window-close'),
   onDesktopAction: (callback) => {
     const listener = (_event, action) => callback(action);
     ipcRenderer.on('omni:desktop-action', listener);

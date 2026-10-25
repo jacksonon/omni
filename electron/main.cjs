@@ -290,11 +290,27 @@ function rememberBounds() {
   try { saveSettings(); } catch (err) { logError(err.message); }
 }
 async function createWindow() {
+  const bot = botMode;
   mainWindow = new BrowserWindow({
-    ...boundsForMode(botMode, false), minWidth: botMode ? 380 : 640, minHeight: botMode ? 340 : 480,
-    title: botMode ? 'Omni Bot' : 'Omni', icon: path.join(__dirname, 'icon.png'), show: false, backgroundColor: '#111113',
+    ...boundsForMode(bot, false), minWidth: bot ? 380 : 640, minHeight: bot ? 340 : 480,
+    title: bot ? 'Omni Bot' : 'Omni', icon: path.join(__dirname, 'icon.png'), show: false,
+    // ChatGPT 式快速窗口：无系统边框/标题栏，透明窗口画圆角卡片，置顶且不占任务栏。
+    frame: !bot,
+    transparent: bot,
+    backgroundColor: bot ? '#00000000' : '#111113',
+    hasShadow: true,
+    roundedCorners: true,
+    alwaysOnTop: bot,
+    skipTaskbar: bot,
+    fullscreenable: !bot,
+    maximizable: !bot,
+    minimizable: !bot,
+    resizable: true,
+    movable: true,
+    acceptFirstMouse: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.cjs') },
   });
+  if (bot && process.platform === 'darwin') mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.on('close', event => { rememberBounds(); if (resident && !quitting) { event.preventDefault(); mainWindow.hide(); } });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.on('moved', rememberBounds); mainWindow.on('resized', rememberBounds);
@@ -322,7 +338,15 @@ async function showWindow(bot = botMode, action) {
     } else if (!mainWindow.isVisible()) mainWindow.setBounds(boundsForMode(bot, bot));
     if (bot) resident = true;
     mainWindow.setSkipTaskbar(bot);
-    if (process.platform === 'darwin') { app.setActivationPolicy(bot ? 'accessory' : 'regular'); if (!bot) app.dock?.show(); }
+    mainWindow.setAlwaysOnTop(bot, bot ? 'floating' : 'normal');
+    mainWindow.setFullScreenable(!bot);
+    mainWindow.setMaximizable(!bot);
+    mainWindow.setMinimizable(!bot);
+    if (process.platform === 'darwin') {
+      mainWindow.setVisibleOnAllWorkspaces(bot, { visibleOnFullScreen: bot });
+      app.setActivationPolicy(bot ? 'accessory' : 'regular');
+      if (!bot) app.dock?.show();
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show(); mainWindow.focus(); emitAction(action || { type: 'focus' });
   } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
@@ -347,6 +371,9 @@ function installIPC() {
   const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { assertSender(event); return fn(...args); });
   handle('omni:pick-directory', pickDir); handle('omni:desktop-info', desktopInfo); handle('omni:bot-settings', setBotSettings);
   handle('omni:hide', () => { if (resident) mainWindow?.hide(); }); handle('omni:open-full', () => showWindow(false));
+  handle('omni:window-minimize', () => mainWindow?.minimize());
+  handle('omni:window-maximize', () => { if (!mainWindow) return; if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize(); });
+  handle('omni:window-close', () => mainWindow?.close());
 }
 function createTray() {
   const file = process.platform === 'darwin' ? 'trayTemplate.png' : process.platform === 'win32' ? 'icon.ico' : 'icon.png';

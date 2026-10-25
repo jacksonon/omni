@@ -814,9 +814,11 @@ omni --server <url>              # connect to an explicit HTTPS server (token: O
 OMNI_LOCAL=1 omni "<task>"       # same as --local for scripts/CI
 ```
 
-`omni bot` requires the desktop app (or a source checkout for development). It keeps running in the
-tray, hides on close/Esc while tasks continue, and reopens into the same session. Tray settings
-(toggle shortcut, launch at login, notifications) live in the app's user data.
+`omni bot` requires the desktop app (or a source checkout for development). It opens a frameless,
+transparent, rounded floating card that stays above other apps; press Esc to hide while tasks
+continue, and reopen into the same session. "Open full window" switches to the regular layout
+(with custom minimize/maximize/close controls). Tray settings (toggle shortcut, launch at login,
+notifications) live in the app's user data.
 
 ### LAN, phone, and remote access (password / PWA / Cloudflare tunnel)
 

@@ -86,8 +86,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* bot 保留同一个对话 DOM，展开完整窗口不丢草稿、审批或流式内容。 */
 .bot-toolbar { display: none; }
-body.omni-bot { display: flex; flex-direction: column; }
-body.omni-bot .bot-toolbar { display: flex; flex: 0 0 42px; align-items: center; gap: 14px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); -webkit-app-region: drag; }
+#bot-shell { display: contents; }
+body.omni-bot { display: flex; flex-direction: column; background: transparent; }
+/* ChatGPT 式悬浮卡片：窗口透明，10px 外留白露出桌面；圆角/阴影/裁切都在 shell 上。 */
+body.omni-bot #bot-shell {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 10px;
+  overflow: hidden; border: 1px solid var(--line-2); border-radius: 20px;
+  background: var(--bg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .34), 0 3px 14px rgba(0, 0, 0, .18);
+  animation: bot-float-in .16s var(--ease-out);
+}
+@keyframes bot-float-in { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: none; } }
+html:has(body.omni-bot) { background: transparent; }
+body.omni-bot .bot-toolbar { display: flex; flex: 0 0 44px; align-items: center; gap: 14px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); background: var(--surface); -webkit-app-region: drag; user-select: none; }
+body.omni-bot .bot-brand { cursor: default; }
+/* 自定义无边框窗口的完整视图：顶栏可拖动，右侧提供最小化/最大化/关闭。 */
+.desktop-window-actions { display: none; align-items: center; gap: 2px; }
+body.omni-desktop-custom.omni-desktop-full #chat-header { -webkit-app-region: drag; }
+body.omni-desktop-custom.omni-desktop-full .empty-session .conversation-header { display: block; }
+body.omni-desktop-custom.omni-desktop-full #chat-header button,
+body.omni-desktop-custom.omni-desktop-full .header-actions { -webkit-app-region: no-drag; }
+body.omni-desktop-custom.omni-desktop-full .desktop-window-actions { display: flex; }
+body.omni-desktop-custom.omni-desktop-full .desktop-window-actions .icon-button { width: 30px; height: 30px; }
 .bot-brand { font-size: 15px; font-weight: 650; letter-spacing: -.3px; white-space: nowrap; }
 .bot-brand span { font-size: 11px; font-weight: 500; margin-left: 5px; color: var(--text-tertiary); }
 .bot-toolbar-hint { color: var(--text-tertiary); font-size: 11px; flex: 1; }

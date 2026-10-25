@@ -34,6 +34,11 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
     show() { this.visible = true; } hide() { this.visible = false; } focus() { this.focused = true; }
     getBounds() { return { x: this.bounds.x, y: this.bounds.y, width: this.bounds.width, height: this.bounds.height }; }
     setBounds(value) { this.bounds = value; } setMinimumSize() {} setTitle() {} setSkipTaskbar(value) { this.skipTaskbar = value; }
+    setAlwaysOnTop(value, level) { this.alwaysOnTop = value; this.alwaysOnTopLevel = level; }
+    setVisibleOnAllWorkspaces(value, options) { this.visibleOnAllWorkspaces = value; this.visibleOnFullScreen = options?.visibleOnFullScreen; }
+    setFullScreenable(value) { this.fullScreenable = value; }
+    setMaximizable(value) { this.maximizable = value; }
+    setMinimizable(value) { this.minimizable = value; }
   }
   class Tray extends EventEmitter { constructor() { super(); tray = this; } isDestroyed() { return false; } setToolTip(t) { this.tooltip = t; } setTitle() {} setContextMenu(menu) { this.menu = menu; } destroy() {} }
   class Note extends EventEmitter {
@@ -75,12 +80,20 @@ test('bot hidden startup, global shortcut, close-to-tray, full window share one 
   const h = await harness();
   try {
     assert.equal(h.win.visible, false);
+    assert.equal(h.win.options.frame, false);
+    assert.equal(h.win.options.transparent, true);
+    assert.equal(h.win.options.alwaysOnTop, true);
+    assert.equal(h.win.options.skipTaskbar, true);
+    assert.equal(h.win.options.roundedCorners, true);
     assert.equal(h.win.cookie.httpOnly, true);
     assert.equal(h.win.cookie.value, 'private-test-token');
     assert.match(h.win.webContents.mainFrame.url, /\/w\/abcd\/\?bot=1$/);
     h.shortcuts.get('CommandOrControl+Shift+Space')();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(h.win.visible, true);
+    assert.equal(h.win.alwaysOnTop, true);
+    assert.equal(h.win.visibleOnAllWorkspaces, true);
+    assert.equal(h.win.fullScreenable, false);
     assert.equal(h.app.policy, 'accessory');
     let prevented = false;
     h.win.emit('close', { preventDefault() { prevented = true; } });
@@ -88,6 +101,9 @@ test('bot hidden startup, global shortcut, close-to-tray, full window share one 
     const sender = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
     await h.handlers.get('omni:open-full')(sender);
     assert.equal(h.app.policy, 'regular'); assert.equal(h.win.skipTaskbar, false);
+    assert.equal(h.win.alwaysOnTop, false);
+    assert.equal(h.win.visibleOnAllWorkspaces, false);
+    assert.equal(h.win.fullScreenable, true);
     assert.equal(h.spawned.length, 1);
     assert.equal(h.spawned[0].args.includes('--json'), true);
     h.app.quit();

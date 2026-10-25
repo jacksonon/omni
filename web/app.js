@@ -7597,7 +7597,12 @@ async function restoreServerSnapshot(reloadHistory) {
 
 function applyDesktopMode(bot) {
   desktopMode = bot === true;
+  // `?bot=1` 表示这个 renderer 由 --bot 的无边框透明窗口创建；切到完整视图后
+  // 仍沿用自定义窗口控件（frame 不能在运行时切换）。
+  const customChrome = !!desktop && new URLSearchParams(location.search).get('bot') === '1';
   document.body.classList.toggle('omni-bot', desktopMode);
+  document.body.classList.toggle('omni-desktop-custom', customChrome);
+  document.body.classList.toggle('omni-desktop-full', customChrome && !desktopMode);
   requestAnimationFrame(() => { if (state.autoFollow) scrollBottom(true); });
   input.focus();
 }
@@ -7620,6 +7625,9 @@ function initDesktopBridge() {
   $('#bot-open-full')?.addEventListener('click', () => desktop.openFullWindow());
   $('#bot-hide')?.addEventListener('click', () => desktop.hide());
   $('#bot-desktop-settings')?.addEventListener('click', openDesktopSettings);
+  $('#win-min')?.addEventListener('click', () => desktop.minimizeWindow?.());
+  $('#win-max')?.addEventListener('click', () => desktop.toggleMaximizeWindow?.());
+  $('#win-close')?.addEventListener('click', () => desktop.closeWindow?.());
   $('#desktop-close')?.addEventListener('click', () => { $('#desktop-settings').classList.add('hidden'); input.focus(); });
   $('#desktop-settings')?.addEventListener('click', (event) => { if (event.target === $('#desktop-settings')) $('#desktop-settings').classList.add('hidden'); });
   $('#desktop-save')?.addEventListener('click', async () => {
