@@ -29,10 +29,12 @@ export interface PendingRegistry {
 /** MessageChannel 式 resolve 槽 */
 export interface PendingApproval {
   sessionId: string;
+  request: ApprovalRequest;
   resolve: (allow: boolean) => void;
 }
 export interface PendingAsk {
   sessionId: string;
+  question: string;
   options: string[];
   multiple: boolean;
   resolve: (result: AskResult | null) => void;
@@ -112,6 +114,10 @@ export class WebOutput implements Output {
     this.announce('answer.end');
   }
 
+  onToolOutput(text: string, toolSeq?: number): void {
+    this.announce('tool.full', { text, seq: toolSeq });
+  }
+
   onStreamProgress(progress: StreamProgress): void {
     this.announce('stream.progress', { ...progress });
   }
@@ -172,9 +178,10 @@ export class WebOutput implements Output {
     chars: number,
     preview?: string[],
     detail?: ToolResultDetail,
-    toolSeq?: number
+    toolSeq?: number,
+    totalLines?: number
   ): void {
-    this.announce('tool.result', { ok, chars, preview: preview ?? [], detail, seq: toolSeq ?? this._nextToolSeq++ });
+    this.announce('tool.result', { ok, chars, preview: preview ?? [], detail, seq: toolSeq ?? this._nextToolSeq++, totalLines });
   }
 
   /**

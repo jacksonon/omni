@@ -180,7 +180,7 @@ export function configSuite(): TestSuite {
       });
     const en = await runHelp(['--help']);
     suite.assert(en.code === 0, '英文帮助退出码 0');
-    suite.assert(en.out.split('\n').length < 45, '首页少于 45 行');
+    suite.assert(en.out.split('\n').length < 50, '首页少于 50 行');
     suite.assert(en.out.includes('omni help <topic>') && en.out.includes('omni exec'), '首页给出常用入口与主题导航');
     suite.assert(en.out.includes('Remote access and pairing:') && ['omni pair', 'omni web --tunnel', 'omni web auth set', 'omni service'].every(cmd => en.out.includes(cmd)), '首页直接展示远程接入、扫码配对、认证与服务管理');
     suite.assert(!en.out.includes('/rewind <N>') && !en.out.includes('"providers"'), '首页不堆砌斜杠命令和配置 JSON');
@@ -290,6 +290,19 @@ export function configSuite(): TestSuite {
     suite.assert(r.overrides.profile === 'work' && r.taskArgs.join(' ') === 'task', '-p 置 profile 且不污染任务');
   });
 
+  suite.test('OMNI_LOCAL=1 等价 --local（--server 优先）', () => {
+    const saved = process.env.OMNI_LOCAL;
+    try {
+      process.env.OMNI_LOCAL = '1';
+      suite.assert(parseArgs(['task']).flags.local === true, '环境变量打开 local');
+      suite.assert(parseArgs(['--server', 'https://example.com']).flags.local === false, '显式 --server 覆盖环境 local');
+      suite.assert(parseArgs(['--local', 'task']).flags.local === true, '显式 --local 仍生效');
+    } finally {
+      if (saved === undefined) delete process.env.OMNI_LOCAL;
+      else process.env.OMNI_LOCAL = saved;
+    }
+  });
+
   suite.test('CLI 参数覆盖模型（overrides 优先级最高）', () => {
     const saved = process.env.OMNI_MODEL;
     delete process.env.OMNI_MODEL;
@@ -363,6 +376,29 @@ export function configSuite(): TestSuite {
       else process.env.XDG_CONFIG_HOME = savedXdg;
       rmSync(tmpXdg, { recursive: true, force: true });
     }
+  });
+
+  suite.test('omni doctor 默认路径不被共享 Server 当成任务（P0 回归）', async () => {
+    const env: Record<string, string | undefined> = { ...process.env };
+    delete env.OMNI_LOCAL; // 显式走默认共享路由，验证 doctor 在 prepareRun/共享分支之前分流
+    const out = await new Promise<{ code: number | null; text: string }>((resolve) => {
+      const child = spawn('npx', ['tsx', 'src/index.ts', 'doctor'], {
+        cwd: ROOT,
+        env: env as NodeJS.ProcessEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let acc = '';
+      child.stdout.on('data', (d) => (acc += d));
+      child.stderr.on('data', (d) => (acc += d));
+      const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ code, text: acc });
+      });
+    });
+    suite.assert(out.code === 0, `doctor 退出码 0（实际 ${out.code}）`);
+    suite.assert(out.text.includes('环境诊断'), '默认输出诊断报告');
+    suite.assert(!out.text.includes('共享会话'), '不被当成 Agent 任务');
   });
 
   suite.test('配置发现：向上查找 + git 根边界', () => {

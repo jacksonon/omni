@@ -22,12 +22,12 @@ function chunk(type: string, data: Buffer): Buffer {
   const body = Buffer.concat([Buffer.from(type), data]);
   return Buffer.concat([uint32(data.length), body, uint32(crc32(body))]);
 }
-function png(size: number): Buffer {
+function png(size: number, template = false): Buffer {
   const rows = Buffer.alloc((size * 4 + 1) * size);
   const spacing = size * 0.022;
   const radius = spacing * 0.37;
   // 深色圆角底板，留足系统图标安全区；小尺寸适当加粗。
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+  if (!template) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const offset = y * (size * 4 + 1) + 1 + x * 4;
     const dx = Math.max(Math.abs(x + 0.5 - size / 2) - size * 0.29, 0);
     const dy = Math.max(Math.abs(y + 0.5 - size / 2) - size * 0.29, 0);
@@ -42,7 +42,10 @@ function png(size: number): Buffer {
       for (let x = Math.max(0, Math.floor(cx - r - 1)); x < Math.min(size, cx + r + 1); x++) {
         const a = Math.max(0, Math.min(1, r + 0.5 - Math.hypot(x + 0.5 - cx, y + 0.5 - cy)));
         const offset = y * (size * 4 + 1) + 1 + x * 4;
-        for (let c = 0; c < 3; c++) rows[offset + c] = Math.round(rows[offset + c]! * (1 - a) + [161, 199, 220][c]! * a);
+        if (template) {
+          rows[offset] = rows[offset + 1] = rows[offset + 2] = 0;
+          rows[offset + 3] = Math.max(rows[offset + 3]!, Math.round(a * 255));
+        } else for (let c = 0; c < 3; c++) rows[offset + c] = Math.round(rows[offset + c]! * (1 - a) + [161, 199, 220][c]! * a);
       }
     }
   }
@@ -69,4 +72,6 @@ const entries = icoSizes.map((size, i) => {
   return entry;
 });
 writeFileSync('electron/icon.ico', Buffer.concat([header, ...entries, ...icoImages]));
-console.log('Omni 编织 O → Web PNG / Electron PNG, ICO, ICNS');
+writeFileSync('electron/trayTemplate.png', png(16, true));
+writeFileSync('electron/trayTemplate@2x.png', png(32, true));
+console.log('Omni 编织 O → Web PNG / Electron PNG, ICO, ICNS / macOS 托盘模板');

@@ -11,6 +11,8 @@ import type { UndoStack } from '../tools/undo.js';
 
 export interface RunOptions {
   tools: Tool[];
+  /** 共享 server 客户端；终端只管理输入和渲染，不执行本地工具或写会话。 */
+  remote?: import('../server/client.js').ServerSession;
   /** 是否把模型的思考与工具调用过程实时打印到终端 */
   stream?: boolean;
   /** 最大循环步数，防止死循环 */

@@ -69,7 +69,8 @@ function runTask(task: EvalTask, env: Record<string, string>, model?: string): P
     args.push(task.prompt);
     const child = spawn('npx', args, {
       cwd: ROOT,
-      env: { ...process.env, ...env },
+      // 评估必须确定性：不连接用户机器上常驻的共享 broker（其模型/密钥可能不同）。
+      env: { ...process.env, ...env, OMNI_LOCAL: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       // 独立进程组：超时必须带走 npx 壳 + 内层真进程（见 run-headless-eval.ts 同修）
       detached: true,

@@ -1,340 +1,400 @@
 /**
- * omni 桌面应用（Electron 壳）。
- *
- * 原理：ll 起本机后端服务（`dist/omni.cjs web --no-open --port <p>`，用 Electron 自带的
- * Node（ELECTRON_RUN_AS_NODE=1）执行，无需系统安装 Node），等端口就绪后开一个
- * BrowserWindow 指向 http://127.0.0.1:<p>。整个 Agent 栈、页面、协议与 `omni web` 完全一致。
- *
- * 打包：electron-builder 出各平台独立应用（macOS .app/.zip/.dmg、Windows .exe、Linux .AppImage）。
- * 开发：npm run electron:dev（先 npm run bundle 生成 dist/omni.cjs，再 electron .）。
+ * 桌面与 bot 共用 Electron 壳、Web UI 和独立 Omni Server。
+ * --bot 常驻托盘，--hidden 登录时不弹窗；退出客户端不终止共享任务。
  */
 'use strict';
-
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
-const { spawn } = require('child_process');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-
-/* ---------- 配置 ---------- */
-const DEFAULT_PORT = 3080;
-const DEV = process.env.OMNI_WEB_DEV === '1';
+const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, dialog, ipcMain, screen, Notification, powerMonitor, shell } = require('electron');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { normalizeSettings, fitBounds, isTrustedPage, workspaceUrl } = require('./bot-utils.cjs');
 const ROOT = path.join(__dirname, '..');
 const DIST_CJS = path.join(ROOT, 'dist', 'omni.cjs');
-const SRC_INDEX = path.join(ROOT, 'src', 'index.ts');
-const TSCLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const WEB_PORT = process.env.OMNI_WEB_PORT ? Number(process.env.OMNI_WEB_PORT) : DEFAULT_PORT;
-
+let botMode = process.argv.includes('--bot');
+let resident = botMode;
+let quitting = false;
 let mainWindow = null;
-let serverProc = null;
-let serverPort = null; // 当前后端端口（菜单选目录走 REST 切换用）
-// 后端子进程输出环形缓冲：Windows GUI 应用看不到任何 console 输出，启动失败的
-// 真实原因（缺 API Key / 端口占用 / bundle 崩溃堆栈…）全在这里——错误弹窗附上
-// 最近几行，同时落盘 userData/backend-latest.log 供用户反馈排查
-const OUT_TAIL = [];
-const OUT_TAIL_MAX = 80;
-let logFile = null;
-// 从 Finder/Dock/开始菜单启动时 process.cwd() 可能是 "/"（macOS）或 System32/盘符根
-// （Windows）——会话会被记到根目录且 AGENTS.md/配置发现全部失效，此时回退到用户主目录
-function saneWorkspace() {
-  const home = require('os').homedir();
-  if (process.env.OMNI_WEB_WORKSPACE) return process.env.OMNI_WEB_WORKSPACE;
+let tray = null;
+let connection = null;
+let connectPromise = null;
+let settings, settingsPath, logPath;
+let shortcutRegistered = false;
+let status = null;
+let recentSessions = [];
+let pendingCount = 0;
+let connected = false;
+let pollTimer, polling = false, observed = false;
+let previousRuns = new Map(), seenPending = new Set();
+let eventObserver = null;
+let failedPolls = 0;
+const heldNotifications = new Set();
+function workspaceArg(args) {
+  const i = args.findIndex(a => a === '--cwd' || a === '--workspace');
+  return i >= 0 && args[i + 1] ? path.resolve(args[i + 1]) : null;
+}
+function initialWorkspace() {
+  if (workspaceArg(process.argv)) return workspaceArg(process.argv);
+  if (process.env.OMNI_WEB_WORKSPACE) return path.resolve(process.env.OMNI_WEB_WORKSPACE);
   const cwd = process.cwd();
-  const bad = cwd === '/'
-    || /^[a-zA-Z]:\\?$/.test(cwd)
-    || /^[/\\]windows([/\\].*)?$/i.test(cwd);
-  return bad ? home : cwd;
+  return cwd === '/' || /^[a-zA-Z]:\\?$/.test(cwd) || /^[a-zA-Z]:[\\/]Windows(?:[\\/]|$)/i.test(cwd) ? os.homedir() : cwd;
 }
-let workspace = saneWorkspace();
-
-function recordOutput(stream, d) {
-  const s = String(d);
-  for (const line of s.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    OUT_TAIL.push(line.length > 300 ? line.slice(0, 300) + '…' : line);
-  }
-  while (OUT_TAIL.length > OUT_TAIL_MAX) OUT_TAIL.shift();
-  process.stdout.write(`[omni-web:${stream}] ${s}`);
-  if (logFile) {
-    try { fs.appendFileSync(logFile, s); } catch { /* 日志失败不影响主流程 */ }
-  }
+let workspace = initialWorkspace();
+function logError(message) {
+  // 不写 server ensure stdout，其中含只供主进程使用的认证凭据。
+  try { fs.appendFileSync(logPath, `${new Date().toISOString()} ${String(message)}\n`); } catch {}
 }
-
-/** 最近输出摘要（错误弹窗用）：最多 12 行、每行 ≤160 列 */
-function outTailSummary() {
-  if (OUT_TAIL.length === 0) return '';
-  const lines = OUT_TAIL.slice(-12).map((l) => (l.length > 160 ? l.slice(0, 160) + '…' : l));
-  return `\n\n—— 后端最近输出 ——\n${lines.join('\n')}`;
+function saveSettings(value = settings) {
+  const tmp = settingsPath + `.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, settingsPath);
 }
-
-function initLogFile() {
-  OUT_TAIL.length = 0; // 重启（切换工作目录）时重置缓冲，尾巴只反映本次启动
-  try {
-    logFile = path.join(app.getPath('userData'), 'backend-latest.log');
-    fs.writeFileSync(
-      logFile,
-      `=== omni backend ${new Date().toISOString()} · port=${serverPort} · cwd=${workspace} ===\n`
-    );
-  } catch {
-    logFile = null; // userData 不可写时静默降级
-  }
+function initSettings() {
+  settingsPath = path.join(app.getPath('userData'), 'bot-settings.json');
+  logPath = path.join(app.getPath('userData'), 'desktop-latest.log');
+  try { settings = normalizeSettings(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))); }
+  catch { settings = normalizeSettings({}); }
 }
-
-/* ---------- 工具 ---------- */
-/** 原生文件夹选择对话框（菜单与页面 preload 共用），返回绝对路径或 null */
-function pickDir() {
-  const choice = dialog.showOpenDialogSync(mainWindow, {
-    title: '选择工作目录（Agent 的工作区）',
-    defaultPath: workspace,
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  // ⚠️ showOpenDialogSync 返回 string[]（取消 = undefined），不是异步版的 { canceled, filePaths }——
-  // 用 choice.filePaths[0] 会在选中后崩「Cannot read properties of undefined (reading '0')」
-  return choice && choice.length ? choice[0] : null;
+function emitAction(action) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('omni:desktop-action', action);
 }
-
-// 页面（Web UI 设置 → 工作目录 → 浏览…）经 preload 触发原生选择
-ipcMain.handle('omni:pick-directory', () => pickDir());
-
-/**
- * 菜单「选择工作目录…」：首选调后端 REST /api/workspace 切换（chdir + 重建运行时 +
- * 持久化到全局配置，页面经 SSE 自动刷新，无需重启）；后端不可达或返回错误时
- * 提示后回退进程重启（修复：此前非 ok 响应被静默吞掉，用户不知道切换没生效）。
- */
-async function pickAndSwitchWorkspace() {
-  const dir = pickDir();
-  if (!dir) return;
-  workspace = dir;
-  try {
-    const res = await fetch(`http://127.0.0.1:${serverPort}/api/workspace`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ dir }),
+/** Electron 自带 Node 执行 CLI，只等待连接结果；broker 独立驻留。 */
+function ensureConnection(dir) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(DIST_CJS)) { reject(new Error('缺少桌面后端，请重新安装 Omni；开发环境请先运行 npm run bundle。')); return; }
+    const child = spawn(process.execPath, [DIST_CJS, 'server', 'ensure', '--json', '--cwd', dir], {
+      cwd: dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
-    if (res.ok) return;
-    // 后端明确拒绝（如目录不存在）→ 提示原因，不盲目重启（重启也会失败）
-    let detail = '';
-    try {
-      const body = await res.json();
-      if (body && body.error) detail = String(body.error);
-    } catch { /* 非 JSON 响应忽略 */ }
-    dialog.showErrorBox('切换工作目录失败', detail || `后端返回 ${res.status}，请检查目录是否有效。`);
-    return;
-  } catch {
-    // 后端不可达（极端）→ 回退重启
-  }
-  await restartWithWorkspace(dir);
+    let stdout = '', stderr = '', settled = false;
+    const finish = (err, value) => { if (settled) return; settled = true; clearTimeout(timer); err ? reject(err) : resolve(value); };
+    const timer = setTimeout(() => { child.kill(); finish(new Error('连接 Omni Server 超时，请运行 omni server status 检查。')); }, 60000);
+    child.stdout.on('data', d => { stdout += String(d); if (stdout.length > 128000) { child.kill(); finish(new Error('服务连接返回了异常数据。')); } });
+    child.stderr.on('data', d => { stderr = (stderr + String(d)).slice(-4000); });
+    child.on('error', err => finish(err));
+    child.on('close', code => {
+      if (code !== 0) { finish(new Error(stderr.trim() || `启动服务失败（${code}）`)); return; }
+      try {
+        const value = JSON.parse(stdout.trim()), server = new URL(value.serverUrl), scoped = new URL(value.url);
+        if (server.hostname !== '127.0.0.1' || server.protocol !== 'http:' || scoped.origin !== server.origin || !workspaceUrl(value.url) || typeof value.token !== 'string' || !value.token) throw new Error('invalid connection');
+        finish(null, value);
+      } catch { finish(new Error('服务连接信息无效，请升级 CLI 与桌面应用至同一版本。')); }
+    });
+  });
 }
-
-/**
- * 轮询 /api/status 直到服务就绪。
- * 与旧版的区别：不等满超时才报错——后端进程提前退出（缺 API Key、bundle 崩溃、
- * spawn 失败…）立即失败并在错误里附最近输出；超时同样附输出。Windows GUI 应用
- * 看不到 console，这是用户能看到真实失败原因的唯一通道。
- */
-function waitForServer(port, timeoutMs, exitPromise, errorPromise) {
-  const t0 = Date.now();
-  const poll = new Promise((resolve, reject) => {
-    let settled = false;
-    const tick = () => {
-      if (settled) return;
-      if (Date.now() - t0 > timeoutMs) {
-        settled = true;
-        reject(new Error(`后端服务启动超时（${Math.round(timeoutMs / 1000)}s）${outTailSummary()}`));
-        return;
-      }
-      const req = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1000 }, (res) => {
-        res.resume();
-        if (!settled) { settled = true; resolve(true); }
+async function setConnectionCookie() {
+  await mainWindow.webContents.session.cookies.set({ url: connection.serverUrl, name: 'omni_broker', value: connection.token, path: '/', httpOnly: true, sameSite: 'strict' });
+}
+async function connectWorkspace(dir, navigate = true) {
+  const previousUrl = connection?.url;
+  connection = await ensureConnection(dir);
+  workspace = dir; observed = false; previousRuns.clear(); seenPending.clear();
+  if (mainWindow) {
+    await setConnectionCookie();
+    if (navigate || previousUrl !== connection.url) await mainWindow.loadURL(`${connection.url}/?bot=${botMode ? '1' : '0'}`);
+  }
+  startEventObserver();
+  void pollServer();
+  return connection;
+}
+function requestJSON(route) {
+  if (!connection) return Promise.reject(new Error('尚未连接服务'));
+  return authenticatedJSON(connection.url + route);
+}
+function authenticatedJSON(url) {
+  return fetch(url, { headers: { authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(5000) })
+    .then(async response => { if (!response.ok) throw new Error(`服务返回 ${response.status}`); return response.json(); });
+}
+async function openSession(sessionId, scope) {
+  if (scope && scope.url !== connection?.url) await connectWorkspace(scope.cwd);
+  await showWindow(true, { type: 'session', sessionId });
+}
+function notify(title, body, sessionId, scope = connection && { url: connection.url, cwd: workspace }) {
+  if (!settings.notifications || !Notification.isSupported() || (mainWindow?.isVisible() && mainWindow?.isFocused())) return;
+  const note = new Notification({ title, body, icon: path.join(__dirname, 'icon.png'), silent: true });
+  heldNotifications.add(note);
+  note.on('click', () => { void openSession(sessionId, scope).catch(err => logError(err.message)); });
+  note.on('close', () => heldNotifications.delete(note)); note.show();
+}
+async function pollServer() {
+  if (polling || !connection || quitting) return;
+  polling = true;
+  const current = connection;
+  try {
+    const [next, sessions, pending, aggregate] = await Promise.all([requestJSON('/api/status'), requestJSON('/api/sessions'), requestJSON('/api/pending'), authenticatedJSON(connection.serverUrl + '/_omni/status').catch(() => null)]);
+    if (current !== connection) return;
+    connected = true; failedPolls = 0; status = next; workspace = next.cwd || workspace;
+    recentSessions = (Array.isArray(sessions) ? sessions : sessions.sessions || []).slice(0, 8).map(s => ({ ...s, scope: { url: current.url, cwd: workspace } }));
+    const scopes = Array.isArray(aggregate?.workspaces) ? aggregate.workspaces : [{ url: current.url, cwd: workspace, status: next, pending }];
+    const requests = scopes.flatMap(scope => [
+      ...(scope.pending?.approvals || []).map(p => ({ ...p, id: scope.url + ':' + p.approvalId, kind: 'approval', scope })),
+      ...(scope.pending?.asks || []).map(p => ({ ...p, id: scope.url + ':' + p.askId, kind: 'ask', scope })),
+    ]);
+    pendingCount = requests.length;
+    const active = new Map(scopes.flatMap(scope => (scope.status?.runningSessions || []).map(id => [scope.url + ':' + id, { sessionId: id, scope }])));
+    status = { ...next, running: active.size > 0, runningSessions: [...active.keys()] };
+    if (observed) {
+      for (const [key, run] of previousRuns) if (!active.has(key)) notify('Omni · 任务已结束', recentSessions.find(s => s.id === run.sessionId)?.title || '点击查看对话结果', run.sessionId, run.scope);
+      for (const p of requests) if (!seenPending.has(p.id)) notify(p.kind === 'approval' ? 'Omni · 等待审批' : 'Omni · 等待回答', p.summary || p.question || '点击处理后继续任务', p.sessionId, p.scope);
+    }
+    previousRuns = active; seenPending = new Set(requests.map(p => p.id)); observed = true;
+  } catch {
+    connected = false;
+    if (++failedPolls >= 3 && !connectPromise) { failedPolls = 0; void reconnect(); }
+  }
+  finally { polling = false; updateTray(); }
+}
+/** 主进程监听事件，隐藏窗口或渲染器节流时仍能立即提示短任务结束与审批。 */
+function startEventObserver() {
+  eventObserver?.abort();
+  const controller = new AbortController(), current = connection;
+  eventObserver = controller;
+  void (async () => {
+    let cursor = '';
+    while (!controller.signal.aborted && !quitting && current === connection) {
+      try {
+        const response = await fetch(current.url + '/api/events', { headers: { authorization: `Bearer ${current.token}`, ...(cursor ? { 'Last-Event-ID': cursor } : {}) }, signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error('event stream unavailable');
+        const reader = response.body.getReader(), decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          let end;
+          while ((end = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+            let type = '', payload = '', id = '';
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) type = line.slice(6).trim();
+              if (line.startsWith('data:')) payload += line.slice(5).trimStart();
+              if (line.startsWith('id:')) id = line.slice(3).trim();
+            }
+            if (id) cursor = id;
+            if (!payload || current !== connection) continue;
+            let ev; try { ev = JSON.parse(payload); } catch { continue; }
+            if (type === 'run.end') {
+              previousRuns.delete(current.url + ':' + ev.sessionId);
+              notify('Omni · 任务已结束', recentSessions.find(s => s.id === ev.sessionId)?.title || '点击查看对话结果', ev.sessionId);
+              void pollServer();
+            } else if (type === 'approval.request' || type === 'ask.request') {
+              const requestId = current.url + ':' + (ev.approvalId || ev.askId);
+              if (!seenPending.has(requestId)) notify(type === 'approval.request' ? 'Omni · 等待审批' : 'Omni · 等待回答', ev.summary || ev.question || '点击处理后继续任务', ev.sessionId);
+              seenPending.add(requestId); void pollServer();
+            } else if (type === 'status' || type === 'approval.resolved' || type === 'ask.resolved') void pollServer();
+          }
+          if (buffer.length > 2000000) throw new Error('oversized event frame');
+        }
+      } catch { /* 恢复连接后按游标补齐，连接状态由轮询更新。 */ }
+      if (!controller.signal.aborted && !quitting) await new Promise(resolve => {
+        const onAbort = () => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => { controller.signal.removeEventListener('abort', onAbort); resolve(); }, 2000);
+        controller.signal.addEventListener('abort', onAbort, { once: true });
       });
-      req.on('timeout', () => req.destroy());
-      req.on('error', () => { if (!settled) setTimeout(tick, 250); });
-    };
-    tick();
-  });
-  const exited = exitPromise.then(({ code, sig }) => {
-    throw new Error(`后端进程提前退出（code=${code}${sig ? ` · signal=${sig}` : ''}）${outTailSummary()}`);
-  });
-  const failed = errorPromise.then((err) => {
-    throw new Error(`无法启动后端进程：${err.message}${outTailSummary()}`);
-  });
-  return Promise.race([poll, exited, failed]);
+    }
+  })();
 }
-
-async function findFreePort(from) {
-  for (let p = from; p < from + 100; p++) {
-    const free = await new Promise((resolve) => {
-      const srv = require('net').createServer();
-      srv.unref();
-      srv.on('error', () => resolve(false));
-      srv.listen(p, '127.0.0.1', () => srv.close(() => resolve(true)));
-    });
-    if (free) return p;
-  }
-  throw new Error('找不到空闲端口');
+function trayStatus() {
+  if (!connected) return '服务未连接';
+  if (pendingCount) return `等待处理 · ${pendingCount}`;
+  if (status?.running) return `执行中 · ${status.runningSessions?.length || 1}`;
+  return '就绪';
 }
-
-const SERVER_TIMEOUT_MS = 30_000; // 冷启动预算（AV 首扫 / npx 冷下载都比 mac 慢，20s 偏紧）
-
-async function startServer(port) {
-  if (serverProc) return;
-  initLogFile();
-  // 统一用 Electron 自带的 Node（ELECTRON_RUN_AS_NODE=1）执行后端入口：
-  //  dev   → tsx 跑源码（tsx CLI 顶层会再 spawn 系统 node + 加载器，EOF 场景不需要)
-  //  pack  → 直接跑 dist/omni.cjs 打包产物（包内自带 Electron 的 Node 运行时）
-  const isDev = DEV && fs.existsSync(TSCLI) && fs.existsSync(SRC_INDEX);
-  const args = isDev
-    ? [TSCLI, SRC_INDEX, 'web', '--no-open', '--port', String(port)]
-    : [DIST_CJS, 'web', '--no-open', '--port', String(port)];
-  if (!isDev && !fs.existsSync(DIST_CJS)) {
-    throw new Error(`缺少 ${DIST_CJS}——请先运行 npm run bundle（或 npm run build）`);
-  }
-  console.log(`[omni-web] spawn server: ${process.execPath} ${args.join(' ')}（DEV=${DEV} cwd=${workspace}）`);
-  serverProc = spawn(process.execPath, args, {
-    cwd: workspace,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', OMNI_WEB_DIR: path.join(ROOT, 'web') },
-  });
-  serverProc.stdout.on('data', (d) => recordOutput('out', d));
-  serverProc.stderr.on('data', (d) => recordOutput('err', d));
-  // spawn 失败（ENOENT/EACCES）与提前退出都要立即暴露——否则轮询干等满超时，
-  // Windows 用户只能看到笼统的「启动超时」而不知道真实原因
-  const exitPromise = new Promise((resolve) => {
-    serverProc.once('exit', (code, sig) => {
-      console.error(`[omni-web] server exited code=${code} sig=${sig}`);
-      serverProc = null;
-      resolve({ code, sig });
-    });
-  });
-  const errorPromise = new Promise((resolve) => {
-    serverProc.once('error', (err) => {
-      console.error('[omni-web] spawn error:', err);
-      resolve(err);
-    });
-  });
+function updateTray() {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setToolTip(`Omni · ${trayStatus()}${shortcutRegistered ? ` · ${settings.shortcut}` : ' · 快捷键不可用'}`);
+  if (process.platform === 'darwin') tray.setTitle(pendingCount ? '•' : status?.running ? '·' : '');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: `Omni · ${trayStatus()}`, enabled: false },
+    { label: `快速对话${shortcutRegistered ? ` (${settings.shortcut})` : ''}`, click: () => void showWindow(true) },
+    { label: '打开完整窗口', click: () => void showWindow(false) },
+    { label: '最近会话', enabled: recentSessions.length > 0, submenu: recentSessions.map(s => ({ label: (s.title || '未命名会话').slice(0, 70), click: () => void openSession(s.id, s.scope).catch(err => logError(err.message)) })) },
+    { type: 'separator' },
+    { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
+    { label: '对话设置…', click: () => void showWindow(true, { type: 'settings' }) },
+    { label: '托盘与快捷键设置…', click: () => void showWindow(true, { type: 'desktop-settings' }) },
+    { label: '登录时启动', type: 'checkbox', checked: loginEnabled(), enabled: app.isPackaged, click: item => {
+      try { setLogin(item.checked); settings.openAtLogin = item.checked; saveSettings(); }
+      catch (err) { dialog.showErrorBox('自启设置失败', err.message); } updateTray();
+    } },
+    ...(!connected ? [{ label: '重新连接服务', click: () => void reconnect() }] : []),
+    { type: 'separator' }, { label: '退出 Omni', click: () => app.quit() },
+  ]));
+}
+function registerShortcut(shortcut) {
   try {
-    await waitForServer(port, SERVER_TIMEOUT_MS, exitPromise, errorPromise);
-  } catch (err) {
-    stopServer(); // 清理半死进程（若还活着）
-    throw err;
-  }
-}
-
-function stopServer() {
-  if (serverProc) {
-    serverProc.kill('SIGTERM');
-    serverProc = null;
-  }
-}
-
-async function createWindow() {
-  const port = await findFreePort(WEB_PORT);
-  serverPort = port;
-  await startServer(port);
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 640,
-    minHeight: 480,
-    title: 'omni',
-    icon: path.join(__dirname, 'icon.png'),
-    backgroundColor: '#111113',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.cjs'),
-    },
-  });
-  mainWindow.loadURL(`http://127.0.0.1:${port}/`);
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-async function restartWithWorkspace(dir) {
-  if (dir) {
-    workspace = dir;
-  } else {
-    const picked = pickDir();
-    if (!picked) return;
-    workspace = picked;
-  }
-  stopServer();
-  await createWindow();
-}
-
-function buildMenu() {
-  const isMac = process.platform === 'darwin';
-  const template = [
-    ...(isMac ? [{ role: 'appMenu' }] : []),
-    {
-      label: '文件',
-      submenu: [
-        { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
-        { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit', label: '退出' },
-      ],
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
-        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
-        { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' },
-      ],
-    },
-    {
-      role: 'window',
-      submenu: [{ role: 'minimize' }, { role: 'close' }],
-    },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-/* ---------- 生命周期 ---------- */
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-
-  app.whenReady().then(async () => {
-    if (process.platform === 'darwin' && app.dock) app.dock.setIcon(path.join(__dirname, 'icon.png'));
-    buildMenu();
-    try {
-      await createWindow();
-    } catch (err) {
-      const msg = String((err && err.message) || err);
-      // 附日志位置：弹窗里放不下的完整输出在 backend-latest.log（Windows 反馈排障的唯一现场）
-      const logHint = logFile ? `\n\n完整日志：${logFile}` : '';
-      dialog.showErrorBox('omni 启动失败', msg + logHint);
-      app.quit();
-      return;
-    }
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        void createWindow();
-      }
+    return globalShortcut.register(shortcut, () => {
+      if (mainWindow?.isVisible() && mainWindow?.isFocused() && botMode) mainWindow.hide();
+      else void showWindow(true);
     });
+  } catch { return false; }
+}
+function linuxLoginPath() { return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart', 'ai.omni.bot.desktop'); }
+function loginEnabled() {
+  if (!app.isPackaged) return false;
+  try { return process.platform === 'linux' ? fs.existsSync(linuxLoginPath()) : app.getLoginItemSettings().openAtLogin; }
+  catch { return settings.openAtLogin; }
+}
+function setLogin(enabled) {
+  if (!app.isPackaged) throw new Error('登录自启需要使用安装后的 Omni 桌面应用。');
+  if (process.platform === 'linux') {
+    const file = linuxLoginPath();
+    if (!enabled) { try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; } return; }
+    const executable = process.env.APPIMAGE || process.execPath;
+    const escaped = executable.replace(/[\\"`$]/g, '\\$&').replace(/%/g, '%%');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Omni Bot\nExec="${escaped}" --bot --hidden\nTerminal=false\nX-GNOME-Autostart-enabled=true\n`, { mode: 0o600 });
+  } else app.setLoginItemSettings({ openAtLogin: enabled, ...(process.platform === 'win32' ? { path: process.execPath, args: ['--bot', '--hidden'], enabled } : {}) });
+}
+function desktopInfo() {
+  return { bot: botMode, shortcut: settings.shortcut, shortcutRegistered, openAtLogin: loginEnabled(), loginSupported: app.isPackaged, notifications: settings.notifications, platform: process.platform, connected };
+}
+async function setBotSettings(input) {
+  if (!input || typeof input !== 'object') throw new Error('设置格式无效');
+  const next = { ...settings };
+  // 先验证全部字段，避免后续字段非法时已占用新快捷键。
+  if (input.openAtLogin !== undefined && typeof input.openAtLogin !== 'boolean') throw new Error('自启设置无效');
+  if (input.notifications !== undefined && typeof input.notifications !== 'boolean') throw new Error('通知设置无效');
+  if (input.shortcut !== undefined && (typeof input.shortcut !== 'string' || !input.shortcut.trim() || input.shortcut.length > 120)) throw new Error('请输入有效的快捷键，如 CommandOrControl+Shift+Space。');
+  const previousLogin = loginEnabled();
+  if (input.openAtLogin !== undefined && input.openAtLogin !== previousLogin) setLogin(input.openAtLogin);
+  try {
+  if (input.shortcut !== undefined) {
+    const candidate = input.shortcut.trim();
+    if (candidate !== settings.shortcut || !shortcutRegistered) {
+      globalShortcut.unregister(settings.shortcut);
+      if (!registerShortcut(candidate)) { shortcutRegistered = registerShortcut(settings.shortcut); throw new Error('该快捷键无法注册，可能已被系统或其它应用占用。请换一个组合。'); }
+      shortcutRegistered = true; next.shortcut = candidate;
+    }
+  }
+  if (input.openAtLogin !== undefined) {
+    next.openAtLogin = input.openAtLogin;
+  }
+  if (input.notifications !== undefined) {
+    next.notifications = input.notifications;
+  }
+  saveSettings(next); settings = next; updateTray(); return desktopInfo();
+  } catch (err) {
+    if (next.shortcut !== settings.shortcut) { globalShortcut.unregister(next.shortcut); shortcutRegistered = registerShortcut(settings.shortcut); }
+    if (input.openAtLogin !== undefined && input.openAtLogin !== previousLogin) { try { setLogin(previousLogin); } catch {} }
+    updateTray(); throw err;
+  }
+}
+function boundsForMode(bot, nearPointer) {
+  const saved = settings[bot ? 'botBounds' : 'fullBounds'];
+  const display = nearPointer ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) : saved ? screen.getDisplayMatching(saved) : screen.getPrimaryDisplay();
+  return fitBounds(nearPointer ? saved && { ...saved, x: undefined, y: undefined } : saved, display.workArea, bot);
+}
+function rememberBounds() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || mainWindow.isMaximized()) return;
+  settings[botMode ? 'botBounds' : 'fullBounds'] = mainWindow.getBounds();
+  try { saveSettings(); } catch (err) { logError(err.message); }
+}
+async function createWindow() {
+  mainWindow = new BrowserWindow({
+    ...boundsForMode(botMode, false), minWidth: botMode ? 380 : 640, minHeight: botMode ? 340 : 480,
+    title: botMode ? 'Omni Bot' : 'Omni', icon: path.join(__dirname, 'icon.png'), show: false, backgroundColor: '#111113',
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.cjs') },
   });
-
-  app.on('will-quit', () => {
-    stopServer();
+  mainWindow.on('close', event => { rememberBounds(); if (resident && !quitting) { event.preventDefault(); mainWindow.hide(); } });
+  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('moved', rememberBounds); mainWindow.on('resized', rememberBounds);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
+  mainWindow.webContents.on('will-navigate', (event, url) => { if (!connection || !isTrustedPage(url, connection.serverUrl)) event.preventDefault(); });
+  mainWindow.webContents.on('did-navigate', (_event, url) => {
+    const scoped = workspaceUrl(url);
+    if (scoped && connection && scoped !== connection.url) { connection = { ...connection, url: scoped }; observed = false; startEventObserver(); void pollServer(); }
   });
-
-  app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+  mainWindow.webContents.on('did-finish-load', () => emitAction({ type: 'mode', bot: botMode }));
+  if (!connection) await connectWorkspace(workspace);
+  else { await setConnectionCookie(); await mainWindow.loadURL(`${connection.url}/?bot=${botMode ? '1' : '0'}`); }
+}
+async function showWindow(bot = botMode, action) {
+  try {
+    if (connectPromise) await connectPromise;
+    if (!mainWindow) {
+      botMode = bot; connectPromise = createWindow();
+      try { await connectPromise; } finally { connectPromise = null; }
+    }
+    rememberBounds();
+    if (bot !== botMode) {
+      botMode = bot; mainWindow.setMinimumSize(bot ? 380 : 640, bot ? 340 : 480);
+      mainWindow.setBounds(boundsForMode(bot, bot)); mainWindow.setTitle(bot ? 'Omni Bot' : 'Omni'); emitAction({ type: 'mode', bot });
+    } else if (!mainWindow.isVisible()) mainWindow.setBounds(boundsForMode(bot, bot));
+    if (bot) resident = true;
+    mainWindow.setSkipTaskbar(bot);
+    if (process.platform === 'darwin') { app.setActivationPolicy(bot ? 'accessory' : 'regular'); if (!bot) app.dock?.show(); }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show(); mainWindow.focus(); emitAction(action || { type: 'focus' });
+  } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
+}
+async function reconnect() {
+  if (connectPromise) return connectPromise;
+  connectPromise = connectWorkspace(workspace, false);
+  try { await connectPromise; } catch (err) { logError(err.message); } finally { connectPromise = null; }
+}
+async function pickDir() {
+  const choice = await dialog.showOpenDialog(mainWindow || undefined, { title: '选择工作目录', defaultPath: workspace, properties: ['openDirectory', 'createDirectory'] });
+  return !choice.canceled && choice.filePaths.length ? choice.filePaths[0] : null;
+}
+async function pickAndSwitchWorkspace() {
+  const dir = await pickDir(); if (!dir) return;
+  try { await connectWorkspace(dir); } catch (err) { dialog.showErrorBox('切换工作目录失败', err.message); }
+}
+function assertSender(event) {
+  if (!connection || !mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !isTrustedPage(event.senderFrame.url, connection.serverUrl)) throw new Error('不受信任的桌面请求');
+}
+function installIPC() {
+  const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { assertSender(event); return fn(...args); });
+  handle('omni:pick-directory', pickDir); handle('omni:desktop-info', desktopInfo); handle('omni:bot-settings', setBotSettings);
+  handle('omni:hide', () => { if (resident) mainWindow?.hide(); }); handle('omni:open-full', () => showWindow(false));
+}
+function createTray() {
+  const file = process.platform === 'darwin' ? 'trayTemplate.png' : process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  const image = nativeImage.createFromPath(path.join(__dirname, file));
+  if (process.platform === 'darwin') image.setTemplateImage(true);
+  tray = new Tray(image); tray.on('click', () => void showWindow(true)); tray.on('double-click', () => void showWindow(true)); updateTray();
+}
+function buildMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { label: '文件', submenu: [
+      { label: '快速对话', click: () => void showWindow(true) }, { label: '打开完整窗口', click: () => void showWindow(false) },
+      { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
+      { label: '托盘与快捷键设置…', click: () => void showWindow(botMode, { type: 'desktop-settings' }) },
+      { type: 'separator' }, { role: 'close' }, { role: 'quit', label: '退出 Omni' },
+    ] },
+    { role: 'editMenu' }, { label: '视图', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] }, { role: 'windowMenu' },
+  ]));
+}
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+else {
+  app.on('second-instance', (_event, argv) => {
+    const dir = workspaceArg(argv), bot = argv.includes('--bot');
+    if (dir) {
+      connectPromise = connectWorkspace(dir);
+      connectPromise.finally(() => { connectPromise = null; }).catch(err => logError(err.message));
+    }
+    void showWindow(bot);
   });
+  app.whenReady().then(async () => {
+    initSettings(); if (process.platform === 'win32') app.setAppUserModelId('ai.omni.web');
+    let loginLaunch = false;
+    try { loginLaunch = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin; } catch {}
+    if (loginLaunch) { botMode = true; resident = true; }
+    if (process.platform === 'darwin') { app.dock?.setIcon(path.join(__dirname, 'icon.png')); if (botMode) app.setActivationPolicy('accessory'); }
+    buildMenu(); installIPC(); createTray(); shortcutRegistered = registerShortcut(settings.shortcut);
+    connectPromise = createWindow();
+    try { await connectPromise; } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
+    finally { connectPromise = null; }
+    updateTray();
+    if (!process.argv.includes('--hidden') && !loginLaunch && mainWindow) await showWindow(botMode);
+    pollTimer = setInterval(() => void pollServer(), 2000); powerMonitor.on('resume', () => void reconnect());
+    screen.on('display-removed', () => { if (mainWindow?.isVisible()) mainWindow.setBounds(boundsForMode(botMode, false)); });
+    app.on('activate', () => void showWindow(botMode));
+  });
+  app.on('before-quit', () => { quitting = true; rememberBounds(); });
+  app.on('will-quit', () => { clearInterval(pollTimer); eventObserver?.abort(); globalShortcut.unregisterAll(); for (const note of heldNotifications) note.close(); tray?.destroy(); });
+  // server 生命周期独立，Web / TUI / mini 客户端与后台任务继续运行。
+  app.on('window-all-closed', () => { if (!resident && process.platform !== 'darwin') app.quit(); });
 }

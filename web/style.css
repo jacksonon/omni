@@ -83,6 +83,38 @@ button:active { transform: scale(.97); }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 38%, transparent); outline-offset: 2px; }
 .hidden { display: none !important; }
 .svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* bot 保留同一个对话 DOM，展开完整窗口不丢草稿、审批或流式内容。 */
+.bot-toolbar { display: none; }
+body.omni-bot { display: flex; flex-direction: column; }
+body.omni-bot .bot-toolbar { display: flex; flex: 0 0 42px; align-items: center; gap: 14px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); -webkit-app-region: drag; }
+.bot-brand { font-size: 15px; font-weight: 650; letter-spacing: -.3px; white-space: nowrap; }
+.bot-brand span { font-size: 11px; font-weight: 500; margin-left: 5px; color: var(--text-tertiary); }
+.bot-toolbar-hint { color: var(--text-tertiary); font-size: 11px; flex: 1; }
+.bot-toolbar-actions { display: flex; align-items: center; gap: 3px; margin-left: auto; -webkit-app-region: no-drag; }
+body.omni-bot .app-frame { flex: 1; height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); }
+body.omni-bot .sidebar { display: none; }
+body.omni-bot .conversation-shell { grid-column: 1; min-width: 0; }
+body.omni-bot .conversation-header { min-height: 48px; padding: 0 20px; }
+body.omni-bot .scroll-body { min-width: 0; }
+body.omni-bot .messages { padding-left: 24px; padding-right: 24px; }
+body.omni-bot .composer-wrap { padding-left: 20px; padding-right: 20px; }
+body.omni-bot .hero-heading { transform: scale(.72); margin-bottom: -12px; }
+body.omni-bot .hero-workspace { margin-bottom: 16px; }
+body.omni-bot .mobile-only { display: none !important; }
+.desktop-settings-card { width: min(480px, calc(100vw - 32px)); }
+.desktop-settings-body { display: flex; flex-direction: column; gap: 12px; padding: 24px; font-size: 13px; }
+#desktop-shortcut { width: 100%; padding: 10px 12px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 13px var(--mono); }
+.desktop-settings-hint { font-size: 12px; line-height: 1.6; color: var(--text-tertiary); margin: 0 0 8px; }
+.desktop-setting-check { display: flex; align-items: center; gap: 9px; line-height: 1.6; }
+.desktop-setting-check input { accent-color: var(--blue); }
+.desktop-settings-error { color: #c44949; min-height: 20px; margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.desktop-settings-buttons { display: flex; justify-content: flex-end; }
+@media (max-width: 520px) {
+  .bot-toolbar-hint { display: none; }
+  body.omni-bot .composer-wrap { padding-left: 12px; padding-right: 12px; }
+  body.omni-bot .messages { padding-left: 16px; padding-right: 16px; }
+}
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
 /* DeepSeek Harness app frame geometry. */

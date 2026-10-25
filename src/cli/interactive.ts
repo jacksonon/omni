@@ -72,6 +72,8 @@ import { runGoal, runOrchestrate } from '../agent/orchestrate.js';
 import { previewOutput, isExitCodeZeroLine } from '../output/format.js';
 import { runCommandTool } from '../tools/run-command.js';
 import { MiniOutput, USER_SHELL_FLAG } from '../output/mini.js';
+import { runRemoteCommand, remoteAttachments } from '../server/terminal.js';
+import { syncRemoteRunOptions } from '../server/client.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools } from '../tools/mcp.js';
 import { createClient, discoverModels } from '../client.js';
 import type { RunOptions } from '../agent/types.js';
@@ -789,6 +791,46 @@ export async function runInteractive(
     if (cmd === '/exit' || cmd === '/quit') {
       await finishSession();
       break;
+    }
+    // 共享服务模式只在本地维护编辑区；命令、上下文与会话副作用均交给 server。
+    if (runOpts.remote) {
+      if (!cmd) { safePrompt(); continue; }
+      const remote = runOpts.remote;
+      try {
+        if (cmd.startsWith('/')) {
+          const lines = await runRemoteCommand(remote, cmd, out, async (title, values, current) => {
+            if (!input.isTTY) return null;
+            const selected = await pickMenu(input, values.map(value => ({ label: value, value })), {
+              title, selected: Math.max(0, values.indexOf(current ?? '')), hint: 'enter select · esc back · ↑↓ navigate',
+            });
+            return selected >= 0 ? values[selected]! : null;
+          });
+          for (const text of lines) suggestPrint(text);
+          syncRemoteRunOptions(remote, runOpts);
+          currentModel = remote.status.model ?? currentModel;
+          permission = runOpts.permission ?? 'safe';
+          planMode = runOpts.planMode ?? false;
+          messages.splice(0, messages.length, ...remote.messages);
+        } else {
+          inTurn = true;
+          rearmTurnAbort();
+          out.onUserMessage(cmd, queuedSubmission?.mode);
+          const attachments = await remoteAttachments(cmd, runOpts.initialImages);
+          runOpts.initialImages = undefined;
+          const shell = isBangShellCommand(cmd);
+          const reason = await remote.run(shell ? stripBangPrefix(cmd) : cmd, { runOpts, attachments, echoed: true, shell });
+          messages.splice(0, messages.length, ...remote.messages);
+          out.onTurnEnd(reason);
+        }
+      } catch (error) {
+        suggestPrint(red(`运行出错：${(error as Error).message}`));
+        if (inTurn) out.onTurnEnd('error');
+      } finally {
+        inTurn = false;
+        miniBuffer?.deferInterrupts();
+        safePrompt();
+      }
+      continue;
     }
     if (isStopCommand(cmd)) {
       // /stop：空闲时没有正在执行的任务（轮内提交走前置拦截 abort，不会落到这里）

@@ -795,7 +795,28 @@ omni web                   # start service + Web UI at http://127.0.0.1:3080 (op
 omni web --port 4000       # custom port
 omni web --no-open         # don't auto-open the browser
 omni web --host 0.0.0.0 --token <token>   # remote access (phone/another machine; non-loopback requires a token)
+omni web --local                           # foreground embedded server (no shared broker)
 ```
+
+> On loopback, `omni web` ensures the shared broker and returns after printing the URL; the broker keeps
+> running in the background. Use `omni web --local` for the old foreground behavior.
+
+### Shared server and bot mode
+
+All local surfaces share one broker: TUI, `omni mini`, `omni exec`, `omni web` and the Electron app.
+Each workspace gets an isolated runtime child (no `process.chdir` / MCP / undo-stack cross-talk).
+
+```bash
+omni server status|start|stop    # inspect / start / stop the broker (--force cancels running tasks)
+omni bot [--workspace <dir>]     # tray/menu-bar assistant with a global summon shortcut
+omni --local "<task>"            # run in-process instead of joining the broker
+omni --server <url>              # connect to an explicit HTTPS server (token: OMNI_SERVER_TOKEN)
+OMNI_LOCAL=1 omni "<task>"       # same as --local for scripts/CI
+```
+
+`omni bot` requires the desktop app (or a source checkout for development). It keeps running in the
+tray, hides on close/Esc while tasks continue, and reopens into the same session. Tray settings
+(toggle shortcut, launch at login, notifications) live in the app's user data.
 
 ### LAN, phone, and remote access (password / PWA / Cloudflare tunnel)
 

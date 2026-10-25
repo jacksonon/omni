@@ -11,4 +11,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('omni', {
   pickDirectory: () => ipcRenderer.invoke('omni:pick-directory'),
+  desktopInfo: () => ipcRenderer.invoke('omni:desktop-info'),
+  setBotSettings: (settings) => ipcRenderer.invoke('omni:bot-settings', settings),
+  hide: () => ipcRenderer.invoke('omni:hide'),
+  openFullWindow: () => ipcRenderer.invoke('omni:open-full'),
+  onDesktopAction: (callback) => {
+    const listener = (_event, action) => callback(action);
+    ipcRenderer.on('omni:desktop-action', listener);
+    return () => ipcRenderer.removeListener('omni:desktop-action', listener);
+  },
 });

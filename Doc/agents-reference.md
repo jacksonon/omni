@@ -17,9 +17,22 @@ src/
                         #   `-o/--output-last-message` 最终回答落盘（codex exec 同款；写失败非零退出）·
                         #   exec resume <id> 会话续跑（复用 session JSONL）· `resume --last`/`--last` 恢复当前目录最近会话（codex 对等，无会话报错不新建）· `--all` 取消目录过滤（codex resume --all）· `--ephemeral` 不落盘会话（codex 对等，json session_id null，与 resume/fork 互斥）· `--json` 事件 JSONL（codex 对等，即 stream-json）· `--add-dir` 沙箱额外可写目录（全局+exec 级合并进 sandboxWritePaths）· 全局 `-i/--image`（交互首轮消费，单次/headless 走显式通道）· 全局 `--approve-for-me`（全模式 cfg.autoReview）· `--strict-config`（未知顶层字段报错；顶层 apiKey 等静默失效字段会被点名）· `exec --help` 打专属帮助（handleExecHelp 双入口共用：扫原始 argv 先拦截，绕过全局 --help 短路；`--` 之后不当 flag）· `exec fork <id|--last>` 分叉全量消息成新会话再跑（无 prompt 仅分叉，stdout 新 id）· `exec --color always|never|auto`（ui setColorOverride，wrap 闭包运行时读绑定）· `exec review [额外要求]`/顶层 `review` 非交互审查（与 /review 同数据源，单请求不建会话；loop 系 flags 互斥报错；-i/@图 vision 随审查发出；--base/--commit 定审查范围，ref 字符集限定防注入）· MCP server 暴露 omni_exec/omni_reply
                         #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
+  server/
+    broker.ts           # **共享 Server broker**：单用户实例、Bearer token（常量时间比较）、启动文件锁、
+                        #   按规范工作区拉起独立 runtime 子进程；/w/<workspace>/ 路由前缀与浏览器一次性 ticket
+    manager.ts          # **发现/启动入口**：ensureSharedServer（server.json → health → 复用；否则加锁启动）、
+                        #   resolveServerCommand（Node/tsx/Bun/Electron 入口）、版本校验
+    discovery.ts        # server.json / runtimeDir / canonicalWorkspace / workspaceId / 进程存活探测
+    proxy.ts            # 远程/LAN 代理：保留认证边界，远程客户端复用同一工作区会话
+    client.ts           # **ServerClient/ServerSession**：REST + SSE 长轮询、事件重放/reset、审批/提问恢复、
+                        #   requestId、abort/steer、远程历史与附件
+    terminal.ts         # **终端适配**：TUI/mini/console 的共享输入、远程命令、历史回放、/cd 工作区切换
+    command.ts          # `omni server start|status|stop|ensure|_run|_worker`
+    acp.ts              # ACP stdio 适配：协议转发，任务/历史/工具由共享 server 持有
   web/
     index.ts            # **Web 服务入口（`omni web`）**：解析 web 参数（--port/--host/--no-open）→ prepareRun +
                         #   attachRuntime（routingOutput 路由审批/提问到当前运行会话）→ startWebService；自动打开浏览器
+                        #   默认确保共享 broker（--local 走嵌入式服务；--host/--token/--tunnel/--pair 保留认证路径）
     server.ts           # **REST + SSE 本地后端**：Node 内置 http（零依赖）；SSE（/api/events）广播运行事件
                         #   （thinking/tool/answer/approval/ask/usage/status…）· REST（会话创建/列表/历史/发送/取消/审批/提问/设置）·
                         #   **全局单运行**（同时只有一个会话在跑，共享 runOpts/闸门/撤销栈无并发交错）· 会话落盘复用 session.ts
@@ -30,11 +43,12 @@ src/
     assets.ts           # **内嵌页面资源**（web/ 的副本，scripts/web-sync.mjs 生成；bundle 单文件发布免外部文件）
   electron/
     main.cjs            # **Electron 桌面应用（`omni`）**：主进程以 Electron 自带 Node（ELECTRON_RUN_AS_NODE=1）
-                        #   执行 `dist/omni.cjs web --no-open --port <p>`（无需系统 Node）→ 轮询 /api/status 就绪 →
-                        #   开 BrowserWindow 加载 http://127.0.0.1:<p> · 单实例锁 · 应用菜单（选择工作目录/重载/DevTools/
-                        #   退出）· 退出时终止后端子进程 · 自动找空闲端口 · 开发模式（OMNI_WEB_DEV=1）走 tsx 源码
-                        #   打包配置在 package.json `build` 字段（electron-builder：mac zip（arm64+x64，dmg 在 CI runner
-                        #   上 hdiutil 产物校验损坏不可用）· win nsis exe x64 · linux AppImage x64）
+                        #   执行 `dist/omni.cjs server ensure --json --cwd <dir>` 连接共享 broker（无需系统 Node）→
+                        #   开 BrowserWindow 加载 /w/<workspace>/ · 单实例锁 · 应用菜单（选择工作目录/重载/DevTools/退出）
+                        #   `--bot`：托盘常驻、全局快捷键、隐藏后任务继续、同会话切完整窗口、审批/提问通知汇总、
+                        #   开机自启；`bot-utils.cjs` 负责设置归一化/窗口边界/同源校验；打包配置在 package.json `build`
+    bot-utils.cjs       # 托盘设置（快捷键/登录自启/通知）、屏幕位置保护、workspace URL 与同源页面判定
+    preload.cjs         # 受限 IPC surface（桌面动作/设置），不暴露 Node
   web/                  # **浏览器页面（仓库根目录）**：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；
                         #   src/web/assets.ts 的源，`npm run web:sync` 重新生成内嵌副本）
                         #   消息操作按钮：**常显**（无需 hover）——用户消息 复制/重新编写（原文带回输入框，按钮堆在

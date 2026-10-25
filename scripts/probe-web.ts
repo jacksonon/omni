@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     // 启动 web 服务（真实 CLI 入口）
     web = startProcess(
       process.execPath,
-      [TSK, path.join(ROOT, 'src', 'index.ts'), 'web', '--no-open', '--port', String(WEB_PORT)],
+      [TSK, path.join(ROOT, 'src', 'index.ts'), 'web', '--local', '--no-open', '--port', String(WEB_PORT)],
       {
         XDG_CONFIG_HOME: XDG,
         OMNI_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/v1`,
@@ -170,7 +170,12 @@ async function main(): Promise<void> {
     check('A7 markdown-renderer.js 可访问（OmniMarkdown 接口）', rdr.status === 200 && rdrTxt.includes('OmniMarkdown'), 'status=' + rdr.status);
     const home2 = await fetch(`${BASE}/`);
     const home2Txt = await home2.text();
-    check('A8 index.html 按序加载 vendor → renderer → app', home2Txt.indexOf('/vendor.js') < home2Txt.indexOf('/markdown-renderer.js') && home2Txt.indexOf('/markdown-renderer.js') < home2Txt.indexOf('/app.js'));
+    // 相对路径（Broker /w/<workspace>/ 前缀）与旧的绝对路径都要能识别。
+    const scriptIndex = (file: string): number => home2Txt.search(new RegExp(`<script[^>]+src=["'][^"']*${file.replace(/\./g, '\\.')}["']`));
+    const vendorAt = scriptIndex('vendor.js');
+    const rendererAt = scriptIndex('markdown-renderer.js');
+    const appAt = scriptIndex('app.js');
+    check('A8 index.html 按序加载 vendor → renderer → app', vendorAt >= 0 && vendorAt < rendererAt && rendererAt < appAt, `vendor=${vendorAt} renderer=${rendererAt} app=${appAt}`);
     const st = await (await fetch(`${BASE}/api/status`)).json();
     check('A4 status：模型/权限/工具', !!st.model && !!st.tools?.length && st.permission === 'safe', JSON.stringify(st).slice(0, 120));
     const sessions0 = await (await fetch(`${BASE}/api/sessions`)).json();

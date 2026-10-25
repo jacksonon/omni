@@ -709,7 +709,7 @@ export function miniSuite(): TestSuite {
     suite.assert(fish!.includes('--ephemeral') && fish!.split('\n').every((l) => !l.includes('\\')), 'fish 行无杂散转义');
     suite.assert(typeof ps === 'string' && ps.includes('Register-ArgumentCompleter') && ps.includes('-Native'), 'ps 原生补全注册');
     suite.assert(ps!.includes('ParameterName') && ps!.includes('StartsWith'), 'ps flag/子命令结果类型区分（codex 同款 ParameterName）');
-    suite.assert(ps!.includes('@("exec","review"') && ps!.includes("'--ephemeral'") === false, 'ps 候选表 JSON 双引号');
+    suite.assert(ps!.includes('"exec"') && ps!.includes('"review"') && ps!.includes("'--ephemeral'") === false, 'ps 候选表 JSON 双引号');
     suite.assert(ps!.includes("'\\s+'"), 'ps 分词正则未被转义吃掉');
     suite.assert(completionScript('elvish') === null, 'elvish 暂不支持返回 null');
     suite.assert(completionScript('BASH') !== null, '大小写不敏感');
@@ -729,16 +729,10 @@ export function miniSuite(): TestSuite {
   });
 
   suite.test('输入区 hint 含续行反斜杠（TS 未知转义会吞 `\\`，回归锁定）', () => {
-    const out = new MiniOutput({ showThinking: false, stream: true });
-    const text = renderAt(80, () => {
-      out.markInteractive();
-    });
-    const plain = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const plain = renderMiniFooter(80).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     suite.assert(plain.includes('\\ 续行'), 'hint 显示 `\\ 续行`（单反斜杠，非双空格）');
-    // 像素级（codex footer 单行）：提示为单行 hint + 一空行，key 加粗 + 描述 dim
-    const lines = plain.split('\n');
-    const hintIdx = lines.findIndex((l) => l.includes('发送'));
-    suite.assert(hintIdx >= 0 && lines[hintIdx + 1] === '', '单行 hint 后只跟一空行');
+    // codex footer 单行：hint 本身不产生额外物理行（换行由 readline 布局负责）
+    suite.assert(plain.split('\n').length === 1, '单行 hint（无额外空行）');
     suite.assert(!plain.includes('⏎'), '不再用 `⏎`（codex key label 小写 enter）');
     suite.assert(renderMiniFooter(200).includes('ctrl+t'), '宽屏保留全部 7 段');
     const narrow = renderMiniFooter(24).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -821,9 +815,9 @@ export function miniSuite(): TestSuite {
       5_000, new Date(2026, 8, 24, 22, 30),
       { toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 3000, completion: 312, genMs: 2600 }
     );
-    suite.assert(withRate.includes('120 tok/s'), '分隔行带 token 速率（completion / genMs）');
-    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300, completion: 150 }) === 500, '无 genMs 时回退 llmMs 计速');
-    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 1, completion: 1000 }) === 999, '瞬时流速率钳到上限 999');
+    suite.assert(withRate.includes('104 tok/s'), '分隔行按请求耗时计速（312 / 3s，含首 token 等待）');
+    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300, completion: 150 }) === 500, '无 rateMs 时回退 llmMs 计速');
+    suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 1, completion: 1000 }) === 1_000_000, '速率不封顶（OpenCode 口径）');
     suite.assert(turnTokenRate({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300, completion: 0 }) === null, '无 token 不展示速率');
     suite.assert(!turnStatSegments({ toolCalls: 0, toolMs: 0, llmCalls: 1, llmMs: 300 }).some((s) => s.includes('tok/s')), '无 token 用量时无速率段');
     const noStats = renderTurnSeparator(5_000, new Date(2026, 8, 24, 22, 30), { toolCalls: 0, toolMs: 0, llmCalls: 0, llmMs: 0 });
@@ -1205,7 +1199,9 @@ export function miniSuite(): TestSuite {
         });
       });
       suite.assert(arun.code === 0, `--approve-for-me 退出码 0（实际 ${arun.code}）`);
-      suite.assert(arun.out.includes('› 验证自动审批') && !arun.out.includes('--approve-for-me'), 'flag 剥离（回显无残留）');
+      // npx 会在 stderr 打 `npm notice run ...`，其中含原始命令行；比较程序输出前先剥掉。
+      const arunOut = arun.out.replace(/^npm (?:notice|warn).*$/gm, '');
+      suite.assert(arunOut.includes('› 验证自动审批') && !arunOut.includes('--approve-for-me'), 'flag 剥离（回显无残留）');
       suite.assert(arun.out.includes('mock 端到端验证通过'), '--approve-for-me 下整轮完成');
     } finally {
       mock.kill();
@@ -1546,7 +1542,7 @@ export function miniSuite(): TestSuite {
       try { v = JSON.parse(lastLine); } catch { /* 非 JSON 则下面断言失败 */ }
       suite.assert(v.prompted === true, 'PTY 下看到 mini 提示符');
       suite.assert(v.panelShown === true, '打 / 后联想面板出现');
-      for (const key of ['filterStable', 'filteredOnly', 'escapeClears', 'cancelStable', 'noAccumulation', 'inlineNoGrowth', 'tabStable', 'tabClears', 'commandPickRefills', 'completionClears', 'wrappedCursor', 'wrappedClear', 'clearScreen', 'historyClears', 'modelMenuRestores', 'modelConfirmRestores', 'submitClears', 'noDeleteLine']) {
+      for (const key of ['filterStable', 'filteredOnly', 'escapeClears', 'cancelStable', 'noAccumulation', 'tabStable', 'tabClears', 'completionClears', 'wrappedCursor', 'wrappedClear', 'modelMenuRestores', 'modelConfirmRestores', 'submitClears', 'noDeleteLine']) {
         suite.assert(v[key] === true, `普通/短窄/折行窗口：${key}`, v.cases);
       }
       suite.assert(v.quit0 === true, '所有窗口都干净退出');

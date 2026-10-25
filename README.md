@@ -49,6 +49,8 @@ No key at hand? `npm run mock` starts a local mock API for keyless end-to-end ru
 | `omni mini` | Pure terminal CLI (Codex CLI style): same runtime, plain scrollback lines, `Ctrl+T` to expand/collapse tool output |
 | `omni exec "<task>"` | Headless mode for scripts/pipes/CI: stdout carries only the result (`--output-format text\|json\|stream-json`) |
 | `omni web` | Local backend (REST + SSE) + browser UI, multi-session sidebar |
+| `omni bot` | Menu-bar/tray assistant with a global summon shortcut (desktop app) |
+| `omni server` | Shared server lifecycle; TUI/mini/exec/Web/Electron reuse one broker (`--local` opts out) |
 | Desktop app | Standalone Electron app (mac/win/linux) from GitHub Releases, no Node needed |
 
 ## Benchmarks (smoke)

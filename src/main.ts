@@ -688,7 +688,7 @@ async function pickSessionId(
 export const CONSOLE_COMMANDS: ReadonlySet<string> = new Set([
   'help', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
   'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset',
-  'import', 'watch', 'mini', 'update',
+  'import', 'watch', 'mini', 'update', 'server', 'bot',
 ]);
 
 /** tui-entry 路由判定：子命令恒 console；其余（空/任务文本）按 TTY 进 TUI */
@@ -734,13 +734,30 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     if (cd.kind === 'change') process.chdir(cd.dir);
   }
 
+  // 共享服务与 GUI 启动器不加载模型配置，不请求 API Key，也不进入 TUI。
+  if (taskArgs[0] === 'server') {
+    const { runServerCommand } = await import('./server/command.js');
+    process.exitCode = await runServerCommand(taskArgs.slice(1));
+    return;
+  }
+  if (taskArgs[0] === 'bot') {
+    const { runBotCommand } = await import('./cli/bot.js');
+    process.exitCode = await runBotCommand(taskArgs.slice(1));
+    return;
+  }
+  // omni doctor：本地环境诊断（不需要 API Key，也不是 Agent 任务；带参时仍按任务文本处理）。
+  if (taskArgs[0] === 'doctor' && taskArgs.length === 1) {
+    for (const l of await doctorReport(loadConfig(overrides))) console.log(l);
+    return;
+  }
+
   // Headless 子命令（把 omni 变成可组合 Unix 命令）：
   //   omni exec "<任务>"  —— 非交互执行（stdout 结果 / stderr 进度；--output-format json|stream-json）
   //   omni mcp-server     —— 作为 MCP server（stdio JSON-RPC，omni_exec / omni_reply 工具）
   // Web 服务（本地后端 + 网页界面，对标 dsh web / opencode serve）：
   //   omni web            —— 启动 REST+SSE 后端服务并托管 Web UI（默认 http://127.0.0.1:3080）
   if (taskArgs[0] === 'exec') {
-    process.exitCode = await runExec(taskArgs.slice(1), overrides);
+    process.exitCode = await runExec(taskArgs.slice(1), overrides, { local: flags.local, serverUrl: flags.server ?? undefined });
     return;
   }
   // omni review：顶层非交互审查（codex review 对等；即 exec review，不建会话；
@@ -856,19 +873,19 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     taskArgs.splice(0, taskArgs.length, ...forkPrompt);
   }
   if (taskArgs[0] === 'mcp-server') {
-    await runMcpServer(overrides);
+    await runMcpServer(overrides, { local: flags.local, serverUrl: flags.server ?? undefined });
     return;
   }
   // omni acp：ACP（Agent Client Protocol）端点（stdio JSON-RPC，Zed 等编辑器生态集成）
   if (taskArgs[0] === 'acp') {
     const { runAcpServer } = await import('./acp.js');
-    await runAcpServer(overrides);
+    await runAcpServer(overrides, { local: flags.local, serverUrl: flags.server ?? undefined });
     return;
   }
   // omni web：启动本地后端服务（REST + SSE）+ Web 界面——前端可以由 CLI 与网页
   // 共同访问同一个后端 Agent 服务（对标 opencode serve / dsh web 架构）。
   if (taskArgs[0] === 'web') {
-    await runWeb(taskArgs.slice(1), overrides);
+    await runWeb([...taskArgs.slice(1), ...(flags.local ? ['--local'] : [])], overrides);
     return;
   }
   // omni service：本机 Web / Cloudflare 隧道的安装、自启、启停
@@ -919,6 +936,17 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // omni watch：Watch 模式——监听 AI!/AI? 注释标记触发 agent 执行（第十二节 P2，Aider 同款）。
   // 复用交互模式的运行时装配（工具链/安全闸/审批回调），console 输出；Ctrl+C 退出。
   if (taskArgs[0] === 'watch') {
+    if (!flags.local) {
+      const { prepareServerTerminal } = await import('./server/terminal.js');
+      const connected = await prepareServerTerminal({ overrides, serverUrl: flags.server ?? undefined });
+      const outputW = makeOutput(connected.ctx.cfg);
+      await connected.remote.start(outputW);
+      const { runWatch } = await import('./agent/watch.js');
+      const stop = await runWatch(connected.ctx.client, connected.ctx.cfg.model, undefined as never,
+        connected.ctx.runOpts, outputW, (text) => console.log(dim(text)));
+      process.on('SIGINT', () => { stop(); void connected.remote.close().finally(() => process.exit(130)); });
+      return;
+    }
     const ctxW = prepareRun(overrides);
     const outputW = makeOutput(ctxW.cfg);
     const trustW = await resolveWorkspaceTrust(process.cwd(), outputW);
@@ -940,6 +968,13 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
   // 只换渲染层（MiniOutput：圆角信息框 + `• Ran` 项目符号 + 回合分隔线）。
   const miniMode = taskArgs[0] === 'mini';
   if (miniMode) taskArgs.shift();
+
+  if (!flags.local) {
+    const { runServerTerminal } = await import('./server/terminal.js');
+    await runServerTerminal({ mode: miniMode ? 'mini' : 'console', taskArgs, overrides,
+      resumeId: resumeIdEff ?? resumeId, continueSession: flags.continueSession, serverUrl: flags.server ?? undefined, fork: forkSpec ?? undefined });
+    return;
+  }
 
   const ctx = prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
@@ -993,11 +1028,6 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     runOpts.sessionPath = forkFile!;
     console.log(green(`已分叉新会话 ${forked.meta.id}（${forked.messages.length} 条消息 · 原会话保留）`));
     if (forked.meta.title) setTerminalTitle(forked.meta.title);
-  }
-  // omni doctor：环境诊断（codex doctor 对等；此前会被当成任务文本发给模型）
-  if (taskArgs[0] === 'doctor' && taskArgs.length === 1) {
-    for (const l of await doctorReport(cfg)) console.log(l);
-    return;
   }
   const output: Output = miniMode
     ? new MiniOutput({ showThinking: cfg.showThinking, stream: true })

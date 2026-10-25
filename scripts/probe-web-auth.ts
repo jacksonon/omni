@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     check('配置不含明文口令', !cfgText.includes(PASS));
 
     // 启动 web（--auth：回环也强制登录）
-    web = startProcess(['web', '--port', String(PORT), '--auth', '--no-open'], {
+    web = startProcess(['web', '--local', '--port', String(PORT), '--auth', '--no-open'], {
       XDG_CONFIG_HOME: XDG,
       OMNI_API_KEY: 'sk-mock',
       OMNI_BASE_URL: 'http://127.0.0.1:1/v1',

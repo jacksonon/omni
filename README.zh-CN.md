@@ -48,6 +48,8 @@ omni                             # 交互会话
 | `omni mini` | 纯终端 CLI（Codex CLI 风格）：同一套运行时，普通滚动行，`Ctrl+T` 展开/收起工具输出 |
 | `omni exec "<任务>"` | Headless 模式（脚本/管道/CI）：stdout 只出结果（`--output-format text\|json\|stream-json`） |
 | `omni web` | 本地后端（REST + SSE）+ 浏览器界面，多会话侧栏 |
+| `omni bot` | 菜单栏/托盘常驻助手 + 全局快捷键唤起（桌面应用） |
+| `omni server` | 共享 Server 生命周期；TUI/mini/exec/Web/Electron 共用一个 broker（`--local` 回退） |
 | 桌面应用 | 独立 Electron 应用（mac/win/linux），见 GitHub Releases，无需 Node |
 
 ## 评测数据

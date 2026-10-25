@@ -15,6 +15,13 @@ const { tokenRate, sumGeneration, validRateSample, requestGeneration, MIN_RATE_S
  */
 'use strict';
 
+/* 共享 server 按 /w/<id>/ 挂载页面，所有 API 继续沿用相同的协议路径。 */
+const workspacePrefix = /^\/w\/[a-f0-9]+(?=\/|$)/.exec(location.pathname)?.[0] || '';
+function workspaceUrl(path) { return typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? workspacePrefix + path : path; }
+const fetch = (path, options) => window.fetch(workspaceUrl(path), options);
+const desktop = window.omni;
+let desktopMode = new URLSearchParams(location.search).get('bot') === '1';
+
 /* ---------------- 状态 ---------------- */
 const state = {
   session: null,        // 当前会话 id
@@ -2086,6 +2093,7 @@ function sessionLabel(sid) {
   return String(sid || '').slice(0, 8) || t('session.unknown');
 }
 function interactionCard(ev) {
+  if (state.waiters.has(`${ev.sessionId}:${ev.type}:${ev.id}`)) return;
   const b = makeBlock(ev.type, ev.sessionId);
   b.sid = ev.sessionId; b.id = ev.id;
   const card = el('div', `interaction-card ${ev.type}`);
@@ -2330,7 +2338,7 @@ function showChatActions(e) {
     refreshSessions().catch(() => {});
   });
   const forkB = mk(t('session.fork'), (id) => openForkDialog({ id }));
-  const exp = mk(t('session.export'), (id) => window.open(`/api/sessions/${id}/export`, '_blank'));
+  const exp = mk(t('session.export'), (id) => window.open(workspaceUrl(`/api/sessions/${id}/export`), '_blank'));
   const rw = mk(t('session.rewind'), (id) => openRewindModal(id));
   const del = mk(t('session.delete'), async (id) => {
     if (!(await uiConfirm(t('session.deleteConfirm')))) return;
@@ -2718,7 +2726,7 @@ function showSessionActions(e, s) {
     forkB.addEventListener('click', () => { closeSessionActions(); openForkDialog(s); });
     const exp = el('button', 'ctx-item', t('session.export'));
     exp.type = 'button';
-    exp.addEventListener('click', () => { closeSessionActions(); window.open(`/api/sessions/${s.id}/export`, '_blank'); });
+    exp.addEventListener('click', () => { closeSessionActions(); window.open(workspaceUrl(`/api/sessions/${s.id}/export`), '_blank'); });
     const rw = el('button', 'ctx-item', t('session.rewind'));
     rw.type = 'button';
     rw.addEventListener('click', () => { closeSessionActions(); openRewindModal(s.id); });
@@ -3203,6 +3211,10 @@ function paintHistoryFromCache(id, keepPosition = false) {
 }
 
 async function selectSession(id, silent) {
+  const target = state.sessions.find((s) => s.id === id);
+  if (workspacePrefix && target?.project && state.status?.cwd && target.project !== state.status.cwd) {
+    await switchWorkspace(target.project, id); return;
+  }
   state.session = id;
   clearPendingMessages(); // 待发送消息属于上一个会话，切换后清空避免错发
   clearMessages();
@@ -3547,12 +3559,18 @@ function browseWorkspace() {
 }
 
 /** 切换工作目录：POST /api/workspace（后端 chdir + 重建运行时 + 持久化），随后刷新状态与会话列表 */
-async function switchWorkspace(dir) {
-  await api('/api/workspace', {
+async function switchWorkspace(dir, sessionId) {
+  const result = await api('/api/workspace', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ dir }),
   });
+  if (result.redirectUrl) {
+    const dest = new URL(result.redirectUrl, location.origin);
+    if (sessionId) dest.searchParams.set('session', sessionId);
+    if (desktopMode) dest.searchParams.set('bot', '1');
+    location.assign(dest.href); return;
+  }
   await refreshStatus();
   state.sessions = await api('/api/sessions');
   renderSessionList();
@@ -3580,6 +3598,7 @@ function modelLabel(m) {
 
 /* ---------------- SSE（+ 长轮询回退） ---------------- */
 let eventPollStarted = false;
+let lastEventSeq = null;
 
 /**
  * SSE 回退：Cloudflare Quick Tunnel 等代理会把 text/event-stream 整体缓冲，
@@ -3597,15 +3616,16 @@ function startEventPolling() {
   }).catch(() => {});
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   (async () => {
-    let cursor = null;
+    let cursor = lastEventSeq;
     for (;;) {
       try {
         const q = cursor === null ? '' : `?since=${cursor}&timeout=20`;
         const r = await fetch('/api/events/poll' + q, { cache: 'no-store' });
         if (!r.ok) { await wait(2000); continue; }
         const j = await r.json();
-        if (typeof j.seq === 'number') cursor = j.seq;
-        for (const e of (j.events || [])) {
+        if (j.reset) await restoreServerSnapshot(true);
+        if (typeof j.seq === 'number') cursor = lastEventSeq = j.seq;
+        for (const e of (j.reset ? [] : (j.events || []))) {
           try { bus.emit(e.type, e.data); } catch { /* ignore malformed */ }
         }
       } catch {
@@ -3616,7 +3636,7 @@ function startEventPolling() {
 }
 
 function connectSSE() {
-  const es = new EventSource('/api/events');
+  const es = new EventSource(workspaceUrl('/api/events') + (lastEventSeq === null ? '' : `?since=${lastEventSeq}`));
   let ready = false;
   // 3 秒内没有收到 ready（被代理缓冲 / SSE 不可用）→ 切长轮询
   const fallbackTimer = setTimeout(() => {
@@ -3624,12 +3644,20 @@ function connectSSE() {
     try { es.close(); } catch { /* ignore */ }
     startEventPolling();
   }, 3000);
-  es.addEventListener('ready', () => {
+  es.addEventListener('ready', (event) => {
+    const info = JSON.parse(event.data);
+    if (info.reset) restoreServerSnapshot(true).catch(() => {});
+    if (lastEventSeq === null && typeof info.seq === 'number') lastEventSeq = info.seq;
     ready = true;
     clearTimeout(fallbackTimer);
   });
   const on = (name) => es.addEventListener(name, (m) => {
-    try { bus.emit(name, JSON.parse(m.data)); } catch (e) { /* ignore malformed */ }
+    try {
+      const seq = Number(m.lastEventId);
+      if (m.lastEventId && lastEventSeq !== null && seq <= lastEventSeq) return;
+      if (m.lastEventId) lastEventSeq = seq;
+      bus.emit(name, JSON.parse(m.data));
+    } catch (e) { /* ignore malformed */ }
   });
   [
     'status', 'session.created', 'user.message', 'thinking.start', 'thinking.chunk',
@@ -3650,7 +3678,7 @@ function connectSSE() {
   };
   es.onopen = () => {
     refreshStatus().then(() => {
-      if (!state.session && state.sessions.length) selectSession(state.sessions[0].id, true);
+      restorePending().catch(() => {});
       updateStatusText();
     }).catch(() => {});
   };
@@ -4545,7 +4573,7 @@ $('#btn-logout')?.addEventListener('click', async () => {
   } catch {
     /* 忽略网络错误，仍然回到登录页 */
   }
-  location.replace('/');
+  location.replace(workspacePrefix + '/');
 });
 /* 关于 → 语言行：跳转到通用面板（与通用语言分段同一落点） */
 {
@@ -4701,7 +4729,7 @@ async function runSlashCommand(cmd) {
   if (base === '/export') {
     if (!state.session) { notify(t('session.new'), 'info'); return; }
     closeCmdPanel();
-    window.open(`/api/sessions/${state.session}/export`, '_blank');
+    window.open(workspaceUrl(`/api/sessions/${state.session}/export`), '_blank');
     return;
   }
   // /rename → 走 REST 重命名（广播 title 事件，侧栏/标题即时更新；无参数弹窗输入）
@@ -5439,6 +5467,8 @@ document.addEventListener('keydown', (e) => {
   // ⌘/Ctrl+K 新建会话、/ 聚焦搜索已移入快捷键注册表（Doc/specs/keyboard-shortcuts-spec.md）：
   // ⌘N=新建、⌘K=会话快速切换、/ = 聚焦搜索（裸键，输入框聚焦时不触发）
   if (e.key === 'Escape') {
+    if (e.isComposing || e.keyCode === 229) return;
+    if ($('#desktop-settings')?.classList.contains('hidden') === false) { $('#desktop-settings').classList.add('hidden'); return; }
     const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
     let escConsumed = false;
@@ -5454,6 +5484,9 @@ document.addEventListener('keydown', (e) => {
     else if (mentionPop && !mentionPop.classList.contains('hidden')) { mentionPop.classList.add('hidden'); escConsumed = true; }
     else if ($('#app').classList.contains('sidebar-open')) { $('#app').classList.remove('sidebar-open'); escConsumed = true; }
     // 无任何浮层/面板打开且当前会话运行中 → Esc 停止回复（对标 TUI 的 Esc 取消）
+    if (!escConsumed && desktopMode && desktop?.hide) {
+      e.preventDefault(); desktop.hide(); return;
+    }
     if (!escConsumed && sessionRunning()) {
       e.preventDefault();
       cancelCurrentRun();
@@ -5501,6 +5534,7 @@ async function doSend(text) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        requestId: crypto.randomUUID(),
         text,
         attachments: atts.map((a) => (a.kind === 'image'
           ? { kind: 'image', name: a.name, dataUrl: a.dataUrl }
@@ -7539,11 +7573,80 @@ $('#messages').addEventListener('click', (e) => {
   if (e.target === $('#messages')) input.focus();
 });
 
+/* 断线/窗口重建后恢复服务端持有的交互与当前流；重复事件按 ID 去重。 */
+async function restorePending(snapshot) {
+  const snap = snapshot || await api('/api/pending');
+  const active = new Set();
+  for (const item of snap.approvals || []) { active.add(`${item.sessionId}:approval:${item.approvalId}`); interactionCard({ ...item, type: 'approval', id: item.approvalId }); }
+  for (const item of snap.asks || []) { active.add(`${item.sessionId}:ask:${item.askId}`); interactionCard({ ...item, type: 'ask', id: item.askId }); }
+  for (const [key, card] of state.waiters) if (!active.has(key)) removeInteractionCard(card);
+}
+async function restoreServerSnapshot(reloadHistory) {
+  const snap = await api('/api/snapshot');
+  lastEventSeq = snap.seq;
+  if (snap.status) bus.emit('status', snap.status);
+  if (reloadHistory && state.session) await selectSession(state.session, true);
+  const live = (snap.active || []).find((a) => a.sessionId === state.session);
+  if (live) {
+    if (live.thinking) { bus.emit('thinking.start', live); bus.emit('thinking.chunk', { ...live, text: live.thinking }); }
+    for (const tool of live.tools || []) bus.emit('tool.start', tool);
+    if (live.answer) bus.emit('answer.chunk', { ...live, text: live.answer });
+  }
+  await restorePending(snap);
+}
+
+function applyDesktopMode(bot) {
+  desktopMode = bot === true;
+  document.body.classList.toggle('omni-bot', desktopMode);
+  requestAnimationFrame(() => { if (state.autoFollow) scrollBottom(true); });
+  input.focus();
+}
+async function openDesktopSettings() {
+  if (!desktop?.desktopInfo) return;
+  try {
+    const info = await desktop.desktopInfo();
+    $('#desktop-shortcut').value = info.shortcut || '';
+    $('#desktop-login').checked = info.openAtLogin;
+    $('#desktop-login').disabled = !info.loginSupported;
+    $('#desktop-notifications').checked = info.notifications;
+    $('#desktop-settings-error').textContent = !info.shortcutRegistered ? '快捷键注册失败，请更换组合。' : (!info.loginSupported ? '登录自启需要安装打包后的桌面应用。' : '');
+    $('#desktop-settings').classList.remove('hidden');
+    $('#desktop-shortcut').focus();
+  } catch (error) { notify(error.message, 'error'); }
+}
+function initDesktopBridge() {
+  applyDesktopMode(desktopMode && !!desktop);
+  if (!desktop?.desktopInfo) return;
+  $('#bot-open-full')?.addEventListener('click', () => desktop.openFullWindow());
+  $('#bot-hide')?.addEventListener('click', () => desktop.hide());
+  $('#bot-desktop-settings')?.addEventListener('click', openDesktopSettings);
+  $('#desktop-close')?.addEventListener('click', () => { $('#desktop-settings').classList.add('hidden'); input.focus(); });
+  $('#desktop-settings')?.addEventListener('click', (event) => { if (event.target === $('#desktop-settings')) $('#desktop-settings').classList.add('hidden'); });
+  $('#desktop-save')?.addEventListener('click', async () => {
+    const button = $('#desktop-save'); button.disabled = true;
+    try {
+      const result = await desktop.setBotSettings({ shortcut: $('#desktop-shortcut').value.trim(), openAtLogin: $('#desktop-login').checked, notifications: $('#desktop-notifications').checked });
+      if (result.error) throw new Error(result.error);
+      if (result.shortcutRegistered === false) throw new Error('快捷键已被其它应用占用，请更换组合。');
+      $('#desktop-settings').classList.add('hidden'); input.focus();
+    } catch (error) { $('#desktop-settings-error').textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  desktop.onDesktopAction?.((action) => {
+    if (action.type === 'mode') applyDesktopMode(action.bot);
+    if (action.type === 'focus') input.focus();
+    if (action.type === 'settings') openSettings();
+    if (action.type === 'desktop-settings') openDesktopSettings();
+    if (action.type === 'session' && action.sessionId) selectSession(action.sessionId).then(() => input.focus()).catch((error) => notify(error.message, 'error'));
+  });
+  desktop.desktopInfo().then((info) => applyDesktopMode(info.bot)).catch(() => {});
+}
+
 /* ---------------- 启动 ---------------- */
 (async function init() {
   // 立即应用主题（读 localStorage，避免首帧闪白 / 主题闪烁）
   applyTheme(getStoredTheme());
-  connectSSE();
+  initDesktopBridge();
   initScrollFollow();
   try {
     await refreshStatus();
@@ -7553,15 +7656,19 @@ $('#messages').addEventListener('click', (e) => {
   try {
     state.sessions = await api('/api/sessions');
     renderSessionList();
-    if (state.sessions.length) await selectSession(state.sessions[0].id, true);
+    const requestedSession = new URLSearchParams(location.search).get('session');
+    const initial = state.sessions.find((s) => s.id === requestedSession) || state.sessions.find((s) => !state.status?.cwd || s.project === state.status.cwd);
+    if (initial) await selectSession(initial.id, true);
     else renderWelcome();
   } catch (e) { renderWelcome(); }
+  await restoreServerSnapshot(false).catch(() => {});
+  connectSSE();
 })();
 
 /* 退出时触发 autoMemory（用 sendBeacon 保证页面关闭时仍能发送） */
 window.addEventListener('beforeunload', () => {
   if (navigator.sendBeacon) {
-    navigator.sendBeacon('/api/finalize', new Blob([JSON.stringify({ sessionId: state.session })], { type: 'application/json' }));
+    navigator.sendBeacon(workspaceUrl('/api/finalize'), new Blob([JSON.stringify({ sessionId: state.session })], { type: 'application/json' }));
   }
 });
 

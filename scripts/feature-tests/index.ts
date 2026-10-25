@@ -23,6 +23,10 @@ import { subagentTasksSuite } from './subagent-tasks.js';
 import { miniSuite } from './mini.js';
 import { execSuite } from './exec.js';
 
+// 功能回归覆盖本地运行时/PTY 链路；共享 server 的端到端由 probe-bot 专门验证。
+// 统一强制进程内运行，避免测试间复用用户机器上常驻的 broker/端口/配置。
+process.env.OMNI_LOCAL = '1';
+
 console.log('🧪 Omni 功能回归测试');
 console.log('═══════════════════════════════════════════');
 

@@ -1,4 +1,6 @@
 import { requestGeneration } from '../output/token-rate.js';
+import { runRemoteCommand, remoteAttachments } from '../server/terminal.js';
+import { syncRemoteRunOptions } from '../server/client.js';
 /**
  * TUI 交互模式：底部输入框 + 消息滚动区，多轮对话全部在 TUI 内完成。
  *
@@ -29,7 +31,7 @@ import { EventRecorder } from '../agent/events.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { resolveContextLimit } from '../config/model-context.js';
-import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand, scheduleCmdPanelAutoClose, taskDetailLines, type TuiCommandContext } from './commands.js';
+import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand as runLocalCommand, scheduleCmdPanelAutoClose, taskDetailLines, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 
@@ -43,6 +45,24 @@ import { t, tf } from './i18n.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
 import { pushCmdLine, pushLine, openCmdPanel, type ScrollAction, type TuiState } from './state.js';
+
+/** 快捷键和运行中的命令也必须经过共享传输，避免绕回本地运行时。 */
+async function runCommand(ctx: TuiCommandContext, command: string): Promise<'exit' | void> {
+  const remote = ctx.runOpts?.remote;
+  if (!remote || /^\/(exit|quit|theme|vim)(\s|$)/.test(command)) return runLocalCommand(ctx, command);
+  const lines = await runRemoteCommand(remote, command, ctx.out);
+  syncRemoteRunOptions(remote, ctx.runOpts!);
+  ctx.state.model = remote.status.model ?? ctx.state.model;
+  ctx.state.models = (ctx.runOpts?.models ?? []).map(model => model.name);
+  ctx.state.permission = ctx.runOpts?.permission ?? 'safe';
+  ctx.state.planMode = ctx.runOpts?.planMode ?? false;
+  ctx.state.reasoningEffort = ctx.runOpts?.reasoningEffort ?? '';
+  ctx.state.restoreHint = `omni -s ${remote.id}`;
+  if (lines.length) {
+    openCmdPanel(ctx.state, command);
+    for (const text of lines) pushCmdLine(ctx.state, { kind: 'meta', text });
+  }
+}
 
 /**
  * 等待输入框下一次 Enter 提交，resolve 出输入内容与提交模式。
@@ -857,6 +877,30 @@ export async function runTuiInteractive(
       }
       const cmd = text.trim();
       if (!cmd) continue;
+      // 共享模式保留终端输入/选择/滚动；命令的运行时和文件副作用只发生在 server。
+      if (runOpts.remote && cmd.startsWith('/') && !/^\/(exit|quit|theme|vim)(\s|$)/.test(cmd)) {
+        try {
+          const lines = await runRemoteCommand(runOpts.remote, cmd, out);
+          if (lines.length) {
+            openCmdPanel(state, cmd);
+            for (const line of lines) pushCmdLine(state, { kind: 'meta', text: line });
+          }
+          syncRemoteRunOptions(runOpts.remote, runOpts);
+          state.model = runOpts.remote.status.model ?? state.model;
+          currentModel = state.model;
+          state.models = (runOpts.models ?? []).map(model => model.name);
+          state.permission = runOpts.permission ?? 'safe';
+          state.planMode = runOpts.planMode ?? false;
+          state.reasoningEffort = runOpts.reasoningEffort ?? '';
+          state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? [];
+          state.restoreHint = `omni -s ${runOpts.remote.id}`;
+          messages.splice(0, messages.length, ...runOpts.remote.messages);
+          await session.paint();
+        } catch (error) {
+          pushCmdLine(state, { kind: 'warn', text: (error as Error).message }, cmd);
+        }
+        continue;
+      }
       // /model 面板/CLI 切换只改 state.model（意图），提交前先同步为真实运行时模型
       syncModel();
       // 命令执行上下文：空闲分发（本迭代顶部）与运行中分发（onSubmit 里输 / 命令）共用
@@ -1049,10 +1093,10 @@ export async function runTuiInteractive(
       runOpts.events?.user(userText); // 轨迹：用户消息（记录模型实际看到的 prompt，source=user）
       // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
       // 恢复会话后仍可 /rewind；附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
-      await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
+      if (!runOpts.remote) await createCheckpoint(runOpts.sessionPath, userText, process.cwd(), persistableMessages(messages).length).catch(() => null);
       // 上下文管理：首轮预载相关文件 + 长对话摘要压缩（选项由入口统一注入 runOpts.context；
       // recorder 传下去——压缩成功时记 compact 轨迹事件）
-      await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
+      if (!runOpts.remote) await prepareContext(currentClient, currentModel, messages, runOpts.context ?? {}, runOpts.events);
       // Agent 运行期间输入框**保持聚焦**（不 blur）：blur 会摘除 Textarea 的按键处理器
       //（OpenTUI blur() 里 offInternal("keypress")），Enter/Cmd+Enter 到不了 onSubmit——
       // queue/steer 运行中提交全是死路径（旧 mockInput 探针没模拟 blur 才"通过"）。
@@ -1141,7 +1185,13 @@ export async function runTuiInteractive(
         }
       };
       try {
-        await runAgent(currentClient, currentModel, messages, runOpts, out);
+        if (runOpts.remote) {
+          const attachments = await remoteAttachments(userText, runOpts.initialImages);
+          runOpts.initialImages = undefined;
+          await runOpts.remote.run(userText, { runOpts, attachments, echoed: true });
+          messages.splice(0, messages.length, ...runOpts.remote.messages);
+          state.restoreHint = `omni -s ${runOpts.remote.id}`;
+        } else await runAgent(currentClient, currentModel, messages, runOpts, out);
       } catch (err) {
         pushLine(state, {
           kind: 'warn',
@@ -1171,7 +1221,7 @@ export async function runTuiInteractive(
       }
       await persistTurn(); // 本轮消息（用户 + 助手 + 工具结果）追加进会话文件 + 轨迹事件落盘
       // 自动 git commit（config autoCommit，Aider 原子提交）：有改动则提交
-      if (runOpts.cfg?.autoCommit) {
+      if (!runOpts.remote && runOpts.cfg?.autoCommit) {
         const committed = await autoGitCommit(cmd).catch(() => null);
         if (committed) pushLine(state, { kind: 'meta', text: `✓ ${committed}` });
       }

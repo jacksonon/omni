@@ -321,6 +321,21 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
     return;
   }
 
+  // 普通本机入口连接共享 broker。远程/LAN/隧道保留原来的认证与监听语义；
+  // 内部工作区进程永远走下方嵌入式服务，不能再次递归启动 broker。
+  const internalWorker = args.includes('--internal-worker') && process.env.OMNI_INTERNAL_WORKER === '1';
+  const local = args.includes('--local');
+  if (!internalWorker && !local && !parsed.requireAuth && !parsed.token && !parsed.tunnel && !parsed.pair
+      && ['127.0.0.1', 'localhost', '::1'].includes(parsed.host)) {
+    const { ensureSharedServer } = await import('../server/manager.js');
+    const connection = await ensureSharedServer({ cwd: process.env.OMNI_WEB_WORKSPACE || process.cwd(), port: parsed.port, overrides });
+    console.log(`Omni Web：${connection.url}/`);
+    if (parsed.open) openBrowser(connection.browserUrl);
+    else console.log(`浏览器登录（60 秒有效、一次性）：${connection.browserUrl}`);
+    console.log('共享服务继续在后台运行；omni server status 查看，omni server stop 停止。');
+    return;
+  }
+
   // 工作目录（优先级高→低）：OMNI_WEB_WORKSPACE 环境变量 > 持久化的 webWorkspace
   // （上次在界面里切换的）> 启动 cwd；cwd 为 "/"（Finder/Dock 启动）回退 home。
   // chdir 后再 prepareRun——配置发现/记忆/系统提示全部跟随新工作区，与运行时切换语义一致。
@@ -373,7 +388,14 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
   // 路由到当前运行会话的 WebOutput；hook 输出/子代理事件转发到 SSE
   // 工作区信任：web 不弹审批（SSE 时序依赖浏览器连接），直接按信任清单判定——未信任只读
   const trusted = isTrustedWorkspace(process.cwd());
-  await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output, { trust: trusted });
+  let sharedProxy: import('../server/proxy.js').SharedProxyConnection | undefined;
+  if (!internalWorker && !local) {
+    const { ensureSharedServer } = await import('../server/manager.js');
+    // 远程监听端口留给认证前端；broker 若尚未启动使用内核分配的本机端口。
+    sharedProxy = await ensureSharedServer({ cwd: process.cwd(), port: 0, overrides });
+  } else {
+    await attachRuntime(ctx, routingOutput as unknown as import('../output/types.js').Output, { trust: trusted });
+  }
   if (!trusted) {
     console.log(`  ⚠️ 当前工作目录未受信任——以只读模式运行（/mcp 等写操作被拒绝；信任目录：omni 交互模式 / CLI 首次进入时批准）`);
   }
@@ -405,9 +427,10 @@ export async function runWeb(args: string[], overrides: ConfigOverrides): Promis
     port: parsed.port,
     overrides,
     token: parsed.token,
-    auth: ctx.cfg.webAuth,
+    auth: internalWorker ? undefined : ctx.cfg.webAuth,
     requireAuth: parsed.requireAuth || parsed.tunnel || parsed.pair,
     pair: pairInfo,
+    sharedProxy,
   });
   // 0.0.0.0 监听时浏览器/手机用具体地址；本机自动打开始终走回环
   const localUrl = `http://127.0.0.1:${parsed.port}`;

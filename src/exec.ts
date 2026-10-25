@@ -46,6 +46,7 @@ import type { Output, TokenUsage } from './output/types.js';
 import { dim, parseColorMode, red, setColorOverride, yellow, type ColorMode } from './ui.js';
 import { VERSION } from './version.js';
 import { helpText } from './cli/help.js';
+import { prepareServerTerminal, remoteAttachments } from './server/terminal.js';
 
 /* ─────────────────────────────── 参数解析 ─────────────────────────────── */
 
@@ -911,8 +912,98 @@ async function resolveLatestSession(scopeAll: boolean, verb: '恢复' | '分叉'
   return latest;
 }
 
+interface ServerHeadlessOptions extends Partial<ExecParseResult> {
+  prompt: string;
+  overrides: ConfigOverrides;
+  serverUrl?: string;
+  onEvent?: (event: TrajEvent) => void;
+}
+
+/** Headless 也使用同一服务；stdout 协议和 schema 校验保持原样。 */
+async function runHeadlessOnServer(options: ServerHeadlessOptions): Promise<HeadlessResult> {
+  const config: Record<string, unknown> = {};
+  if (options.maxTurns !== undefined) config.maxSteps = options.maxTurns;
+  if (options.allowedTools?.length) config.allowedTools = options.allowedTools;
+  if (options.outputSchema) config.outputSchema = options.outputSchema;
+  if (options.ephemeral) config.ephemeral = true;
+  if (options.approveForMe) config.autoReview = true;
+  const { ctx, remote } = await prepareServerTerminal({
+    overrides: options.overrides, serverUrl: options.serverUrl,
+    resumeId: options.resumeId ?? options.forkId,
+    continueSession: options.resumeLast || options.forkLast,
+    sessionConfig: config,
+  });
+  const output = new ExecOutput(options.quiet === true, ctx.cfg.showThinking !== false);
+  let costUsd = 0;
+  let tools = 0;
+  let numTurns = 0;
+  const started = Date.now();
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  ctx.runOpts.abortSignal = abort.signal;
+  process.once('SIGINT', cancel);
+  try {
+    if (options.forkId || options.forkLast) {
+      const fork = await remote.client.request<{ id: string }>(`/api/sessions/${encodeURIComponent(remote.id)}/fork`, {
+        n: remote.messages.filter(message => message.role !== 'system').length,
+      });
+      await remote.client.createSession({ autoTitle: false, ...config }, fork.id);
+      await remote.select(fork.id);
+    }
+    output.log(dim(`exec ${options.ephemeral ? '临时会话' : '共享会话 ' + remote.id} · 模型 ${remote.status.model ?? ctx.cfg.model}`));
+    await remote.start(output, {
+      meta: text => output.log(dim(text)),
+      event: event => {
+        if (event.type === 'usage') costUsd += Number(event.data.costUsd ?? 0);
+        else if (event.type === 'tool.start') tools += 1;
+        else if (event.type === 'trajectory') {
+          const trajectory = event.data.event as TrajEvent;
+          if (trajectory.k === 'turn/start') numTurns += 1;
+          options.onEvent?.(trajectory);
+        }
+      },
+    });
+    let reason = 'completed';
+    if (options.prompt) {
+      reason = await remote.run(options.prompt, {
+        runOpts: ctx.runOpts,
+        attachments: await remoteAttachments(options.prompt, options.images),
+      });
+    }
+    const result = extractFinalAnswer(remote.messages) || output.answerText;
+    let exitCode = reason === 'completed' ? 0 : 1;
+    let errorType = reason;
+    if (options.outputSchema) {
+      let errors = validateAgainstSchema(result, options.outputSchema);
+      if (errors.length) {
+        const json = extractJsonObject(result);
+        if (json !== null) errors = validateAgainstSchema(json, options.outputSchema);
+      }
+      if (errors.length) {
+        output.log(red(`✗ 最终回答不符合 --output-schema：\n${errors.join('\n')}`));
+        exitCode = 1;
+        errorType = 'schema-fail';
+      }
+    }
+    return {
+      result: options.prompt ? result : '', costUsd: Number(costUsd.toFixed(6)),
+      durationMs: Date.now() - started, numTurns: numTurns || (options.prompt ? 1 : 0),
+      sessionId: options.ephemeral ? null : remote.id, exitCode,
+      tokens: { prompt: output.inTokens, completion: output.outTokens, cached: output.cachedTokens },
+      idleTurns: tools === 0 && options.prompt ? 1 : 0, errorType,
+      latency: {
+        ttftMs: output.ttftSamples.length ? Math.round(output.ttftSamples.reduce((sum, sample) => sum + sample, 0) / output.ttftSamples.length) : null,
+        llmMs: output.llmMsTotal, genMs: output.genMsTotal,
+      },
+    };
+  } finally {
+    process.off('SIGINT', cancel);
+    await remote.close();
+  }
+}
+
 /** `omni exec ...` 入口：返回进程退出码（0 成功 / 1 失败） */
-export async function runExec(args: string[], overrides: ConfigOverrides): Promise<number> {
+export async function runExec(args: string[], overrides: ConfigOverrides, transport: { local?: boolean; serverUrl?: string } = { local: true }): Promise<number> {
   const opts = parseExecArgs(args);
   // --color：显式颜色开关（always/never 覆盖环境变量与 TTY 判定；auto/缺省归一化回默认，
   // 同进程复用 runExec 时不把上次覆盖泄漏给下次调用）
@@ -931,6 +1022,21 @@ export async function runExec(args: string[], overrides: ConfigOverrides): Promi
   if (opts.addDirs.length) effective.addDirs = [...(effective.addDirs ?? []), ...opts.addDirs];
   // exec 级 -i/--image：全局 -i 先被 parseArgs 收走，此处合并（互斥通道，不重复）
   const mergedImages = [...(effective.images ?? []), ...opts.images];
+  if (!transport.local && !opts.reviewMode) {
+    const injected = opts.promptRaw !== '-' ? readStdinIfPiped() : null;
+    const result = await runHeadlessOnServer({
+      ...opts, prompt: injected ? `${prompt}\n\n[stdin 输入]\n${injected}` : prompt,
+      images: mergedImages, overrides: effective, serverUrl: transport.serverUrl,
+      onEvent: opts.outputFormat === 'stream-json' ? event => process.stdout.write(JSON.stringify({ t: 'ev', e: event }) + '\n') : undefined,
+    });
+    if (opts.outputFormat === 'text') process.stdout.write(result.result ? result.result + '\n' : '');
+    else process.stdout.write(JSON.stringify(resultJson(result, opts.outputFormat === 'stream-json' ? { t: 'result' } : {})) + '\n');
+    if (opts.outputLastMessage) {
+      try { writeFileSync(opts.outputLastMessage, result.result); }
+      catch (error) { process.stderr.write(`最终回答落盘失败：${(error as Error).message}\n`); return 1; }
+    }
+    return result.exitCode;
+  }
   const ctx = prepareRun(effective);
   const { cfg } = ctx;
   // exec review：非交互审查（与 /review 同数据源；轻量单请求，不建会话/不跑 agent 循环）
@@ -1026,9 +1132,9 @@ interface RpcRequest {
 }
 
 /** omni 作为 MCP server：stdio JSON-RPC，暴露 omni_exec / omni_reply 两个工具 */
-export async function runMcpServer(overrides: ConfigOverrides): Promise<number> {
+export async function runMcpServer(overrides: ConfigOverrides, transport: { local?: boolean; serverUrl?: string } = { local: true }): Promise<number> {
   // 启动即校验配置（缺 API Key 早失败，报错信息清晰）
-  prepareRun(overrides);
+  if (transport.local) prepareRun(overrides);
   const rl = readline.createInterface({ input: process.stdin });
   // 请求串行处理（每条 tools/call 独立会话；避免并发跑 Agent 抢占 stderr/资源）
   let tail: Promise<void> = Promise.resolve();
@@ -1107,7 +1213,7 @@ export async function runMcpServer(overrides: ConfigOverrides): Promise<number> 
         }
         tail = tail.then(async () => {
           try {
-            const res = await runMcpTool(name, args ?? {}, overrides);
+            const res = await runMcpTool(name, args ?? {}, overrides, transport);
             respond(id, { content: [{ type: 'text', text: JSON.stringify(resultJson(res)) }], isError: res.exitCode !== 0 });
           } catch (err) {
             respondError(id, err instanceof Error ? err.message : String(err));
@@ -1130,11 +1236,22 @@ export async function runMcpServer(overrides: ConfigOverrides): Promise<number> 
 async function runMcpTool(
   name: string,
   args: Record<string, unknown>,
-  overrides: ConfigOverrides
+  overrides: ConfigOverrides,
+  transport: { local?: boolean; serverUrl?: string } = { local: true }
 ): Promise<HeadlessResult> {
   const prompt = typeof args.prompt === 'string' && args.prompt ? args.prompt : (name === 'omni_exec' ? '' : undefined);
   if (!prompt) throw new Error('缺少必填参数 prompt');
   const modelOverride: ConfigOverrides = typeof args.model === 'string' && args.model ? { ...overrides, model: args.model } : overrides;
+  if (!transport.local) {
+    const resumeId = name === 'omni_reply' ? typeof args.session_id === 'string' ? args.session_id : null : null;
+    if (name === 'omni_reply' && !resumeId) throw new Error('omni_reply 缺少必填参数 session_id');
+    return runHeadlessOnServer({
+      prompt, overrides: modelOverride, serverUrl: transport.serverUrl, resumeId,
+      quiet: true, maxTurns: typeof args.max_turns === 'number' ? args.max_turns : undefined,
+      allowedTools: Array.isArray(args.allowed_tools) ? args.allowed_tools.filter((value): value is string => typeof value === 'string') : undefined,
+      outputSchema: args.output_schema && typeof args.output_schema === 'object' ? args.output_schema as Record<string, unknown> : undefined,
+    });
+  }
   const ctx = prepareRun(modelOverride);
   const output = new ExecOutput(true); // MCP 模式进度静默（结果经 JSON-RPC 返回）
   await attachRuntime(ctx, output);

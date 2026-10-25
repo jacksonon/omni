@@ -300,7 +300,10 @@ export async function runServiceCommand(args: string[]): Promise<number> {
     if (!cfg.webAuth) console.log('  ⚠️ 未设置账号密码：仅限本机回环访问');
 
     const workdir = process.cwd();
-    const webCommand = [...entry, 'web', '--host', host, '--port', String(port), '--no-open'];
+    // 本机服务直接监督 broker；远程/LAN 监督认证代理（其 Agent 仍在共享 broker）。
+    const webCommand = !tunnelName && (host === '127.0.0.1' || host === 'localhost')
+      ? [...entry, 'server', '_run', '--port', String(port)]
+      : [...entry, 'web', '--host', host, '--port', String(port), '--no-open', '--auth'];
     const next: ServiceState = {
       version: 1,
       platform: 'darwin',

@@ -123,7 +123,13 @@ export async function runWatch(
       },
     ];
     try {
-      await runAgent(client, model, msgs, opts, output);
+      if (opts.remote) {
+        const prompt = String(msgs[0]!.content);
+        const reason = await opts.remote.run(prompt, { runOpts: opts });
+        if (reason !== 'completed') throw new Error(`任务未完成：${reason}`);
+        msgs.splice(0, msgs.length, ...opts.remote.messages);
+      } else await runAgent(client, model, msgs, opts, output);
+      if (opts.permission === 'read') { onEvent(`只读模式：保留 ${label}:${marker.line} 标记`); return; }
       // 改写文件：AI! → 删除标记行（若仍存在）；AI? → 在标记行下方插入答案注释
       const content = await readFile(marker.file, 'utf8');
       const lines = content.split('\n');

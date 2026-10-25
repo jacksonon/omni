@@ -42,6 +42,8 @@ export type WebEventName =
   | 'tool.start'
   | 'tool.result'
   | 'tool.output' // run_command 实时输出（{ sessionId, seq, chunk, isError }）
+  | 'tool.full' // 完整工具原文，供终端 Ctrl+T 展开（与 tool.result 同 seq）
+  | 'trajectory' // EventRecorder 原始事件，保持 exec stream-json 冻结协议
   | 'answer.chunk'
   | 'answer.end'
   | 'stream.progress'
@@ -67,4 +69,4 @@ export type WebEventName =
   | 'session.deleted';
 
 /** 广播函数：把（事件名, 数据）发给所有已连接客户端 */
-export type WebBroadcast = (type: WebEventName, data: Record<string, unknown>) => void;
+export type WebBroadcast = (type: WebEventName, data: Record<string, unknown>, seq?: number) => void;

@@ -66,7 +66,12 @@ function lastAssistantText(messages: ChatCompletionMessageParam[]): string {
   return '';
 }
 
-export async function runAcpServer(overrides: ConfigOverrides): Promise<void> {
+export async function runAcpServer(overrides: ConfigOverrides, options: { local?: boolean; serverUrl?: string } = {}): Promise<void> {
+  if (!options.local) {
+    const { runSharedAcp } = await import('./server/acp.js');
+    await runSharedAcp(overrides, options.serverUrl);
+    return;
+  }
   // 复用完整入口装配（模型/端点/权限/MCP/hooks 全一致）；stdio 下无审批 UI → fail-safe
   const ctx = prepareRun(overrides);
   await import('./main.js').then(async (m) => {

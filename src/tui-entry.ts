@@ -28,6 +28,8 @@ import { TuiOutput } from './tui/output.js';
 import { createTuiState } from './tui/state.js';
 import { dim, isBun, isTTY, red } from './ui.js';
 import { VERSION } from './version.js';
+import { prepareServerTerminal, remoteAttachments } from './server/terminal.js';
+import { syncRemoteRunOptions } from './server/client.js';
 
 // 崩溃处理器：先于任何异步逻辑安装。未捕获异常落盘 + 尽力恢复终端后退出；
 // 未处理拒绝只记录不退出（不致命，但日志能揭示与重绘/按键的关联）。
@@ -77,12 +79,14 @@ async function run(): Promise<void> {
     return;
   }
 
-  const ctx = prepareRun(overrides);
+  if (flags.cd) process.chdir(flags.cd);
+  const connected = !flags.local ? await prepareServerTerminal({ overrides, resumeId, continueSession: flags.continueSession, serverUrl: flags.server ?? undefined }) : null;
+  const ctx = connected?.ctx ?? prepareRun(overrides);
   const { cfg, client, messages, runOpts } = ctx;
   const singleTask = taskArgs.join(' ').trim();
   // 会话持久化：--continue / -r 恢复历史（历史消息在 startTui 前载入，随后回放到 TUI）；
   // 交互模式自动创建会话文件。console.log 此时还未进入全屏，直接输出恢复提示。
-  const ok = await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
+  const ok = connected ? true : await prepareSessionPersistence(flags, resumeId, cfg, messages, runOpts, Boolean(singleTask));
   if (!ok) return;
   const state = createTuiState();
   // 界面语言（/settings 语言面板可改并持久化；应用层已校验 zh/en）
@@ -93,10 +97,26 @@ async function run(): Promise<void> {
   activeSession = session; // 崩溃时优先恢复终端
   const output = new TuiOutput(state, { showThinking: cfg.showThinking }, session);
   // 工作区信任（第九节）：首次进入未信任目录时 TUI 审批卡片询问；未信任 → 只读 + 跳过项目级配置
-  const trust = await resolveWorkspaceTrust(process.cwd(), output);
-  await attachRuntime(ctx, output, { trust }); // 安全护栏 + 动态工具链 + 上下文选项（MCP 发现可能耗时）
+  const trust = connected ? true : await resolveWorkspaceTrust(process.cwd(), output);
+  if (!connected) await attachRuntime(ctx, output, { trust }); // 共享模式不创建本地工具链
   if (!trust && !singleTask) output.onUserMessage('⚠️ 当前目录未受信任——以只读模式运行（/status 查看；/permission 无法提升）');
   output.banner(cfg, runOpts.tools.map((t) => t.name));
+  if (connected) {
+    await connected.remote.start(output, {
+      status: (status) => {
+        syncRemoteRunOptions(connected.remote, runOpts);
+        state.model = status.model ?? state.model;
+        state.models = (runOpts.models ?? []).map(model => model.name);
+        state.permission = runOpts.permission ?? 'safe';
+        state.planMode = runOpts.planMode ?? false;
+        state.reasoningEffort = runOpts.reasoningEffort ?? '';
+        state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? [];
+        state.contextLimit = status.contextLimit ?? state.contextLimit;
+        state.schedulePaint?.();
+      },
+      meta: text => output.pushToast(text, 'info'),
+    });
+  }
   // 恢复的会话：把历史消息回放到 TUI（用户消息/思考块/纯文本回答；工具调用历史不重建卡片），
   // 让对话流与消息上下文一致——新一轮在历史之后继续。思考块（reasoning/reasoningMs 已随
   // assistant 消息持久化）一并回放，带「- thinking · 耗时」头行（旧会话无 reasoningMs → 无耗时）。
@@ -132,10 +152,13 @@ async function run(): Promise<void> {
     if (singleTask) {
       output.onUserMessage(singleTask);
       messages.push({ role: 'user', content: singleTask });
-      await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
+      if (!connected) await prepareContext(client, cfg.model, messages, runOpts.context ?? {}, runOpts.events);
       output.startLoading(); // 会话进行中：模型行思考级别右侧 loading 一直转
       try {
-        await runAgent(client, cfg.model, messages, runOpts, output);
+        if (connected) {
+          await connected.remote.run(singleTask, { echoed: true, runOpts, attachments: await remoteAttachments(singleTask, overrides.images) });
+          state.restoreHint = `omni -s ${connected.remote.id}`;
+        } else await runAgent(client, cfg.model, messages, runOpts, output);
       } finally {
         output.stopLoading(); // 会话结束：loading 消失
       }
@@ -144,6 +167,7 @@ async function run(): Promise<void> {
       await runTuiInteractive(client, cfg.model, messages, runOpts, output, session, state);
     }
   } finally {
+    await connected?.remote.close();
     // 先刷掉 30ms 节流窗口内未渲染的最后一帧（如“任务完成”），再退出全屏恢复终端
     try {
       await output.flush();

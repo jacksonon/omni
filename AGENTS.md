@@ -6,7 +6,7 @@
 ## 项目是什么
 
 Omni 是一个 **Agent 工程**（终端型 AI 编程助手）。
-当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）+ 纯终端 CLI 模式（`omni mini`，Codex CLI 形态）**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
+当前为 **1.0 阶段（Beta 功能完备 + 行业标配补齐）**：单 Agent 循环 + 基础工具集 + 安全护栏 + 上下文管理 + 子代理/并行/编排 + MCP 外部工具（tools/resources/prompts/instructions/HTTP+OAuth）+ 记忆系统/会话持久化/技能系统 + 全屏 TUI + **本地后端服务与 Web 界面（`omni web`）+ Electron 桌面应用（mac/win/linux）+ 纯终端 CLI 模式（`omni mini`，Codex CLI 形态）+ 统一共享 Server（`omni server`，TUI/mini/exec/Web/Electron 共用 broker，`--local` 回退）+ `omni bot` 菜单栏/托盘常驻与全局快捷键唤起**，无框架依赖（裸 OpenAI SDK + 主循环）。路线图基础项与 1.0 定义项已全部完成（含 /rewind 三模式 code/chat/both），仅剩进阶项：SWE-bench 评测、Windows 原生沙箱（见 `Doc/roadmap.md`）。2026-09 市场对齐批次（动态工作流/插件系统/后台子代理与远程接入/MCP elicitation·sampling/AI 自动审批/会话 pin·archive·/cd/Vim/LSP/密钥脱敏）见 `Doc/TODO.md` 第二部分 I 节。
 
 设计理念：
 - **认知优先**：代码是认知梳理对话（见仓库根目录 `Agent开发认知梳理.md`）的落地，保持最小可读，不为"架构好看"引入抽象；
@@ -35,8 +35,15 @@ npx tsx src/index.ts service install --tunnel omni  # 安装 Web+隧道登录服
 npx tsx src/index.ts service start|stop|status|enable|disable|uninstall
 npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
 npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
+npm run probe:bot         # 共享 Server + bot e2e（broker/工作区隔离/SSE 重放/审批恢复/远程代理，21 项）
+npm run test:desktop      # Electron bot 单元测试（托盘/快捷键/窗口/通知/路径）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
+npm run electron:bot      # 开发模式启动菜单栏/托盘 bot（electron . --bot）
 npm run electron:build    # Electron 桌面应用打包（npm run web:sync + bundle + electron-builder）
+omni bot                  # 安装版：唤起桌面托盘助手（OMNI_DESKTOP_PATH 可指定安装位置）
+omni server status|start|stop   # 共享 Server 生命周期（--force 可取消运行中任务后停止）
+omni --local "<任务>"     # 不连接共享 Server，进程内独立运行（OMNI_LOCAL=1 等价）
+omni --server <url>      # 连接显式共享 Server（HTTPS；令牌用 OMNI_SERVER_TOKEN）
 npm run eval              # 评估：真实 API 跑任务集 + 完成率报告（eval-report.json）
 npm run eval:mock         # 评估：离线 mock（确定性，可进 CI）
 npm run dev -- exec "<任务>" --output-format json   # Headless：stdout 只出结果、进度走 stderr（可 | jq / 管道分支）
@@ -56,7 +63,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 | 产物 | 命令 | 说明 |
 |---|---|---|
-| `dist/omni.cjs`（~730K） | `npm run bundle` | **单文件 JS 包**（内联 openai SDK），需 Node ≥18；npm 安装即用此文件 |
+| `dist/omni.cjs`（~3.1MB） | `npm run bundle` | **单文件 JS 包**（内联 openai SDK），需 Node ≥18；npm 安装即用此文件 |
 | `release/omni`（~57M） | `npm run compile` | **原生二进制**（bun compile，含运行时，零依赖、无需 Node），平台相关（arm64/x64），适合直接分发；macOS 自动 ad-hoc 重新签名（`scripts/sign-macos.mjs`） |
 | `omni-<版本>.tgz` | `npm pack` | **npm 安装包**（自动 prepack 构建），`npm install -g omni-0.1.0.tgz` 全局安装后可直接用 `omni` 命令 |
 
@@ -77,7 +84,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 | 全局配置 | `~/.config/omni/omni.json` | 用户级默认（尊重 `XDG_CONFIG_HOME`） |
 | 项目配置 | `omni.json` / `omni.jsonc` | 从当前目录向上找，最近的生效；git 根与 home 为边界 |
 | 自定义配置 | `OMNI_CONFIG` 环境变量 或 `--config <路径>` | 显式指定 |
-| 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_DEBUG` | 覆盖配置文件；`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体 |
+| 环境变量 | `OMNI_API_KEY` / `OMNI_BASE_URL` / `OMNI_MODEL` / `OMNI_MAX_STEPS` / `OMNI_SHOW_THINKING` / `OMNI_PERMISSION` / `OMNI_LOCAL` / `OMNI_DEBUG` | 覆盖配置文件；`OMNI_LOCAL=1` 等价 `--local`；`OMNI_DEBUG=1` 打印发往 LLM 的完整请求体 |
 | CLI 参数 | `-m, --model <名称>` | 最高优先级 |
 
 **配置字段**：
@@ -153,7 +160,8 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 - **Agent 核心** `src/agent/`：`loop.ts` 主循环；`context.ts` 全局/项目记忆级联注入 + 相关文件预载 + 长对话摘要压缩；`messages.ts` / `thinking.ts`；`session.ts` 会话 JSONL 落盘；`undo.ts` 撤销 + 重做；`subagent.ts` / `subagent-registry.ts` 子代理与 Agent View；`orchestrate.ts` 动态工作流 + `/goal`；`team.ts` 共享看板；`memory.ts` 记忆；`skill.ts` 技能；`redact.ts` 密钥脱敏；`events.ts` / `trace.ts` 轨迹。
 - **工具** `src/tools/`：静态 8 个（read_file / write_file / edit_file / list_directory / search_code / run_command / skill / lsp）+ 运行时注入（delegate / ask_user / task_board / send_message / web_search / web_fetch / MCP `<server>_<tool>`）。
 - **安全** `src/safety/`：`index.ts` 统一闸门（policy 判定 + 审批 + 审计）、`policy.ts` 权限分级与危险命令检测、`trust.ts` 工作区信任、`sandbox.ts` OS 沙箱、`audit.ts` 审计、`auto-review.ts` AI 自动审批。
-- **前端/渲染**（同一运行时，多套 Output）：`ui.ts` + `cli/`（console / interactive / mini）· `src/tui/`（全屏 OpenTUI，命令式渲染；**改前必读 `Doc/tui-architecture.md`**）· `src/web/`（REST + SSE 本地后端）· `electron/`（桌面应用）。
+- **共享服务** `src/server/`：`broker.ts`（单用户 broker + 工作区子进程/token/文件锁）· `manager.ts`（发现与启动）· `discovery.ts`（server.json/规范工作区）· `proxy.ts`（远程代理与认证边界）· `client.ts`（SSE 长轮询/会话/审批/提问）· `terminal.ts`（TUI/mini/console 共用输入与回放）· `acp.ts`（ACP stdio 转发）。`omni web` 默认确保 broker；`--local` 回退进程内。
+- **前端/渲染**（同一运行时，多套 Output）：`ui.ts` + `cli/`（console / interactive / mini）· `src/tui/`（全屏 OpenTUI，命令式渲染；**改前必读 `Doc/tui-architecture.md`**）· `src/web/`（REST + SSE 本地后端）· `electron/`（桌面应用；`--bot` 托盘/全局快捷键、`bot-utils.cjs` 设置与窗口校验）。
 - **配置** `src/config/`：分层加载（默认 → 全局 → 项目 → 自定义 → 环境变量 → CLI）+ JSONC + `model-context.ts` 模型能力查表（`/settings models refresh` 热替换）。
 - **扩展**：`src/hooks/` 生命周期自动化 · `agent/plugins.ts` 插件系统 · MCP `tools/mcp.ts` + `mcp-oauth.ts`。
 

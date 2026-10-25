@@ -147,13 +147,16 @@ Agents and extensions:
       --strict-config         Error on unrecognized config file fields
       --ignore-user-config    Skip the user-level config file
       --add-dir <dir>     Extra writable dir for the sandbox, repeatable
+      --local             Run in-process without the shared server (debug/isolation)
+      --server <url>      Connect to an explicit shared server (HTTPS; token via OMNI_SERVER_TOKEN)
   -s, -r, --resume <session-id>   Resume a specific session
   -l, --list-sessions   List saved sessions (cwd only by default; add -f/--full/--all for all)
   -f, --full, --all     With -l: list all sessions (default lists cwd only)
       --lang <zh|en>    Help language (default en; --lang zh for Chinese help)
       --no-tui          Disable fullscreen TUI (default: auto-enable on bun + TTY)
   -h, --help            Show help (default English; add --lang zh for Chinese)
-  -v, -V, --version     Show version`,
+  -v, -V, --version     Show version
+  OMNI_LOCAL=1          Same as --local (--server takes precedence)`,
     config: `Config files (JSON / JSONC, ascending priority):
   1. Global   ~/.config/omni/omni.json
   2. Project  omni.json / omni.jsonc (search upward from cwd)
@@ -313,13 +316,16 @@ Example: cp omni.example.jsonc omni.json then edit as needed.`,
       --strict-config         严格配置校验：未知顶层字段报错
       --ignore-user-config    跳过用户级配置文件
       --add-dir <目录>    沙箱额外可写目录，可重复
+      --local             不连接共享 server，进程内独立运行（调试/隔离）
+      --server <地址>     连接指定共享 server（HTTPS；令牌用 OMNI_SERVER_TOKEN）
   -s, -r, --resume <会话id>   恢复指定会话
   -l, --list-sessions   列出会话（默认仅当前目录；加 -f/--full/--all 查看全部）
   -f, --full, --all     配合 -l：查看全部会话（默认仅当前目录）
       --lang <zh|en>    帮助语言（默认英文；--lang zh 显示中文）
       --no-tui          禁用全屏 TUI（默认：bun + 终端时自动启用）
   -h, --help            显示帮助（默认英文；加 --lang zh 显示中文）
-  -v, -V, --version     显示版本`,
+  -v, -V, --version     显示版本
+  OMNI_LOCAL=1          等价 --local（--server 优先）`,
     config: `配置文件（JSON / JSONC，优先级从低到高）：
   1. 全局配置   ~/.config/omni/omni.json
   2. 项目配置   omni.json / omni.jsonc（从当前目录向上找）
@@ -350,6 +356,7 @@ function overview(lang: 'zh' | 'en'): string {
   omni "任务"             执行一个任务
   omni mini               使用纯终端界面
   omni web                打开 Web 界面
+  omni bot                启动菜单栏/托盘助手（需安装桌面应用）
   omni exec "任务"        非交互执行，适合脚本和管道
   omni review             审查未提交的代码改动
   omni update             更新 Omni（--check 只检查版本）
@@ -359,6 +366,7 @@ function overview(lang: 'zh' | 'en'): string {
   omni pair               手机扫码配对（同一 Wi-Fi）
   omni web --tunnel       开启临时公网 HTTPS 接入
   omni service            管理常驻服务与登录自启
+  omni server             查看共享 server（start / status / stop）
 
 会话：
   omni -c                 继续当前项目最近一次会话
@@ -376,6 +384,7 @@ function overview(lang: 'zh' | 'en'): string {
 详细帮助：omni help <主题>
   exec / mini             任务执行与纯终端模式
   web / remote / pair     网页、远程接入与扫码配对
+  bot / server            托盘助手与共享服务
   sessions                恢复、分叉、归档与删除会话
   commands                插件、MCP、诊断与其他命令
   interactive             按类别查看交互斜杠命令
@@ -392,6 +401,7 @@ Get started:
   omni "task"             Run a single task
   omni mini               Use the terminal interface
   omni web                Open the Web UI
+  omni bot                Start the menu-bar/tray assistant (desktop app required)
   omni exec "task"        Run non-interactively for scripts and pipes
   omni review             Review uncommitted code changes
   omni update             Update Omni (--check only checks for updates)
@@ -401,6 +411,7 @@ Remote access and pairing:
   omni pair               Pair a phone via QR code on the same Wi-Fi
   omni web --tunnel       Start temporary public HTTPS access
   omni service            Manage background service and login startup
+  omni server             Shared server lifecycle (start / status / stop)
 
 Sessions:
   omni -c                 Continue the latest session in this project
@@ -418,6 +429,7 @@ Common options:
 More help: omni help <topic>
   exec / mini             Task execution and terminal mode
   web / remote / pair     Web UI, remote access, and QR pairing
+  bot / server            Tray assistant and shared server
   sessions                Resume, fork, archive, and delete sessions
   commands                Plugins, MCP, diagnostics, and other commands
   interactive             Interactive slash commands by category
@@ -464,6 +476,12 @@ export async function handleHelp(args: ParsedArgs): Promise<boolean> {
   } else if (topic === 'service') {
     const { runServiceCommand } = await import('./service.js');
     process.exitCode = await runServiceCommand(['--help']);
+  } else if (topic === 'bot') {
+    const { runBotCommand } = await import('./bot.js');
+    process.exitCode = await runBotCommand(['--help']);
+  } else if (topic === 'server') {
+    const { runServerCommand } = await import('../server/command.js');
+    process.exitCode = await runServerCommand(['--help']);
   } else if (topic === 'resume' || topic === 'fork' || topic === 'archive' || topic === 'unarchive' || topic === 'delete') {
     printHelp(lang, 'sessions');
   } else if (topic === 'pair' || topic === 'remote') {

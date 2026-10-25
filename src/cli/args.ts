@@ -6,7 +6,7 @@ import type { ConfigOverrides } from '../config/index.js';
 export interface ParsedArgs {
   taskArgs: string[];
   overrides: ConfigOverrides;
-  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean; listAll: boolean; cd: string | null };
+  flags: { noTui: boolean; listSessions: boolean; continueSession: boolean; listAll: boolean; cd: string | null; local: boolean; server: string | null };
   /** --resume/-r <id>：要恢复的会话 id（null = 未指定） */
   resumeId: string | null;
   help: boolean;
@@ -19,7 +19,10 @@ export interface ParsedArgs {
 export function parseArgs(args: string[]): ParsedArgs {
   const taskArgs: string[] = [];
   const overrides: ConfigOverrides = {};
-  const flags = { noTui: false, listSessions: false, continueSession: false, listAll: false, cd: null as string | null };
+  // OMNI_LOCAL=1：测试/CI/离线环境的等价 --local 默认值；显式 --server 优先。
+  const envLocal = /^(1|true|yes)$/i.test(process.env.OMNI_LOCAL ?? '');
+  const flags = { noTui: false, listSessions: false, continueSession: false, listAll: false, cd: null as string | null, local: envLocal, server: null as string | null };
+  let localExplicit = false;
   let resumeId: string | null = null;
   let help = false;
   let version = false;
@@ -33,6 +36,16 @@ export function parseArgs(args: string[]): ParsedArgs {
     const takeValue = (): string | undefined => inlineValue ?? args[++i];
 
     switch (name) {
+      case '--local':
+        flags.local = true;
+        localExplicit = true;
+        break;
+      case '--server': {
+        const value = takeValue();
+        if (!value || value.startsWith('--')) throw new Error('--server 缺少服务地址');
+        flags.server = value;
+        break;
+      }
       case '--help':
       case '-h':
         help = true;
@@ -140,6 +153,9 @@ export function parseArgs(args: string[]): ParsedArgs {
     taskArgs.length = 0;
     taskArgs.push(...keep);
   }
+  // 显式 --server 覆盖环境默认的 OMNI_LOCAL；显式 --local + --server 仍算冲突。
+  if (envLocal && flags.server && !localExplicit) flags.local = false;
+  if (flags.local && flags.server) throw new Error('--local 与 --server 不能同时使用');
   return { taskArgs, overrides, flags, resumeId, help, version, lang };
 }
 

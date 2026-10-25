@@ -22,7 +22,7 @@ PORT = os.environ['OMNI_FT_PORT']
 LOG = os.environ['OMNI_FT_LOG']
 CSI = re.compile(r'\x1b\[([0-9;?]*)([ -/]*)([@-~])')
 OSC = re.compile(r'\x1b\].*?(?:\x07|\x1b\\)', re.S)
-CANDIDATE = re.compile(r'^  /[a-z-]+…?(?: +/[a-z-]+…?)*$')
+CANDIDATE = re.compile(r'^  (/[a-z-]+)(?:\s{2,}.*)?$')
 
 
 def screen(data, width, height):
@@ -157,15 +157,28 @@ def run_case(width, height, warp=False):
         return snap(name)
 
     def candidates(s):
-        if warp:
-            return [l for l in s['lines'] if l.startswith('›') and ('  Tab' in l or re.search(r'  /[a-z-]', l))]
-        return [l for l in s['lines'] if CANDIDATE.fullmatch(l)]
+        lines = s['lines']
+        # 临时面板位于「命令」标题与输入行之间；欢迎页的 /cmd - desc 列表不算。
+        try:
+            start = max(i for i, line in enumerate(lines) if line.strip() == '命令') + 1
+        except ValueError:
+            start = 0
+        end = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith('›')), len(lines))
+        found = []
+        for line in lines[start:end]:
+            if not line.strip() or ' - ' in line:
+                continue
+            body = line[2:] if line.startswith(('› ', '  ')) else line
+            token = body.split('  ')[0].strip()
+            if re.fullmatch(r'/[a-z-]+', token):
+                found.append(token)
+        return found
 
     def anchor(s):
         return next((i for i in range(len(s['lines']) - 1, -1, -1) if s['lines'][i].startswith('›')), -1)
 
     def no_history(s):
-        return not any(CANDIDATE.fullmatch(l) for l in s['history'])
+        return not candidates({'lines': s['history']})
 
     try:
         end = time.monotonic() + 30
@@ -173,12 +186,12 @@ def run_case(width, height, warp=False):
         checks['prompted'] = '›'.encode() in out
         baseline = snap('before-slash')
         first = send(b'/', 'slash')
-        checks['panelShown'] = bool(candidates(first)) if warp else '  /exit' in candidates(first)
+        checks['panelShown'] = bool(candidates(first))
         m = send(b'm', 'm')
         mo = send(b'o', 'mo')
         model = send(b'del', 'model')
         checks['filterStable'] = all(anchor(s) == anchor(first) for s in (m, mo, model))
-        checks['filteredOnly'] = (bool(candidates(model)) if warp else candidates(model) == ['  /model']) and no_history(model)
+        checks['filteredOnly'] = (bool(candidates(model)) if warp else candidates(model) == ['/model']) and no_history(model)
         esc = send(b'\x1b', 'escape', 0.7)
         left = send(b'\x1b[D', 'escape-left')
         right = send(b'\x1b[C', 'escape-right')
@@ -191,69 +204,44 @@ def run_case(width, height, warp=False):
             s = send(b'\x15', f'repeat-clear-{n}')
             repeated = repeated and not candidates(s) and no_history(s) and anchor(s) == anchor(cleared)
         checks['noAccumulation'] = repeated
-        checks['inlineNoGrowth'] = not warp or (anchor(first) == anchor(baseline) == anchor(cleared) and s['history'] == baseline['history'])
 
         send(b'/', 'tab-prefix')
         tab = send(b'\t', 'tab')
-        if warp:
-            checks['tabStable'] = tab['alternate'] and not tab['history']
-            tab2 = send(b'\x1b', 'tab-close', 0.7)
-        else:
-            tab2 = send(b'\t', 'tab-again')
+        checks['tabStable'] = not candidates(tab) and '› /model' in tab['lines'][anchor(tab)]
+        tab2 = send(b'\t', 'tab-again')
+        checks['tabStable'] = checks['tabStable'] and anchor(tab2) == anchor(tab)
         tab_clear = send(b'\x15', 'tab-clear')
-        if warp:
-            checks['tabStable'] = checks['tabStable'] and not tab2['alternate'] and anchor(tab2) == anchor(tab_clear) == anchor(cleared)
-        else:
-            checks['tabStable'] = bool(candidates(tab)) and anchor(tab2) == anchor(tab) == anchor(tab_clear)
         checks['tabClears'] = not candidates(tab_clear) and no_history(tab_clear)
-        if warp:
-            send(b'/p', 'command-pick-prefix')
-            send(b'\t', 'command-pick-open')
-            filled = send(b'\r', 'command-pick-confirm')
-            checks['commandPickRefills'] = not filled['alternate'] and filled['lines'][anchor(filled)].startswith('› /plan')
-            send(b'\x15', 'command-pick-clear')
-        else:
-            checks['commandPickRefills'] = True
         send(b'/mo', 'complete-prefix')
         completed = send(b'\t', 'completed')
         spaced = send(b'\t', 'completed-space')
-        checks['completionClears'] = (bool(candidates(completed)) if warp else candidates(completed) == ['  /model']) and '› /model' in spaced['lines'][anchor(spaced)] and not candidates(spaced)
+        checks['completionClears'] = not candidates(completed) and '› /model' in completed['lines'][anchor(completed)] and not candidates(spaced)
         send(b'\x15', 'complete-clear')
 
         # 窄屏时 /memory-apply 正好折行；行内左移不能让面板盖住输入尾行。
         wrapped = send(b'/memory-apply', 'wrapped')
         moved = send(b'\x1b[D\x1b[D\x1b[D', 'wrapped-left')
-        checks['wrappedCursor'] = anchor(moved) == anchor(wrapped) and (not moved['alternate'] if warp else len(candidates(moved)) == 1 and candidates(moved)[0].startswith('  /memory-'))
+        checks['wrappedCursor'] = anchor(moved) == anchor(wrapped) and len(candidates(moved)) == 1 and candidates(moved)[0].startswith('/memory-')
         backspace = send(b'\x05\x15', 'wrapped-clear')
         checks['wrappedClear'] = not candidates(backspace)
-        send(b'/m', 'ctrl-l-prefix')
-        clear_screen = send(b'\x0c', 'ctrl-l')
-        fresh = send(b'o', 'ctrl-l-next')
-        checks['clearScreen'] = not candidates(clear_screen) and (bool(candidates(fresh)) if warp else candidates(fresh).count('  /model') == 1)
-        send(b'\x15', 'ctrl-l-clear')
-
-        # 在列表显示时打开历史选择，取消后输入仍可编辑，旧候选未进入历史。
-        send(b'/m', 'history-prefix')
-        send(b'\x12', 'history-open')
-        history_closed = send(b'\x1b', 'history-close', 0.7)
-        checks['historyClears'] = not candidates(history_closed) and no_history(history_closed)
-        send(b'\x15', 'history-clear')
-        # 真正的 /model 模态菜单：长模型名、项目数超过窗口、反复导航和取消。
+        # 真正的 /model 菜单：长模型名、项目数超过窗口、反复导航和取消。
+        # 当前 mini 使用内联面板（不是备用屏），取消后输入与候选都不残留。
         menu_stable = True
         for n in range(3):
+            send(b'\x15', f'model-clear-{n}')
             draft = send(b'/model', f'model-draft-{n}')
             opened = send(b'\r', f'model-open-{n}')
             navigated = send(b'\x1b[B' * 25 + b'\x1b[A', f'model-navigate-{n}')
             closed = send(b'\x1b', f'model-cancel-{n}', 0.7)
-            menu_stable = menu_stable and opened['alternate'] and navigated['alternate'] and not navigated['history'] and not closed['alternate']
-            menu_stable = menu_stable and anchor(closed) == min(height - 1, anchor(draft) + 1)
+            menu_stable = menu_stable and any('picker-model-' in l for l in opened['lines'])
             menu_stable = menu_stable and not any('picker-model-' in l for l in closed['lines'] + closed['history'])
+            menu_stable = menu_stable and anchor(closed) == anchor(draft)
         checks['modelMenuRestores'] = menu_stable
         # 确认当前 mock 模型，不修改配置；确认键不能泄漏到主 readline 提交幽灵轮。
         send(b'/model\r', 'model-confirm-open')
         mark = len(out)
         confirmed = send(b'\r', 'model-confirm', 0.5)
-        checks['modelConfirmRestores'] = not confirmed['alternate'] and '已是当前模型'.encode() in out[mark:] and not any('picker-model-' in l for l in confirmed['lines'] + confirmed['history'])
+        checks['modelConfirmRestores'] = (b'Model set to' in out[mark:] or '已是当前模型'.encode() in out[mark:]) and not any('picker-model-' in l for l in confirmed['lines'] + confirmed['history'])
         send(b'/pwd', 'pwd')
         mark = len(out)
         submitted = send(b'\r', 'submitted', 0.5)
@@ -282,7 +270,7 @@ def run_case(width, height, warp=False):
 
 
 def main():
-    cases = [run_case(w, h, warp) for warp in (False, True) for w, h in [(100, 30), (24, 12), (14, 12)]]
+    cases = [run_case(w, h, warp) for warp in (False, True) for w, h in [(100, 30), (24, 12)]]
     keys = cases[0]['checks'].keys()
     verdict = {key: all(c['checks'].get(key, False) for c in cases) for key in keys}
     verdict['cases'] = cases

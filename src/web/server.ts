@@ -3,9 +3,9 @@
  *
  * 架构：
  *   · 服务端复用现有 Agent 栈（prepareRun + attachRuntime + runAgent），
- *     进程内持有一组会话（messages[] + 落盘 JSONL），**全局单运行**——同一时刻
- *     只有一个会话在跑（与 TUI 单对话模型一致），避免共享 runOpts/闸门/撤销栈
- *     的并发交错；其它会话可浏览/新建，运行中的会话拒绝新消息（可取消）。
+ *     进程内持有一组会话（messages[] + 落盘 JSONL），每会话只运行一个回合，
+ *     不同会话按 webConcurrency 并发；共享服务把不同工作区放在独立子进程，
+ *     会话配置、工具与审批由服务端持有。
  *   · SSE（GET /api/events）向所有已连接客户端推送运行事件（thinking / tool /
  *     answer / approval / ask / usage…），Web UI 按事件名渲染；
  *   · REST：会话创建/列表/历史、发送消息、取消运行、审批/提问应答、设置。
@@ -17,6 +17,10 @@
  * （bundle 单文件发布时无需外部文件）。
  */
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { RequestLedger } from './requests.js';
+import { Safety } from '../safety/index.js';
+import { formatToolCall, previewOutput, isExitCodeZeroLine } from '../output/format.js';
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
@@ -133,9 +137,9 @@ import type { WebBroadcast } from './events.js';
 import { WebOutput } from './output.js';
 import { STATUSLINE_DEFAULT } from '../tui/layout.js';
 import { getAsset, getIconPng, json, MIME, readBody } from './http-util.js';
-import { approvals, asks, currentEventSeq, emitEvent, eventsSince, listeners, pendingRegistry, queuedSends, runs, sessions, type RunningRun, type WebSession } from './state.js';
+import { approvals, asks, currentEventSeq, emitEvent, eventsSince, listeners, pendingRegistry, queuedSends, runs, sessions, pendingSnapshot, activeSnapshot, cancelPending, type SessionConfig, type RunningRun, type WebSession } from './state.js';
 import { buildStatus, lastRunReason, maybeAutoTitle } from './status.js';
-import { routingOutput, setCurrentOutput } from './routing-output.js';
+import { routingOutput, withCurrentOutput } from './routing-output.js';
 import { LoginRateLimiter, WebAuth, normalizePairCode } from './auth.js';
 
 // 抽出模块的对外导出保持路径不变（web/index.ts 仍按 './server.js' 引用 routingOutput）
@@ -288,6 +292,8 @@ export interface WebServiceOptions {
   requireAuth?: boolean;
   /** 一次性配对码（omni pair 生成）：扫码后免密换取会话；单次使用、限时有效 */
   pair?: { code: string; expiresAt: number };
+  /** 远程认证前端：认证通过后只代理共享服务，不另外执行 Agent。 */
+  sharedProxy?: import('../server/proxy.js').SharedProxyConnection;
 }
 
 export async function startWebService(opts: WebServiceOptions): Promise<http.Server> {
@@ -323,9 +329,35 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   const invalidateSessionRuntimes = (): void => {
     sessionRuntimes.clear(); // 工具链重建（/mcp reconnect）或换工作区后调用
   };
-  function runtimeFor(s: WebSession): RunOptions {
+  const configuredRuntimes = new Map<string, Promise<RunOptions>>();
+  async function runtimeFor(s: WebSession): Promise<RunOptions> {
     let ro = sessionRuntimes.get(s.id);
     if (ro) return ro;
+    if (s.config && Object.keys(s.config).length) {
+      const existing = configuredRuntimes.get(s.id);
+      if (existing) return existing;
+      const pending = (async () => {
+        const sessionCtx = prepareRun({ ...overrides, ...s.config }, { allowMissingKey: true });
+        // ConfigOverrides 是 CLI 参数形状，permission 等运行选项不能靠 loadConfig 展开。
+        const sessionConfig = s.config!;
+        for (const key of ['maxSteps', 'permission', 'reasoningEffort', 'showThinking', 'contextLimit', 'autoReview'] as const) {
+          if (sessionConfig[key] !== undefined) Object.assign(sessionCtx.cfg, { [key]: sessionConfig[key] });
+        }
+        sessionCtx.runOpts.maxSteps = sessionCtx.cfg.maxSteps;
+        sessionCtx.runOpts.showThinking = sessionCtx.cfg.showThinking;
+        const out = new WebOutput(s.id, broadcast, pendingRegistry, () => sessionCtx.runOpts.showThinking ?? true, s.config?.model);
+        await attachRuntime(sessionCtx, out, { trust: runOpts.trusted !== false });
+        sessionCtx.runOpts.sessionPath = s.file ?? undefined;
+        sessionCtx.runOpts.planMode = s.config?.planMode ?? false;
+        if (s.config?.allowedTools) { const allowed = new Set(s.config.allowedTools); sessionCtx.runOpts.tools = sessionCtx.runOpts.tools.filter((t) => allowed.has(t.name)); }
+        if (s.config?.outputSchema) sessionCtx.runOpts.systemNote = `\n[输出要求] 请以单个 JSON 对象回答，严格符合如下 JSON Schema：\n${JSON.stringify(s.config.outputSchema)}`;
+        if (s.config?.contextLimit && sessionCtx.runOpts.context) sessionCtx.runOpts.context.contextLimit = s.config.contextLimit;
+        sessionRuntimes.set(s.id, sessionCtx.runOpts);
+        return sessionCtx.runOpts;
+      })();
+      configuredRuntimes.set(s.id, pending);
+      try { return await pending; } finally { configuredRuntimes.delete(s.id); }
+    }
     const undo = new UndoStack();
     // 基础工具（静态 + delegate + ask/todo/webfetch/diagnose/skill）重包撤销快照；
     // MCP 工具无文件副作用，直接复用当前句柄构建
@@ -338,6 +370,29 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }) as RunOptions;
     sessionRuntimes.set(s.id, ro);
     return ro;
+  }
+
+  const messageRequests = new RequestLedger<{ error?: string }>();
+  function sanitizeSessionConfig(raw: unknown): SessionConfig | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const value = raw as Record<string, unknown>;
+    const out: SessionConfig = {};
+    if (typeof value.model === 'string') {
+      if (!(runOpts.models ?? []).some((m) => m.name === value.model)) throw new Error('模型未在服务端配置中注册');
+      out.model = value.model;
+    }
+    if (Number.isInteger(value.maxSteps) && Number(value.maxSteps) > 0 && Number(value.maxSteps) <= 10000) out.maxSteps = Number(value.maxSteps);
+    if (['full', 'safe', 'ask', 'read'].includes(String(value.permission))) out.permission = runOpts.trusted === false ? 'read' : value.permission as SessionConfig['permission'];
+    if (typeof value.reasoningEffort === 'string' && value.reasoningEffort.length <= 64) out.reasoningEffort = value.reasoningEffort;
+    if (typeof value.showThinking === 'boolean') out.showThinking = value.showThinking;
+    if (typeof value.planMode === 'boolean') out.planMode = value.planMode;
+    if (typeof value.ephemeral === 'boolean') out.ephemeral = value.ephemeral;
+    if (typeof value.autoReview === 'boolean') out.autoReview = value.autoReview;
+    if (typeof value.autoTitle === 'boolean') out.autoTitle = value.autoTitle;
+    if (Array.isArray(value.allowedTools) && value.allowedTools.length <= 256 && value.allowedTools.every((v) => typeof v === 'string' && v.length < 200)) out.allowedTools = value.allowedTools;
+    if (value.outputSchema && typeof value.outputSchema === 'object' && !Array.isArray(value.outputSchema) && JSON.stringify(value.outputSchema).length <= 100000) out.outputSchema = value.outputSchema as Record<string, unknown>;
+    if (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0) out.contextLimit = Number(value.contextLimit);
+    return out;
   }
 
   /**
@@ -458,7 +513,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   async function sendMessage(
     sessionId: string,
     text: string,
-    o: { quiet?: boolean; attachments?: WebAttachment[] } = {}
+    o: { quiet?: boolean; attachments?: WebAttachment[]; shell?: boolean } = {}
   ): Promise<{ error?: string }> {
     const s = sessions.get(sessionId);
     if (!s) return { error: '会话不存在' };
@@ -467,15 +522,16 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     const atts = sanitizeAttachments(o.attachments);
     if (!text.trim() && !atts.length) return { error: '消息为空' };
 
-    const ro = runtimeFor(s);
     const controller = new AbortController();
     const run: RunningRun = { sessionId, controller, interruptText: null };
     runs.set(sessionId, run);
+    let ro: RunOptions;
+    try { ro = await runtimeFor(s); } catch (err) { runs.delete(sessionId); throw err; }
     s.updated = Date.now();
 
     // 会话私有字段落在本运行的克隆上（共享 runOpts 不被污染）
     ro.sessionPath = s.file ?? undefined;
-    ro.events = await EventRecorder.open(s.file ?? null);
+    ro.events = await EventRecorder.open(s.file ?? null, (event) => broadcast('trajectory', { sessionId, event }));
     ro.abortSignal = controller.signal;
     ro.takeInterrupt = () => {
       const t = run.interruptText;
@@ -499,9 +555,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
     };
 
-    const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, runOpts.modelRuntime?.model);
+    const output = new WebOutput(sessionId, broadcast, pendingRegistry, () => ro.showThinking ?? true, ro.modelRuntime?.model);
     ro.onBackgroundResult = (r) => output.onBackgroundSubagentDone?.(r);
-    setCurrentOutput(output);
+    ro.requestApproval = output.requestApproval.bind(output);
+    ro.askUser = output.askUser.bind(output);
 
     // 广播运行状态（客户端据此按会话显示取消按钮 / 其它会话可继续发送）
     void broadcast('status', await buildStatus(runOpts));
@@ -510,26 +567,32 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     let prompt = text;
     if (ro.hooks?.has('UserPromptSubmit')) {
       try {
-        prompt = (await ro.hooks.userPromptSubmit(text)).prompt;
+        prompt = (await withCurrentOutput(output, () => ro.hooks!.userPromptSubmit(text))).prompt;
       } catch {
         prompt = text;
       }
     }
 
-    s.messages.push({ role: 'user', content: buildUserContent(prompt, atts) });
-    if (!o.quiet) output.onUserMessage(prompt); // 排队跨会话消息不在当前对话流回显
+    s.messages.push({ role: 'user', content: buildUserContent(o.shell ? `!${prompt}` : prompt, atts) });
+    if (!o.quiet) output.onUserMessage(o.shell ? `!${prompt}` : prompt); // 排队跨会话消息不在当前对话流回显
     // 会话检查点（/rewind 数据源）：每轮用户消息提交后快照工作区修改文件（存盘，
     // 附带 msgCount 供 chat/both 对话回滚）；失败静默不打扰对话
     await createCheckpoint(s.file ?? undefined, prompt, process.cwd(), persistableMessages(s.messages).length).catch(() => null);
 
     // 后台运行：事件流经 broadcast 推给客户端，REST 路由立即返回 202
-    void (async () => {
-      const client = runOpts.modelRuntime!.client;
-      const model = runOpts.modelRuntime!.model;
+    void withCurrentOutput(output, async () => {
+      const client = ro.modelRuntime!.client;
+      const model = ro.modelRuntime!.model;
+      let failureReason: string | undefined;
       try {
+        if (o.shell) {
+          await runShell(s, prompt, ro, output);
+        } else {
         await prepareContext(client, model, s.messages, ro.context ?? {}, ro.events);
         await runAgent(client, model, s.messages, ro, output);
+        }
       } catch (err) {
+        failureReason = 'error';
         output.onRequestFailed(err);
       } finally {
         // 持久化本轮新增消息（可落盘过滤脚手架 system；摘要压缩后头部被替换 → 重置增量起点）
@@ -543,37 +606,70 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (s.file) await finalizeSession(s.file).catch(() => {});
 
         // 运行结束后自动生成标题（首轮）
-        maybeAutoTitle(s, runOpts.modelRuntime!.client, runOpts.modelRuntime!.model, cfg.language);
+        if (!o.shell && s.config?.autoTitle !== false) maybeAutoTitle(s, ro.modelRuntime!.client, ro.modelRuntime!.model, cfg.language);
 
-        const reason = lastRunReason(ro.events);
-        setCurrentOutput(null);
+        const reason = failureReason ?? (run.controller.signal.aborted ? 'aborted' : lastRunReason(ro.events));
         runs.delete(sessionId);
+        cancelPending(sessionId);
         broadcast('run.end', { sessionId, reason });
         void broadcast('status', await buildStatus(runOpts));
         // 空闲容量：消费排队跨会话消息 / 收件箱任务
         void drainQueuedSends();
       }
-    })();
+    });
 
     return {};
   }
 
+  async function runShell(s: WebSession, command: string, ro: RunOptions, output: WebOutput): Promise<void> {
+    const tool = ro.tools.find((t) => t.name === 'run_command');
+    if (!tool) throw new Error('当前工具白名单不允许 run_command');
+    const turn = ro.events?.turnStart() ?? 0;
+    const callId = `shell-${randomUUID()}`;
+    const args = { command, __userShell: true };
+    ro.events?.user(`!${command}`);
+    ro.events?.toolCall(turn, callId, tool.name, JSON.stringify({ command }));
+    output.onToolStep(0, 1, tool.name, `$ ${command}`, args, 0);
+    let input: Record<string, unknown> = { command };
+    const before = await ro.hooks?.preToolUse(tool.name, input);
+    if (before?.updatedInput) input = { ...input, ...before.updatedInput };
+    const gate = new Safety({ tier: ro.permission ?? 'safe', audit: ro.auditLog ?? true,
+      requestApproval: ro.requestApproval, dangerousPatterns: ro.cfg?.dangerousPatterns,
+      hooks: ro.hooks, autoReview: ro.autoReview, summarize: formatToolCall });
+    const decision = before && !before.allow ? { allow: false, reason: before.reason } : await gate.gate(tool, input);
+    let result: string;
+    if (ro.abortSignal?.aborted) result = '已取消';
+    else if (!decision.allow) result = `已拦截：${decision.reason ?? '权限限制'}`;
+    else result = await tool.execute(input, { cwd: process.cwd(), sessionPath: s.file ?? undefined, toolSeq: 0,
+      onCommandOutput: (line, isError) => { if (!ro.abortSignal?.aborted) output.onCommandOutput(line, isError, 0); } });
+    const ok = !/^(错误|执行失败|已拦截|已取消)/.test(result);
+    s.messages.push({ role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: tool.name, arguments: JSON.stringify(input) } }] }, { role: 'tool', tool_call_id: callId, content: result });
+    output.onToolOutput(result, 0);
+    const totalLines = result.split('\n').filter((line) => line.trim() && !isExitCodeZeroLine(line)).length;
+    output.onToolResult(ok, result.length, previewOutput(result), undefined, 0, totalLines);
+    ro.events?.toolResult(callId, ok, result.length);
+    ro.events?.turnEnd(ro.abortSignal?.aborted ? 'aborted' : ok ? 'completed' : 'error');
+    if (ro.hooks?.has('PostToolUse')) await ro.hooks.postToolUse(tool.name, input, result);
+  }
+
   /** /model 切换：按端点重建客户端并更新共享 modelRuntime（主循环/子代理同步） */
-  async function switchModel(name: string): Promise<boolean> {
-    const ep = (runOpts.models ?? []).find((m) => m.name === name);
+  async function switchModel(name: string, target?: RunOptions): Promise<boolean> {
+    const active = target ?? runOpts;
+    const config = active.cfg ?? cfg;
+    const ep = (active.models ?? []).find((m) => m.name === name);
     if (!ep) return false;
     try {
-      const client = createClient(ep, ep.apiKey ?? cfg.apiKey ?? '');
-      runOpts.modelRuntime = { client, model: name };
-      runOpts.reasoningEffort = ep.reasoningEffort ?? cfg.reasoningEffort;
-      runOpts.reasoningEffortOptions = ep.reasoningEffortOptions ?? cfg.reasoningEffortOptions;
-      runOpts.activeVariant = ep.variant; // 命名 variant 随端点带出（1.0 P0-3）
+      const client = createClient(ep, ep.apiKey ?? config.apiKey ?? '');
+      active.modelRuntime = { client, model: name };
+      active.reasoningEffort = ep.reasoningEffort ?? config.reasoningEffort;
+      active.reasoningEffortOptions = ep.reasoningEffortOptions ?? config.reasoningEffortOptions;
+      active.activeVariant = ep.variant; // 命名 variant 随端点带出（1.0 P0-3）
       // 压缩预算跟随新模型（手动覆盖（/context <档位>）优先；数据源自动档：未知模型清空不误压）
-      if (runOpts.context) runOpts.context.contextLimit = resolveContextLimit(cfg.contextLimit, ep.limit?.context);
+      if (active.context) active.context.contextLimit = resolveContextLimit(config.contextLimit, ep.limit?.context);
     } catch {
       return false;
     }
-    void broadcast('status', await buildStatus(runOpts));
+    void broadcast('status', await buildStatus(active));
     return true;
   }
 
@@ -701,9 +797,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     cmd: string,
     s: WebSession | null,
   ): Promise<{ lines: string[] }> {
+    const commandOptions = s ? await runtimeFor(s) : runOpts;
     const lines: string[] = [];
-    const client = runOpts.modelRuntime?.client;
-    const model = runOpts.modelRuntime?.model ?? cfg.model;
+    const client = commandOptions.modelRuntime?.client;
+    const model = commandOptions.modelRuntime?.model ?? cfg.model;
     const messages = s?.messages ?? [];
 
     const add = (t: string) => lines.push(t);
@@ -720,7 +817,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (!s) { add('（无当前会话）'); return { lines }; }
       s.messages.length = 0;
       s.persisted = 0;
-      runOpts.hooks?.resetSessionStart();
+      commandOptions.hooks?.resetSessionStart();
       // 广播 clear 事件 → 前端清空消息流
       emitEvent('clear', { sessionId: s.id });
       add('已清空上下文，开始新一轮对话。');
@@ -728,14 +825,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/plan') {
-      runOpts.planMode = !runOpts.planMode;
-      add(runOpts.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。');
+      commandOptions.planMode = !commandOptions.planMode;
+      add(commandOptions.planMode ? '已进入计划模式（只读调研，不会修改文件；/plan 退出）。' : '已退出计划模式（可正常修改文件/执行命令）。');
       return { lines };
     }
 
     if (cmd === '/team' || cmd.startsWith('/team ')) {
       // Team 任务看板（2026-09 DYN）：共享任务列表 + 未投递消息 + 后台子代理
-      const board = runOpts.team;
+      const board = commandOptions.team;
       if (!board || board.tasks.length === 0) {
         add('任务看板为空（多代理协作时主代理会建任务；/orchestrate <任务> 走动态工作流）。');
       } else {
@@ -751,7 +848,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/tasks' || cmd.startsWith('/tasks ')) {
       // 子代理任务中心（Agent View，1.0 完整版）：列出本次会话全部子代理（含编排 worker），
       // 支持 show/resume/stop；Web 原生面板走 /api/tasks（前端优先）。
-      const ro = s ? runtimeFor(s) : runOpts;
+      const ro = s ? await runtimeFor(s) : commandOptions;
       await hydrateRegistryFromSession(ro);
       const records = ro.subagentRegistry?.records() ?? [];
       const arg = cmd.slice('/tasks'.length).trim();
@@ -816,7 +913,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const arg = cmd.slice('/auto'.length).trim().toLowerCase();
       const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg.autoReview === true);
       cfg.autoReview = next;
-      if (runOpts.cfg) runOpts.cfg.autoReview = next;
+      if (commandOptions.cfg) commandOptions.cfg.autoReview = next;
       const { persistGlobalBoolToConfig } = await import('../config/write.js');
       persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
       add(`AI 自动审批：${next ? '已开启（需要审批的操作先经模型审阅，失败回退人工）' : '已关闭'}`);
@@ -854,11 +951,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const PERMS: Record<string, PermissionTier> = { 只读: 'read', 请求批准: 'ask', 帮我批准: 'safe', 完全访问: 'full', 低: 'read', 中: 'safe', 高: 'ask', 全量: 'full', read: 'read', safe: 'safe', ask: 'ask', full: 'full' };
       const LABEL: Record<string, string> = { read: '只读', safe: '帮我批准', ask: '请求批准', full: '完全访问' };
       if (!want) {
-        add(`当前安全权限：${LABEL[runOpts.permission ?? 'safe']}（/permission 只读|请求批准|帮我批准|完全访问 切换）`);
+        add(`当前安全权限：${LABEL[commandOptions.permission ?? 'safe']}（/permission 只读|请求批准|帮我批准|完全访问 切换）`);
       } else {
         const next = PERMS[want];
         if (!next) { add(`未知权限「${want}」——可选：只读 / 请求批准 / 帮我批准 / 完全访问`); }
-        else { runOpts.permission = next; runOpts.safetyGate?.setTier(next); add(`已切换安全权限 → ${LABEL[next]}`); }
+        else if (commandOptions.trusted === false && next !== 'read') { add('未信任工作区只能使用只读权限'); }
+        else { commandOptions.permission = next; commandOptions.safetyGate?.setTier(next); add(`已切换安全权限 → ${LABEL[next]}`); }
       }
       return { lines };
     }
@@ -867,7 +965,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       // 无会话上下文（s=null）时 undoStack 仍在但 messages 注入无意义——如实提示，
       // 不静默「成功」（修复：此前 messages ?? [] 把 system 提示推进了临时数组，用户看不到）
       if (!s) { add('当前没有会话上下文——/undo 需要先选择一个会话。'); return { lines }; }
-      const stack = runtimeFor(s).undoStack;
+      const stack = (await runtimeFor(s)).undoStack;
       if (!stack || stack.size === 0) { add('没有可撤销的写操作。'); return { lines }; }
       const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
       if (all) {
@@ -890,7 +988,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/redo' || cmd.startsWith('/redo ')) {
       // 同 /undo：无会话上下文时如实提示（messages ?? [] 临时数组 bug 修复）
       if (!s) { add('当前没有会话上下文——/redo 需要先选择一个会话。'); return { lines }; }
-      const stack = runtimeFor(s).undoStack;
+      const stack = (await runtimeFor(s)).undoStack;
       if (!stack || stack.redoSize === 0) { add('没有可重做的操作。'); return { lines }; }
       const all = /(?:^|\s)all(?=\s|$)/.test(cmd.slice(5));
       if (all) {
@@ -911,15 +1009,15 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/status') {
-      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
+      const curEp = (commandOptions.models ?? []).find((m) => m.name === model);
       const contextWindow = describeModelContextWindow(
         resolveContextLimit(cfg.contextLimit, curEp?.limit?.context), model, curEp?.apiModel
       );
       for (const l of fullStatusReport({
-        model, permission: runOpts.permission ?? 'safe',
-        planMode: runOpts.planMode ?? false, reasoningEffort: runOpts.reasoningEffort,
-        sessionPath: runOpts.sessionPath, scaffolds: detectScaffolds(messages),
-        sandbox: runOpts.sandbox, trusted: runOpts.trusted,
+        model, permission: commandOptions.permission ?? 'safe',
+        planMode: commandOptions.planMode ?? false, reasoningEffort: commandOptions.reasoningEffort,
+        sessionPath: commandOptions.sessionPath, scaffolds: detectScaffolds(messages),
+        sandbox: commandOptions.sandbox, trusted: commandOptions.trusted,
         memoryFiles: memoryFilesFromMessages(messages),
         globalMemory: messages.some((m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆')),
         contextWindow,
@@ -933,7 +1031,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/usage') {
-      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
+      const curEp = (commandOptions.models ?? []).find((m) => m.name === model);
       for (const l of usageReport(messages, model, {
         endpointPrice: curEp?.price,
         apiModel: curEp?.apiModel,
@@ -944,14 +1042,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/context' || cmd.startsWith('/context ')) {
       // /context：调整上下文窗口（档位 K 手动覆盖 / 默认清除跟随模型自动；无参查看）
       const parsed = parseContextSetArg(cmd.slice('/context'.length));
-      const curEp = (runOpts.models ?? []).find((m) => m.name === model);
+      const curEp = (commandOptions.models ?? []).find((m) => m.name === model);
       if (parsed.kind === 'error') {
         add(parsed.message);
         return { lines };
       }
       if (parsed.kind === 'clear') {
         delete cfg.contextLimit;
-        if (runOpts.context) runOpts.context.contextLimit = curEp?.limit?.context;
+        if (commandOptions.context) commandOptions.context.contextLimit = curEp?.limit?.context;
         add('已清除手动覆盖（跟随模型自动识别）');
         const res = persistContextLimitToConfig(null, cfg);
         add(res.message);
@@ -959,7 +1057,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
       if (parsed.kind === 'set') {
         cfg.contextLimit = parsed.tokens;
-        if (runOpts.context) runOpts.context.contextLimit = parsed.tokens;
+        if (commandOptions.context) commandOptions.context.contextLimit = parsed.tokens;
         add(`已覆盖上下文窗口 → ${parsed.k}K（${formatTokenCount(parsed.tokens)} tokens；压缩预算与用量分母即时生效）`);
         const res = persistContextLimitToConfig(parsed.tokens, cfg);
         add(res.message);
@@ -1065,7 +1163,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/trace') {
-      const events = runOpts.events?.events ?? [];
+      const events = commandOptions.events?.events ?? [];
       if (events.length === 0) {
         add('暂无轨迹——开始对话后这里会记录每一轮请求/工具/消息');
       } else {
@@ -1078,7 +1176,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/agents' || cmd.startsWith('/agents ')) {
       const showName = cmd.slice('/agents'.length).trim();
       if (showName) {
-        const defs = runOpts.subagents ?? [];
+        const defs = commandOptions.subagents ?? [];
         const def = defs.find((d) => d.name === showName);
         if (!def) { add(`未找到子代理定义「${showName}」`); return { lines }; }
         add(`子代理：${def.name} — ${def.description}`);
@@ -1087,11 +1185,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         add(`· 步数上限：${def.maxSteps ?? '（继承）'} · 定义文件：${def.path}`);
         for (const l of def.instructions.split('\n')) add(`  ${l}`);
       } else {
-        const tools = runOpts.tools ?? [];
+        const tools = commandOptions.tools ?? [];
         const hasDelegate = tools.some((t) => t.name === 'delegate');
         add(`子代理：${hasDelegate ? '已启用' : '未启用'} · 模型：${model}`);
-        add(`· 最大步数：${runOpts.maxSubagentSteps ?? 10} · 最大嵌套深度：${runOpts.maxSubagentDepth ?? 5}`);
-        const defs = runOpts.subagents ?? [];
+        add(`· 最大步数：${commandOptions.maxSubagentSteps ?? 10} · 最大嵌套深度：${commandOptions.maxSubagentDepth ?? 5}`);
+        const defs = commandOptions.subagents ?? [];
         if (defs.length > 0) { add(`· 已定义子代理（${defs.length}）：`); for (const d of defs) add(`  · ${d.name} — ${d.description}`); }
         else add('· 已定义子代理：无');
       }
@@ -1099,9 +1197,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
-      const servers = runOpts.mcpServers ?? {};
+      const servers = commandOptions.mcpServers ?? {};
       const names = Object.keys(servers);
-      const handles = runOpts.mcpHandles ?? [];
+      const handles = commandOptions.mcpHandles ?? [];
       const arg = cmd.slice(4).trim();
       const sub = arg.split(/\s+/)[0] ?? '';
       // 增删/OAuth 走与 /api/mcp REST 完全相同的底层逻辑（persist + 运行时重建工具链）
@@ -1112,11 +1210,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (parsed.name in servers) { add(`服务器「${parsed.name}」已存在（用 /mcp remove ${parsed.name} 先移除）`); return { lines }; }
         add(`正在连接 MCP 服务器「${parsed.name}」…`);
         const pr = persistMcpServerToConfig(parsed.name, parsed.cfg, cfg);
-        runOpts.mcpServers = { ...(runOpts.mcpServers ?? {}), [parsed.name]: parsed.cfg };
+        commandOptions.mcpServers = { ...(commandOptions.mcpServers ?? {}), [parsed.name]: parsed.cfg };
         closeMcpClients();
-        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
-        runOpts.mcpHandles = newHandles;
-        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        const newHandles = await discoverMcpWithHandlers(commandOptions.mcpServers);
+        commandOptions.mcpHandles = newHandles;
+        commandOptions.tools = [...(commandOptions.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes();
         add(`已添加并连接 MCP 服务器「${parsed.name}」（工具已对模型可见）`);
         add(pr.message);
@@ -1128,11 +1226,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (!(serverName in servers)) { add(`未配置 MCP 服务器「${serverName}」（/mcp 查看列表）`); return { lines }; }
         const { removeMcpServerFromConfig } = await import('../config/write.js');
         const pr = removeMcpServerFromConfig(serverName, cfg);
-        delete runOpts.mcpServers?.[serverName];
+        delete commandOptions.mcpServers?.[serverName];
         closeMcpClients();
-        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
-        runOpts.mcpHandles = newHandles;
-        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        const newHandles = await discoverMcpWithHandlers(commandOptions.mcpServers);
+        commandOptions.mcpHandles = newHandles;
+        commandOptions.tools = [...(commandOptions.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes();
         add(`已移除 MCP 服务器「${serverName}」（工具链已更新）`);
         if (!pr.ok) add(pr.message);
@@ -1187,17 +1285,17 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (names.length === 0) { add('未配置 MCP 服务器（/mcp add 添加）'); return { lines }; }
         add('正在重连 MCP…');
         closeMcpClients();
-        const newHandles = await discoverMcpWithHandlers(runOpts.mcpServers);
-        runOpts.mcpHandles = newHandles;
-        runOpts.tools = [...(runOpts.baseTools ?? []), ...buildMcpTools(newHandles)];
+        const newHandles = await discoverMcpWithHandlers(commandOptions.mcpServers);
+        commandOptions.mcpHandles = newHandles;
+        commandOptions.tools = [...(commandOptions.baseTools ?? []), ...buildMcpTools(newHandles)];
         invalidateSessionRuntimes(); // 工具链变化 → 会话级克隆重建
-        add(`已重连（当前 ${runOpts.tools.length} 个工具）`);
+        add(`已重连（当前 ${commandOptions.tools.length} 个工具）`);
         return { lines };
       }
       // 无子命令：概览列表（含 0 服务器时的引导）
       if (!sub) {
         if (names.length === 0) { add('未配置 MCP 服务器（/mcp add <名称> <command|--url> 添加）'); return { lines }; }
-        const mcpToolNames = (runOpts.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
+        const mcpToolNames = (commandOptions.tools ?? []).filter((t) => names.some((n) => t.name.startsWith(n.replace(/[^a-z0-9_]/gi, '_').toLowerCase() + '_')));
         add(`已配置 ${names.length} 个服务器：${names.join('、')} · 工具：${mcpToolNames.length > 0 ? mcpToolNames.map((t) => t.name).join('、') : '（无）'}`);
         for (const h of handles) {
           const bits: string[] = [];
@@ -1261,8 +1359,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         add(`/fork <N>：N 须为 1..${persistable.length} 的整数`);
         return { lines };
       }
-      // 会话文件优先取当前 Web 会话（s.file），回退全局 runOpts.sessionPath（CLI 兼容）
-      const srcFile = s?.file ?? runOpts.sessionPath;
+      // 会话文件优先取当前 Web 会话（s.file），回退全局 commandOptions.sessionPath（CLI 兼容）
+      const srcFile = s?.file ?? commandOptions.sessionPath;
       if (!srcFile) { add('当前会话未落盘（无法 fork）'); return { lines }; }
       const forkFile = await forkSession(srcFile, n, process.cwd(), model);
       if (forkFile) {
@@ -1309,27 +1407,27 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/variants' || cmd.startsWith('/variants ')) {
       // /variants：字符串级别 + 命名 variants（1.0 P0-3）——<id> 命中当前模型的
       // variants 表时切叠加层并持久化 models."<模型>".variant；未知报错列可用项。
-      const opts = runOpts.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max'];
-      const ep = (runOpts.models ?? []).find((m) => m.name === model);
+      const opts = commandOptions.reasoningEffortOptions ?? ['low', 'medium', 'high', 'xhigh', 'max'];
+      const ep = (commandOptions.models ?? []).find((m) => m.name === model);
       const namedIds = Object.keys(ep?.variants ?? {});
       const want = cmd.slice('/variants'.length).trim();
       if (!want) {
         add(
-          runOpts.activeVariant
-            ? `当前：命名变体 ${runOpts.activeVariant}（级别 ${runOpts.reasoningEffort ?? '默认'}）`
-            : `当前思考级别：${runOpts.reasoningEffort ?? '（未设置）'}`
+          commandOptions.activeVariant
+            ? `当前：命名变体 ${commandOptions.activeVariant}（级别 ${commandOptions.reasoningEffort ?? '默认'}）`
+            : `当前思考级别：${commandOptions.reasoningEffort ?? '（未设置）'}`
         );
         add(`可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`);
       } else if (namedIds.includes(want) && !opts.includes(want)) {
-        runOpts.activeVariant = want;
+        commandOptions.activeVariant = want;
         add(`已切换命名变体 → ${want}`);
         const res = persistVariantToConfig(want, cfg, model);
         add(res.message);
       } else if (!opts.includes(want)) {
         add(`未知思考级别「${want}」——可选：${[...opts, ...namedIds.map((id) => `${id}(命名)`)].join(' / ')}`);
       } else {
-        runOpts.reasoningEffort = want;
-        runOpts.activeVariant = undefined; // 普通级别清除命名叠加
+        commandOptions.reasoningEffort = want;
+        commandOptions.activeVariant = undefined; // 普通级别清除命名叠加
         add(`已切换思考级别 → ${want}`);
         const res = persistReasoningEffortToConfig(want, cfg, model);
         add(res.message);
@@ -1340,7 +1438,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (cmd === '/model fetch' || cmd.startsWith('/model fetch ')) {
       // /model fetch [名称]（1.0 P1）：GET {baseURL}/models 自动补全远端模型清单
       const target = cmd.slice('/model fetch'.length).trim();
-      const eps = runOpts.models ?? [];
+      const eps = commandOptions.models ?? [];
       const ep = target ? eps.find((m) => m.name === target) : eps.find((m) => m.name === model);
       if (!ep?.baseURL) { add(`/model fetch${target ? ` ${target}` : ''}：未找到带 baseURL 的端点`); return { lines }; }
       add(`正在拉取 ${ep.baseURL}/models …`);
@@ -1361,7 +1459,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     if (cmd === '/model' || cmd.startsWith('/model ')) {
       const want = cmd.slice('/model'.length).trim();
-      const models = runOpts.models ?? [];
+      const models = commandOptions.models ?? [];
       if (!want) {
         add(`当前模型：${model}（可用：${models.map((m) => m.name).join(' / ')}）`);
       } else if (want.startsWith('add')) {
@@ -1377,8 +1475,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         };
         const existing = models.find((m) => m.name === parsed.name);
         if (existing) Object.assign(existing, endpoint);
-        else runOpts.models = [...models, endpoint];
-        if (await switchModel(parsed.name)) add(`已添加并切换模型 → ${parsed.name}`);
+        else commandOptions.models = [...models, endpoint];
+        if (await switchModel(parsed.name, commandOptions)) add(`已添加并切换模型 → ${parsed.name}`);
         else add(`切换失败：${parsed.name}`);
         const res = persistModelToConfig(parsed.name, { baseURL: parsed.baseURL, apiKey: parsed.apiKey, userAgent: parsed.userAgent }, cfg);
         add(res.message);
@@ -1387,7 +1485,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (!ep) { add(`未知模型「${want}」`); }
         else if (want === model) { add(`已是当前模型 ${want}`); }
         else {
-          if (await switchModel(want)) {
+          if (await switchModel(want, commandOptions)) {
             add(`已切换模型 → ${want}`);
             const res = persistModelDefaultToConfig(want, cfg);
             add(res.message);
@@ -1406,7 +1504,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     if (cmd === '/compact') {
       const before = messages.length;
-      await summarizeContext(client, model, messages, { summarizeAt: 1, summarizeWindow: 8 }, runOpts.events);
+      await summarizeContext(client, model, messages, { summarizeAt: 1, summarizeWindow: 8 }, commandOptions.events);
       add(messages.length < before ? `已压缩 ${before - messages.length} 条旧消息为摘要。` : '上下文还很短，无需压缩。');
       return { lines };
     }
@@ -1472,10 +1570,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     if (cmd === '/orchestrate' || cmd.startsWith('/orchestrate ')) {
-      if (!runOpts.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
+      if (!commandOptions.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
       try {
-        const { combined, review } = await runOrchestrate(cmd.slice('/orchestrate'.length).trim(), runOpts.subagents, {
-          client, model, runOpts,
+        const { combined, review } = await runOrchestrate(cmd.slice('/orchestrate'.length).trim(), commandOptions.subagents, {
+          client, model, runOpts: commandOptions,
           log: (t) => add(t),
           onSubagentEvent: (ev) => { /* 静默，不阻塞 */ },
         });
@@ -1487,11 +1585,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
     const goalCmd = cmd === '/goal' || cmd.startsWith('/goal ') || cmd === '/loop' || cmd.startsWith('/loop ');
     if (goalCmd) {
-      if (!runOpts.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
+      if (!commandOptions.safetyGate) { add('需要安全闸（当前环境异常）'); return { lines }; }
       try {
         const raw = (cmd.startsWith('/goal') ? cmd.slice('/goal'.length) : cmd.slice('/loop'.length)).trim();
         const result = await runGoal(raw, {
-          client, model, runOpts,
+          client, model, runOpts: commandOptions,
           log: (t) => add(t),
           onStream: () => ({
             start(prefix: string) { add(prefix); },
@@ -1510,7 +1608,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       const feature = cmd.slice('/spec'.length).trim();
       if (!feature) { add('用法：/spec <功能特性>'); return { lines }; }
       const { generateSpec } = await import('../agent/spec.js');
-      const r = await generateSpec(client, model, feature, process.cwd(), runOpts.todoList);
+      const r = await generateSpec(client, model, feature, process.cwd(), commandOptions.todoList);
       add(r.message);
       return { lines };
     }
@@ -1622,14 +1720,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
     if (cmd === '/rollout') {
       // /rollout：当前会话文件路径（交互端对等；Web 会话取自 s.file）
-      const sp = s?.file ?? runOpts.sessionPath;
+      const sp = s?.file ?? commandOptions.sessionPath;
       add(sp ? `当前会话文件：${sp}` : '当前无会话文件。');
       return { lines };
     }
     if (cmd === '/hooks') {
       // /hooks：生效中的 lifecycle hooks 只读视图（交互端对等）
       const { HOOK_EVENTS } = await import('../hooks/index.js');
-      const defs = runOpts.hooks?.list?.() ?? {};
+      const defs = commandOptions.hooks?.list?.() ?? {};
       const events = HOOK_EVENTS.filter((e) => (defs[e] ?? []).length > 0);
       if (events.length === 0) add('未配置 hooks（配置文件 hooks 字段按事件配 command，改后重启生效）。');
       else {
@@ -1681,16 +1779,21 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     return { lines };
   }
 
-  async function createWebSession(resumeId?: string): Promise<WebSession> {
+  async function createWebSession(resumeId?: string, config?: SessionConfig): Promise<WebSession> {
     if (resumeId) {
       const file = await findSessionById(resumeId);
       if (!file) throw new Error('会话不存在');
       const loaded = await loadSession(file);
       if (!loaded) throw new Error('会话文件损坏，无法恢复');
+      assertSessionWorkspace(loaded.meta.project);
       const existing = sessions.get(loaded.meta.id);
-      if (existing) return existing;
+      if (existing) {
+        if (config && !runs.has(existing.id)) { existing.config = config; sessionRuntimes.delete(existing.id); }
+        return existing;
+      }
       const ws: WebSession = {
         id: loaded.meta.id,
+        config,
         file,
         messages: [...loaded.messages],
         persisted: persistableMessages(loaded.messages).length,
@@ -1702,11 +1805,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       broadcast('session.created', { id: ws.id, title: ws.title });
       return ws;
     }
-    const file = await createSession({ project: process.cwd(), model: runOpts.modelRuntime?.model ?? cfg.model });
-    if (!file) throw new Error('创建会话失败（无法写入会话目录）');
-    const id = sessionIdFromPath(file);
+    const file = config?.ephemeral ? null : await createSession({ project: process.cwd(), model: config?.model ?? runOpts.modelRuntime?.model ?? cfg.model });
+    if (!file && !config?.ephemeral) throw new Error('创建会话失败（无法写入会话目录）');
+    const id = file ? sessionIdFromPath(file) : `ephemeral-${randomUUID()}`;
     const now = Date.now();
-    const ws: WebSession = { id, file, messages: [], persisted: 0, title: '', created: now, updated: now };
+    const ws: WebSession = { id, file, config, messages: [], persisted: 0, title: '', created: now, updated: now };
     sessions.set(id, ws);
     broadcast('session.created', { id, title: '' });
     return ws;
@@ -1764,6 +1867,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
     // 内存中尚未落盘会话（防御性兜底——创建即落盘，正常不会出现）
     for (const s of sessions.values()) {
+      if (s.config?.ephemeral) continue;
       if (!out.some((o) => o.id === s.id)) {
         out.push({ id: s.id, title: s.title, messages: s.messages.length, created: s.created, updated: s.updated, project: process.cwd() });
       }
@@ -1776,6 +1880,10 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     });
   }
 
+  function assertSessionWorkspace(project: string): void {
+    if (path.resolve(project) !== path.resolve(process.cwd())) throw new Error('该会话属于其它工作区，请先切换工作区');
+  }
+
   /** 按需取会话（内存没有时从磁盘加载——服务重启后历史会话只在磁盘上） */
   async function ensureSession(sessionId: string): Promise<WebSession> {
     const existing = sessions.get(sessionId);
@@ -1784,6 +1892,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     if (!file) throw new NotFoundError(`会话不存在：${sessionId}`);
     const loaded = await loadSession(file);
     if (!loaded) throw new NotFoundError('会话文件损坏，无法读取');
+    assertSessionWorkspace(loaded.meta.project);
     const ws: WebSession = {
       id: loaded.meta.id,
       file,
@@ -1812,7 +1921,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    const p = url.pathname;
+    const p = opts.sharedProxy ? url.pathname.replace(/^\/w\/[a-f0-9]{24}(?=\/|$)/, '') || '/' : url.pathname;
     const parts = p.split('/').filter(Boolean);
 
     // 接入凭据：--token（Bearer / ?token= / Cookie）或账号登录会话（HttpOnly Cookie / Bearer）
@@ -1950,6 +2059,11 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
     }
 
     try {
+      if (opts.sharedProxy) {
+        const { proxySharedRequest } = await import('../server/proxy.js');
+        proxySharedRequest(req, res, opts.sharedProxy);
+        return;
+      }
       // ---------- 首页（账号密码认证通过后才返回 SPA）----------
       if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
         const asset = getAsset('index.html');
@@ -1984,7 +2098,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const deadline = Date.now() + waitSec * 1000;
         for (;;) {
           const batch = eventsSince(since);
-          if (batch.events.length > 0) {
+          if (batch.events.length > 0 || batch.reset) {
             // 小批聚合：流式 token 不把长轮询打成每 chunk 一次请求
             await new Promise((r) => setTimeout(r, 250));
             if (aborted) return;
@@ -2001,15 +2115,21 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
       // ---------- SSE ----------
       if (p === '/api/events' && req.method === 'GET') {
+        const sinceRaw = req.headers['last-event-id'] ?? url.searchParams.get('since');
+        const since = sinceRaw == null ? currentEventSeq() : Number(sinceRaw);
+        if (!Number.isSafeInteger(since) || since < 0) { json(res, 400, { error: '事件游标无效' }); return; }
+        const replay = eventsSince(since);
         res.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-store',
+          'x-accel-buffering': 'no',
           connection: 'keep-alive',
         });
-        res.write(`event: ready\ndata: ${JSON.stringify({ version: VERSION, cwd: process.cwd() })}\n\n`);
-        const l: WebBroadcast = (type, data) => {
-          res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+        res.write(`event: ready\ndata: ${JSON.stringify({ version: VERSION, cwd: process.cwd(), seq: replay.seq, reset: replay.reset === true })}\n\n`);
+        const l: WebBroadcast = (type, data, seq) => {
+          res.write(`id: ${seq}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
         };
+        for (const event of replay.events) l(event.type, event.data, event.seq);
         listeners.add(l);
         const hb = setInterval(() => res.write(': ping\n\n'), 15000);
         req.on('close', () => {
@@ -2055,6 +2175,14 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       // ---------- REST API ----------
       if (parts[0] !== 'api') {
         json(res, 404, { error: 'Not Found' });
+        return;
+      }
+
+      if ((p === '/api/snapshot' || p === '/api/pending') && req.method === 'GET') {
+        const sessionId = url.searchParams.get('sessionId');
+        const options = sessionId ? await runtimeFor(await ensureSession(sessionId)) : runOpts;
+        const status = await buildStatus(options);
+        json(res, 200, { status, seq: currentEventSeq(), ...pendingSnapshot(), active: activeSnapshot() });
         return;
       }
 
@@ -2117,7 +2245,8 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
 
       if (p === '/api/sessions' && req.method === 'POST') {
         const body = await readBody(req);
-        const ws = await createWebSession(typeof body.resume === 'string' ? body.resume : undefined);
+        const config = sanitizeSessionConfig(body.config);
+        const ws = await createWebSession(typeof body.resume === 'string' ? body.resume : undefined, config);
         json(res, 201, { id: ws.id, title: ws.title });
         return;
       }
@@ -2129,11 +2258,26 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           json(res, 200, await sessionMessages(sid));
           return;
         }
-        if (p === sessionPath('messages') && req.method === 'POST') {
+        if ((p === sessionPath('messages') || p === sessionPath('shell')) && req.method === 'POST') {
           const body = await readBody(req);
-          const err = await sendMessage(sid, typeof body.text === 'string' ? body.text : '', {
-            attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
-          });
+          const session = await ensureSession(sid);
+          const send = () => {
+            if (runs.has(sid)) return Promise.resolve({ error: '当前会话正在运行，可点击「取消」' });
+            const config = sanitizeSessionConfig(body.config);
+            if (config) {
+              session.config = { ...session.config, ...config };
+              sessionRuntimes.delete(sid);
+            }
+            return sendMessage(sid, p === sessionPath('shell') ? String(body.command ?? '') : typeof body.text === 'string' ? body.text : '', {
+              shell: p === sessionPath('shell'),
+              attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
+            });
+          };
+          const requestId = body.requestId;
+          if (requestId !== undefined && (typeof requestId !== 'string' || !/^[\w.-]{1,128}$/.test(requestId))) {
+            json(res, 400, { error: 'requestId 无效' }); return;
+          }
+          const err = requestId ? await messageRequests.run(`${sid}:${requestId}`, { text: body.text, command: body.command, shell: p.endsWith('/shell'), attachments: body.attachments, config: body.config }, send) : await send();
           if (err.error) {
             json(res, 409, err);
             return;
@@ -2143,6 +2287,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         if (p === sessionPath('cancel') && req.method === 'POST') {
           runs.get(sid)?.controller.abort();
+          cancelPending(sid);
           json(res, 200, { ok: true });
           return;
         }
@@ -2173,7 +2318,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
             json(res, 400, { error: 'seq 非法' });
             return;
           }
-          const ro = runs.get(sid) ? runtimeFor(sessions.get(sid)!) : null;
+          const ro = runs.get(sid) ? await runtimeFor(sessions.get(sid)!) : null;
           if (!ro?.stopSubagent) {
             json(res, 409, { error: '当前会话未在运行或子代理已结束' });
             return;
@@ -2205,7 +2350,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           const body = await readBody(req);
           const id = typeof body.approvalId === 'string' ? body.approvalId : '';
           const entry = approvals.get(id);
-          if (!entry) {
+          if (!entry || entry.sessionId !== sid) {
             json(res, 404, { error: '审批请求不存在或已过期' });
             return;
           }
@@ -2220,7 +2365,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           const body = await readBody(req);
           const id = typeof body.askId === 'string' ? body.askId : '';
           const entry = asks.get(id);
-          if (!entry) {
+          if (!entry || entry.sessionId !== sid) {
             json(res, 404, { error: '提问请求不存在或已过期' });
             return;
           }
@@ -2712,12 +2857,12 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         // 命令可带 sessionId（恢复/undo 等需要会话上下文的命令）；无则 null
         const sid = typeof body.sessionId === 'string' ? body.sessionId : null;
-        const s = sid ? sessions.get(sid) ?? null : null;
+        const s = sid ? await ensureSession(sid) : null;
         try {
           const result = await runSlashCommand(cmd, s);
           // 命令可能修改了运行时状态（如 /model /permission /plan）→ 广播最新状态
           void broadcast('status', await buildStatus(runOpts));
-          json(res, 200, { ok: true, lines: result.lines });
+          json(res, 200, { ok: true, lines: result.lines, status: await buildStatus(s ? await runtimeFor(s) : runOpts) });
         } catch (err) {
           json(res, 400, { error: err instanceof Error ? err.message : String(err) });
         }
@@ -2805,7 +2950,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       if (p === '/api/tasks' && req.method === 'GET') {
         const sid0 = url.searchParams.get('sessionId');
         const s0 = sid0 ? sessions.get(sid0) ?? null : null;
-        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const ro0 = s0 ? await runtimeFor(s0) : runOpts;
         await hydrateRegistryFromSession(ro0);
         const reg0 = ro0.subagentRegistry;
         json(res, 200, { tasks: (reg0?.records() ?? []).map((r) => serializeTask(r, reg0)) });
@@ -2817,7 +2962,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const id = decodeURIComponent(taskDetailMatch[1]);
         const sid0 = url.searchParams.get('sessionId');
         const s0 = sid0 ? sessions.get(sid0) ?? null : null;
-        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const ro0 = s0 ? await runtimeFor(s0) : runOpts;
         await hydrateRegistryFromSession(ro0);
         const entry = ro0.subagentRegistry?.get(id);
         if (!entry) { json(res, 404, { error: '子代理记录不存在' }); return; }
@@ -2833,7 +2978,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         if (!message) { json(res, 400, { error: '追问内容为空' }); return; }
         const sid0 = typeof body.sessionId === 'string' ? body.sessionId : url.searchParams.get('sessionId');
         const s0 = sid0 ? sessions.get(sid0) ?? null : null;
-        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const ro0 = s0 ? await runtimeFor(s0) : runOpts;
         const entry = ro0.subagentRegistry?.get(id);
         if (!entry?.resume) { json(res, 404, { error: '该子代理不支持续跑' }); return; }
         try {
@@ -2852,7 +2997,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const body = await readBody(req);
         const sid0 = typeof body.sessionId === 'string' ? body.sessionId : url.searchParams.get('sessionId');
         const s0 = sid0 ? sessions.get(sid0) ?? null : null;
-        const ro0 = s0 ? runtimeFor(s0) : runOpts;
+        const ro0 = s0 ? await runtimeFor(s0) : runOpts;
         const ok = ro0.subagentRegistry?.stop(id) ?? false;
         broadcast('tasks.changed', { sessionId: sid0 ?? null });
         json(res, 200, { ok });
@@ -3204,7 +3349,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
   // 不会删——这里对空白文件单独处理。
   try {
     const dir = sessionsDir();
-    if (existsSync(dir)) {
+    if (!opts.sharedProxy && !process.env.OMNI_INTERNAL_WORKER && existsSync(dir)) {
       for (const f of readdirSync(dir)) {
         if (!f.endsWith('.jsonl')) continue;
         const fp = path.join(dir, f);

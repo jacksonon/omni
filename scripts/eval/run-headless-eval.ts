@@ -184,7 +184,8 @@ function runExec(
     if (model) args.push('-m', model);
     const child = spawn('npx', args, {
       cwd: ROOT,
-      env: { ...process.env, ...env },
+      // 评估必须确定性：不连接用户机器上常驻的共享 broker。
+      env: { ...process.env, ...env, OMNI_LOCAL: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       // 独立进程组：超时 kill 必须带走 npx 壳 + 内层 tsx 真进程，否则壳死而真进程
       //  holding 住管道，close 事件等它跑完才触发（超时形同虚设，还在后台烧 token）
