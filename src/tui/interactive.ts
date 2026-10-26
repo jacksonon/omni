@@ -771,7 +771,9 @@ export async function runTuiInteractive(
     // 会话结束清理（/exit 与运行中 /exit 共用）：autoMemory 偏好提取 + 会话 finalize + 空占位删除
     const exitSession = async (): Promise<void> => {
       if (runOpts.context?.autoMemory !== false && messages.some((m) => m.role === 'user')) {
-        await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+        await maybeWriteGlobalMemory(currentClient, currentModel, messages, {
+          cwd: process.cwd(), sessionPath: runOpts.sessionPath,
+        }).catch(() => {});
         // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
         await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
       }

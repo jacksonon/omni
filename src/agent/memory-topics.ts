@@ -12,9 +12,10 @@
  * 兼容：旧版 ~/.config/omni/AGENTS.md 继续加载（只读遗留），新写入全部进结构化布局。
  */
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdir, readFile, writeFile, appendFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { captureMemoryBaseline, checkMemoryFreshness, memoryFreshnessNotice, parseMemoryFreshness, type MemoryFreshness } from './memory-freshness.js';
 
 /** 结构化记忆根目录 */
 export function memoryTopicsRoot(): string {
@@ -60,7 +61,23 @@ export interface MemoryTopic {
   date: string;
   globs?: string;
   archived?: boolean;
+  freshness?: MemoryFreshness;
+  freshnessInvalid?: boolean;
   content: string;
+}
+
+/** 写回时保留适用性基线；旧主题无需迁移。 */
+export function serializeMemoryTopic(topic: MemoryTopic): string {
+  return `---\ntopic: ${JSON.stringify(topic.topic)}\ndate: ${topic.date}` +
+    (topic.globs ? `\nglobs: ${JSON.stringify(topic.globs)}` : '') +
+    (topic.archived ? '\narchived: true' : '') +
+    (topic.freshness ? `\nfreshness: ${JSON.stringify(topic.freshness)}` : topic.freshnessInvalid ? '\nfreshness: invalid' : '') +
+    `\n---\n\n${topic.content.trim()}\n`;
+}
+
+function metadataText(text: string): string {
+  try { const parsed: unknown = JSON.parse(text); return typeof parsed === 'string' ? parsed : text; }
+  catch { return text; }
 }
 
 /** 解析一个主题文件的 frontmatter + 正文；损坏返回 null */
@@ -76,10 +93,12 @@ export async function parseTopicFile(file: string): Promise<MemoryTopic | null> 
     }
     return {
       file,
-      topic: meta['topic'] ?? path.basename(file, '.md'),
+      topic: meta['topic'] ? metadataText(meta['topic']) : path.basename(file, '.md'),
       date: meta['date'] ?? '',
-      globs: meta['globs'] || undefined,
+      globs: meta['globs'] ? metadataText(meta['globs']) : undefined,
       archived: meta['archived'] === 'true',
+      freshness: meta['freshness'] ? parseMemoryFreshness(meta['freshness']) : undefined,
+      freshnessInvalid: meta['freshness'] !== undefined && !parseMemoryFreshness(meta['freshness']),
       content: (m[2] ?? '').trim(),
     };
   } catch {
@@ -95,6 +114,7 @@ export async function listTopics(): Promise<MemoryTopic[]> {
     const files = readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
     const out: MemoryTopic[] = [];
     for (const f of files) {
+      if (!(await lstat(path.join(dir, f))).isFile()) continue;
       const t = await parseTopicFile(path.join(dir, f));
       if (t) out.push(t);
     }
@@ -105,7 +125,7 @@ export async function listTopics(): Promise<MemoryTopic[]> {
 }
 
 /** 标题 → 文件名 slug（非字母数字折成 -；截 48 字符） */
-function slugify(title: string): string {
+export function memoryTopicSlug(title: string): string {
   return (
     title
       .toLowerCase()
@@ -124,14 +144,15 @@ function slugify(title: string): string {
 export async function writeTopicEntry(
   title: string,
   entry: string,
-  globs?: string
+  globs?: string,
+  source?: { cwd?: string; sessionPath?: string }
 ): Promise<boolean> {
   await mkdir(memoryTopicsDir(), { recursive: true });
   const norm = entry.trim().toLowerCase().replace(/^-\s*/, '');
   const existing = await listTopics();
   const today = new Date().toISOString().slice(0, 10);
   // 同主题定位：slug 相同即同一文件
-  const wantSlug = `${slugify(title)}.md`;
+  const wantSlug = `${memoryTopicSlug(title)}.md`;
   const hit = existing.find((t) => path.basename(t.file) === wantSlug);
   if (hit) {
     // 去重：规范化相等或长包含（与全局记忆 append 同语义）
@@ -143,14 +164,15 @@ export async function writeTopicEntry(
       }
     }
     const updated = `${hit.content.replace(/\s*$/, '')}\n- ${entry.trim()}\n`;
-    await writeFile(hit.file, `---\ntopic: ${hit.topic}\ndate: ${today}${hit.globs ? `\nglobs: ${JSON.stringify(hit.globs)}` : ''}\n---\n\n${updated}`, 'utf8');
+    await writeFile(hit.file, serializeMemoryTopic({ ...hit, date: today, content: updated }), 'utf8');
     await rebuildIndex();
     return true;
   }
   const file = path.join(memoryTopicsDir(), wantSlug);
+  const freshness = source ? await captureMemoryBaseline(source.cwd || process.cwd(), [], [], source.sessionPath) : undefined;
   await writeFile(
     file,
-    `---\ntopic: ${title}\ndate: ${today}${globs ? `\nglobs: ${JSON.stringify(globs)}` : ''}\n---\n\n- ${entry.trim()}\n`,
+    serializeMemoryTopic({ file, topic: title, date: today, globs, freshness, content: `- ${entry.trim()}` }),
     'utf8'
   );
   await rebuildIndex();
@@ -158,7 +180,7 @@ export async function writeTopicEntry(
 }
 
 /** 重建 MEMORY.md 索引（每主题一行：未归档在前，按日期倒序） */
-export async function rebuildIndex(): Promise<void> {
+export async function renderMemoryIndex(cwd = process.cwd()): Promise<string> {
   const topics = await listTopics();
   const lines: string[] = ['# Omni 记忆索引', '', '> 详细条目在 topics/ 下；模型可用 memory_search / memory_read 按需读取。', ''];
   const active = topics.filter((t) => !t.archived);
@@ -167,7 +189,10 @@ export async function rebuildIndex(): Promise<void> {
     lines.push('## 主题');
     for (const t of active) {
       const first = t.content.split('\n').find((l) => l.trim())?.trim() ?? '';
-      lines.push(`- ${t.topic}：${first.slice(0, 80)} · ${path.basename(t.file)}${t.globs ? `（命中 ${t.globs} 时自动加载）` : ''}`);
+      const result = await checkMemoryFreshness(t.freshness, cwd, t.freshnessInvalid);
+      const marker = result.status === 'review' ? '[待复核，仅历史线索]' : result.status === 'untracked' ? '[未关联基线]' : '[基线未变化]';
+      lines.push(`- ${marker} ${t.topic}：${first.slice(0, 80)} · ${t.file}${t.globs ? `（命中 ${t.globs} 时自动加载）` : ''}`);
+      if (result.status === 'review') lines.push(`  原因：${result.reasons.join('；')}`);
     }
     lines.push('');
   }
@@ -176,8 +201,12 @@ export async function rebuildIndex(): Promise<void> {
     for (const t of archived) lines.push(`- ${t.topic} · ${path.basename(t.file)}`);
     lines.push('');
   }
+  return lines.join('\n');
+}
+
+export async function rebuildIndex(): Promise<void> {
   await mkdir(memoryTopicsRoot(), { recursive: true });
-  await writeFile(memoryIndexFile(), lines.join('\n'), 'utf8');
+  await writeFile(memoryIndexFile(), await renderMemoryIndex(), 'utf8');
 }
 
 /**
@@ -187,7 +216,8 @@ export async function rebuildIndex(): Promise<void> {
 export async function topicsMatchingTask(
   taskText: string | undefined,
   max = 3,
-  maxBytes = 4 * 1024
+  maxBytes = 4 * 1024,
+  cwd = process.cwd()
 ): Promise<{ topic: string; file: string; content: string }[]> {
   if (!taskText) return [];
   const topics = (await listTopics()).filter((t) => !t.archived && t.globs);
@@ -202,7 +232,9 @@ export async function topicsMatchingTask(
       return tokens.some((tok) => re.test(tok));
     });
     if (!matched) continue;
-    const content = t.content.length > maxBytes ? `${t.content.slice(0, maxBytes)}\n…[已截断]` : t.content;
+    const notice = memoryFreshnessNotice(await checkMemoryFreshness(t.freshness, cwd, t.freshnessInvalid), t.freshness);
+    const body = t.content.length > maxBytes ? `${t.content.slice(0, maxBytes)}\n…[已截断]` : t.content;
+    const content = `${notice}\n\n${body}`;
     out.push({ topic: t.topic, file: t.file, content });
     if (out.length >= max) break;
   }

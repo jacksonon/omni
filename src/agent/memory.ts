@@ -141,7 +141,7 @@ export async function loadProjectMemory(
  * memory/MEMORY.md 索引（新写入都在结构化布局）——两段拼接注入。
  * 无任何文件返回 null。
  */
-export async function loadGlobalMemory(): Promise<{ path: string; content: string } | null> {
+export async function loadGlobalMemory(cwd = process.cwd()): Promise<{ path: string; content: string } | null> {
   const parts: string[] = [];
   let label = '';
   const legacy = globalMemoryPath();
@@ -152,11 +152,12 @@ export async function loadGlobalMemory(): Promise<{ path: string; content: strin
       label = legacy;
     }
   }
-  const { memoryIndexFile, memoryTopicsDir } = await import('./memory-topics.js');
+  const { memoryIndexFile, memoryTopicsDir, renderMemoryIndex } = await import('./memory-topics.js');
   const idxFile = memoryIndexFile();
-  if (existsSync(idxFile)) {
+  if (existsSync(idxFile) || existsSync(memoryTopicsDir())) {
     try {
-      const raw = await readFile(idxFile, 'utf8');
+      // 索引磁盘副本仅用于发现；适用性每次按当前工作区只读重算。
+      const raw = existsSync(memoryTopicsDir()) ? await renderMemoryIndex(cwd) : await readFile(idxFile, 'utf8');
       if (raw.trim()) {
         parts.push(raw);
         if (!label) label = idxFile;
@@ -164,9 +165,6 @@ export async function loadGlobalMemory(): Promise<{ path: string; content: strin
     } catch {
       // 读失败忽略
     }
-  } else if (!label && existsSync(memoryTopicsDir())) {
-    // 只有 topics 没有 index（极端）→ 以目录为标签
-    label = memoryTopicsDir();
   }
   if (parts.length === 0) return null;
   return { path: label || idxFile, content: parts.join('\n\n') };
@@ -389,7 +387,7 @@ export function applyMemoryTTL(sections: string[]): { kept: string[]; expired: s
   return { kept, expired };
 }
 
-export async function appendGlobalMemory(entry: string): Promise<boolean> {
+export async function appendGlobalMemory(entry: string, source?: { cwd?: string; sessionPath?: string }): Promise<boolean> {
   // 1.0 P1-2 记忆结构化升级：**新写入全部进结构化布局**（memory/MEMORY.md 索引 +
   // memory/topics/<主题>.md）；遗留 AGENTS.md 只读保留。已知条目 = 遗留文件 +
   // 现有主题条目合并计算（规范化相等 / 长包含去重——防重复学习），矛盾替换在
@@ -419,7 +417,7 @@ export async function appendGlobalMemory(entry: string): Promise<boolean> {
     for (const item of toWrite) {
       // writeTopicEntry 会自己加 `- ` 前缀，去掉条目自带的以防双短横
       const clean = item.replace(/^-\s*/, '').trim();
-      const ok = await writeTopicEntry(topicKey(item), clean).catch(() => false);
+      const ok = await writeTopicEntry(topicKey(item), clean, undefined, source).catch(() => false);
       wrote = wrote || ok;
     }
     return wrote;
@@ -435,11 +433,12 @@ export async function appendGlobalMemory(entry: string): Promise<boolean> {
 export async function maybeWriteGlobalMemory(
   client: OpenAI,
   model: string,
-  messages: ChatCompletionMessageParam[]
+  messages: ChatCompletionMessageParam[],
+  source?: { cwd?: string; sessionPath?: string }
 ): Promise<void> {
   const entry = await extractSessionMemory(client, model, messages);
   if (!entry) return;
-  await appendGlobalMemory(entry);
+  await appendGlobalMemory(entry, source);
 }
 
 // ── 项目级会话自动写入（P0）──────────────────────────────────

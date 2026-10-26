@@ -25,7 +25,7 @@ import { doctorReport, lastAssistantText } from './agent/report.js';
 import { pushWarning } from './agent/warnings.js';
 import { resolveCdArg } from './agent/workspace.js';
 import { createSkillTool } from './agent/skill.js';
-import { memorySearchTool, memoryReadTool } from './tools/memory-tools.js';
+import { memorySearchTool, memoryReadTool, memoryUpdateTool } from './tools/memory-tools.js';
 import { createTodoWriteTool } from './tools/todo.js';
 import { createWebFetchTool } from './tools/web-fetch.js';
 import { createWebSearchTool } from './tools/web-search.js';
@@ -471,9 +471,9 @@ export async function attachRuntime(
   }
   // skills=false（含未信任目录）时从工具链移除 skill 工具（模型不可见/不可调用）
   if (cfg.skills === false || !trusted) tracked = tracked.filter((t) => t.name !== 'skill');
-  // 记忆渐进披露工具（memory_search / memory_read）：trusted 时注入（防未信任仓库污染记忆）
+  // 记忆读取与复核工具：trusted 时注入；memory_update 继续受写权限闸门约束。
   if (trusted) {
-    tracked.push(memorySearchTool, memoryReadTool);
+    tracked.push(memorySearchTool, memoryReadTool, memoryUpdateTool);
   }
   // 技能启用：用带运行时上下文的 skill 工具替换静态版（支持 frontmatter 扩展：
   // context:fork → 子代理执行 / agent / background；delegate 运行时在 tools 里找）

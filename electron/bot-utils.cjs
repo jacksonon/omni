@@ -1,10 +1,12 @@
 'use strict';
 const DEFAULT_SHORTCUT = 'CommandOrControl+Shift+Space';
+const DEFAULT_CLIPBOARD_SHORTCUT = 'CommandOrControl+Alt+Space';
 /** 只接受明确的偏好字段。 */
 function normalizeSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const result = {
     shortcut: typeof v.shortcut === 'string' && v.shortcut.trim() && v.shortcut.length <= 120 ? v.shortcut.trim() : DEFAULT_SHORTCUT,
+    clipboardShortcut: typeof v.clipboardShortcut === 'string' && v.clipboardShortcut.trim() && v.clipboardShortcut.length <= 120 ? v.clipboardShortcut.trim() : DEFAULT_CLIPBOARD_SHORTCUT,
     openAtLogin: v.openAtLogin === true,
     notifications: v.notifications !== false,
   };
@@ -42,4 +44,4 @@ function workspaceUrl(pageUrl) {
     return match ? `${u.origin}/w/${match[1]}` : null;
   } catch { return null; }
 }
-module.exports = { DEFAULT_SHORTCUT, normalizeSettings, fitBounds, isTrustedPage, workspaceUrl };
+module.exports = { DEFAULT_SHORTCUT, DEFAULT_CLIPBOARD_SHORTCUT, normalizeSettings, fitBounds, isTrustedPage, workspaceUrl };

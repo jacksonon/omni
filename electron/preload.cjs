@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('omni', {
   closeWindow: () => ipcRenderer.invoke('omni:window-close'),
   expandBotWindow: () => ipcRenderer.invoke('omni:bot-expand'),
   compactBotWindow: () => ipcRenderer.invoke('omni:bot-compact'),
+  readClipboard: () => ipcRenderer.invoke('omni:read-clipboard'),
+  captureScreen: () => ipcRenderer.invoke('omni:capture-screen'),
+  stageWorkspaceDraft: (target, draft) => ipcRenderer.invoke('omni:stage-workspace-draft', target, draft),
+  takeWorkspaceDraft: () => ipcRenderer.invoke('omni:take-workspace-draft'),
   onDesktopAction: (callback) => {
     const listener = (_event, action) => callback(action);
     ipcRenderer.on('omni:desktop-action', listener);

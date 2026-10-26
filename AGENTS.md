@@ -36,6 +36,8 @@ npx tsx src/index.ts service start|stop|status|enable|disable|uninstall
 npm run web:sync          # 构建 vendor.js + 同步 web/ 静态资源到 src/web/assets.ts（bundle 内嵌副本；开发热更新不需要——server 优先从 web/ 目录读取）
 npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审批/提问/取消/模型切换/会话管理）
 npm run probe:bot         # 共享 Server + bot e2e（broker/工作区隔离/SSE 重放/审批恢复/远程代理，21 项）
+npm run probe:desktop-capture # 桌面附件经共享 Server 到 Chat/Responses 的传输与历史恢复验收
+npm run probe:memory      # 记忆写工具注册/只读拒绝/文件变化后同会话复核验收
 npm run test:desktop      # Electron bot 单元测试（托盘/快捷键/窗口/通知/路径）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
 npm run dev:bot           # 开发模式启动菜单栏/托盘 bot（electron . --bot；别名 electron:bot）
@@ -158,7 +160,7 @@ curl -fsSL <release>/scripts/install.sh | sh # 一键安装原生二进制（零
 
 - **入口与客户端**：`src/index.ts`（CLI 调度：main / exec / mcp-server / web / doctor / completion / review / resume / fork / 会话归档 / mcp 子命令）→ `main.ts` 参数调度 → `client.ts` 按模型端点建 OpenAI 客户端（`/model` 切换重建；`ModelRuntime` 共享引用让主循环/子代理同步）；headless `omni exec` 与 MCP server 在 `src/exec.ts`；CLI 分层帮助在 `src/cli/help.ts`，console / TUI 启动入口共用，先于配置加载与终端初始化。
 - **Agent 核心** `src/agent/`：`loop.ts` 主循环；`context.ts` 全局/项目记忆级联注入 + 相关文件预载 + 长对话摘要压缩；`messages.ts` / `thinking.ts`；`session.ts` 会话 JSONL 落盘；`undo.ts` 撤销 + 重做；`subagent.ts` / `subagent-registry.ts` 子代理与 Agent View；`orchestrate.ts` 动态工作流 + `/goal`；`team.ts` 共享看板；`memory.ts` 记忆；`skill.ts` 技能；`redact.ts` 密钥脱敏；`events.ts` / `trace.ts` 轨迹。
-- **工具** `src/tools/`：静态 8 个（read_file / write_file / edit_file / list_directory / search_code / run_command / skill / lsp）+ 运行时注入（delegate / ask_user / task_board / send_message / web_search / web_fetch / MCP `<server>_<tool>`）。
+- **工具** `src/tools/`：静态 8 个（read_file / write_file / edit_file / list_directory / search_code / run_command / skill / lsp）+ 运行时注入（memory_search / memory_read / memory_update / delegate / ask_user / task_board / send_message / web_search / web_fetch / MCP `<server>_<tool>`）。
 - **安全** `src/safety/`：`index.ts` 统一闸门（policy 判定 + 审批 + 审计）、`policy.ts` 权限分级与危险命令检测、`trust.ts` 工作区信任、`sandbox.ts` OS 沙箱、`audit.ts` 审计、`auto-review.ts` AI 自动审批。
 - **共享服务** `src/server/`：`broker.ts`（单用户 broker + 工作区子进程/token/文件锁）· `manager.ts`（发现与启动）· `discovery.ts`（server.json/规范工作区）· `proxy.ts`（远程代理与认证边界）· `client.ts`（SSE 长轮询/会话/审批/提问）· `terminal.ts`（TUI/mini/console 共用输入与回放）· `acp.ts`（ACP stdio 转发）。`omni web` 默认确保 broker；`--local` 回退进程内。
 - **前端/渲染**（同一运行时，多套 Output）：`ui.ts` + `cli/`（console / interactive / mini）· `src/tui/`（全屏 OpenTUI，命令式渲染；**改前必读 `Doc/tui-architecture.md`**）· `src/web/`（REST + SSE 本地后端）· `electron/`（桌面应用；`--bot` 托盘/全局快捷键、`bot-utils.cjs` 设置与窗口校验）。
@@ -220,6 +222,10 @@ for step in 1..maxSteps:
 - TUI 空会话首页使用 `src/tui/omni-mark.ts` 的 Braille 点阵编织 O 标识，点击图标随机执行圆心正反转、X/Y/斜轴翻转、翻滚或螺旋旋转，避免连续重复；开始对话后隐藏。
 
 - 品牌标识跨端共用 `src/tui/omni-mark.ts`：Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。
+
+- 桌面 bot 支持显式导入剪贴板文字/图片与截图选区，复用 Web 附件预览和消息协议；普通快捷键唤起不读取剪贴板。切换工作区时保留未发送的草稿和附件，用户确认发送后才进入模型请求。桌面采集 IPC 继续校验受信 workspace 页面。
+
+- 结构化记忆可记录来源及工作区文件/依赖版本基线；读取、搜索和上下文注入时检查变化并标为待复核。文件未变化仅代表基线一致，不证明记忆内容正确；更新基线须显式确认，历史记忆保持兼容。
 
 - mini 底部输入区由 `src/cli/mini-composer.ts` 装饰原生 readline：自动检测终端亮暗背景的输入块（未知背景沿用终端默认色），文本上下各一行留白；启动时输入区位于窗口底部，下方展示实时模型/思考级别/窗口/剩余上下文/运行状态与快捷键。提交后完整清除编辑区及留白，历史用户消息以灰底块展示，文本上下各一行同色留白，保留每轮统计。请求前上下文比例使用估算并标 `~`，请求后读取实际 prompt usage；窗口 resize 由 readline 单独驱动刷新，回退行数使用新宽度；readline 清屏使用终端默认背景，灰底只施加于输入文本与留白。修改须通过 PTY 验证编辑、联想、流中输入保留与窗口换行。
 

@@ -167,7 +167,7 @@ body.omni-bot .hero-workspace { margin-bottom: 16px; }
 body.omni-bot .mobile-only { display: none !important; }
 .desktop-settings-card { width: min(480px, calc(100vw - 32px)); }
 .desktop-settings-body { display: flex; flex-direction: column; gap: 12px; padding: 24px; font-size: 13px; }
-#desktop-shortcut { width: 100%; padding: 10px 12px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 13px var(--mono); }
+#desktop-shortcut, #desktop-clipboard-shortcut { width: 100%; padding: 10px 12px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 13px var(--mono); }
 .desktop-settings-hint { font-size: 12px; line-height: 1.6; color: var(--text-tertiary); margin: 0 0 8px; }
 .desktop-setting-check { display: flex; align-items: center; gap: 9px; line-height: 1.6; }
 .desktop-setting-check input { accent-color: var(--blue); }
@@ -653,6 +653,28 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .attach-chip img { flex: none; width: 22px; height: 22px; border-radius: 6px; object-fit: cover; }
 .attach-meta { min-width: 0; display: flex; align-items: baseline; gap: 5px; }
 .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-preview { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.attach-preview:hover .attach-name { color: var(--blue); }
+.desktop-capture-tools { display: flex; gap: 3px; }
+.capture-button { height: 28px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-secondary); font: 12px var(--font); cursor: pointer; white-space: nowrap; }
+.capture-button:hover { background: var(--surface-hover); }
+.capture-button:disabled { opacity: .5; cursor: wait; }
+.capture-preview-card { width: min(960px, calc(100vw - 36px)); max-height: calc(100vh - 40px); }
+.capture-preview-body { min-height: 0; padding: 18px; overflow: auto; }
+.capture-preview-body img { display: block; max-width: 100%; max-height: 70vh; margin: auto; object-fit: contain; }
+.capture-preview-body pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }
+.capture-hint { margin: 0; padding: 12px 18px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.capture-canvas-wrap { display: flex; align-items: center; justify-content: center; min-height: 0; padding: 0 14px; overflow: hidden; }
+#screen-capture-canvas { display: block; max-width: 100%; max-height: calc(100vh - 220px); width: auto; height: auto; cursor: crosshair; touch-action: none; }
+.capture-footer { display: flex; align-items: center; flex: none; gap: 8px; padding: 14px 18px; }
+.capture-footer span { flex: 1; }
+body.omni-bot.omni-bot-compact:has(.attach-list:not(.hidden)) .scroll-body { overflow-y: auto; justify-content: flex-end; }
+body.omni-bot .composer-tools { gap: 4px; }
+@media (max-width: 540px) {
+  body.omni-bot .composer-row { flex-wrap: wrap !important; }
+  body.omni-bot .composer-tools { gap: 3px; }
+  body.omni-bot .plan-toggle { padding: 0 4px; }
+}
 .attach-size { flex: none; color: var(--text-caption); font-size: 10.5px; }
 .attach-remove { flex: none; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-tertiary); font-size: 14px; line-height: 1; cursor: pointer; }
 .attach-remove:hover { background: var(--surface-hover); color: var(--text); }

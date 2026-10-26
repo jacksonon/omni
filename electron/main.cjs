@@ -3,12 +3,13 @@
  * --bot 常驻托盘，--hidden 登录时不弹窗；退出客户端不终止共享任务。
  */
 'use strict';
-const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, dialog, ipcMain, screen, Notification, powerMonitor, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, dialog, ipcMain, screen, Notification, powerMonitor, shell, clipboard, desktopCapturer, systemPreferences } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { normalizeSettings, fitBounds, isTrustedPage, workspaceUrl } = require('./bot-utils.cjs');
+const { readClipboardPayload, chooseScreenSource, captureErrorMessage, normalizeDraft } = require('./desktop-capture.cjs');
 const ROOT = path.join(__dirname, '..');
 const DIST_CJS = path.join(ROOT, 'dist', 'omni.cjs');
 let botMode = process.argv.includes('--bot');
@@ -22,10 +23,12 @@ let connection = null;
 let connectPromise = null;
 let settings, settingsPath, logPath;
 let shortcutRegistered = false;
+let clipboardShortcutRegistered = false;
 let status = null;
 let recentSessions = [];
 let pendingCount = 0;
 let connected = false;
+let workspaceDraft = null, workspaceDraftTimer = null, capturing = false;
 let pollTimer, polling = false, observed = false;
 let previousRuns = new Map(), seenPending = new Set();
 let eventObserver = null;
@@ -209,6 +212,8 @@ function updateTray() {
     { label: `Omni · ${trayStatus()}`, enabled: false },
     { label: '新建会话', click: () => newBotSession() },
     { label: `快速对话${shortcutRegistered ? ` (${settings.shortcut})` : ''}`, click: () => void showWindow(true) },
+    { label: `从剪贴板提问…${clipboardShortcutRegistered ? ` (${settings.clipboardShortcut})` : ''}`, click: () => void importClipboard() },
+    { label: '截图提问…', click: () => void showWindow(true, { type: 'capture-screen' }) },
     { label: '查看当前会话', click: () => revealBotSession() },
     { label: '打开完整窗口', click: () => void showWindow(false) },
     { label: '最近会话', enabled: recentSessions.length > 0, submenu: recentSessions.map(s => ({ label: (s.title || '未命名会话').slice(0, 70), click: () => void openSession(s.id, s.scope).catch(err => logError(err.message)) })) },
@@ -232,6 +237,10 @@ function registerShortcut(shortcut) {
     });
   } catch { return false; }
 }
+function registerClipboardShortcut(shortcut) {
+  try { return globalShortcut.register(shortcut, () => void importClipboard()); }
+  catch { return false; }
+}
 function linuxLoginPath() { return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart', 'ai.omni.bot.desktop'); }
 function loginEnabled() {
   if (!app.isPackaged) return false;
@@ -250,7 +259,7 @@ function setLogin(enabled) {
   } else app.setLoginItemSettings({ openAtLogin: enabled, ...(process.platform === 'win32' ? { path: process.execPath, args: ['--bot', '--hidden'], enabled } : {}) });
 }
 function desktopInfo() {
-  return { bot: botMode, compact: botMode && botCompact, shortcut: settings.shortcut, shortcutRegistered, openAtLogin: loginEnabled(), loginSupported: app.isPackaged, notifications: settings.notifications, platform: process.platform, connected };
+  return { bot: botMode, compact: botMode && botCompact, shortcut: settings.shortcut, shortcutRegistered, clipboardShortcut: settings.clipboardShortcut, clipboardShortcutRegistered, openAtLogin: loginEnabled(), loginSupported: app.isPackaged, notifications: settings.notifications, platform: process.platform, connected };
 }
 async function setBotSettings(input) {
   if (!input || typeof input !== 'object') throw new Error('设置格式无效');
@@ -259,6 +268,8 @@ async function setBotSettings(input) {
   if (input.openAtLogin !== undefined && typeof input.openAtLogin !== 'boolean') throw new Error('自启设置无效');
   if (input.notifications !== undefined && typeof input.notifications !== 'boolean') throw new Error('通知设置无效');
   if (input.shortcut !== undefined && (typeof input.shortcut !== 'string' || !input.shortcut.trim() || input.shortcut.length > 120)) throw new Error('请输入有效的快捷键，如 CommandOrControl+Shift+Space。');
+  if (input.clipboardShortcut !== undefined && (typeof input.clipboardShortcut !== 'string' || !input.clipboardShortcut.trim() || input.clipboardShortcut.length > 120)) throw new Error('请输入有效的剪贴板快捷键，如 CommandOrControl+Alt+Space。');
+  if ((input.shortcut?.trim() || next.shortcut) === (input.clipboardShortcut?.trim() || next.clipboardShortcut)) throw new Error('唤起和剪贴板快捷键需要使用不同组合。');
   const previousLogin = loginEnabled();
   if (input.openAtLogin !== undefined && input.openAtLogin !== previousLogin) setLogin(input.openAtLogin);
   try {
@@ -270,6 +281,14 @@ async function setBotSettings(input) {
       shortcutRegistered = true; next.shortcut = candidate;
     }
   }
+  if (input.clipboardShortcut !== undefined) {
+    const candidate = input.clipboardShortcut.trim();
+    if (candidate !== settings.clipboardShortcut || !clipboardShortcutRegistered) {
+      globalShortcut.unregister(settings.clipboardShortcut);
+      if (!registerClipboardShortcut(candidate)) { clipboardShortcutRegistered = registerClipboardShortcut(settings.clipboardShortcut); throw new Error('剪贴板快捷键无法注册，请换一个组合。'); }
+      clipboardShortcutRegistered = true; next.clipboardShortcut = candidate;
+    }
+  }
   if (input.openAtLogin !== undefined) {
     next.openAtLogin = input.openAtLogin;
   }
@@ -279,6 +298,7 @@ async function setBotSettings(input) {
   saveSettings(next); settings = next; updateTray(); return desktopInfo();
   } catch (err) {
     if (next.shortcut !== settings.shortcut) { globalShortcut.unregister(next.shortcut); shortcutRegistered = registerShortcut(settings.shortcut); }
+    if (next.clipboardShortcut !== settings.clipboardShortcut) { globalShortcut.unregister(next.clipboardShortcut); clipboardShortcutRegistered = registerClipboardShortcut(settings.clipboardShortcut); }
     if (input.openAtLogin !== undefined && input.openAtLogin !== previousLogin) { try { setLogin(previousLogin); } catch {} }
     updateTray(); throw err;
   }
@@ -403,8 +423,39 @@ async function pickDir() {
   return !choice.canceled && choice.filePaths.length ? choice.filePaths[0] : null;
 }
 async function pickAndSwitchWorkspace() {
-  const dir = await pickDir(); if (!dir) return;
-  try { await connectWorkspace(dir); } catch (err) { dialog.showErrorBox('切换工作目录失败', err.message); }
+  // 由页面切换以带走当前草稿和附件，避免主进程直接 loadURL 丢失输入。
+  await showWindow(botMode, { type: 'choose-workspace' });
+}
+async function importClipboard() {
+  try {
+    const payload = await readClipboardPayload(clipboard);
+    await showWindow(true, { type: 'clipboard', payload });
+  } catch (err) { dialog.showErrorBox('无法导入剪贴板', err.message); }
+}
+async function captureScreen() {
+  if (capturing) throw new Error('截图正在进行中。');
+  capturing = true;
+  const win = mainWindow, display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const visible = win?.isVisible();
+  let permission = process.platform === 'darwin' ? systemPreferences?.getMediaAccessStatus('screen') : undefined;
+  try {
+    if (['denied', 'restricted'].includes(permission)) throw new Error('Screen recording access denied');
+    win?.hide();
+    // 等桌面合成器移除 Omni，避免把自己的悬浮窗截进图片。
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const scale = Math.min(1, 2560 / Math.max(display.size.width * display.scaleFactor, display.size.height * display.scaleFactor));
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: Math.round(display.size.width * display.scaleFactor * scale), height: Math.round(display.size.height * display.scaleFactor * scale) } });
+    const source = chooseScreenSource(sources, display);
+    return { dataUrl: 'data:image/jpeg;base64,' + source.thumbnail.toJPEG(90).toString('base64'), name: '屏幕截图.jpg' };
+  } catch (err) {
+    if (process.platform === 'darwin') permission = systemPreferences?.getMediaAccessStatus('screen');
+    const message = captureErrorMessage(err, permission, process.platform);
+    logError(`[screen capture] permission=${permission || 'unknown'} ${message}`);
+    throw new Error(message);
+  } finally {
+    capturing = false;
+    if (visible && win && !win.isDestroyed()) { win.show(); win.focus(); }
+  }
 }
 function assertSender(event) {
   if (!connection || !mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !isTrustedPage(event.senderFrame.url, connection.serverUrl)) throw new Error('不受信任的桌面请求');
@@ -418,6 +469,21 @@ function installIPC() {
   handle('omni:window-close', () => mainWindow?.close());
   handle('omni:bot-expand', () => setBotCompact(false));
   handle('omni:bot-compact', () => setBotCompact(true));
+  handle('omni:read-clipboard', () => readClipboardPayload(clipboard));
+  handle('omni:capture-screen', captureScreen);
+  handle('omni:stage-workspace-draft', (target, draft) => {
+    if (typeof target !== 'string' || !isTrustedPage(target, connection.serverUrl)) throw new Error('工作区地址无效。');
+    workspaceDraft = { target: workspaceUrl(target), draft: normalizeDraft(draft), expires: Date.now() + 60000 };
+    clearTimeout(workspaceDraftTimer);
+    workspaceDraftTimer = setTimeout(() => { workspaceDraft = null; }, 60000);
+    workspaceDraftTimer.unref?.();
+  });
+  handle('omni:take-workspace-draft', () => {
+    const value = workspaceDraft;
+    workspaceDraft = null;
+    clearTimeout(workspaceDraftTimer);
+    return value && value.expires > Date.now() && value.target === workspaceUrl(mainWindow.webContents.getURL()) ? value.draft : null;
+  });
 }
 function createTray() {
   const file = process.platform === 'darwin' ? 'trayTemplate.png' : process.platform === 'win32' ? 'icon.ico' : 'icon.png';
@@ -431,6 +497,8 @@ function buildMenu() {
     { label: '文件', submenu: [
       { label: '新建会话', click: () => newBotSession() },
       { label: '快速对话', click: () => void showWindow(true) }, { label: '查看当前会话', click: () => revealBotSession() },
+      { label: '从剪贴板提问…', accelerator: 'CommandOrControl+Shift+V', click: () => void importClipboard() },
+      { label: '截图提问…', click: () => void showWindow(true, { type: 'capture-screen' }) },
       { label: '打开完整窗口', click: () => void showWindow(false) },
       { label: '选择工作目录…', click: () => void pickAndSwitchWorkspace() },
       { label: '托盘与快捷键设置…', click: () => void showWindow(botMode, { type: 'desktop-settings' }) },
@@ -456,7 +524,7 @@ else {
     try { loginLaunch = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin; } catch {}
     if (loginLaunch) { botMode = true; resident = true; }
     if (process.platform === 'darwin') { app.dock?.setIcon(path.join(__dirname, 'icon.png')); if (botMode) app.setActivationPolicy('accessory'); }
-    buildMenu(); installIPC(); createTray(); shortcutRegistered = registerShortcut(settings.shortcut);
+    buildMenu(); installIPC(); createTray(); shortcutRegistered = registerShortcut(settings.shortcut); clipboardShortcutRegistered = registerClipboardShortcut(settings.clipboardShortcut);
     connectPromise = createWindow();
     try { await connectPromise; } catch (err) { logError(err.message); dialog.showErrorBox('Omni 启动失败', `${err.message}\n\n日志：${logPath}`); }
     finally { connectPromise = null; }

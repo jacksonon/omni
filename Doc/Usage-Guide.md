@@ -629,6 +629,7 @@ model needs the full text it pulls it on demand with two read-only tools:
 |---|---|
 | `memory_search` | multi-keyword AND search over memory; results ranked by number of hits |
 | `memory_read` | read the full memory file at a given path |
+| `memory_update` | save/revise topics and sources, associate files/dependencies, and explicitly confirm reviewed baselines; blocked in read-only mode |
 
 This is why you can keep a detailed AGENTS.md without paying for it on every turn.
 
@@ -649,6 +650,20 @@ Global memory can also use a structured layout instead of one big file:
   rebuilt out of the index. Nothing is ever deleted, just archived.
 - The legacy `~/.config/omni/AGENTS.md` is still loaded read-only; new writes go to the structured
   layout.
+
+**Sources and freshness checks:** ask Omni to “remember this build workaround, associate it with
+`package.json` and `scripts/build.sh`, and record this session as its source.” The `memory_update`
+tool saves the topic, sources, and file/dependency baselines. Reads, searches, and context preparation
+on subsequent turns check those associations. Changes, missing files, or a different workspace mark
+the topic as needing review. Treat it as a historical lead until the current code or behavior has
+been checked. Ask to inspect its sources and change reasons, then explicitly confirm a revised
+baseline after verification. Checks only read files; they never execute remembered commands.
+An unchanged baseline does not prove the remembered conclusion. Legacy topics without associations
+are labeled untracked rather than silently treated as verified.
+Dependency associations compare declarations in `package.json` and automatically hash any existing
+npm/pnpm/yarn/bun lockfiles alongside it. Any lockfile change conservatively requires review; the
+installed version in `node_modules` is not inferred. Each associated file is limited to 1 MiB,
+with at most 24 file/dependency associations per topic.
 
 ### 9.4 Pending project-memory snippet
 
@@ -821,6 +836,18 @@ menu provides New Session, View Current Session, Open Full Window, and settings.
 while tasks continue, and reopen into the same session. "Open full window" switches to the regular
 layout (with custom minimize/maximize/close controls). Tray settings (toggle shortcut, launch at
 login, notifications) live in the app's user data.
+
+**Bring the problem into Omni:** copy an error or image, summon the bot, and use the clipboard
+action beside the composer or the tray's clipboard action. Imported content appears as removable
+attachments for review before you select a workspace and send a task. The ordinary summon shortcut
+only opens the window. Screen capture temporarily hides Omni, captures a display, and lets you
+select a region before adding an image attachment. Pasting an image from the system screenshot tool
+also works. Unsent text and attachments survive workspace changes. On macOS, native capture needs
+Screen Recording permission; system screenshots can be pasted when that permission is unavailable.
+The clipboard action defaults to `Cmd/Ctrl+Alt+Space`, configurable in tray settings; normal summon
+remains `Cmd/Ctrl+Shift+Space`. In source development, macOS may attribute screen permissions to the
+host application that launched Electron. For regular use, launch the packaged Omni app from Finder
+and check the application identity shown by the system before granting access.
 
 ### LAN, phone, and remote access (password / PWA / Cloudflare tunnel)
 
@@ -1432,6 +1459,7 @@ injected at runtime by `attachRuntime`.
 |---|---|---|
 | `memory_search` | workspace is **trusted** | multi-keyword AND search over memory, ranked by hits |
 | `memory_read` | workspace is **trusted** | read a full memory file by path |
+| `memory_update` | workspace is **trusted**, permission allows writes | save topics and sources, associate files/dependencies, explicitly confirm reviewed baselines |
 | `delegate` | `allowSubagents: true` **and** workspace trusted | hand a subtask to an isolated subagent (see section 15) |
 | `task_board` | team orchestration is active | shared task board: add / update / claim / list |
 | `send_message` | team orchestration is active | async messages to main or other subagents |

@@ -2835,7 +2835,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
           if (s && s.messages.some((m) => m.role === 'user') && runOpts.context?.autoMemory !== false) {
             const client = runOpts.modelRuntime?.client;
             const model = runOpts.modelRuntime?.model ?? cfg.model;
-            if (client) await maybeWriteGlobalMemory(client, model, s.messages).catch(() => {});
+            if (client) await maybeWriteGlobalMemory(client, model, s.messages, {
+              cwd: process.cwd(), sessionPath: s.file ?? undefined,
+            }).catch(() => {});
           }
           json(res, 200, { ok: true });
         } catch (e) {

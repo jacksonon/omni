@@ -49,6 +49,9 @@
         }
       ],
       "icon": "electron/icon.icns",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Omni 在你点击截图提问后截取屏幕，并由你选择区域、预览及确认发送。"
+      },
       "category": "public.app-category.developer-tools"
     },
     "win": {
@@ -88,6 +91,8 @@
     "probe:web": "tsx scripts/probe-web.ts",
     "probe:web:auth": "tsx scripts/probe-web-auth.ts",
     "probe:bot": "tsx scripts/probe-bot.ts",
+    "probe:desktop-capture": "tsx scripts/probe-desktop-capture.ts",
+    "probe:memory": "tsx scripts/probe-memory-freshness.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && tsc && npm run bundle",
     "start": "node dist/index.js",

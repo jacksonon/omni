@@ -137,7 +137,7 @@ const I18N_ZH = {
   // 附件
   'attach.remove': '移除附件',
   'attach.imageTooLarge': '⚠ 图片超过 4MB 上限，已跳过：{name}',
-  'attach.modelNoImage': '⚠ 当前模型不支持图片，已转为路径附件：{name}',
+  'attach.modelNoImage': '当前模型不支持图片，附件已保留；请切换支持图片的模型后发送：{name}',
   'attach.truncated': '（已截断，可用 read_file 定向读取）',
   'attach.running': '⚠ 运行中无法附带附件，请等待当前回复完成',
   'attach.image': '图片',
@@ -628,7 +628,7 @@ const I18N_EN = {
   // attachments
   'attach.remove': 'Remove attachment',
   'attach.imageTooLarge': '⚠ Image exceeds 4MB limit, skipped: {name}',
-  'attach.modelNoImage': '⚠ Current model does not support images; converted to a path attachment: {name}',
+  'attach.modelNoImage': 'Image kept. Switch to a model that supports images before sending: {name}',
   'attach.truncated': '(truncated; use read_file for the full file)',
   'attach.running': '⚠ Cannot attach files while running — wait for the current reply to finish',
   'attach.image': 'Image',
@@ -1532,9 +1532,7 @@ async function handleAttachFiles(fileList) {
   for (const file of files) {
     if (file.type.startsWith('image/')) {
       if (!modelSupportsImage()) {
-        state.attachments.push({ id: attachId(), kind: 'path', name: file.name, size: file.size });
         notify(t('attach.modelNoImage', { name: file.name }), 'info');
-        continue;
       }
       if (file.size > IMAGE_MAX_BYTES) {
         notify(t('attach.imageTooLarge', { name: file.name }), 'error');
@@ -1554,6 +1552,7 @@ async function handleAttachFiles(fileList) {
     }
   }
   renderAttachList();
+  updateComposer();
 }
 /** 附件条渲染（输入框上方）：图片缩略图 / 名称+大小，每条 × 移除 */
 function renderAttachList() {
@@ -1565,15 +1564,20 @@ function renderAttachList() {
   list.innerHTML = '';
   atts.forEach((a) => {
     const chip = el('div', 'attach-chip' + (a.kind === 'image' ? ' is-image' : ''));
+    const preview = el('button', 'attach-preview');
+    preview.type = 'button';
+    preview.title = state.language === 'en' ? 'Preview attachment' : '点击预览附件';
+    preview.addEventListener('click', () => previewAttachment(a));
     if (a.kind === 'image') {
       const img = document.createElement('img');
       img.src = a.dataUrl; img.alt = a.name;
-      chip.appendChild(img);
+      preview.appendChild(img);
     }
     const meta = el('div', 'attach-meta');
     meta.appendChild(el('span', 'attach-name', a.name));
     if (a.size) meta.appendChild(el('span', 'attach-size', formatFileSize(a.size)));
-    chip.appendChild(meta);
+    preview.appendChild(meta);
+    chip.appendChild(preview);
     const rm = el('button', 'attach-remove', '×');
     rm.type = 'button';
     rm.title = t('attach.remove');
@@ -1585,6 +1589,24 @@ function renderAttachList() {
     chip.appendChild(rm);
     list.appendChild(chip);
   });
+}
+function closeAttachmentPreview() {
+  $('#attachment-preview').classList.add('hidden');
+  $('#attachment-preview-body').replaceChildren();
+  input.focus();
+}
+function previewAttachment(attachment) {
+  const body = $('#attachment-preview-body');
+  body.replaceChildren();
+  $('#attachment-preview-title').textContent = attachment.name;
+  if (attachment.kind === 'image') {
+    const image = document.createElement('img');
+    image.src = attachment.dataUrl; image.alt = attachment.name;
+    body.appendChild(image);
+  } else body.appendChild(el('pre', '', attachment.content || attachment.name));
+  if (desktopMode) { applyDesktopCompact(false); desktop?.expandBotWindow?.(); }
+  $('#attachment-preview').classList.remove('hidden');
+  $('#attachment-preview-close').focus();
 }
 /** 解析会话历史里的用户消息 content（字符串或数组）→ { text, attachments }（历史恢复最小渲染） */
 function parseUserContent(content) {
@@ -3571,6 +3593,9 @@ async function switchWorkspace(dir, sessionId) {
     const dest = new URL(result.redirectUrl, location.origin);
     if (sessionId) dest.searchParams.set('session', sessionId);
     if (desktopMode) dest.searchParams.set('bot', '1');
+    if (desktop?.stageWorkspaceDraft && (input.value || state.attachments.length)) {
+      await desktop.stageWorkspaceDraft(dest.href, { text: input.value, attachments: state.attachments });
+    }
     location.assign(dest.href); return;
   }
   await refreshStatus();
@@ -5470,6 +5495,8 @@ document.addEventListener('keydown', (e) => {
   // ⌘N=新建、⌘K=会话快速切换、/ = 聚焦搜索（裸键，输入框聚焦时不触发）
   if (e.key === 'Escape') {
     if (e.isComposing || e.keyCode === 229) return;
+    if (!$('#screen-capture-modal').classList.contains('hidden')) { e.preventDefault(); closeScreenCapture(); return; }
+    if (!$('#attachment-preview').classList.contains('hidden')) { e.preventDefault(); closeAttachmentPreview(); return; }
     if ($('#desktop-settings')?.classList.contains('hidden') === false) { $('#desktop-settings').classList.add('hidden'); return; }
     const anyPopOpen = ['#permission-pop', '#model-pop'].some((sel) => !$(sel).classList.contains('hidden'));
     if (anyPopOpen) { closeAllComposerPops(); return; }
@@ -5498,6 +5525,12 @@ document.addEventListener('keydown', (e) => {
 
 /* 纯发送（不检查 running 状态，由调用方保证）；text 为空但带附件也可发送 */
 async function doSend(text) {
+  const image = state.attachments.find(a => a.kind === 'image');
+  if (image && !modelSupportsImage()) {
+    state._sending = false;
+    notify(t('attach.modelNoImage', { name: image.name }), 'error');
+    return;
+  }
   // 快速输入框发出第一条消息时展开成对话卡片；主进程同步调整窗口高度。
   if (desktopMode) { applyDesktopCompact(false); desktop?.expandBotWindow?.(); }
   input.value = '';
@@ -7599,6 +7632,120 @@ async function restoreServerSnapshot(reloadHistory) {
   await restorePending(snap);
 }
 
+let captureImage = null, captureStart = null, captureSelection = null;
+let desktopCaptureBusy = false;
+
+async function importDesktopClipboard(payload) {
+  if (desktopCaptureBusy) return;
+  desktopCaptureBusy = true;
+  $('#btn-clipboard').disabled = true;
+  try {
+    const item = payload || await desktop.readClipboard();
+    if (item.kind === 'image') {
+      // 复用文件压缩与图片能力检查，保留图片而不是退化成无实际路径的占位符。
+      const response = await window.fetch(item.dataUrl);
+      await handleAttachFiles([new File([await response.blob()], item.name, { type: 'image/png' })]);
+    } else if (item.kind === 'text' && typeof item.content === 'string') {
+      state.attachments.push({ id: attachId(), kind: 'text', name: item.name, size: item.size, content: item.content });
+      renderAttachList(); updateComposer();
+      if (item.truncated) notify(state.language === 'en' ? 'Clipboard text truncated to 30K characters.' : '剪贴板文字超过上限，已保留前 30K 字符。', 'info');
+    }
+    // compact 容量很小，附件出现后展开，保证预览条和输入框都可见。
+    if (desktopMode) { applyDesktopCompact(false); await desktop.expandBotWindow?.(); }
+    input.focus();
+  } catch (error) { notify(error.message, 'error'); }
+  finally { desktopCaptureBusy = false; $('#btn-clipboard').disabled = false; }
+}
+
+function drawScreenCapture() {
+  if (!captureImage) return;
+  const canvas = $('#screen-capture-canvas'), ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(captureImage, 0, 0);
+  const s = captureSelection;
+  const valid = s && s.width >= 6 && s.height >= 6;
+  if (valid) {
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    ctx.fillRect(0, 0, canvas.width, s.y);
+    ctx.fillRect(0, s.y + s.height, canvas.width, canvas.height - s.y - s.height);
+    ctx.fillRect(0, s.y, s.x, s.height);
+    ctx.fillRect(s.x + s.width, s.y, canvas.width - s.x - s.width, s.height);
+    ctx.strokeStyle = '#5e9bff'; ctx.lineWidth = Math.max(2, canvas.width / canvas.clientWidth * 2);
+    ctx.strokeRect(s.x, s.y, s.width, s.height);
+  }
+  $('#screen-capture-add').textContent = valid ? (state.language === 'en' ? 'Attach selection' : '添加选区') : (state.language === 'en' ? 'Attach screen' : '添加整屏');
+}
+function closeScreenCapture() {
+  $('#screen-capture-modal').classList.add('hidden');
+  captureImage = null; captureStart = null; captureSelection = null;
+  const canvas = $('#screen-capture-canvas'); canvas.width = 0; canvas.height = 0;
+  input.focus();
+}
+async function openScreenCapture() {
+  if (!desktop?.captureScreen || desktopCaptureBusy) return;
+  desktopCaptureBusy = true;
+  $('#btn-screen-capture').disabled = true;
+  try {
+    if (desktopMode) { applyDesktopCompact(false); await desktop.expandBotWindow?.(); }
+    const shot = await desktop.captureScreen();
+    const image = new Image();
+    await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error('无法读取截图，请重试。')); image.src = shot.dataUrl; });
+    captureImage = image; captureStart = null; captureSelection = null;
+    const canvas = $('#screen-capture-canvas');
+    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    $('#screen-capture-modal').classList.remove('hidden');
+    drawScreenCapture();
+    $('#screen-capture-add').focus();
+  } catch (error) { notify(error.message, 'error'); }
+  finally { desktopCaptureBusy = false; $('#btn-screen-capture').disabled = false; }
+}
+async function attachScreenSelection() {
+  const button = $('#screen-capture-add');
+  if (!captureImage || button.disabled) return;
+  const source = captureImage;
+  button.disabled = true;
+  try {
+  const s = captureSelection && captureSelection.width >= 6 && captureSelection.height >= 6 ? captureSelection : { x: 0, y: 0, width: captureImage.naturalWidth, height: captureImage.naturalHeight };
+  const canvas = document.createElement('canvas');
+  canvas.width = s.width; canvas.height = s.height;
+  canvas.getContext('2d').drawImage(captureImage, s.x, s.y, s.width, s.height, 0, 0, s.width, s.height);
+  // JPEG 上限可控；发送前继续复用现有附件压缩流程。
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .92));
+  if (captureImage !== source) return; // 转码期间取消/重开截图，不再把旧图加回草稿。
+  if (!blob) { notify('无法处理截图，请重新选择。', 'error'); return; }
+  closeScreenCapture();
+  await handleAttachFiles([new File([blob], '屏幕截图.jpg', { type: 'image/jpeg' })]);
+  input.focus();
+  } finally { button.disabled = false; }
+}
+function initCaptureUI() {
+  $('#attachment-preview-close').addEventListener('click', closeAttachmentPreview);
+  $('#attachment-preview').addEventListener('click', e => { if (e.target === $('#attachment-preview')) closeAttachmentPreview(); });
+  $('#screen-capture-close').addEventListener('click', closeScreenCapture);
+  $('#screen-capture-cancel').addEventListener('click', closeScreenCapture);
+  $('#screen-capture-modal').addEventListener('click', e => { if (e.target === $('#screen-capture-modal')) closeScreenCapture(); });
+  $('#screen-capture-add').addEventListener('click', () => void attachScreenSelection());
+  $('#screen-capture-reset').addEventListener('click', () => { captureStart = null; captureSelection = null; drawScreenCapture(); });
+  const canvas = $('#screen-capture-canvas');
+  const point = event => {
+    const r = canvas.getBoundingClientRect();
+    return { x: Math.round(Math.max(0, Math.min(1, (event.clientX - r.left) / r.width)) * canvas.width), y: Math.round(Math.max(0, Math.min(1, (event.clientY - r.top) / r.height)) * canvas.height) };
+  };
+  canvas.addEventListener('pointerdown', event => {
+    if (!captureImage || event.button !== 0) return;
+    event.preventDefault(); canvas.setPointerCapture(event.pointerId);
+    captureStart = point(event); captureSelection = null; drawScreenCapture();
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (!captureStart) return;
+    const p = point(event);
+    captureSelection = { x: Math.min(captureStart.x, p.x), y: Math.min(captureStart.y, p.y), width: Math.abs(p.x - captureStart.x), height: Math.abs(p.y - captureStart.y) };
+    drawScreenCapture();
+  });
+  canvas.addEventListener('pointerup', () => { captureStart = null; });
+  canvas.addEventListener('pointercancel', () => { captureStart = null; });
+}
+
 function applyDesktopCompact(compact) {
   document.body.classList.toggle('omni-bot-compact', desktopMode && compact === true);
   requestAnimationFrame(() => {
@@ -7624,17 +7771,22 @@ async function openDesktopSettings() {
   try {
     const info = await desktop.desktopInfo();
     $('#desktop-shortcut').value = info.shortcut || '';
+    $('#desktop-clipboard-shortcut').value = info.clipboardShortcut || '';
     $('#desktop-login').checked = info.openAtLogin;
     $('#desktop-login').disabled = !info.loginSupported;
     $('#desktop-notifications').checked = info.notifications;
-    $('#desktop-settings-error').textContent = !info.shortcutRegistered ? '快捷键注册失败，请更换组合。' : (!info.loginSupported ? '登录自启需要安装打包后的桌面应用。' : '');
+    $('#desktop-settings-error').textContent = !info.shortcutRegistered || info.clipboardShortcutRegistered === false ? '唤起或剪贴板快捷键注册失败，请更换组合。' : (!info.loginSupported ? '登录自启需要安装打包后的桌面应用。' : '');
     $('#desktop-settings').classList.remove('hidden');
     $('#desktop-shortcut').focus();
   } catch (error) { notify(error.message, 'error'); }
 }
 function initDesktopBridge() {
+  initCaptureUI();
   applyDesktopMode(desktopMode && !!desktop);
   if (!desktop?.desktopInfo) return;
+  $('#desktop-capture-tools').classList.remove('hidden');
+  $('#btn-clipboard').addEventListener('click', () => void importDesktopClipboard());
+  $('#btn-screen-capture').addEventListener('click', () => void openScreenCapture());
   $('#bot-open-full')?.addEventListener('click', () => desktop.openFullWindow());
   $('#bot-hide')?.addEventListener('click', () => desktop.hide());
   $('#bot-desktop-settings')?.addEventListener('click', openDesktopSettings);
@@ -7659,9 +7811,10 @@ function initDesktopBridge() {
   $('#desktop-save')?.addEventListener('click', async () => {
     const button = $('#desktop-save'); button.disabled = true;
     try {
-      const result = await desktop.setBotSettings({ shortcut: $('#desktop-shortcut').value.trim(), openAtLogin: $('#desktop-login').checked, notifications: $('#desktop-notifications').checked });
+      const result = await desktop.setBotSettings({ shortcut: $('#desktop-shortcut').value.trim(), clipboardShortcut: $('#desktop-clipboard-shortcut').value.trim(), openAtLogin: $('#desktop-login').checked, notifications: $('#desktop-notifications').checked });
       if (result.error) throw new Error(result.error);
       if (result.shortcutRegistered === false) throw new Error('快捷键已被其它应用占用，请更换组合。');
+      if (result.clipboardShortcutRegistered === false) throw new Error('剪贴板快捷键已被其它应用占用，请更换组合。');
       $('#desktop-settings').classList.add('hidden'); input.focus();
     } catch (error) { $('#desktop-settings-error').textContent = error.message; }
     finally { button.disabled = false; }
@@ -7675,6 +7828,9 @@ function initDesktopBridge() {
     if (action.type === 'focus') input.focus();
     if (action.type === 'settings') openSettings();
     if (action.type === 'desktop-settings') openDesktopSettings();
+    if (action.type === 'clipboard') void importDesktopClipboard(action.payload);
+    if (action.type === 'capture-screen') void openScreenCapture();
+    if (action.type === 'choose-workspace') browseWorkspace();
     if (action.type === 'session' && action.sessionId) selectSession(action.sessionId).then(() => input.focus()).catch((error) => notify(error.message, 'error'));
   });
   desktop.desktopInfo().then((info) => applyDesktopMode(info.bot, info.compact === true)).catch(() => {});
@@ -7700,6 +7856,18 @@ function initDesktopBridge() {
     else renderWelcome();
   } catch (e) { renderWelcome(); }
   await restoreServerSnapshot(false).catch(() => {});
+  if (desktop?.takeWorkspaceDraft) {
+    try {
+      const draft = await desktop.takeWorkspaceDraft();
+      if (draft) {
+        await newSession();
+        input.value = draft.text;
+        state.attachments = draft.attachments.map(a => ({ ...a, id: attachId() }));
+        renderAttachList(); autoResize(); updateComposer();
+        if (desktopMode && state.attachments.length) { applyDesktopCompact(false); await desktop.expandBotWindow?.(); }
+      }
+    } catch (error) { notify(error.message, 'error'); }
+  }
   connectSSE();
 })();
 

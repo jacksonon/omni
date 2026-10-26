@@ -423,14 +423,21 @@ export async function prepareContext(
   const staticScaffold: ChatCompletionMessageParam[] = [];
   const dynamicScaffold: ChatCompletionMessageParam[] = [];
 
-  // 1) 全局记忆 ~/.config/omni/AGENTS.md：跨项目共享，首轮注入一次
+  // 1) 全局记忆：跨项目共享；每轮刷新主题索引中的适用性状态。
   const globalFile = opts.globalAgentsFile !== false;
   const hasGlobal = messages.some(
     (m) => typeof m.content === 'string' && m.content.startsWith(GLOBAL_MEMORY_PREFIX)
   );
-  if (globalFile && !hasGlobal) {
+  if (globalFile) {
     const mem = await loadGlobalMemory();
-    if (mem) staticScaffold.push(globalMemoryMessage(mem));
+    if (mem) {
+      const fresh = globalMemoryMessage(mem);
+      if (!hasGlobal) staticScaffold.push(fresh);
+      else {
+        const index = messages.findIndex((m) => typeof m.content === 'string' && m.content.startsWith(GLOBAL_MEMORY_PREFIX));
+        messages[index] = fresh;
+      }
+    }
   }
 
   // 2) 项目记忆 AGENTS.md：跨会话共享，首轮注入一次
@@ -472,10 +479,11 @@ export async function prepareContext(
   }
 
   // 5) 动态任务主题匹配：任务命中主题 glob 时内联
-  const hasTopics = messages.some(
-    (m) => typeof m.content === 'string' && m.content.startsWith('[全局记忆主题')
-  );
-  if (globalFile && !hasTopics) {
+  // 每轮替换动态主题，避免同一会话修改文件后继续使用旧的适用性状态。
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (typeof messages[i]!.content === 'string' && (messages[i]!.content as string).startsWith('[全局记忆主题')) messages.splice(i, 1);
+  }
+  if (globalFile) {
     const lastUserForTopics = [...messages].reverse().find((m) => m.role === 'user');
     const taskText0 =
       lastUserForTopics && typeof lastUserForTopics.content === 'string' ? lastUserForTopics.content : undefined;

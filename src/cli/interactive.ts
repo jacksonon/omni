@@ -722,7 +722,9 @@ export async function runInteractive(
       try {
         await Promise.race([
           (async () => {
-            await maybeWriteGlobalMemory(currentClient, currentModel, messages).catch(() => {});
+            await maybeWriteGlobalMemory(currentClient, currentModel, messages, {
+              cwd: process.cwd(), sessionPath: runOpts.sessionPath,
+            }).catch(() => {});
             // P0 项目级自动写入：提取项目持久事实 → 生成待提交片段（.omni/memory-pending.md，不直接改 AGENTS.md）
             await maybeWriteProjectMemory(currentClient, currentModel, messages).catch(() => {});
           })(),

@@ -11,6 +11,8 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
   const app = new EventEmitter();
   let ready, win, tray, aggregate = null;
   const notifications = [];
+  let clipboardText = 'fixture error: missing SDK', clipboardReads = 0;
+  const captures = [];
   const shortcuts = new Map(), handlers = new Map(), spawned = [], intervals = [];
   Object.assign(app, {
     requestSingleInstanceLock: () => true, whenReady: () => ({ then: fn => { ready = fn(); return ready; } }),
@@ -23,6 +25,7 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
       super(); this.options = options; this.visible = false; this.focused = false; this.bounds = options;
       this.webContents = new EventEmitter();
       this.webContents.mainFrame = { url: '' };
+      this.webContents.getURL = () => this.webContents.mainFrame.url;
       this.webContents.session = { cookies: { set: async cookie => { this.cookie = cookie; } } };
       this.webContents.send = (_name, action) => { this.action = action; };
       this.webContents.setWindowOpenHandler = callback => { this.external = callback; };
@@ -56,7 +59,10 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
     globalShortcut: { register: (key, fn) => { if (shortcuts.has(key) || key === 'bad') return false; shortcuts.set(key, fn); return true; }, unregister: key => shortcuts.delete(key), unregisterAll: () => shortcuts.clear() },
     dialog: { showErrorBox: (...value) => { throw Error(value.join(' ')); } },
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
-    powerMonitor: new EventEmitter(), screen: Object.assign(new EventEmitter(), { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getDisplayMatching: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getCursorScreenPoint: () => ({ x: 300, y: 300 }) }),
+    clipboard: { readImage: () => { clipboardReads++; return { isEmpty: () => true }; }, readText: () => clipboardText },
+    desktopCapturer: { getSources: async options => { captures.push({ options, visible: win.visible }); return [{ display_id: '7', thumbnail: { isEmpty: () => false, toJPEG: () => Buffer.from('screen fixture') } }]; } },
+    systemPreferences: { getMediaAccessStatus: () => 'granted' },
+    powerMonitor: new EventEmitter(), screen: Object.assign(new EventEmitter(), { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getDisplayNearestPoint: () => ({ id: 7, size: { width: 1440, height: 900 }, scaleFactor: 2, workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getDisplayMatching: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }), getCursorScreenPoint: () => ({ x: 300, y: 300 }) }),
     shell: { openExternal() {} },
   };
   function fakeSpawn(command, args) {
@@ -77,7 +83,7 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'), context);
   await ready; await new Promise(resolve => setImmediate(resolve));
-  return { app, dir, get win() { return win; }, tray, shortcuts, handlers, spawned, context, intervals, notifications, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
+  return { app, dir, get win() { return win; }, get clipboardReads() { return clipboardReads; }, captures, tray, shortcuts, handlers, spawned, context, intervals, notifications, setClipboard(value) { clipboardText = value; }, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 test('bot hidden startup, global shortcut, close-to-tray, full window share one renderer', async () => {
   const h = await harness();
@@ -136,6 +142,45 @@ test('untrusted frame rejected, shortcut collision restores previous registered 
     assert.equal(info.loginSupported, false);
     await assert.rejects(h.handlers.get('omni:bot-settings')(sender, { shortcut: 'CommandOrControl+Alt+J', notifications: 'invalid' }), /通知设置无效/);
     assert.equal(h.shortcuts.has('CommandOrControl+Shift+Space'), true);
+  } finally { h.cleanup(); }
+});
+test('普通唤起不读取剪贴板，导入快捷键只预览、截图先隐藏窗口且发送仍需用户操作', async () => {
+  const h = await harness();
+  try {
+    assert.equal(h.clipboardReads, 0);
+    h.shortcuts.get('CommandOrControl+Shift+Space')();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.clipboardReads, 0);
+    h.setClipboard('复制的报错\nnext line');
+    h.shortcuts.get('CommandOrControl+Alt+Space')();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.clipboardReads, 1);
+    assert.equal(h.win.action.type, 'clipboard');
+    assert.equal(h.win.action.payload.content, '复制的报错\nnext line');
+    const sender = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    const shot = await h.handlers.get('omni:capture-screen')(sender);
+    assert.match(shot.dataUrl, /^data:image\/jpeg;base64,/);
+    assert.equal(h.captures.length, 1); assert.equal(h.captures[0].visible, false);
+    assert.ok(h.captures[0].options.thumbnailSize.width > 1000);
+    assert.equal(h.win.visible, true);
+    assert.throws(() => h.handlers.get('omni:read-clipboard')({ sender: h.win.webContents, senderFrame: { url: 'https://evil.example' } }), /不受信任/);
+    assert.equal(h.clipboardReads, 1);
+  } finally { h.cleanup(); }
+});
+test('跨工作区草稿只传给同源指定工作区且只读一次，快捷键设置失败回滚两组注册', async () => {
+  const h = await harness();
+  try {
+    const sender = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    const draft = { text: '修复截图中的报错', attachments: [{ kind: 'image', name: 'shot.png', dataUrl: 'data:image/png;base64,YWJj', size: 3 }] };
+    assert.throws(() => h.handlers.get('omni:stage-workspace-draft')(sender, 'https://evil.example/w/target/', draft), /地址无效/);
+    h.handlers.get('omni:stage-workspace-draft')(sender, 'http://127.0.0.1:3080/w/target/?bot=1', draft);
+    await h.win.loadURL('http://127.0.0.1:3080/w/target/?bot=1');
+    assert.deepEqual(h.handlers.get('omni:take-workspace-draft')(sender), draft);
+    assert.equal(h.handlers.get('omni:take-workspace-draft')(sender), null);
+    await assert.rejects(h.handlers.get('omni:bot-settings')(sender, { shortcut: 'Alt+J', clipboardShortcut: 'bad' }), /剪贴板快捷键无法注册/);
+    assert.equal(h.shortcuts.has('CommandOrControl+Shift+Space'), true);
+    assert.equal(h.shortcuts.has('CommandOrControl+Alt+Space'), true);
+    assert.equal(h.shortcuts.has('Alt+J'), false);
   } finally { h.cleanup(); }
 });
 test('托盘汇总其它工作区审批，通知点击连接对应工作区', async () => {

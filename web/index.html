@@ -136,6 +136,10 @@
                 <button id="btn-attach" class="attach-button" type="button" title="选择文件/图片" aria-label="选择文件/图片" data-i18n-title="composer.attach"><svg><use href="#i-plus"/></svg></button>
                 <input id="attach-input" type="file" multiple accept="image/*,text/*,.md,.txt,.json,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.go,.rs,.rb,.java,.c,.h,.cpp,.hpp,.cs,.sh,.bash,.zsh,.yml,.yaml,.toml,.ini,.xml,.html,.css,.scss,.sql,.csv,.log" hidden>
               </div>
+              <div id="desktop-capture-tools" class="desktop-capture-tools hidden">
+                <button id="btn-clipboard" class="capture-button" type="button" title="从剪贴板导入文字或图片">剪贴板</button>
+                <button id="btn-screen-capture" class="capture-button" type="button" title="截图并圈选要提问的区域">截图</button>
+              </div>
               <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label" data-i18n="perm.full">完全访问</span></button>
               <label class="plan-toggle" title="计划模式" data-i18n-title="shortcut.planModeDesc"><input type="checkbox" id="plan-mode"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
               <button id="btn-composer-settings" class="mode-button hidden" type="button" title="运行设置" data-i18n-title="composer.settings"><svg><use href="#i-settings"/></svg><span id="composer-mode">标准模式</span></button>
@@ -175,13 +179,32 @@
   </div>
 </div>
 
+<div id="attachment-preview" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="attachment-preview-title">
+  <div class="modal-card capture-preview-card">
+    <div class="modal-head"><h2 id="attachment-preview-title">附件预览</h2><button id="attachment-preview-close" class="icon-button" type="button" aria-label="关闭预览"><svg><use href="#i-x"/></svg></button></div>
+    <div id="attachment-preview-body" class="capture-preview-body"></div>
+  </div>
+</div>
+
+<div id="screen-capture-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="screen-capture-title">
+  <div class="modal-card capture-preview-card">
+    <div class="modal-head"><h2 id="screen-capture-title">截图提问</h2><button id="screen-capture-close" class="icon-button" type="button" aria-label="取消截图"><svg><use href="#i-x"/></svg></button></div>
+    <p class="capture-hint">拖动圈选要提问的区域；截图只会在你发送消息时交给模型。</p>
+    <div class="capture-canvas-wrap"><canvas id="screen-capture-canvas" aria-label="拖动圈选截图区域"></canvas></div>
+    <div class="capture-footer"><button id="screen-capture-reset" class="secondary-button" type="button">重选</button><span></span><button id="screen-capture-cancel" class="secondary-button" type="button">取消</button><button id="screen-capture-add" class="primary-button" type="button">添加整屏</button></div>
+  </div>
+</div>
+
 <div id="desktop-settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="desktop-settings-title">
   <div class="modal-card desktop-settings-card">
     <div class="modal-head"><h2 id="desktop-settings-title">托盘与快捷键</h2><button class="icon-button" id="desktop-close" type="button" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
     <div class="modal-body desktop-settings-body">
       <label for="desktop-shortcut">全局唤起快捷键</label>
       <input id="desktop-shortcut" type="text" spellcheck="false" autocomplete="off" placeholder="CommandOrControl+Shift+Space">
+      <label for="desktop-clipboard-shortcut">导入剪贴板并唤起</label>
+      <input id="desktop-clipboard-shortcut" type="text" spellcheck="false" autocomplete="off" placeholder="CommandOrControl+Alt+Space">
       <p class="desktop-settings-hint">CommandOrControl 在 macOS 表示 ⌘，在 Windows / Linux 表示 Ctrl。快捷键被占用时可更换组合。</p>
+      <p class="desktop-settings-hint">普通唤起不会读取剪贴板；使用导入快捷键时，先预览文字或图片，再由你发送。</p>
       <label class="desktop-setting-check"><input id="desktop-login" type="checkbox">登录时在托盘启动</label>
       <label class="desktop-setting-check"><input id="desktop-notifications" type="checkbox">任务结束、审批和提问时发送通知</label>
       <p id="desktop-settings-error" class="desktop-settings-error" role="status" aria-live="polite"></p>

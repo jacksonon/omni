@@ -54,7 +54,7 @@ export function dangerousCommand(command: string, extraPatterns?: string[]): str
 }
 
 /** 静态写工具（read 档位拒绝 / writes 审批判定） */
-const WRITE_TOOLS = new Set(['write_file', 'run_command']);
+const WRITE_TOOLS = new Set(['write_file', 'run_command', 'memory_update']);
 
 /** 某工具是否写操作：静态写工具（write_file/run_command）、或 MCP 工具（带 approvalMode 字段，
  *  无法证明只读 → 视为写，readOnly===true 除外）。静态只读工具（read_file 等）不视为写。 */
