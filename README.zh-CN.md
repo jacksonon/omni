@@ -8,6 +8,7 @@ Omni 是一个终端型 AI 编程助手：读代码、改文件、跑命令，�
 
 ![Omni TUI](Doc/images/tui.png)
 ![Omni mini](Doc/images/mini.png)
+![Omni 宠物](Doc/images/pet.png)
 
 ## 快速开始
 
@@ -49,6 +50,7 @@ omni                             # 交互会话
 | `omni exec "<任务>"` | Headless 模式（脚本/管道/CI）：stdout 只出结果（`--output-format text\|json\|stream-json`） |
 | `omni web` | 本地后端（REST + SSE）+ 浏览器界面，多会话侧栏 |
 | `omni bot` | 菜单栏/托盘常驻助手 + 全局快捷键唤起（桌面应用） |
+| `omni pet` | 桌面宠物：跟随 CLI、mini、TUI、exec、Web、Electron 的任务（桌面应用） |
 | `omni server` | 共享 Server 生命周期；TUI/mini/exec/Web/Electron 共用一个 broker（`--local` 回退） |
 | 桌面应用 | 独立 Electron 应用（mac/win/linux），见 GitHub Releases，无需 Node |
 
@@ -80,6 +82,7 @@ npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5
 - **安全优先**：权限分级（`full`/`safe`/`ask`/`read`）、危险命令确认、审批 UI、审计日志、工作区信任、OS 级沙箱
 - **记忆与会话**：`AGENTS.md` 项目/全局记忆级联、JSONL 会话持久化（恢复/分叉/回滚）
 - **多模型**：`providers` 分组（一个网关挂多模型）、`/model` 切换、Completions + Responses 双协议、思考级别
+- **桌面宠物**：`omni pet` 跨端跟随任务（原创小猫形象；点击快速对话、拖动记忆位置；Web/Electron 可导入透明 PNG/WebP 精灵图）
 - **可扩展**：MCP 服务器、生命周期 hooks、技能、插件、Headless `exec`/`mcp-server` 进 CI
 
 ## 配置

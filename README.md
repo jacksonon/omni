@@ -8,6 +8,7 @@ Omni is a terminal-based AI coding assistant: it reads your codebase, edits file
 
 ![Omni TUI](Doc/images/tui.png)
 ![Omni mini](Doc/images/mini.png)
+![Omni pet](Doc/images/pet.png)
 
 ## Quickstart
 
@@ -50,6 +51,7 @@ No key at hand? `npm run mock` starts a local mock API for keyless end-to-end ru
 | `omni exec "<task>"` | Headless mode for scripts/pipes/CI: stdout carries only the result (`--output-format text\|json\|stream-json`) |
 | `omni web` | Local backend (REST + SSE) + browser UI, multi-session sidebar |
 | `omni bot` | Menu-bar/tray assistant with a global summon shortcut (desktop app) |
+| `omni pet` | Desktop companion that follows tasks across CLI, mini, TUI, exec, Web and Electron (desktop app) |
 | `omni server` | Shared server lifecycle; TUI/mini/exec/Web/Electron reuse one broker (`--local` opts out) |
 | Desktop app | Standalone Electron app (mac/win/linux) from GitHub Releases, no Node needed |
 
@@ -88,6 +90,7 @@ Background reading (different tasks and harnesses — **not** a like-for-like co
 - **Safety first**: permission tiers (`full`/`safe`/`ask`/`read`), dangerous-command confirmation, approval UI, audit log, workspace trust, OS-level sandbox
 - **Memory & sessions**: `AGENTS.md` project/global memory cascade, JSONL session persistence with resume/fork/rewind
 - **Multi-model**: `providers` groups (one gateway, many models), `/model` switching, Completions + Responses protocols, reasoning levels
+- **Desktop companion**: `omni pet` follows tasks across every surface (original cat sprite; click for quick chat, drag to reposition; Web/Electron can import transparent PNG/WebP sprites)
 - **Extensible**: MCP servers, lifecycle hooks, skills, plugins, headless `exec`/`mcp-server` for CI
 
 ## Configuration
