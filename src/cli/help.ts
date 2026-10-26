@@ -479,6 +479,9 @@ export async function handleHelp(args: ParsedArgs): Promise<boolean> {
   } else if (topic === 'bot') {
     const { runBotCommand } = await import('./bot.js');
     process.exitCode = await runBotCommand(['--help']);
+  } else if (topic === 'pet') {
+    const { runPetCommand } = await import('./pet.js');
+    process.exitCode = await runPetCommand(['--help']);
   } else if (topic === 'server') {
     const { runServerCommand } = await import('../server/command.js');
     process.exitCode = await runServerCommand(['--help']);

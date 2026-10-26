@@ -9,6 +9,8 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { ApprovalRequest } from '../safety/index.js';
 import type { AskResult } from '../tools/ask.js';
 import type { WebBroadcast } from './events.js';
+import { PetState } from '../pet/state.js';
+import { redactText } from '../agent/redact.js';
 import { type PendingApproval, type PendingAsk } from './output.js';
 
 /* ---------------- 会话存储与运行管理（1.0 P0-2 多会话并发）---------------- */
@@ -53,6 +55,7 @@ export const approvals = new Map<string, PendingApproval>();
 export const asks = new Map<string, PendingAsk>();
 /** 并发运行表：sessionId → 运行句柄（每会话限 1 个并发；全局上限 cfg.webConcurrency） */
 export const runs = new Map<string, RunningRun>();
+export const petState = new PetState();
 
 /** /send 排队（第六节 P2 轻量多会话协调）：容量空闲时逐条执行（FIFO） */
 export const queuedSends: { targetId: string; text: string }[] = [];
@@ -107,6 +110,8 @@ export function activeSnapshot(): Record<string, unknown>[] {
 
 /** 广播事件：写入环形缓冲 + 推送给所有 SSE 客户端 */
 export function emitEvent(type: Parameters<WebBroadcast>[0], data: Record<string, unknown>): void {
+  const petChanged = petState.apply(type, typeof data.text === 'string' || typeof data.title === 'string'
+    ? { ...data, ...(typeof data.text === 'string' ? { text: redactText(data.text) } : {}), ...(typeof data.title === 'string' ? { title: redactText(data.title) } : {}) } : data);
   const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
   if (sid) {
     if (type === 'user.message') activeStreams.set(sid, { sessionId: sid, thinking: '', answer: '', tools: new Map() });
@@ -133,6 +138,7 @@ export function emitEvent(type: Parameters<WebBroadcast>[0], data: Record<string
       // 单个客户端异常不影响其它
     }
   }
+  if (petChanged) emitEvent('pet.changed', {});
 }
 
 /** 当前事件序号（新客户端从这里开始拉取，避免重放历史） */

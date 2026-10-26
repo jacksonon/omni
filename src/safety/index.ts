@@ -10,6 +10,7 @@
  * 子代理的工具调用与主代理同权限、同审批、同审计。
  */
 import type { Tool } from '../tools/types.js';
+import { withPetInteraction } from '../pet/presence.js';
 import { writeAudit } from './audit.js';
 import { gateTool, type PermissionTier } from './policy.js';
 
@@ -125,7 +126,7 @@ export class Safety {
 
   private async requestApproval(req: ApprovalRequest): Promise<boolean> {
     try {
-      return await (this.opts.requestApproval ?? (() => false))(req);
+      return await withPetInteraction('approval', () => (this.opts.requestApproval ?? (() => false))(req));
     } catch {
       return false; // 审批流程异常 → fail-safe 拒绝
     }

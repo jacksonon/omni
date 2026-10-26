@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEFAULT_SHORTCUT, DEFAULT_CLIPBOARD_SHORTCUT, normalizeSettings, fitBounds, isTrustedPage, workspaceUrl } = require('./bot-utils.cjs');
 test('保存偏好排除未知字段并拒绝损坏的屏幕位置', () => {
-  assert.deepEqual(normalizeSettings({ secret: 'unused', shortcut: '   ', botBounds: { x: NaN }, notifications: false }), { shortcut: DEFAULT_SHORTCUT, clipboardShortcut: DEFAULT_CLIPBOARD_SHORTCUT, openAtLogin: false, notifications: false });
+  assert.deepEqual(normalizeSettings({ secret: 'unused', shortcut: '   ', botBounds: { x: NaN }, notifications: false }), { shortcut: DEFAULT_SHORTCUT, clipboardShortcut: DEFAULT_CLIPBOARD_SHORTCUT, openAtLogin: false, notifications: false, petEnabled: true });
   assert.deepEqual(normalizeSettings({ botBounds: { x: -12.2, y: 0, width: 720, height: 640 } }).botBounds, { x: -12, y: 0, width: 720, height: 640 });
 });
 test('剪贴板快捷键与普通唤起独立，旧设置自动补默认值', () => {

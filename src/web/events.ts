@@ -32,6 +32,7 @@
  *   session.deleted  —— 会话已删除（1.0 P0-2，{ sessionId }）
  */
 export type WebEventName =
+  | 'pet.changed' // 宠物状态已变化，客户端读取权威 /api/pet 快照
   | 'ready'
   | 'status'
   | 'session.created'

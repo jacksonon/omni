@@ -9,8 +9,9 @@ function normalizeSettings(value) {
     clipboardShortcut: typeof v.clipboardShortcut === 'string' && v.clipboardShortcut.trim() && v.clipboardShortcut.length <= 120 ? v.clipboardShortcut.trim() : DEFAULT_CLIPBOARD_SHORTCUT,
     openAtLogin: v.openAtLogin === true,
     notifications: v.notifications !== false,
+    petEnabled: v.petEnabled !== false,
   };
-  for (const name of ['botBounds', 'fullBounds']) {
+  for (const name of ['botBounds', 'fullBounds', 'petBounds']) {
     const b = v[name];
     if (b && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(b[k]))) result[name] = Object.fromEntries(['x', 'y', 'width', 'height'].map(k => [k, Math.round(b[k])]));
   }

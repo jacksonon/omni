@@ -9,7 +9,7 @@ test('event cursors report replay gaps and retain current streaming snapshot', (
   emitEvent('user.message', { sessionId: 'snapshot-test', text: 'hello' });
   emitEvent('thinking.chunk', { sessionId: 'snapshot-test', text: 'working' });
   assert.equal(activeSnapshot().find((s) => s.sessionId === 'snapshot-test')?.thinking, 'working');
-  assert.equal(eventsSince(before).events.length, 2);
+  assert.equal(eventsSince(before).events.filter(e => e.type !== 'pet.changed').length, 2);
   for (let i = 0; i < 1001; i++) emitEvent('meta.add', { sessionId: 'snapshot-test', text: String(i) });
   assert.equal(eventsSince(before).reset, true);
   assert.equal(eventsSince(currentEventSeq() + 100).reset, true);

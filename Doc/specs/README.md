@@ -5,6 +5,7 @@
 
 | 规格 | 内容 |
 |---|---|
+| [omni-pet.md](omni-pet.md) | 宠物跨 bot/CLI/Electron/Web 的当前设计、实现进度与验收证据，开发中持续更新。 |
 | [keyboard-shortcuts-spec.md](keyboard-shortcuts-spec.md) | Web 键盘快捷键系统设计（侧栏/设置/新建会话/会话切换/主题/权限；竞品键位调研 + 注册表方案）。 |
 | [settings-providers-spec.md](settings-providers-spec.md) | Web「设置 → 模型配置」支持 `providers` 分组（一个 baseURL+key 对应多个模型）的修复规格。 |
 | [stats-restore-spec.md](stats-restore-spec.md) | 恢复会话思考丢失 + token 速率统计修正 + 上下文统计的修复规格。 |

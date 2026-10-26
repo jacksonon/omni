@@ -7,6 +7,8 @@ import { openSync, closeSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { ConfigOverrides } from '../config/index.js';
 import { VERSION } from '../version.js';
+import { PresenceStore } from '../pet/presence.js';
+import { petSettings, petCatalog } from '../web/pet.js';
 import { canonicalWorkspace, readServerRecord, registryPath, runtimeDir, workspaceId, writeServerRecord } from './discovery.js';
 import { resolveServerCommand } from './manager.js';
 import { BROKER_COOKIE, SERVER_PRODUCT, SERVER_PROTOCOL, type ServerConnection } from './protocol.js';
@@ -51,6 +53,10 @@ export async function startBroker(options: { port?: number; token?: string; reco
   const token = options.token ?? randomBytes(32).toString('hex');
   const workers = new Map<string, Promise<Worker>>();
   const tickets = new Map<string, { workspaceId: string; expires: number }>();
+  const presence = new PresenceStore();
+  const petListeners = new Set<http.ServerResponse>();
+  const petWatches = new Map<string, AbortController>();
+  const petChanged = () => { for (const res of petListeners) res.write('event: pet.changed\ndata: {}\n\n'); };
   const cmd = resolveServerCommand();
   let closing = false;
   let publicPort = options.port ?? 3080;
@@ -91,7 +97,10 @@ export async function startBroker(options: { port?: number; token?: string; reco
           });
           if (response.ok) {
             const status = await response.json() as { version?: string; cwd?: string };
-            if (status.version === VERSION && status.cwd === cwd) return { id, cwd, port, token: workerToken, process: child };
+            if (status.version === VERSION && status.cwd === cwd) {
+              const worker = { id, cwd, port, token: workerToken, process: child };
+              watchPet(worker); petChanged(); return worker;
+            }
           }
         } catch { /* 后端还在准备 MCP 与工具 */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -102,6 +111,37 @@ export async function startBroker(options: { port?: number; token?: string; reco
     workers.set(id, started);
     started.catch(() => workers.delete(id));
     return started;
+  }
+
+  function watchPet(worker: Worker): void {
+    const controller = new AbortController(); petWatches.set(worker.id, controller);
+    worker.process.once('exit', () => { controller.abort(); petWatches.delete(worker.id); petChanged(); });
+    void (async () => {
+      let cursor = '';
+      while (!controller.signal.aborted && !closing) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${worker.port}/api/events`, {
+            headers: { authorization: `Bearer ${worker.token}`, ...(cursor ? { 'Last-Event-ID': cursor } : {}) }, signal: controller.signal });
+          if (!response.ok || !response.body) throw new Error('pet stream unavailable');
+          const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
+          for (;;) {
+            const { value, done } = await reader.read(); if (done) break;
+            buffer += decoder.decode(value, { stream: true }); let end;
+            while ((end = buffer.indexOf('\n\n')) >= 0) {
+              const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+              cursor = /^id: (.+)$/m.exec(frame)?.[1] ?? cursor;
+              if (/^event: (?:pet.changed|ready)$/m.test(frame)) petChanged();
+            }
+            if (buffer.length > 2_000_000) throw new Error('oversized frame');
+          }
+        } catch { /* 周期快照和重连修正遗漏，不将正文传给宠物客户端。 */ }
+        if (!controller.signal.aborted && !closing) await new Promise<void>(resolve => {
+          const timer = setTimeout(done, 1000);
+          function done() { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); }
+          controller.signal.addEventListener('abort', done, { once: true });
+        });
+      }
+    })();
   }
 
   function connection(worker: Worker): Omit<ServerConnection, 'token'> {
@@ -133,6 +173,8 @@ export async function startBroker(options: { port?: number; token?: string; reco
       }
     }
     closing = true;
+    for (const controller of petWatches.values()) controller.abort();
+    for (const res of petListeners) res.end();
     for (const workerPromise of workers.values()) {
       const worker = await workerPromise.catch(() => null);
       worker?.process.kill('SIGTERM');
@@ -188,6 +230,32 @@ export async function startBroker(options: { port?: number; token?: string; reco
           } catch { return { id: w.id, cwd: w.cwd, url: `${base()}/w/${w.id}`, status: { error: true }, pending: { approvals: [], asks: [] } }; }
         }));
         send(res, 200, { workspaces: list.filter(Boolean) }); return;
+      }
+      if (url.pathname === '/_omni/pet/events' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+        res.write('event: pet.changed\ndata: {}\n\n'); petListeners.add(res);
+        const timer = setInterval(() => res.write(': ping\n\n'), 15000);
+        res.on('close', () => { clearInterval(timer); petListeners.delete(res); }); return;
+      }
+      if (url.pathname === '/_omni/pet/presence' && req.method === 'POST') {
+        const body = await bodyJson(req); body.cwd = canonicalWorkspace(String(body.cwd ?? ''));
+        presence.update(body); petChanged(); send(res, 200, { ok: true }); return;
+      }
+      if (url.pathname === '/_omni/pet/read' && req.method === 'POST') {
+        const body = await bodyJson(req); presence.read(String(body.sessionId), Number(body.revision));
+        petChanged(); send(res, 200, { ok: true }); return;
+      }
+      if (url.pathname === '/_omni/pet' && req.method === 'GET') {
+        const list = await Promise.all([...workers.values()].map(async value => {
+          const w = await value.catch(() => null); if (!w) return [];
+          try {
+            const r = await fetch(`http://127.0.0.1:${w.port}/api/pet`, { headers: { authorization: `Bearer ${w.token}` }, signal: AbortSignal.timeout(1500) });
+            if (!r.ok) return [];
+            const snapshot = await r.json() as { tasks: Record<string, unknown>[] };
+            return snapshot.tasks.map(t => ({ ...t, cwd: w.cwd, url: `${base()}/w/${w.id}` }));
+          } catch { return []; }
+        }));
+        send(res, 200, { version: 1, settings: await petSettings(), pets: await petCatalog(), tasks: [...list.flat(), ...presence.snapshot()] }); return;
       }
       if (url.pathname === '/_omni/shutdown' && req.method === 'POST') {
         const body = await bodyJson(req);

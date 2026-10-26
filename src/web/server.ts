@@ -19,6 +19,7 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { RequestLedger } from './requests.js';
+import { handlePetRequest, petSnapshot } from './pet.js';
 import { Safety } from '../safety/index.js';
 import { formatToolCall, previewOutput, isExitCodeZeroLine } from '../output/format.js';
 import { execSync } from 'node:child_process';
@@ -2140,7 +2141,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       // ---------- 静态页面 ----------
-      if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js' || p === '/omni-mark.js' || p === '/manifest.webmanifest' || p === '/sw.js')) {
+      if (req.method === 'GET' && (['/pet.html', '/pet.js', '/pet.css'].includes(p) || p === '/style.css' || p === '/app.js' || p === '/vendor.js' || p === '/markdown-renderer.js' || p === '/omni-mark.js' || p === '/manifest.webmanifest' || p === '/sw.js')) {
         const name = p.replace(/^\//, '');
         const asset = getAsset(name);
         if (asset === null) {
@@ -2173,6 +2174,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       }
 
       // ---------- REST API ----------
+      if (await handlePetRequest(req, res, p)) return;
       if (parts[0] !== 'api') {
         json(res, 404, { error: 'Not Found' });
         return;
@@ -2182,7 +2184,7 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         const sessionId = url.searchParams.get('sessionId');
         const options = sessionId ? await runtimeFor(await ensureSession(sessionId)) : runOpts;
         const status = await buildStatus(options);
-        json(res, 200, { status, seq: currentEventSeq(), ...pendingSnapshot(), active: activeSnapshot() });
+        json(res, 200, { status, seq: currentEventSeq(), ...pendingSnapshot(), active: activeSnapshot(), pet: await petSnapshot() });
         return;
       }
 

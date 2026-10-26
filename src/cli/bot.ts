@@ -19,6 +19,7 @@ export async function runBotCommand(args: string[]): Promise<number> {
     console.log('omni bot [--workspace <目录>]\n启动菜单栏/托盘常驻助手，通过全局快捷键快速对话；退出窗口不停止任务。\n需要 Omni 桌面应用；可用 OMNI_DESKTOP_PATH 指定安装位置。');
     return 0;
   }
+  const petArgs = args.includes('--pet') ? ['--pet'] : args.includes('--pet-hide') ? ['--pet-hide'] : [];
   const wi = args.includes('--cwd') ? args.indexOf('--cwd') : args.indexOf('--workspace');
   const cwd = wi >= 0 ? path.resolve(args[wi + 1] || '.') : process.cwd();
   const desktop = desktopCandidates().find((p) => existsSync(p));
@@ -26,7 +27,7 @@ export async function runBotCommand(args: string[]): Promise<number> {
   let launchArgs: string[];
   if (desktop) {
     executable = process.platform === 'darwin' && desktop.endsWith('.app') ? '/usr/bin/open' : desktop;
-    launchArgs = executable === '/usr/bin/open' ? ['-a', desktop, '--args', '--bot', '--cwd', cwd] : ['--bot', '--cwd', cwd];
+    launchArgs = executable === '/usr/bin/open' ? ['-a', desktop, '--args', '--bot', '--cwd', cwd, ...petArgs] : ['--bot', '--cwd', cwd, ...petArgs];
   } else {
     // 开发 checkout 使用仓库已有 Electron；发布的 CLI 不会静默下载 GUI。
     const roots = [process.cwd(), path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')];
@@ -37,13 +38,13 @@ export async function runBotCommand(args: string[]): Promise<number> {
     }
     // cli.js 需要系统 Node；仅作为源码开发路径，安装版直接启动桌面可执行文件。
     executable = process.execPath;
-    launchArgs = [path.join(root, 'node_modules', 'electron', 'cli.js'), root, '--bot', '--cwd', cwd];
+    launchArgs = [path.join(root, 'node_modules', 'electron', 'cli.js'), root, '--bot', '--cwd', cwd, ...petArgs];
   }
   await new Promise<void>((resolve, reject) => {
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(executable, launchArgs, { detached: true, stdio: 'ignore', windowsHide: true, env });
     child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
   });
-  console.log('Omni Bot 已唤起；可从菜单栏/托盘打开对话。');
+  console.log(petArgs.length ? 'Omni 宠物显示设置已发送到桌面应用。' : 'Omni Bot 已唤起；可从菜单栏/托盘打开对话。');
   return 0;
 }

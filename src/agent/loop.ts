@@ -1,4 +1,5 @@
 import { StreamingRate } from '../output/token-rate.js';
+import { withLocalPet } from '../pet/presence.js';
 /**
  * Agent 主循环（整个系统的核心）：
  *
@@ -74,7 +75,7 @@ export async function runAgent(
 ): Promise<void> {
   await withRequestSession(
     opts.sessionPath ? sessionIdFromPath(opts.sessionPath) : undefined,
-    () => runAgentInner(client, model, messages, opts, output)
+    () => withLocalPet(opts, output, messages, out => runAgentInner(client, model, messages, opts, out))
   );
 }
 

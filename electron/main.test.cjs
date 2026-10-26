@@ -9,7 +9,7 @@ const vm = require('node:vm');
 async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-desktop-test-'));
   const app = new EventEmitter();
-  let ready, win, tray, aggregate = null;
+  let ready, win, pet, tray, aggregate = null;
   const notifications = [];
   let clipboardText = 'fixture error: missing SDK', clipboardReads = 0;
   const captures = [];
@@ -29,12 +29,14 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
       this.webContents.session = { cookies: { set: async cookie => { this.cookie = cookie; } } };
       this.webContents.send = (_name, action) => { this.action = action; };
       this.webContents.setWindowOpenHandler = callback => { this.external = callback; };
-      win = this;
+      if (options.title === 'Omni Pet') pet = this; else win = this;
     }
     async loadURL(url) { this.webContents.mainFrame.url = url; this.webContents.emit('did-navigate', {}, url); this.webContents.emit('did-finish-load'); }
     isDestroyed() { return false; } isVisible() { return this.visible; } isFocused() { return this.focused; }
     isMinimized() { return false; } isMaximized() { return false; }
     show() { this.visible = true; } hide() { this.visible = false; } focus() { this.focused = true; }
+    showInactive() { this.visible = true; }
+    setIgnoreMouseEvents(value, options) { this.ignoreMouse = value; this.forwardMouse = options?.forward; }
     getBounds() { return { x: this.bounds.x, y: this.bounds.y, width: this.bounds.width, height: this.bounds.height }; }
     setBounds(value) { this.bounds = value; } setMinimumSize() {} setTitle() {} setSkipTaskbar(value) { this.skipTaskbar = value; }
     setAlwaysOnTop(value, level) { this.alwaysOnTop = value; this.alwaysOnTopLevel = level; }
@@ -77,13 +79,14 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
     URL, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout,
     setInterval: fn => { intervals.push(fn); return 1; }, clearInterval() {},
     fetch: async (url, options) => {
-      if (url.endsWith('/api/events')) return new Promise((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
+      if (url.endsWith('/api/events') || url.endsWith('/_omni/pet/events')) return new Promise((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
+      if (url.endsWith('/_omni/pet')) return { ok: true, json: async () => ({ version: 1, tasks: [], pets: [{id:'omni',name:'Omni 小猫',url:''}], settings:{enabled:true,selected:'omni'} }) };
       return { ok: true, json: async () => url.endsWith('/_omni/status') ? aggregate : url.endsWith('/api/status') ? { cwd: dir, runningSessions: [] } : url.endsWith('/api/pending') ? { approvals: [], asks: [] } : [] };
     },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'), context);
   await ready; await new Promise(resolve => setImmediate(resolve));
-  return { app, dir, get win() { return win; }, get clipboardReads() { return clipboardReads; }, captures, tray, shortcuts, handlers, spawned, context, intervals, notifications, setClipboard(value) { clipboardText = value; }, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
+  return { app, dir, get win() { return win; }, get pet() { return pet; }, get clipboardReads() { return clipboardReads; }, captures, tray, shortcuts, handlers, spawned, context, intervals, notifications, setClipboard(value) { clipboardText = value; }, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 test('bot hidden startup, global shortcut, close-to-tray, full window share one renderer', async () => {
   const h = await harness();
@@ -196,5 +199,32 @@ test('托盘汇总其它工作区审批，通知点击连接对应工作区', as
     h.notifications[0].emit('click'); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
     assert.equal(h.spawned.length, 2);
     assert.equal(h.win.action.type, 'session'); assert.equal(h.win.action.sessionId, 'remote-run');
+  } finally { h.cleanup(); }
+});
+test('独立宠物不抢焦点、IPC 隔离、移动保存与隐藏恢复', async () => {
+  const h = await harness(['--bot', '--pet']);
+  try {
+    assert.equal(h.pet.visible, true); assert.equal(h.win.visible, false);
+    assert.equal(h.pet.options.focusable, false); assert.equal(h.pet.ignoreMouse, true);
+    const sender = { sender: h.pet.webContents, senderFrame: h.pet.webContents.mainFrame };
+    const primary = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    await assert.rejects(h.handlers.get('omni:pet-action')(primary, 'chat'), /不受信任/);
+    const before = h.pet.getBounds();
+    await h.handlers.get('omni:pet-action')(sender, 'move', { dx: -20, dy: -10 });
+    await h.handlers.get('omni:pet-action')(sender, 'position');
+    assert.equal(h.pet.bounds.x, before.x - 20);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.dir, 'bot-settings.json'), 'utf8')).petBounds.x, before.x - 20);
+    await h.handlers.get('omni:pet-action')(sender, 'hide'); assert.equal(h.pet.visible, false);
+    await h.handlers.get('omni:pet-enable')(primary, true); assert.equal(h.pet.visible, true);
+    await h.handlers.get('omni:pet-action')(sender, 'chat'); assert.equal(h.win.visible, true);
+  } finally { h.cleanup(); }
+});
+test('Linux 无 forward 时保持宠物可点击', async () => {
+  const h = await harness(['--bot', '--pet'], 'linux');
+  try {
+    assert.equal(h.pet.ignoreMouse, false);
+    const sender = { sender: h.pet.webContents, senderFrame: h.pet.webContents.mainFrame };
+    await h.handlers.get('omni:pet-action')(sender, 'hit', { interactive: false });
+    assert.equal(h.pet.ignoreMouse, false);
   } finally { h.cleanup(); }
 });

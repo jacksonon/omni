@@ -20,6 +20,7 @@ const workspacePrefix = /^\/w\/[a-f0-9]+(?=\/|$)/.exec(location.pathname)?.[0] |
 function workspaceUrl(path) { return typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? workspacePrefix + path : path; }
 const fetch = (path, options) => window.fetch(workspaceUrl(path), options);
 const desktop = window.omni;
+let petWidget = null;
 let desktopMode = new URLSearchParams(location.search).get('bot') === '1';
 
 /* ---------------- 状态 ---------------- */
@@ -3238,6 +3239,7 @@ async function selectSession(id, silent) {
     await switchWorkspace(target.project, id); return;
   }
   state.session = id;
+  petWidget?.setSession(id);
   clearPendingMessages(); // 待发送消息属于上一个会话，切换后清空避免错发
   clearMessages();
   renderSessionList();
@@ -3255,6 +3257,7 @@ async function selectSession(id, silent) {
  *  避免反复点「新会话」/ Cmd+K 在磁盘上积累大量空会话 */
 async function newSession() {
   state.session = null;
+  petWidget?.setSession(null);
   state.historyCache = null; // 草稿态无历史：旧缓存作废，避免“加载更多”串会话
   clearPendingMessages();
   clearMessages();
@@ -3692,7 +3695,7 @@ function connectSSE() {
     'stream.progress', 'turn.step', 'lap', 'toolsLap', 'usage', 'subagent', 'subagent.background', 'hook.output', 'auto.review',
     'error', 'run.end', 'approval.request', 'approval.resolved',
     'ask.request', 'ask.resolved', 'title', 'meta.add', 'clear',
-    'workspace.changed', 'session.deleted',
+    'workspace.changed', 'session.deleted', 'pet.changed',
   ].forEach(on);
   es.onerror = () => {
     const topDot = $('#top-status-dot');
@@ -3714,6 +3717,7 @@ function connectSSE() {
 /* ---------------- 事件处理 ---------------- */
 
 bus.on('ready', () => {});
+bus.on('pet.changed', () => petWidget?.refresh());
 const syncRunningSessions = (st) => {
   const list = Array.isArray(st?.runningSessions) ? st.runningSessions : (st?.running && st.runningSession ? [st.runningSession] : []);
   state.runningSessions = new Set(list);
@@ -5544,6 +5548,7 @@ async function doSend(text) {
     if (!state.session) {
       const data = await api('/api/sessions', { method: 'POST' });
       state.session = data.id;
+      petWidget?.setSession(data.id);
       if (!state.sessions.some((s) => s.id === data.id)) {
         state.sessions.unshift({ id: data.id, title: t('session.new'), messages: 0, created: Date.now(), updated: Date.now(), project: state.status?.cwd });
       }
@@ -7828,6 +7833,7 @@ function initDesktopBridge() {
     if (action.type === 'focus') input.focus();
     if (action.type === 'settings') openSettings();
     if (action.type === 'desktop-settings') openDesktopSettings();
+    if (action.type === 'pet-settings') petWidget?.openSettings();
     if (action.type === 'clipboard') void importDesktopClipboard(action.payload);
     if (action.type === 'capture-screen') void openScreenCapture();
     if (action.type === 'choose-workspace') browseWorkspace();
@@ -7841,6 +7847,11 @@ function initDesktopBridge() {
   // 立即应用主题（读 localStorage，避免首帧闪白 / 主题闪烁）
   applyTheme(getStoredTheme());
   initDesktopBridge();
+  const petHost = document.createElement('div'); document.body.append(petHost);
+  petWidget = window.OmniPet?.mount(petHost, { openSession: selectSession, focus: () => input.focus() });
+  const petSettingsButton = el('button', 'settings-button', '宠物'); petSettingsButton.type = 'button';
+  petSettingsButton.addEventListener('click', () => petWidget?.openSettings());
+  $('#btn-settings')?.parentElement.append(petSettingsButton);
   initScrollFollow();
   try {
     await refreshStatus();

@@ -55,6 +55,8 @@ export interface ToolResultDetail {
 }
 
 export interface Output {
+  /** 服务端 Output 已持有宠物状态；独立终端广播不重复报告它。 */
+  readonly petStateManaged?: boolean;
   /**
    * 渲染端自行处理 Ctrl+C（如 TUI 渲染器的 exitOnCtrlC）时为 true，
    * main 不再注册自己的 SIGINT 处理（避免打断 TUI 退出清理流程）。

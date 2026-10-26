@@ -18,6 +18,7 @@ src/
                         #   exec resume <id> 会话续跑（复用 session JSONL）· `resume --last`/`--last` 恢复当前目录最近会话（codex 对等，无会话报错不新建）· `--all` 取消目录过滤（codex resume --all）· `--ephemeral` 不落盘会话（codex 对等，json session_id null，与 resume/fork 互斥）· `--json` 事件 JSONL（codex 对等，即 stream-json）· `--add-dir` 沙箱额外可写目录（全局+exec 级合并进 sandboxWritePaths）· 全局 `-i/--image`（交互首轮消费，单次/headless 走显式通道）· 全局 `--approve-for-me`（全模式 cfg.autoReview）· `--strict-config`（未知顶层字段报错；顶层 apiKey 等静默失效字段会被点名）· `exec --help` 打专属帮助（handleExecHelp 双入口共用：扫原始 argv 先拦截，绕过全局 --help 短路；`--` 之后不当 flag）· `exec fork <id|--last>` 分叉全量消息成新会话再跑（无 prompt 仅分叉，stdout 新 id）· `exec --color always|never|auto`（ui setColorOverride，wrap 闭包运行时读绑定）· `exec review [额外要求]`/顶层 `review` 非交互审查（与 /review 同数据源，单请求不建会话；loop 系 flags 互斥报错；-i/@图 vision 随审查发出；--base/--commit 定审查范围，ref 字符集限定防注入）· MCP server 暴露 omni_exec/omni_reply
                         #   （协议与 tools/mcp.ts 客户端对称，外部 harness 把 omni 当子代理用）
   server/
+                        #   /_omni/pet 聚合全部工作区与 local 状态，/events 只发变化提示
     broker.ts           # **共享 Server broker**：单用户实例、Bearer token（常量时间比较）、启动文件锁、
                         #   按规范工作区拉起独立 runtime 子进程；/w/<workspace>/ 路由前缀与浏览器一次性 ticket
     manager.ts          # **发现/启动入口**：ensureSharedServer（server.json → health → 复用；否则加锁启动）、
@@ -30,6 +31,7 @@ src/
     command.ts          # `omni server start|status|stop|ensure|_run|_worker`
     acp.ts              # ACP stdio 适配：协议转发，任务/历史/工具由共享 server 持有
   web/
+    pet.ts              # 宠物快照、偏好、PNG/WebP 精灵图导入与受控资源响应
     index.ts            # **Web 服务入口（`omni web`）**：解析 web 参数（--port/--host/--no-open）→ prepareRun +
                         #   attachRuntime（routingOutput 路由审批/提问到当前运行会话）→ startWebService；自动打开浏览器
                         #   默认确保共享 broker（--local 走嵌入式服务；--host/--token/--tunnel/--pair 保留认证路径）
@@ -49,6 +51,11 @@ src/
                         #   开机自启；`bot-utils.cjs` 负责设置归一化/窗口边界/同源校验；打包配置在 package.json `build`
     bot-utils.cjs       # 托盘设置（快捷键/登录自启/通知）、屏幕位置保护、workspace URL 与同源页面判定
     preload.cjs         # 受限 IPC surface（桌面动作/设置），不暴露 Node
+    pet-preload.cjs      # 独立宠物页的最小 IPC（状态、拖动、显示、会话操作）
+    pet-utils.cjs        # 宠物固定尺寸/屏幕保护/精确页面与会话匹配
+  pet/
+    state.ts            # 运行事件 → 宠物状态；工具/交互配对、未读水位、任务优先级
+    presence.ts         # 独立 CLI 向已有 broker 的轻量广播；租约与异步交互上下文
   web/                  # **浏览器页面（仓库根目录）**：index.html + style.css + app.js（vanilla HTML/CSS/JS 零框架；
                         #   src/web/assets.ts 的源，`npm run web:sync` 重新生成内嵌副本）
                         #   消息操作按钮：**常显**（无需 hover）——用户消息 复制/重新编写（原文带回输入框，按钮堆在

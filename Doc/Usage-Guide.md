@@ -1523,6 +1523,12 @@ omni web --host 0.0.0.0 --token <token>              # remote Web access
 
 ## 2026-09 New Capabilities (market-alignment batch)
 
+### Pet companion
+
+Use `omni pet` / `omni pet show` to show the desktop companion, `omni pet hide` to hide it, and `omni pet status` to read task JSON from an existing shared server. The floating companion requires the Omni desktop app. In a source checkout, use `npm run dev -- pet` or `npm run dev:bot`.
+
+The original Omni cat follows CLI/mini/TUI/exec/Web/Electron tasks on the same server. Click it to open quick chat, or choose a task to open its workspace and conversation. Dragging saves its position. Web/Electron's sidebar Pet button selects the appearance and imports transparent PNG/WebP sprite sheets (1536×1872 or 1536×2288, up to 20 MiB). Local runs report lightweight status only to an already running local broker; `OMNI_PET=off` disables that reporting. Local approvals remain in the terminal. Mouse passthrough is supported on macOS/Windows; Linux keeps the pet window clickable.
+
 | Area | What's new | Entry point |
 |---|---|---|
 | Orchestration | dynamic workflow (model-planned steps+dependencies → layered parallel execution), team board + messaging, background subagents | `/orchestrate` · `/tasks` · `/team` |

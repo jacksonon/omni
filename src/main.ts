@@ -31,6 +31,7 @@ import { createWebFetchTool } from './tools/web-fetch.js';
 import { createWebSearchTool } from './tools/web-search.js';
 import { createDiagnoseTool } from './tools/diagnose.js';
 import { runAgent } from './agent/loop.js';
+import { withPetInteraction } from './pet/presence.js';
 import { createSession, deleteSessionFile, findSessionById, formatSessionInfo, latestSession, listSessions, loadSession, persistableMessages, resolveSessionTarget, sessionIdFromPath, updateSessionMeta } from './agent/session.js';
 import { EventRecorder } from './agent/events.js';
 import type { RunOptions } from './agent/types.js';
@@ -279,7 +280,7 @@ export async function attachRuntime(
     : () => false;
   // ask_user 提问回调（Output 层实现 UI——console readline / TUI 选项面板）；
   // 未实现/非交互 → undefined（工具返回「无法询问」，模型自行决定）
-  const askUser = output.askUser ? output.askUser.bind(output) : undefined;
+  const askUser = output.askUser ? (q: string, options: string[], multiple: boolean) => withPetInteraction('ask', () => output.askUser!(q, options, multiple)) : undefined;
   // 插件系统（2026-09 PLG）：启用清单来自配置；未信任目录整体忽略插件
   //（插件 hooks/MCP 会执行命令——信任边界与全局 hooks 一致处理）
   setEnabledPlugins(trusted ? cfg.plugins : []);
@@ -688,7 +689,7 @@ async function pickSessionId(
 export const CONSOLE_COMMANDS: ReadonlySet<string> = new Set([
   'help', 'exec', 'review', 'resume', 'fork', 'archive', 'unarchive', 'delete',
   'mcp-server', 'acp', 'web', 'pair', 'service', 'mcp', 'plugin', 'completion', 'preset',
-  'import', 'watch', 'mini', 'update', 'server', 'bot',
+  'import', 'watch', 'mini', 'update', 'server', 'bot', 'pet',
 ]);
 
 /** tui-entry 路由判定：子命令恒 console；其余（空/任务文本）按 TTY 进 TUI */
@@ -744,6 +745,10 @@ export async function main(makeOutput: (cfg: OmniConfig) => Output): Promise<voi
     const { runBotCommand } = await import('./cli/bot.js');
     process.exitCode = await runBotCommand(taskArgs.slice(1));
     return;
+  }
+  if (taskArgs[0] === 'pet') {
+    const { runPetCommand } = await import('./cli/pet.js');
+    process.exitCode = await runPetCommand(taskArgs.slice(1)); return;
   }
   // omni doctor：本地环境诊断（不需要 API Key，也不是 Agent 任务；带参时仍按任务文本处理）。
   if (taskArgs[0] === 'doctor' && taskArgs.length === 1) {

@@ -43,6 +43,7 @@ npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + ele
 npm run dev:bot           # 开发模式启动菜单栏/托盘 bot（electron . --bot；别名 electron:bot）
 npm run electron:build    # Electron 桌面应用打包（npm run web:sync + bundle + electron-builder）
 omni bot                  # 安装版：唤起桌面托盘助手（OMNI_DESKTOP_PATH 可指定安装位置）
+omni pet show|hide|status  # 桌面宠物显示/隐藏；status 只读取已有 broker 的任务快照
 omni server status|start|stop   # 共享 Server 生命周期（--force 可取消运行中任务后停止）
 omni --local "<任务>"     # 不连接共享 Server，进程内独立运行（OMNI_LOCAL=1 等价）
 omni --server <url>      # 连接显式共享 Server（HTTPS；令牌用 OMNI_SERVER_TOKEN）
@@ -240,3 +241,5 @@ for step in 1..maxSteps:
 - mini 思考显示蓝色圆点与 `Think` 标题，续行与思考内容对齐，正式回答继续使用 `•`；统计行与输入块之间保留一行外部留白。思考流按当前终端可用列宽即时提交完整行，不等待模型换行或思考结束；缩放后重排未完成行，live 清理按当前物理行数回退，结束时卸载 resize 监听。
 
 - token 速率统一由 `src/output/token-rate.ts` 计算，采用 OpenCode 口径：输出（含思考）token / 每步请求开始至流结束的累计耗时，包含首 token 等待、排除工具执行；OpenAI completion/output tokens 已含思考，不重复加。流中估算标 `~`，请求口径记录带 `generation.basis=request`；旧历史按 durMs 重建，不复用纯生成分母。Web vendor 打包共享同一函数。
+
+- 宠物设计与持续实施记录见 `Doc/specs/omni-pet.md`。`src/pet/state.ts` 从运行事件派生状态，`turn.step` 在关闭思考正文时仍驱动思考动作；并行工具与待处理交互分别配对，取消不冒充完成，已读操作带 revision 水位。Web/Electron 页面与独立桌面宠物共用 `web/pet.js` / `pet.css`：原创 SVG 小猫 + 主动导入 Codex v1/v2 PNG/WebP；默认发行不打包第三方形象。bot 宠物由独立透明窗口显示，点击唤起原快速输入，任务点击展开原会话；macOS/Windows 支持按图形/alpha 命中穿透，Linux 保持窗口可点击。`/_omni/pet` 汇总各工作区，SSE 只发状态变化提示。`--local` 只向已有本机 broker 轻量广播（15 秒租约，不改变执行归属），`OMNI_PET=off` 关闭此广播。`npm run probe:pet` 验证跨工作区、审批/提问、重连快照、独立 CLI 与图像资源。

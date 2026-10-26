@@ -45,6 +45,7 @@ export interface PendingAsk {
  * 所有事件带 sessionId 广播——多客户端/多标签页都能看到同一会话的实时过程。
  */
 export class WebOutput implements Output {
+  readonly petStateManaged = true;
   readonly thinking: ThinkingDisplay;
   /** 工具配对序号兜底计数器（loop 未传 toolSeq 时自增，保证 start/result 一致） */
   private _nextToolSeq = 0;

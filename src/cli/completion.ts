@@ -19,6 +19,7 @@ const SUBCOMMANDS = [
   'unarchive',
   'delete',
   'mini',
+  'pet',
   'web',
   'pair',
   'service',

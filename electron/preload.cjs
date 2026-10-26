@@ -12,6 +12,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('omni', {
   pickDirectory: () => ipcRenderer.invoke('omni:pick-directory'),
   desktopInfo: () => ipcRenderer.invoke('omni:desktop-info'),
+  setPetEnabled: enabled => ipcRenderer.invoke('omni:pet-enable', enabled),
   setBotSettings: (settings) => ipcRenderer.invoke('omni:bot-settings', settings),
   hide: () => ipcRenderer.invoke('omni:hide'),
   openFullWindow: () => ipcRenderer.invoke('omni:open-full'),
