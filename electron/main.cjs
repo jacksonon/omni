@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { normalizeSettings, fitBounds, isTrustedPage, workspaceUrl } = require('./bot-utils.cjs');
-const { petBounds, isPetPage, taskForAction } = require('./pet-utils.cjs');
+const { petBounds, petChatBounds, isPetPage, taskForAction } = require('./pet-utils.cjs');
 const { readClipboardPayload, chooseScreenSource, captureErrorMessage, normalizeDraft } = require('./desktop-capture.cjs');
 const ROOT = path.join(__dirname, '..');
 const DIST_CJS = path.join(ROOT, 'dist', 'omni.cjs');
@@ -17,10 +17,15 @@ let botMode = process.argv.includes('--bot');
 let resident = botMode;
 // 快速窗口初始只显示输入区；发送后展开为对话卡片，隐藏再唤起又回到输入态。
 let botCompact = botMode;
+let botPopoverBounds = null;
 let quitting = false;
 let mainWindow = null;
 let petWindow = null, petObserver = null, petPolling = false, petDirty = false, petRefreshTimer = null;
-let petSnapshot = { version: 1, tasks: [], pets: [], settings: { enabled: true, selected: 'omni' }, connected: false };
+let petPointerTimer = null, petPointerWanted = false;
+let petDragBounds = null;
+let petChatWindow = null, petChatLoading = null, petChatReady = null, petChatDraft = null;
+let petChatSession = null;
+let petSnapshot = { version: 1, tasks: [], pets: [], settings: { enabled: true, selected: 'omni-dog' }, connected: false };
 let tray = null;
 let connection = null;
 let connectPromise = null;
@@ -119,10 +124,13 @@ async function openSession(sessionId, scope) {
   await showWindow(true, { type: 'session', sessionId });
 }
 function notify(title, body, sessionId, scope = connection && { url: connection.url, cwd: workspace }) {
-  if (!settings.notifications || !Notification.isSupported() || (mainWindow?.isVisible() && mainWindow?.isFocused())) return;
+  if (!settings.notifications || !Notification.isSupported() || [mainWindow, petChatWindow].some(win => win?.isVisible() && win?.isFocused())) return;
   const note = new Notification({ title, body, icon: path.join(__dirname, 'icon.png'), silent: true });
   heldNotifications.add(note);
-  note.on('click', () => { void openSession(sessionId, scope).catch(err => logError(err.message)); });
+  note.on('click', () => {
+    const petTask = petChatSession?.id === sessionId && petChatSession.url === scope?.url;
+    void (petTask ? showPetChat({ url: scope.url, sessionId }) : openSession(sessionId, scope)).catch(err => logError(err.message));
+  });
   note.on('close', () => heldNotifications.delete(note)); note.show();
 }
 async function pollServer() {
@@ -203,11 +211,82 @@ function rememberPetBounds() {
   if (!petWindow || petWindow.isDestroyed()) return;
   settings.petBounds = petWindow.getBounds(); saveSettings();
 }
+function settlePetPosition() {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  const bounds = petDragBounds || petWindow.getBounds(); petDragBounds = null;
+  petWindow.setBounds(petBounds(bounds, screen.getDisplayMatching(bounds).workArea));
+  rememberPetBounds(); positionPetChat();
+}
+function positionPetChat() {
+  if (!petWindow || !petChatWindow || petChatWindow.isDestroyed() || !petChatWindow.isVisible()) return;
+  const pet = petWindow.getBounds();
+  petChatWindow.setBounds(petChatBounds(pet, screen.getDisplayMatching(pet).workArea, petChatWindow.getBounds()));
+}
+function rememberPetChatBounds() {
+  if (!petChatWindow || petChatWindow.isDestroyed()) return;
+  settings.petChatBounds = petChatWindow.getBounds(); saveSettings();
+}
+async function loadPetChat(url) {
+  const win = petChatWindow;
+  let timer;
+  const ready = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('宠物对话页加载超时')), 15000);
+    petChatReady = resolve;
+  });
+  petChatLoading = (async () => {
+    await win.loadURL(url); await ready;
+  })();
+  try { await petChatLoading; }
+  finally { clearTimeout(timer); petChatReady = null; petChatLoading = null; }
+}
+/** 专属对话页独立持有会话/草稿，正常 bot 快速输入不切换到这里。 */
+async function showPetChat(task, action) {
+  if (connectPromise) await connectPromise;
+  if (!connection) return;
+  const scope = task?.url || connection.url;
+  if (!petChatWindow || petChatWindow.isDestroyed()) {
+    const pet = petWindow?.getBounds() || petBounds(settings.petBounds, screen.getPrimaryDisplay().workArea);
+    petChatWindow = new BrowserWindow({ ...petChatBounds(pet, screen.getDisplayMatching(pet).workArea, settings.petChatBounds),
+      minWidth: 360, minHeight: 360, title: 'Omni · 宠物对话', show: false, frame: false,
+      transparent: true, backgroundColor: '#00000000', hasShadow: false, roundedCorners: false,
+      alwaysOnTop: true, skipTaskbar: true, resizable: true, maximizable: false, minimizable: false, fullscreenable: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'pet-chat-preload.cjs') } });
+    if (process.platform === 'darwin') petChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    const win = petChatWindow;
+    win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
+    win.webContents.on('will-navigate', (event, url) => { if (!isTrustedPage(url, connection.serverUrl)) event.preventDefault(); });
+    win.on('close', event => { if (!quitting) { event.preventDefault(); rememberPetChatBounds(); win.hide(); } });
+    win.on('hide', rememberPetChatBounds);
+    win.on('closed', () => { petChatWindow = null; petChatDraft = null; petChatSession = null; });
+    await win.webContents.session.cookies.set({ url: connection.serverUrl, name: 'omni_broker', value: connection.token, path: '/', httpOnly: true, sameSite: 'strict' });
+    await loadPetChat(`${scope}/?bot=1&petChat=1${task?.sessionId ? '&session=' + encodeURIComponent(task.sessionId) : ''}`);
+  } else {
+    if (petChatLoading) await petChatLoading;
+    if (workspaceUrl(petChatWindow.webContents.getURL()) !== scope) {
+      await loadPetChat(`${scope}/?bot=1&petChat=1${task?.sessionId ? '&session=' + encodeURIComponent(task.sessionId) : ''}`);
+    } else if (task?.sessionId) petChatWindow.webContents.send('omni:pet-chat-action', { type: 'session', sessionId: task.sessionId });
+  }
+  if (action) petChatWindow.webContents.send('omni:pet-chat-action', action);
+  petChatWindow.show(); positionPetChat(); petChatWindow.focus();
+}
+/** 只在可见且播放器允许空闲注视时采样；坐标仅经本机 IPC 发送到宠物页。 */
+function trackPetPointer() {
+  clearInterval(petPointerTimer); petPointerTimer = null;
+  if (!petPointerWanted || quitting || !petWindow || petWindow.isDestroyed() || !petWindow.isVisible()) return;
+  let previous = '';
+  petPointerTimer = setInterval(() => {
+    if (!petWindow || petWindow.isDestroyed() || !petWindow.isVisible()) return;
+    const point = screen.getCursorScreenPoint(), bounds = petWindow.getBounds();
+    const x = point.x - bounds.x, y = point.y - bounds.y, key = `${x},${y}`;
+    if (key === previous) return;
+    previous = key; petWindow.webContents.send('omni:pet-pointer', { x, y });
+  }, 100);
+}
 async function setPetEnabled(enabled) {
   if (typeof enabled !== 'boolean') throw new Error('宠物显示开关无效');
   settings.petEnabled = enabled; saveSettings();
   if (enabled) { await createPetWindow(); petWindow?.showInactive(); }
-  else petWindow?.hide();
+  else { petWindow?.hide(); petChatWindow?.hide(); }
   updateTray(); return desktopInfo();
 }
 async function createPetWindow() {
@@ -223,15 +302,17 @@ async function createPetWindow() {
   petWindow.setIgnoreMouseEvents(process.platform !== 'linux', { forward: true });
   petWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   petWindow.webContents.on('will-navigate', (event, url) => { if (!isPetPage(url, connection)) event.preventDefault(); });
-  petWindow.on('closed', () => { petWindow = null; });
+  petWindow.on('show', trackPetPointer);
+  petWindow.on('hide', () => { clearInterval(petPointerTimer); petPointerTimer = null; });
+  petWindow.on('closed', () => { petWindow = null; petPointerWanted = false; clearInterval(petPointerTimer); petPointerTimer = null; });
   petWindow.on('close', event => { if (!quitting) { event.preventDefault(); void setPetEnabled(false); } });
   petWindow.webContents.on('did-finish-load', () => { void refreshPet(); if (settings.petEnabled) petWindow?.showInactive(); });
   await petWindow.loadURL(connection.url + '/pet.html');
 }
 function petMenu() {
   Menu.buildFromTemplate([
-    { label: '快速对话', click: () => void showWindow(true) },
-    { label: '选择宠物形象…', click: () => void showWindow(false, { type: 'pet-settings' }) },
+    { label: '宠物对话', click: () => void showPetChat().catch(err => dialog.showErrorBox('无法打开宠物对话', err.message)) },
+    { label: '选择宠物形象…', click: () => void showPetChat(undefined, { type: 'pet-settings' }).catch(err => dialog.showErrorBox('无法打开宠物对话', err.message)) },
     { label: '隐藏宠物', click: () => void setPetEnabled(false) },
   ]).popup({ window: petWindow });
 }
@@ -406,12 +487,29 @@ function rememberBounds() {
 }
 function setBotCompact(compact) {
   if (!mainWindow || !botMode) return;
+  botPopoverBounds = null;
   if (compact && !botCompact) { botCompact = false; rememberBounds(); }
   botCompact = compact;
   const target = boundsForMode(true, false, compact);
   const current = mainWindow.getBounds();
   mainWindow.setBounds(fitBounds({ ...target, x: current.x, y: current.y }, screen.getDisplayMatching(current).workArea, true, compact));
   emitAction({ type: 'compact', compact });
+}
+/** compact 菜单临时借用上方空间，输入区底边不动；不写入用户保存的窗口尺寸。 */
+function setBotPopoverHeight(extra) {
+  if (!Number.isFinite(extra) || extra < 0 || extra > 460) throw new Error('菜单高度无效');
+  if (!mainWindow || !botMode || !botCompact) { botPopoverBounds = null; return; }
+  if (!extra) {
+    if (botPopoverBounds) {
+      const base = botPopoverBounds; botPopoverBounds = null; mainWindow.setBounds(base);
+    }
+    return;
+  }
+  botPopoverBounds ||= mainWindow.getBounds();
+  const base = botPopoverBounds, area = screen.getDisplayMatching(base).workArea;
+  const height = Math.min(base.height + Math.ceil(extra), area.height);
+  const y = Math.min(Math.max(base.y + base.height - height, area.y), area.y + area.height - height);
+  mainWindow.setBounds({ ...base, y, height });
 }
 async function createWindow() {
   const bot = botMode;
@@ -438,6 +536,7 @@ async function createWindow() {
   if (bot && process.platform === 'darwin') mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.on('close', event => { rememberBounds(); if (resident && !quitting) { event.preventDefault(); mainWindow.hide(); } });
   mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('hide', () => setBotPopoverHeight(0));
   mainWindow.on('moved', rememberBounds); mainWindow.on('resized', rememberBounds);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
   mainWindow.webContents.on('will-navigate', (event, url) => { if (!connection || !isTrustedPage(url, connection.serverUrl)) event.preventDefault(); });
@@ -458,6 +557,7 @@ async function showWindow(bot = botMode, action) {
     const enteringBot = bot !== botMode;
     const wasHidden = !mainWindow || !mainWindow.isVisible();
     const wasBot = botMode, wasCompact = botCompact;
+    if (enteringBot || wasHidden) botPopoverBounds = null;
     if (!mainWindow) {
       botMode = bot; botCompact = bot;
       connectPromise = createWindow();
@@ -521,10 +621,10 @@ async function importClipboard() {
     await showWindow(true, { type: 'clipboard', payload });
   } catch (err) { dialog.showErrorBox('无法导入剪贴板', err.message); }
 }
-async function captureScreen() {
+async function captureScreen(win = mainWindow) {
   if (capturing) throw new Error('截图正在进行中。');
   capturing = true;
-  const win = mainWindow, display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const visible = win?.isVisible();
   let permission = process.platform === 'darwin' ? systemPreferences?.getMediaAccessStatus('screen') : undefined;
   try {
@@ -553,32 +653,67 @@ function installIPC() {
   const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { assertSender(event); return fn(...args); });
   handle('omni:pick-directory', pickDir); handle('omni:desktop-info', desktopInfo); handle('omni:bot-settings', setBotSettings);
   handle('omni:pet-enable', setPetEnabled);
+  ipcMain.handle('omni:pet-chat', async (event, action, input) => {
+    const win = petChatWindow;
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || !isTrustedPage(event.senderFrame.url, connection.serverUrl)) throw new Error('不受信任的宠物对话请求');
+    if (action === 'ready') { petChatReady?.(); return; }
+    if (action === 'info') return { ...desktopInfo(), bot: true, compact: false, petChat: true };
+    if (action === 'session') {
+      if (input !== null && (typeof input !== 'string' || input.length > 160)) throw new Error('会话标识无效');
+      petChatSession = input ? { id: input, url: workspaceUrl(event.senderFrame.url) } : null; return;
+    }
+    if (action === 'hide') { win.hide(); return; }
+    if (action === 'read-clipboard') return readClipboardPayload(clipboard);
+    if (action === 'capture-screen') return captureScreen(win);
+    if (action === 'expand' || action === 'compact') return;
+    if (action === 'pet-enable') return setPetEnabled(input);
+    if (action === 'bot-settings') return setBotSettings(input);
+    if (action === 'pick-directory') {
+      const choice = await dialog.showOpenDialog(win, { title: '选择工作目录', defaultPath: workspace, properties: ['openDirectory', 'createDirectory'] });
+      return !choice.canceled && choice.filePaths.length ? choice.filePaths[0] : null;
+    }
+    if (action === 'stage-draft') {
+      if (!isTrustedPage(input?.target, connection.serverUrl)) throw new Error('工作区地址无效');
+      petChatDraft = { target: workspaceUrl(input.target), draft: normalizeDraft(input.draft), expires: Date.now() + 60000 }; return;
+    }
+    if (action === 'take-draft') {
+      const value = petChatDraft; petChatDraft = null;
+      return value && value.expires > Date.now() && value.target === workspaceUrl(win.webContents.getURL()) ? value.draft : null;
+    }
+    throw new Error('未知的宠物对话操作');
+  });
   const assertPet = event => {
     if (!petWindow || event.sender !== petWindow.webContents || event.senderFrame !== petWindow.webContents.mainFrame || !isPetPage(event.senderFrame.url, connection)) throw new Error('不受信任的宠物请求');
   };
   ipcMain.handle('omni:pet-info', event => { assertPet(event); return petSnapshot; });
   ipcMain.handle('omni:pet-action', async (event, action, input) => {
     assertPet(event);
-    if (action === 'chat') return showWindow(true);
-    if (action === 'settings') return showWindow(false, { type: 'pet-settings' });
+    if (action === 'chat') return showPetChat();
+    if (action === 'settings') return showPetChat(undefined, { type: 'pet-settings' });
     if (action === 'hide') return setPetEnabled(false);
     if (action === 'menu') return petMenu();
+    if (action === 'watch-pointer') {
+      if (typeof input?.enabled !== 'boolean') throw new Error('宠物注视开关无效');
+      petPointerWanted = input.enabled; trackPetPointer(); return;
+    }
     if (action === 'hit') { if (process.platform !== 'linux') petWindow.setIgnoreMouseEvents(input?.interactive !== true, { forward: true }); return; }
     if (action === 'move') {
       if (!Number.isFinite(input?.dx) || !Number.isFinite(input?.dy) || Math.abs(input.dx) > 4000 || Math.abs(input.dy) > 4000) throw new Error('宠物移动无效');
-      const b = petWindow.getBounds(), target = { ...b, x: b.x + input.dx, y: b.y + input.dy };
-      petWindow.setBounds(petBounds(target, screen.getDisplayMatching(target).workArea)); return;
+      const b = petDragBounds || petWindow.getBounds(), target = { ...b, x: b.x + input.dx, y: b.y + input.dy };
+      // AppKit 也可能暂时夹住跨屏的小步 setBounds；累计期望位置，不能每帧从被夹住的位置重算。
+      petDragBounds = target;
+      // 移动中不能夹回单个屏幕，否则小步移动永远无法越过当前显示器边缘。
+      petWindow.setBounds({ ...target, x: Math.round(target.x), y: Math.round(target.y) }); positionPetChat(); return;
     }
-    if (action === 'position') return rememberPetBounds();
+    if (action === 'position') return settlePetPosition();
     if (action === 'session') {
       const task = taskForAction(petSnapshot.tasks, input); if (!task) throw new Error('任务已结束或工作区已断开，请刷新后重试');
       if (task.source === 'local') {
-        if (task.cwd !== workspace) await connectWorkspace(task.cwd);
-        if (task.resumeId) { await openSession(task.resumeId); setBotCompact(false); } else await showWindow(true);
+        const scoped = await ensureConnection(task.cwd);
+        await showPetChat(task.resumeId ? { url: scoped.url, sessionId: task.resumeId } : { url: scoped.url });
         await fetch(connection.serverUrl + '/_omni/pet/read', { method: 'POST', headers: { authorization: `Bearer ${connection.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: task.sessionId, revision: input.revision }) });
       } else {
-        await openSession(task.sessionId, { url: task.url, cwd: task.cwd });
-        setBotCompact(false);
+        await showPetChat(task);
         await fetch(task.url + '/api/pet/read', { method: 'POST', headers: { authorization: `Bearer ${connection.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: task.sessionId, revision: input.revision }) });
       }
       schedulePetRefresh(); return;
@@ -591,6 +726,7 @@ function installIPC() {
   handle('omni:window-close', () => mainWindow?.close());
   handle('omni:bot-expand', () => setBotCompact(false));
   handle('omni:bot-compact', () => setBotCompact(true));
+  handle('omni:bot-popover', extra => setBotPopoverHeight(extra));
   handle('omni:read-clipboard', () => readClipboardPayload(clipboard));
   handle('omni:capture-screen', captureScreen);
   handle('omni:stage-workspace-draft', (target, draft) => {
@@ -663,11 +799,16 @@ else {
     if (!process.argv.includes('--hidden') && !process.argv.includes('--pet') && !process.argv.includes('--pet-hide') && !loginLaunch && mainWindow) await showWindow(botMode);
     pollTimer = setInterval(() => void pollServer(), 2000); powerMonitor.on('resume', () => void reconnect());
     screen.on('display-removed', () => { if (mainWindow?.isVisible()) mainWindow.setBounds(boundsForMode(botMode, false, botMode && botCompact)); });
-    screen.on('display-removed', () => { if (petWindow) petWindow.setBounds(petBounds(petWindow.getBounds(), screen.getDisplayMatching(petWindow.getBounds()).workArea)); });
-    app.on('activate', () => void showWindow(botMode));
+    const refitPet = () => { if (petWindow) settlePetPosition(); };
+    screen.on('display-removed', refitPet); screen.on('display-metrics-changed', refitPet);
+    app.on('activate', () => {
+      if (petChatWindow?.isVisible()) { petChatWindow.focus(); return; }
+      if (process.argv.includes('--pet')) return;
+      void showWindow(botMode);
+    });
   });
-  app.on('before-quit', () => { quitting = true; rememberBounds(); rememberPetBounds(); });
-  app.on('will-quit', () => { clearInterval(pollTimer); clearTimeout(petRefreshTimer); eventObserver?.abort(); petObserver?.abort(); globalShortcut.unregisterAll(); for (const note of heldNotifications) note.close(); tray?.destroy(); });
+  app.on('before-quit', () => { quitting = true; rememberBounds(); rememberPetBounds(); rememberPetChatBounds(); });
+  app.on('will-quit', () => { clearInterval(pollTimer); clearInterval(petPointerTimer); clearTimeout(petRefreshTimer); eventObserver?.abort(); petObserver?.abort(); globalShortcut.unregisterAll(); for (const note of heldNotifications) note.close(); tray?.destroy(); });
   // server 生命周期独立，Web / TUI / mini 客户端与后台任务继续运行。
   app.on('window-all-closed', () => { if (!resident && process.platform !== 'darwin') app.quit(); });
 }

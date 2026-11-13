@@ -149,7 +149,7 @@ export function createSpinner(text: string): Spinner {
       if (stopped) return;
       stopped = true;
       clearInterval(id);
-      process.stderr.write(`\r\x1b[K${msg}\n`);
+      process.stderr.write(msg ? `\r\x1b[K${msg}\n` : '\r\x1b[K');
     },
   };
 }

@@ -82,7 +82,7 @@ npx tsx scripts/eval/run-headless-eval.ts --real --repeat 5
 - **安全优先**：权限分级（`full`/`safe`/`ask`/`read`）、危险命令确认、审批 UI、审计日志、工作区信任、OS 级沙箱
 - **记忆与会话**：`AGENTS.md` 项目/全局记忆级联、JSONL 会话持久化（恢复/分叉/回滚）
 - **多模型**：`providers` 分组（一个网关挂多模型）、`/model` 切换、Completions + Responses 双协议、思考级别
-- **桌面宠物**：`omni pet` 跨端跟随任务（原创小猫形象；点击快速对话、拖动记忆位置；Web/Electron 可导入透明 PNG/WebP 精灵图）
+- **桌面宠物**：`omni pet` 跨端跟随任务（原创猫/狗形象；点击专属对话与输出窗、跨屏拖动记忆位置；Web/Electron 可导入透明 PNG/WebP 精灵图）
 - **可扩展**：MCP 服务器、生命周期 hooks、技能、插件、Headless `exec`/`mcp-server` 进 CI
 
 ## 配置

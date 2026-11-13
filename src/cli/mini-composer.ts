@@ -2,7 +2,7 @@ import { isMiniSteerKey, miniExtendedKey, type MiniInputActions, type MiniInputK
 import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
 import { miniPanelBackground, miniSelection } from './mini-theme.js';
 /** mini 输入区装饰：原生 readline 负责编辑，显示层补灰底、占位与两行状态。 */
-import { fuzzySlashMatch, matchMention, MINI_SLASH_DESCRIPTIONS } from './picker.js';
+import { applyMentionInsert, fuzzySlashMatch, matchMention, MINI_SLASH_DESCRIPTIONS } from './picker.js';
 import { formatTokenCount } from '../config/model-context.js';
 import { bold, dim, useColor } from '../ui.js';
 import { visualWidth } from '../tui/width.js';
@@ -110,18 +110,33 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
   let selected = 0;
   let lastQuery = '';
   let dismissedFor: string | null = null;
-  const suggestions = (): string[] => {
+  type ComposerMenu =
+    | { kind: 'slash'; items: string[]; dismissedKey: string }
+    | { kind: 'mention'; items: string[]; atIndex: number; query: string; dismissedKey: string };
+  const currentMenu = (): ComposerMenu | null => {
     const line = rl.line as string;
     if (dismissedFor !== null && line !== dismissedFor) dismissedFor = null;
-    if (getStatus().running || !/^\/[a-z-]*$/.test(line) || line === dismissedFor) return [];
-    if (line !== lastQuery) { selected = 0; lastQuery = line; }
-    const commands = fuzzySlashMatch(line.slice(1));
-    // 裸 / 优先显示常用入口，其余命令仍可通过方向键与过滤找到。
-    if (line === '/') {
-      const first = ['/model', '/variants', '/permission', '/status', '/context', '/plan', '/review', '/mcp'];
-      return [...first.filter(c => commands.includes(c)), ...commands.filter(c => !first.includes(c))];
+    if (getStatus().running) return null;
+    if (/^\/[a-z-]*$/.test(line)) {
+      if (line === dismissedFor) return null;
+      const commands = fuzzySlashMatch(line.slice(1));
+      let items = commands;
+      // 裸 / 优先显示常用入口，其余命令仍可通过方向键与过滤找到。
+      if (line === '/') {
+        const first = ['/model', '/variants', '/permission', '/status', '/context', '/plan', '/review', '/mcp'];
+        items = [...first.filter(c => commands.includes(c)), ...commands.filter(c => !first.includes(c))];
+      }
+      if (items.length === 0) return null;
+      if (line !== lastQuery) { selected = 0; lastQuery = line; }
+      return { kind: 'slash', items, dismissedKey: line };
     }
-    return commands;
+    if (line === dismissedFor) return null;
+    const cursor = typeof rl.cursor === 'number' ? rl.cursor : line.length;
+    const mention = matchMention(line, process.cwd(), cursor);
+    if (!mention || mention.cands.length === 0) return null;
+    const key = `m:${mention.atIndex}:${mention.query}`;
+    if (key !== lastQuery) { selected = 0; lastQuery = key; }
+    return { kind: 'mention', items: mention.cands.slice(0, 15), atIndex: mention.atIndex, query: mention.query, dismissedKey: line };
   };
   const positions = () => {
     const cursor = rl.cursor;
@@ -166,7 +181,9 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       // 终端已按新宽度重排，readline 的旧 prevRows 不能继续用来回退。
       rl.prevRows = rl.getCursorPos().rows;
     }
-    const commands = suggestions();
+    const menu = currentMenu();
+    const commands = menu?.items ?? [];
+    const menuKind = menu?.kind;
     const endRows = positions().end.rows;
     const height = Math.max(0, Math.min(8, (out.rows || 24) - endRows - 8, commands.length));
     const pendingRows = miniPendingRows(getActions()?.pending() ?? [], width, Math.max(0, (out.rows || 24) - endRows - 8 - (height ? height + 2 : 0)));
@@ -201,10 +218,13 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       const width = out.columns || 80;
       const start = Math.max(0, Math.min(selected - Math.floor(height / 2), commands.length - height));
       const nameWidth = Math.min(18, Math.max(8, Math.floor(width / 3)));
-      if (height) out.write(`${bg()}${bold(truncateToWidth('  命令', Math.max(1, width - 1)))}${bg()}\x1b[K\x1b[0m\n\r${bg()}\x1b[K\x1b[0m\n\r`);
+      const menuTitle = menuKind === 'mention' ? '  文件' : '  命令';
+      if (height) out.write(`${bg()}${bold(truncateToWidth(menuTitle, Math.max(1, width - 1)))}${bg()}\x1b[K\x1b[0m\n\r${bg()}\x1b[K\x1b[0m\n\r`);
       for (let i = start; i < start + height; i++) {
-        const command = commands[i]!;
-        const label = width >= 36 ? truncateToWidth(command, nameWidth).padEnd(nameWidth) + '  ' + (MINI_SLASH_DESCRIPTIONS[command] ?? '') : command;
+        const item = commands[i]!;
+        const label = menuKind === 'mention'
+          ? `@${item}`
+          : (width >= 36 ? truncateToWidth(item, nameWidth).padEnd(nameWidth) + '  ' + (MINI_SLASH_DESCRIPTIONS[item] ?? '') : item);
         const row = truncateToWidth(`${i === selected ? '› ' : '  '}${label}`, Math.max(1, width - 1));
         const color = i === selected ? miniSelection() : bg();
         out.write(`${color}${row}\x1b[K\x1b[0m\n\r`);
@@ -232,7 +252,12 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     // 用换行分配页底空间，再按相对行归位；终端滚屏后仍停在原输入字符上。
     out.write(`${bg()}\n\r\x1b[K\x1b[0m\n\r\x1b[0J`);
     out.write(miniComposerStatus(getStatus(), width));
-    out.write(`\n\r${dim(truncateToWidth(menuHeight ? '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭' : getStatus().running ? '  tab queue · cmd/ctrl+enter steer · ↑ 编辑最后一条 queue' : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 展开', Math.max(1, width - 1)))}`);
+    const hintText = menuHeight
+      ? (menuKind === 'mention' ? '  ↑↓ 选择 · tab/enter 插入 · esc 关闭' : '  ↑↓ 选择 · tab 填入 · enter 执行 · esc 关闭')
+      : getStatus().running
+        ? '  tab queue · cmd/ctrl+enter steer · ↑ 编辑最后一条 queue'
+        : '  @ 文件 · / 命令 · ? 快捷键 · ctrl+t 展开';
+    out.write(`\n\r${dim(truncateToWidth(hintText, Math.max(1, width - 1)))}`);
     out.write(`${move(-(end.rows - pos.rows + 3))}${restoreColumn(pos.cols)}\x1b[0m`);
     visible = true;
     generation++;
@@ -303,20 +328,32 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
       key.name = 'return'; key.ctrl = false; key.super = false;
       text = '\r';
     }
-    const commands = suggestions();
-    if (commands.length && !key?.ctrl && !key?.super) {
+    const menu = currentMenu();
+    if (menu && !key?.ctrl && !key?.super) {
       if (key?.name === 'up' || key?.name === 'down') {
-        selected = (selected + (key.name === 'up' ? -1 : 1) + commands.length) % commands.length;
+        if (key) key.miniHandled = true;
+        selected = (selected + (key.name === 'up' ? -1 : 1) + menu.items.length) % menu.items.length;
         rl[refreshKey]();
         return;
       }
       if (key?.name === 'escape') {
-        dismissedFor = rl.line;
+        if (key) key.miniHandled = true;
+        dismissedFor = menu.dismissedKey;
         rl[refreshKey]();
         return;
       }
       if (key?.name === 'tab' || key?.name === 'return' || key?.name === 'enter') {
-        rl.line = commands[selected] + (key.name === 'tab' ? ' ' : '');
+        if (key) key.miniHandled = true;
+        if (menu.kind === 'mention') {
+          const picked = menu.items[selected]!;
+          const ins = applyMentionInsert(line, menu.atIndex, menu.query.length, picked);
+          rl.line = ins.text;
+          rl.cursor = ins.cursor;
+          dismissedFor = picked.endsWith('/') ? null : ins.text;
+          rl[refreshKey]();
+          return;
+        }
+        rl.line = menu.items[selected] + (key.name === 'tab' ? ' ' : '');
         rl.cursor = rl.line.length;
         dismissedFor = rl.line;
         rl[refreshKey]();

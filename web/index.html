@@ -13,6 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Omni">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="pet.css">
   <script>
     // PWA：HTTPS（Cloudflare 隧道）下注册 service worker；局域网 HTTP 不注册（非安全上下文）
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -25,6 +26,8 @@
   <symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
   <symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></symbol>
+  <symbol id="i-capture" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 12h4M12 10v4"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
   <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
@@ -58,6 +61,7 @@
 
 <div id="bot-shell">
 <div id="bot-drag" aria-hidden="true"></div>
+<button id="bot-hide" type="button" class="icon-button bot-dismiss" aria-label="隐藏窗口" title="隐藏窗口（Esc）· 任务继续运行"><svg><use href="#i-x"/></svg></button>
 <div id="bot-toolbar" class="bot-toolbar" aria-label="Omni Bot">
   <span class="bot-brand">omni <span>bot</span></span>
   <span class="bot-toolbar-hint">Esc 隐藏 · 任务继续运行</span>
@@ -66,7 +70,6 @@
     <button id="bot-expand" type="button" class="icon-button" aria-label="展开对话" title="展开对话"><svg><use href="#i-chevron-down"/></svg></button>
     <button id="bot-desktop-settings" type="button" class="icon-button" aria-label="托盘与快捷键设置" title="托盘与快捷键设置"><svg><use href="#i-settings"/></svg></button>
     <button id="bot-open-full" type="button" class="icon-button" aria-label="打开完整窗口" title="打开完整窗口"><svg><use href="#i-panel-right"/></svg></button>
-    <button id="bot-hide" type="button" class="icon-button" aria-label="隐藏窗口" title="隐藏窗口"><svg><use href="#i-x"/></svg></button>
   </div>
 </div>
 
@@ -103,10 +106,13 @@
     <header id="chat-header" class="conversation-header">
       <div class="title-row">
         <div class="title-cluster">
+          <div class="pet-chat-brand"><span class="pet-chat-dot"></span><strong>Omni 伙伴</strong><span>对话与任务输出</span></div>
           <button id="btn-mobile-sidebar" class="icon-button mobile-only" type="button" title="打开导航" aria-label="打开导航" data-i18n-title="sidebar.openNav"><svg><use href="#i-menu"/></svg></button>
           <nav class="crumbs" aria-label="会话层级"><button id="chat-title" class="crumb current-crumb" type="button" title="会话操作（分叉/导出/检查点…）" data-i18n-title="header.sessionActions">新会话</button></nav>
         </div>
         <div class="header-actions">
+          <button id="pet-chat-sessions" class="icon-button pet-chat-new" type="button" title="查看会话" aria-label="查看会话"><svg><use href="#i-search"/></svg></button>
+          <button id="pet-chat-new" class="icon-button pet-chat-new" type="button" title="新建宠物对话" aria-label="新建宠物对话"><svg><use href="#i-edit"/></svg></button>
           <div class="desktop-window-actions">
             <button id="win-min" class="icon-button" type="button" title="最小化" aria-label="最小化"><svg><use href="#i-minus"/></svg></button>
             <button id="win-max" class="icon-button" type="button" title="最大化" aria-label="最大化"><svg><use href="#i-square"/></svg></button>
@@ -117,6 +123,7 @@
     </header>
 
     <div class="scroll-body">
+      <div class="pet-chat-empty"><strong>我在这里，随时可以聊聊。</strong><span>对话、任务过程和结果都会显示在这里。</span></div>
       <section id="messages" class="messages" aria-live="polite"></section>
       <footer id="composer-wrap" class="composer-wrap">
         <div class="hero-heading"><button class="omni-mark-button" type="button" data-omni-mark aria-label="Omni · 点击随机旋转" title="Omni · 点击随机旋转"><span class="omni-mark-dots" aria-hidden="true"></span></button></div>
@@ -137,8 +144,8 @@
                 <input id="attach-input" type="file" multiple accept="image/*,text/*,.md,.txt,.json,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.go,.rs,.rb,.java,.c,.h,.cpp,.hpp,.cs,.sh,.bash,.zsh,.yml,.yaml,.toml,.ini,.xml,.html,.css,.scss,.sql,.csv,.log" hidden>
               </div>
               <div id="desktop-capture-tools" class="desktop-capture-tools hidden">
-                <button id="btn-clipboard" class="capture-button" type="button" title="从剪贴板导入文字或图片">剪贴板</button>
-                <button id="btn-screen-capture" class="capture-button" type="button" title="截图并圈选要提问的区域">截图</button>
+                <button id="btn-clipboard" class="capture-button" type="button" title="从剪贴板导入文字或图片" aria-label="从剪贴板导入文字或图片"><svg aria-hidden="true"><use href="#i-clipboard"/></svg></button>
+                <button id="btn-screen-capture" class="capture-button" type="button" title="截图并圈选要提问的区域" aria-label="截图并圈选要提问的区域"><svg aria-hidden="true"><use href="#i-capture"/></svg></button>
               </div>
               <button id="btn-permission" class="perm-pill" type="button" title="权限设置" data-i18n-title="composer.permission"><svg><use href="#i-shield"/></svg><span id="perm-label" data-i18n="perm.full">完全访问</span></button>
               <label class="plan-toggle" title="计划模式" data-i18n-title="shortcut.planModeDesc"><input type="checkbox" id="plan-mode"><svg><use href="#i-target"/></svg><span data-i18n="composer.plan">计划</span></label>
@@ -157,8 +164,6 @@
       </footer>
     </div>
   </main>
-
-  </aside>
 </div>
 </div>
 
@@ -471,7 +476,6 @@
 </div>
 <script src="vendor.js"></script>
 <script src="markdown-renderer.js"></script>
-<link rel="stylesheet" href="pet.css">
 <script src="pet.js"></script>
 <script src="app.js"></script>
 <script src="omni-mark.js"></script>

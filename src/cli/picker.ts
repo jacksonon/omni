@@ -442,11 +442,11 @@ export async function pickFromList(
       rows.push(`${panelBg()}${bold(truncateToWidth(`  ${opts.title ?? '选择操作'}`, width - 1))}${panelBg()}\x1b[K\x1b[0m`);
       rows.push(`${panelBg()}\x1b[K\x1b[0m`);
     }
-    if (showFilter) rows.push(dim(truncateToWidth(`  filter: ${query}▌`, width)));
+    if (showFilter) rows.push(`${panelBg()}${dim(truncateToWidth(`  filter: ${query}▌`, width - 1))}${panelBg()}\x1b[K\x1b[0m`);
     const maxVisible = Math.max(1, Math.min(12, height - rows.length - 1));
     const start = Math.max(0, Math.min(sel - Math.floor(maxVisible / 2), curItems.length - maxVisible));
     const slice = curItems.slice(start, start + maxVisible);
-    if (slice.length === 0) rows.push(dim(truncateToWidth('  (无匹配项)', width)));
+    if (slice.length === 0) rows.push(`${panelBg()}${dim(truncateToWidth('  (无匹配项)', width - 1))}${panelBg()}\x1b[K\x1b[0m`);
     else for (let i = 0; i < slice.length; i++) rows.push(renderRow(start + i, width));
     const position = curItems.length > maxVisible ? `${sel + 1}/${curItems.length} · ` : '';
     if (height >= 2) rows.push(`${panelBg()}${dim(truncateToWidth('  ' + position + hint, width - 1))}${panelBg()}\x1b[K\x1b[0m`);

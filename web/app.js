@@ -22,6 +22,7 @@ const fetch = (path, options) => window.fetch(workspaceUrl(path), options);
 const desktop = window.omni;
 let petWidget = null;
 let desktopMode = new URLSearchParams(location.search).get('bot') === '1';
+let petChatMode = new URLSearchParams(location.search).get('petChat') === '1';
 
 /* ---------------- 状态 ---------------- */
 const state = {
@@ -191,6 +192,9 @@ const I18N_ZH = {
   'session.newStarted': '已新建会话（旧会话保留在列表）',
   'session.title': '会话',
   'empty.sessions': '暂无会话',
+  'empty.searchSessions': '没有匹配的会话',
+  'pet.settings': '宠物',
+  'pet.settingsTitle': '桌宠设置',
   'history.more': '显示更早 {n} 条（{t} 轮）',
   // 设置面板（tab 与字段）
   'settings.general': '通用',
@@ -678,6 +682,9 @@ const I18N_EN = {
   'session.newStarted': 'New session started (old one kept in the list)',
   'session.title': 'Session',
   'empty.sessions': 'No sessions',
+  'empty.searchSessions': 'No matching sessions',
+  'pet.settings': 'Pet',
+  'pet.settingsTitle': 'Pet settings',
   'history.more': 'Show {n} earlier ({t} turns)',
   'settings.general': 'General',
   'settings.theme': 'Theme',
@@ -2011,6 +2018,8 @@ function renderHistoryTool(sessionId, name, argsJson, output, callId) {
     if (saved && 'original' in saved) parsedArgs.original = saved.original ?? null;
   }
   const preview = formatToolArgs(name, parsedArgs);
+  const outStr = String(output || '');
+  const isErr = /^(错误|执行失败|已拦截)/.test(outStr.trim());
 
   if (isExplored) {
     const block = el('div', 'explored-block');
@@ -2019,6 +2028,11 @@ function renderHistoryTool(sessionId, name, argsJson, output, callId) {
     head.innerHTML = `<span class="explored-icon">→</span><span class="explored-title">${esc(headText)}</span>`;
     const item = el('div', 'explored-item', preview || name);
     item.classList.add('hidden');
+    if (isErr) {
+      item.classList.add('error');
+      const errFirst = outStr.trim().split('\n')[0];
+      if (errFirst) item.textContent += ` [${errFirst.slice(0, 120)}]`;
+    }
     head.addEventListener('click', () => {
       item.classList.toggle('hidden');
       scrollBottom();
@@ -2035,11 +2049,13 @@ function renderHistoryTool(sessionId, name, argsJson, output, callId) {
     const diffWrap = el('div', 'tc-diff');
     const path = parsedArgs.path || '';
     const isNew = parsedArgs.original == null && parsedArgs.content != null;
-    const headPrefix = isNew ? '← Write' : '← Edit';
-    if (window.OmniMarkdown?.renderFileDiff && parsedArgs.content != null) {
+    const headPrefix = name === 'edit_file' ? '← Edit' : (isNew ? '← Write' : '← Edit');
+    if (!isErr && name === 'edit_file' && window.OmniMarkdown?.renderEditDiff && parsedArgs.old_string != null && parsedArgs.new_string != null) {
+      diffWrap.innerHTML = window.OmniMarkdown.renderEditDiff(path, String(parsedArgs.old_string).split('\n'), String(parsedArgs.new_string).split('\n'));
+    } else if (!isErr && window.OmniMarkdown?.renderFileDiff && parsedArgs.content != null) {
       diffWrap.innerHTML = window.OmniMarkdown.renderFileDiff(parsedArgs.original, parsedArgs.content, path);
     } else {
-      diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${headPrefix} ${esc(path)}</div><pre class="tc-output">${esc(output || '')}</pre></div>`;
+      diffWrap.innerHTML = `<div class="md-diff-wrap"><div class="md-diff-head-title">${headPrefix} ${esc(path)}</div><pre class="tc-output">${esc(outStr)}</pre></div>`;
     }
     wrap.appendChild(diffWrap);
     msgList().appendChild(wrap);
@@ -2050,24 +2066,24 @@ function renderHistoryTool(sessionId, name, argsJson, output, callId) {
   const card = el('div', 'tool-card');
   const head = el('div', 'tc-head');
   if (name === 'run_command') {
-    const cmd = (parsedArgs.command || preview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '');
-    head.innerHTML = `<span class="tool-dot">●</span> <span class="tool-name">Bash</span><span class="tool-args">(${esc(cmd)})</span>`;
+    const cmd = (parsedArgs.command || preview || '').trim().replace(/^●\s*Bash\(/, '').replace(/\)$/, '').replace(/^\$\s*/, '');
+    head.innerHTML = `<span class="tool-prompt">$</span> <span class="tool-cmd">${esc(cmd)}</span>`;
   } else {
     head.appendChild(el('span', 'tc-cmd', name || 'tool'));
     const st = el('span', 'tc-state');
-    const chars = output ? output.length : 0;
-    const charsTxt = chars ? t('tool.nchars', { n: chars }) : t('tool.noOutput');
+    const chars = outStr.length;
+    const charsTxt = isErr ? t('tool.failed') : (chars ? t('tool.nchars', { n: chars }) : t('tool.noOutput'));
     st.textContent = preview ? `${preview} · ${charsTxt}` : charsTxt;
     head.appendChild(st);
   }
   const body = el('div', 'tc-body');
-  body.classList.add('hidden');
+  if (!isErr) body.classList.add('hidden');
   head.addEventListener('click', () => {
     body.classList.toggle('hidden');
     scrollBottom();
   });
-  if (output) {
-    const lines = output.split('\n').slice(0, 12).join('\n');
+  if (outStr) {
+    const lines = outStr.split('\n').slice(0, 12).join('\n');
     body.appendChild(el('div', 'tc-output', lines));
   }
   card.appendChild(head); card.appendChild(body);
@@ -2211,9 +2227,9 @@ function renderSessionList() {
   // 归档会话默认隐藏（底部「已归档 (N)」切换显示）
   const all = matched.filter((s) => state.showArchived || !s.archived);
   $('#session-count').textContent = String(state.sessions.length - archivedCount);
-  if (!all.length && !archivedCount) {
-    list.appendChild(el('div', 'empty', t('empty.sessions')));
-    return;
+  if (!all.length) {
+    list.appendChild(el('div', 'empty', filter ? t('empty.searchSessions') : t('empty.sessions')));
+    if (!archivedCount) return;
   }
 
   // 按工作区分组（组=工作区，组内元素=会话）；当前工作区组排最前且默认展开
@@ -2871,7 +2887,7 @@ function updatePillAvg() {
   const u = state.session ? state.sessionUsage.get(state.session) : null;
   const rate = (s && u) ? sessionAvgRate(s, u) : 0;
   if (rate > 0) {
-    tag.textContent = `· ${state.liveStream && state.liveStream.liveGenMs >= MIN_RATE_SAMPLE_MS && validRateSample(state.liveStream.streamTokens, state.liveStream.liveGenMs) ? '~' : ''}${rate} tok/s`;
+    tag.textContent = `${state.liveStream && state.liveStream.liveGenMs >= MIN_RATE_SAMPLE_MS && validRateSample(state.liveStream.streamTokens, state.liveStream.liveGenMs) ? '~' : ''}${rate} tok/s`;
     tag.classList.remove('hidden');
     tag.title = t('composer.avgTitle');
   } else {
@@ -2921,6 +2937,61 @@ function updatePermissionPill() {
 }
 
 /* —— 权限 / 模型 pop 渲染 —— */
+let composerPopoverFrame = 0, composerPopoverSpace = 0, composerPopoverBaseHeight = 0;
+function scheduleComposerPopovers() {
+  if (composerPopoverFrame) return;
+  composerPopoverFrame = requestAnimationFrame(() => { composerPopoverFrame = 0; void positionComposerPopover(); });
+}
+async function positionComposerPopover() {
+  const pop = ['#permission-pop', '#model-pop'].map(sel => $(sel)).find(n => n && !n.classList.contains('hidden'));
+  const compact = desktopMode && document.body.classList.contains('omni-bot-compact');
+  if (compact && pop && !composerPopoverBaseHeight) composerPopoverBaseHeight = innerHeight;
+  const card = $('#composer-card').getBoundingClientRect();
+  const borrowed = composerPopoverBaseHeight ? Math.max(0, innerHeight - composerPopoverBaseHeight) : 0;
+  const space = compact && pop
+    ? Math.min(420, Math.max(0, Math.ceil(Math.min(400, pop.scrollHeight + 2) + 16 - (card.top - borrowed))))
+    : 0;
+  if (space) document.body.classList.add('bot-popover-open');
+  if (space !== composerPopoverSpace) {
+    composerPopoverSpace = space;
+    try { await desktop?.setBotPopoverHeight?.(space); }
+    catch (error) { notify(error.message, 'error'); }
+    // 原生 resize 的布局在下一帧生效，再按最终视口定位。
+    scheduleComposerPopovers();
+  }
+  if (!space) {
+    document.body.classList.remove('bot-popover-open');
+    composerPopoverBaseHeight = 0;
+  }
+  const dismiss = $('#bot-hide');
+  if (compact && space) {
+    const hero = $('.hero-workspace').getBoundingClientRect(), shell = $('#bot-shell').getBoundingClientRect();
+    dismiss.style.top = `${hero.top + hero.height / 2 - 14 - shell.top}px`;
+  }
+  else dismiss.style.removeProperty('top');
+  if (!pop || pop.classList.contains('hidden')) return;
+  const anchor = $(pop.id === 'model-pop' ? '#composer-model' : '#btn-permission');
+  const box = anchor.getBoundingClientRect(), margin = 8, gap = 8;
+  const above = Math.max(0, card.top - margin - gap), below = Math.max(0, innerHeight - card.bottom - margin - gap);
+  pop.style.maxHeight = `${Math.min(400, Math.max(above, below))}px`;
+  const bounds = pop.getBoundingClientRect(), up = above >= bounds.height || above >= below;
+  const left = pop.id === 'model-pop' ? box.right - bounds.width : box.left;
+  pop.style.left = `${Math.max(margin, Math.min(left, innerWidth - bounds.width - margin))}px`;
+  pop.style.right = 'auto';
+  pop.style.top = `${Math.max(margin, Math.min(up ? card.top - gap - bounds.height : card.bottom + gap, innerHeight - bounds.height - margin))}px`;
+}
+function initComposerPopovers() {
+  for (const sel of ['#permission-pop', '#model-pop']) {
+    const pop = $(sel);
+    pop.classList.add('composer-popover'); document.body.append(pop);
+    new MutationObserver(scheduleComposerPopovers).observe(pop, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+    new ResizeObserver(scheduleComposerPopovers).observe(pop);
+  }
+  new ResizeObserver(scheduleComposerPopovers).observe($('#composer-card'));
+  window.addEventListener('resize', scheduleComposerPopovers);
+  document.addEventListener('scroll', scheduleComposerPopovers, true);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) closeAllComposerPops(); });
+}
 function closeAllComposerPops() {
   ['#permission-pop', '#model-pop'].forEach((sel) => {
     const n = $(sel);
@@ -3234,11 +3305,13 @@ function paintHistoryFromCache(id, keepPosition = false) {
 }
 
 async function selectSession(id, silent) {
+  closeAllComposerPops();
   const target = state.sessions.find((s) => s.id === id);
   if (workspacePrefix && target?.project && state.status?.cwd && target.project !== state.status.cwd) {
     await switchWorkspace(target.project, id); return;
   }
   state.session = id;
+  void desktop?.setSession?.(id);
   petWidget?.setSession(id);
   clearPendingMessages(); // 待发送消息属于上一个会话，切换后清空避免错发
   clearMessages();
@@ -3256,7 +3329,9 @@ async function selectSession(id, silent) {
 /** 新会话：仅进入草稿态（不落盘）——首条消息发出时才真正创建会话文件，
  *  避免反复点「新会话」/ Cmd+K 在磁盘上积累大量空会话 */
 async function newSession() {
+  closeAllComposerPops();
   state.session = null;
+  void desktop?.setSession?.(null);
   petWidget?.setSession(null);
   state.historyCache = null; // 草稿态无历史：旧缓存作废，避免“加载更多”串会话
   clearPendingMessages();
@@ -3359,7 +3434,7 @@ function refreshStatus() {
     if (topDot) topDot.title = s.cwd || '';
     $('#about-version').textContent = `v${s.version}`;
     renderAboutTools(s.tools);
-    $('#about-server').textContent = `http://${location.host}`;
+    $('#about-server').textContent = location.origin;
     $('#plan-mode').checked = state.planMode;
     const sp = $('#set-plan');
     if (sp) sp.checked = state.planMode;
@@ -3905,6 +3980,7 @@ bus.on('tool.result', (ev) => {
   }
   if (currentTool) currentTool.result(ev);
   state.inFlight--;
+  updateComposerMeta();
 });
 
 bus.on('usage', (ev) => {
@@ -5457,6 +5533,7 @@ input.addEventListener('input', () => {
   }
 });
 input.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
   // 斜杠命令 palette 导航
   if (!cmdPalette.classList.contains('hidden')) {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveCmdSel(1); return; }
@@ -5548,6 +5625,7 @@ async function doSend(text) {
     if (!state.session) {
       const data = await api('/api/sessions', { method: 'POST' });
       state.session = data.id;
+      void desktop?.setSession?.(data.id);
       petWidget?.setSession(data.id);
       if (!state.sessions.some((s) => s.id === data.id)) {
         state.sessions.unshift({ id: data.id, title: t('session.new'), messages: 0, created: Date.now(), updated: Date.now(), project: state.status?.cwd });
@@ -6041,7 +6119,7 @@ function renderModelPop(s) {
     // 档位刻度点（视觉指示；点击直达走底部标签——交互层盖住轨道）
     efforts.forEach((_, i) => {
       const dot = el('span', 'slider-dot');
-      dot.style.left = steps === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
+      dot.style.left = efforts.length === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`;
       if (i === idx) dot.classList.add('active'); // 初始高亮当前档位
       dots.appendChild(dot);
     });
@@ -6049,7 +6127,7 @@ function renderModelPop(s) {
     efforts.forEach((t, i) => {
       const sp = el('span', null, t);
       if (i === idx) sp.classList.add('active'); // 初始高亮当前档位
-      sp.style.left = steps === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`; // 与刻度点同 x：端点标签 none/max 对齐滑块两端
+      sp.style.left = efforts.length === 1 ? '50%' : `calc(var(--pad) + (100% - 2 * var(--pad)) * ${i} / ${steps})`; // 与刻度点同 x：端点标签 none/max 对齐滑块两端
       sp.addEventListener('click', () => { // 点刻度直达该档
         range.value = String(i);
         range.dispatchEvent(new Event('change'));
@@ -6722,6 +6800,7 @@ initConcurrencySlider();
 
 $('#session-search').addEventListener('input', (e) => {
   state.sessionFilter = e.target.value;
+  $('.session-search')?.classList.toggle('has-query', !!e.target.value.trim());
   renderSessionList();
 });
 // 收起侧栏后搜索按钮（图标）点击无效的修复：搜索控件是 label 包 svg+input，
@@ -7752,19 +7831,23 @@ function initCaptureUI() {
 }
 
 function applyDesktopCompact(compact) {
-  document.body.classList.toggle('omni-bot-compact', desktopMode && compact === true);
+  compact = compact === true && !petChatMode;
+  document.body.classList.toggle('omni-bot-compact', desktopMode && compact);
+  scheduleComposerPopovers();
   requestAnimationFrame(() => {
     if (state.autoFollow && !compact) scrollBottom(true);
     if (compact) input.focus();
   });
 }
 
-function applyDesktopMode(bot, compact = false) {
+function applyDesktopMode(bot, compact = false, petChat = false) {
   desktopMode = bot === true;
+  petChatMode = desktopMode && petChat;
   // `?bot=1` 表示这个 renderer 由 --bot 的无边框透明窗口创建；切到完整视图后
   // 仍沿用自定义窗口控件（frame 不能在运行时切换）。
   const customChrome = !!desktop && new URLSearchParams(location.search).get('bot') === '1';
   document.body.classList.toggle('omni-bot', desktopMode);
+  document.body.classList.toggle('omni-pet-chat', petChatMode);
   document.body.classList.toggle('omni-desktop-custom', customChrome);
   document.body.classList.toggle('omni-desktop-full', customChrome && !desktopMode);
   applyDesktopCompact(compact);
@@ -7787,13 +7870,15 @@ async function openDesktopSettings() {
 }
 function initDesktopBridge() {
   initCaptureUI();
-  applyDesktopMode(desktopMode && !!desktop);
+  applyDesktopMode(desktopMode && !!desktop, false, petChatMode);
   if (!desktop?.desktopInfo) return;
   $('#desktop-capture-tools').classList.remove('hidden');
   $('#btn-clipboard').addEventListener('click', () => void importDesktopClipboard());
   $('#btn-screen-capture').addEventListener('click', () => void openScreenCapture());
   $('#bot-open-full')?.addEventListener('click', () => desktop.openFullWindow());
   $('#bot-hide')?.addEventListener('click', () => desktop.hide());
+  $('#pet-chat-new')?.addEventListener('click', () => newSession().then(() => input.focus()).catch(error => notify(error.message, 'error')));
+  $('#pet-chat-sessions')?.addEventListener('click', openSessionSwitch);
   $('#bot-desktop-settings')?.addEventListener('click', openDesktopSettings);
   $('#bot-expand')?.addEventListener('click', () => {
     applyDesktopCompact(false);
@@ -7825,7 +7910,7 @@ function initDesktopBridge() {
     finally { button.disabled = false; }
   });
   desktop.onDesktopAction?.((action) => {
-    if (action.type === 'mode') applyDesktopMode(action.bot, action.compact === true);
+    if (action.type === 'mode') applyDesktopMode(action.bot, action.compact === true, action.petChat === true);
     if (action.type === 'compact') applyDesktopCompact(action.compact === true);
     if (action.type === 'new-session') {
       newSession().then(() => { applyDesktopCompact(true); input.focus(); }).catch((error) => notify(error.message, 'error'));
@@ -7839,17 +7924,22 @@ function initDesktopBridge() {
     if (action.type === 'choose-workspace') browseWorkspace();
     if (action.type === 'session' && action.sessionId) selectSession(action.sessionId).then(() => input.focus()).catch((error) => notify(error.message, 'error'));
   });
-  desktop.desktopInfo().then((info) => applyDesktopMode(info.bot, info.compact === true)).catch(() => {});
+  desktop.desktopInfo().then((info) => applyDesktopMode(info.bot, info.compact === true, info.petChat === true)).catch(() => {});
 }
 
 /* ---------------- 启动 ---------------- */
 (async function init() {
   // 立即应用主题（读 localStorage，避免首帧闪白 / 主题闪烁）
   applyTheme(getStoredTheme());
+  initComposerPopovers();
   initDesktopBridge();
   const petHost = document.createElement('div'); document.body.append(petHost);
   petWidget = window.OmniPet?.mount(petHost, { openSession: selectSession, focus: () => input.focus() });
-  const petSettingsButton = el('button', 'settings-button', '宠物'); petSettingsButton.type = 'button';
+  const petSettingsButton = el('button', 'settings-button');
+  petSettingsButton.type = 'button';
+  petSettingsButton.dataset.i18nTitle = 'pet.settingsTitle';
+  petSettingsButton.title = t('pet.settingsTitle');
+  petSettingsButton.innerHTML = `<svg><use href="#i-spark"/></svg><span data-i18n="pet.settings">${esc(t('pet.settings'))}</span>`;
   petSettingsButton.addEventListener('click', () => petWidget?.openSettings());
   $('#btn-settings')?.parentElement.append(petSettingsButton);
   initScrollFollow();
@@ -7862,7 +7952,7 @@ function initDesktopBridge() {
     state.sessions = await api('/api/sessions');
     renderSessionList();
     const requestedSession = new URLSearchParams(location.search).get('session');
-    const initial = state.sessions.find((s) => s.id === requestedSession) || state.sessions.find((s) => !state.status?.cwd || s.project === state.status.cwd);
+    const initial = state.sessions.find((s) => s.id === requestedSession) || (!petChatMode && state.sessions.find((s) => !state.status?.cwd || s.project === state.status.cwd));
     if (initial) await selectSession(initial.id, true);
     else renderWelcome();
   } catch (e) { renderWelcome(); }
@@ -7880,6 +7970,7 @@ function initDesktopBridge() {
     } catch (error) { notify(error.message, 'error'); }
   }
   connectSSE();
+  await desktop?.ready?.();
 })();
 
 /* 退出时触发 autoMemory（用 sendBeacon 保证页面关闭时仍能发送） */
@@ -7900,10 +7991,7 @@ setInterval(() => {
   }
   spinIdx++;
   const frame = SPIN[spinIdx % SPIN.length];
-  document.querySelectorAll('.tool-card.running .spin').forEach((n) => {
+  document.querySelectorAll('.tool-card.running .spin, .explored-block.running .spin, .tc-diff.running .spin, .mc-loading .spin, #cmd-panel .cmd-empty .spin').forEach((n) => {
     n.textContent = frame;
   });
-  // 命令面板加载中的 spinner 也实时转动
-  const panelSpin = $('#cmd-panel .cmd-empty .spin');
-  if (panelSpin) panelSpin.textContent = frame;
 }, 200);

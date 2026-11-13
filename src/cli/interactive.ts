@@ -344,6 +344,7 @@ export async function runInteractive(
         if (key?.name === 'paste-end') {
           inBracketedPaste = false;
           if (pasteBuf.length > 0) {
+            if (out instanceof MiniOutput && out.hasComposer()) out.clearComposer();
             const cur = rl.line ?? '';
             contBuf.push(...pasteBuf.map((l) => (hasLineContinuation(l) ? l : `${l}\\`)));
             (rl as unknown as { setPrompt(s: string): void }).setPrompt(contPrompt());
@@ -393,8 +394,13 @@ export async function runInteractive(
               return;
             }
             lastEmptySigintTime = now;
-            process.stdout.write(`\n${dim('（再次按 Ctrl+C 或按 Ctrl+D 退出）')}\n`);
-            rl.prompt();
+            if (out instanceof MiniOutput && out.hasComposer()) {
+              out.clearComposer();
+              process.stdout.write(`${dim('（再次按 Ctrl+C 或按 Ctrl+D 退出）')}\n`);
+            } else {
+              process.stdout.write(`\n${dim('（再次按 Ctrl+C 或按 Ctrl+D 退出）')}\n`);
+            }
+            rl.prompt(true);
             return;
           }
           lastEmptySigintTime = 0;
@@ -519,25 +525,26 @@ export async function runInteractive(
   };
   const redrawInput = (): void => {
     try {
-      (rl as unknown as { _refreshLine?: () => void })._refreshLine?.();
       rl.prompt(true);
     } catch {
       /* 接口已关闭，忽略 */
     }
   };
   let mentionPanel: MentionSuggestHandle | null = null;
-  // @ 提及联想面板（纯显示被动监听；选择走下面的 Tab 拦截器）
-  mentionPanel = installMentionSuggest({
-    stdin: input,
-    getLine: () => rl.line,
-    getCursor: () => rlCursor(),
-    getCwd: () => process.cwd(),
-    isActive: () => !inTurn,
-    print: (s) => suggestPrint(s),
-    redraw: () => {
-      redrawInput();
-    },
-  });
+  // @ 提及联想面板：mini 复合输入栏自绘内联 @ 文件菜单，避免 stdout 直接输出破坏底部灰底输入区
+  if (!(out instanceof MiniOutput && out.hasComposer())) {
+    mentionPanel = installMentionSuggest({
+      stdin: input,
+      getLine: () => rl.line,
+      getCursor: () => rlCursor(),
+      getCwd: () => process.cwd(),
+      isActive: () => !inTurn,
+      print: (s) => suggestPrint(s),
+      redraw: () => {
+        redrawInput();
+      },
+    });
+  }
   // stdin 流结束（EOF）时接口会自动关闭，之后不能再调 prompt，这里做安全守卫
   // 粘贴突发跟踪（独立监听，不看 inTurn——突发横跨多轮提交；只计数不消费按键）
   const pasteTracker = new PasteBurstTracker();
@@ -571,8 +578,9 @@ export async function runInteractive(
   // 多候选 → 模态选择器（↑↓/Enter/Esc/数字，pickFromList 已验证组件）。
   // completer 对 @ 行一律 no-op（防双 UI 打架）；非 @ 的 Tab 全放行（/ 命令补全不受影响）。
   if (input.isTTY) {
-    input.on('keypress', ((ss: unknown, key?: { name?: string; ctrl?: boolean }) => {
+    input.on('keypress', ((ss: unknown, key?: MiniInputKey) => {
       try {
+        if (key?.miniHandled) return;
         if (key?.name === 'tab' && !key?.ctrl && !inTurn) {
           const cur = rl.line ?? '';
           if (!cur.trimStart().startsWith('/')) {
@@ -1316,14 +1324,16 @@ export async function runInteractive(
         });
         if (!r.ok) {
           console.log(red(`旁问失败：${r.error ?? '未知错误'}`));
-        } else if (r.answer) {
-          // 走正文单元格（`• ` + Markdown 渲染，与 /review 同理）
-          out.onAnswer(r.answer);
-          out.onAnswerEnd();
         } else {
-          console.log('（没有回答）');
+          if (r.answer) {
+            // 走正文单元格（`• ` + Markdown 渲染，与 /review 同理）
+            out.onAnswer(r.answer);
+            out.onAnswerEnd();
+          } else {
+            console.log('（没有回答）');
+          }
           console.log(dim(`—— 旁问结束（${r.toolCalls} 次只读工具调用，未进入对话历史${keep ? '' : '；加 --keep 可留在上下文'}）`));
-          if (keep) {
+          if (keep && r.answer) {
             messages.push({ role: 'system', content: formatBtwNote(question, r.answer) });
             console.log(green('已留在对话上下文（--keep）'));
           }

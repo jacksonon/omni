@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('omni', {
   closeWindow: () => ipcRenderer.invoke('omni:window-close'),
   expandBotWindow: () => ipcRenderer.invoke('omni:bot-expand'),
   compactBotWindow: () => ipcRenderer.invoke('omni:bot-compact'),
+  setBotPopoverHeight: extra => ipcRenderer.invoke('omni:bot-popover', extra),
   readClipboard: () => ipcRenderer.invoke('omni:read-clipboard'),
   captureScreen: () => ipcRenderer.invoke('omni:capture-screen'),
   stageWorkspaceDraft: (target, draft) => ipcRenderer.invoke('omni:stage-workspace-draft', target, draft),

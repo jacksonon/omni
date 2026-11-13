@@ -90,7 +90,7 @@ Background reading (different tasks and harnesses — **not** a like-for-like co
 - **Safety first**: permission tiers (`full`/`safe`/`ask`/`read`), dangerous-command confirmation, approval UI, audit log, workspace trust, OS-level sandbox
 - **Memory & sessions**: `AGENTS.md` project/global memory cascade, JSONL session persistence with resume/fork/rewind
 - **Multi-model**: `providers` groups (one gateway, many models), `/model` switching, Completions + Responses protocols, reasoning levels
-- **Desktop companion**: `omni pet` follows tasks across every surface (original cat sprite; click for quick chat, drag to reposition; Web/Electron can import transparent PNG/WebP sprites)
+- **Desktop companion**: `omni pet` follows tasks across every surface (original cat/dog; dedicated conversation and output window, drag across monitors; Web/Electron can import transparent PNG/WebP sprites)
 - **Extensible**: MCP servers, lifecycle hooks, skills, plugins, headless `exec`/`mcp-server` for CI
 
 ## Configuration

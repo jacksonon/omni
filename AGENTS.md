@@ -38,6 +38,7 @@ npm run probe:web         # Web 服务 e2e 探针（mock 离线：对话流/审�
 npm run probe:bot         # 共享 Server + bot e2e（broker/工作区隔离/SSE 重放/审批恢复/远程代理，21 项）
 npm run probe:desktop-capture # 桌面附件经共享 Server 到 Chat/Responses 的传输与历史恢复验收
 npm run probe:memory      # 记忆写工具注册/只读拒绝/文件变化后同会话复核验收
+npm run probe:pet-ui      # Electron 真实 DOM：方向注视、提醒去重、拖动、隐藏与减少动态效果
 npm run test:desktop      # Electron bot 单元测试（托盘/快捷键/窗口/通知/路径）
 npm run electron:dev      # Electron 桌面应用（开发：bundle 后端 + electron 窗口）
 npm run dev:bot           # 开发模式启动菜单栏/托盘 bot（electron . --bot；别名 electron:bot）
@@ -242,4 +243,14 @@ for step in 1..maxSteps:
 
 - token 速率统一由 `src/output/token-rate.ts` 计算，采用 OpenCode 口径：输出（含思考）token / 每步请求开始至流结束的累计耗时，包含首 token 等待、排除工具执行；OpenAI completion/output tokens 已含思考，不重复加。流中估算标 `~`，请求口径记录带 `generation.basis=request`；旧历史按 durMs 重建，不复用纯生成分母。Web vendor 打包共享同一函数。
 
-- 宠物设计与持续实施记录见 `Doc/specs/omni-pet.md`。`src/pet/state.ts` 从运行事件派生状态，`turn.step` 在关闭思考正文时仍驱动思考动作；并行工具与待处理交互分别配对，取消不冒充完成，已读操作带 revision 水位。Web/Electron 页面与独立桌面宠物共用 `web/pet.js` / `pet.css`：原创 SVG 小猫 + 主动导入 Codex v1/v2 PNG/WebP；默认发行不打包第三方形象。bot 宠物由独立透明窗口显示，点击唤起原快速输入，任务点击展开原会话；macOS/Windows 支持按图形/alpha 命中穿透，Linux 保持窗口可点击。`/_omni/pet` 汇总各工作区，SSE 只发状态变化提示。`--local` 只向已有本机 broker 轻量广播（15 秒租约，不改变执行归属），`OMNI_PET=off` 关闭此广播。`npm run probe:pet` 验证跨工作区、审批/提问、重连快照、独立 CLI 与图像资源。
+- 宠物设计与持续实施记录见 `Doc/specs/omni-pet.md`。`src/pet/state.ts` 从运行事件派生状态，`turn.step` 在关闭思考正文时仍驱动思考动作；并行工具与待处理交互分别配对，取消不冒充完成，已读操作带 revision 水位。Web/Electron 页面与独立桌面宠物共用 `web/pet.js` / `pet.css`：原创 SVG 小猫/小狗 + 主动导入 Codex v1/v2 PNG/WebP；默认发行不打包第三方形象。宠物由独立透明窗口显示，点击打开独立的专属对话/输出窗（`pet-chat-preload.cjs`，原 bot 快速窗口保持独立），任务点击定位原会话；macOS/Windows 支持按图形/alpha 命中穿透，Linux 保持窗口可点击。`/_omni/pet` 汇总各工作区，SSE 只发状态变化提示。`--local` 只向已有本机 broker 轻量广播（15 秒租约，不改变执行归属），`OMNI_PET=off` 关闭此广播。`npm run probe:pet` 验证跨工作区、审批/提问、重连快照、独立 CLI 与图像资源。
+
+- 宠物第二轮体验：原创猫空闲注视、v2 第 9–10 行 16 向（正上起顺时针）、点击/拖动短暂回应；工作状态优先。完成庆祝约 2.2 秒后静置，待处理每 30 秒、失败每 60 秒短提醒；重复快照与任务往返不重播。桌面指针只在可见/空闲/允许动态时以 100ms 周期采样，经受信本机 IPC 发送变化坐标，不落盘/上传；隐藏、减少动态效果和销毁释放采样与动画。修改播放器须通过 `probe:pet-ui` 并检查实渲染。
+
+- bot 输入态和展开态均在右上角提供独立“×”隐藏按钮，不随精简工具栏隐藏；按钮须位于拖动区域之上且 `no-drag`，只隐藏窗口，保留草稿和运行任务。完整窗口沿用原有窗口控件；Esc 先关闭浮层，再隐藏 bot。
+
+- 模型/权限浮层统一挂在 body，按输入卡片与视口定位，避免新会话/滚动区裁切；快速窗口打开菜单时通过受信 `omni:bot-popover` IPC 临时借用空间，关闭/隐藏恢复原尺寸，不持久化菜单高度。剪贴板/截图在所有 GUI 输入区使用带 title/aria-label 的 SVG 图标按钮。内置宠物含 `omni` 小猫与 `omni-dog` 小狗，小狗复用状态、注视和互动；内置形象不可删除。
+
+- 宠物跨屏移动累计期望坐标，移动中不按单屏夹回；松手后才选目标屏工作区校正并持久化，避免 AppKit 边缘约束让小步移动卡住。专属对话窗按宠物位置在同屏左右避让，跨屏时跟随，拔屏/显示参数变化时重定位；坐标统一使用 Electron DIP。宠物对话页独立保存当前窗口的草稿/会话，关闭后任务继续，支持历史/新会话/模型权限/截图；原 bot 不被自动显示。Web 以 `petChat=1` 呈现专属样式与统一输入/输出，原生操作仅接受受信的专属窗口 sender。
+
+- 默认宠物为 `omni-dog`（原创小狗），保留 `omni`（小猫）可选；空配置、失效选择、删除当前导入形象均回退小狗，显式小猫偏好继续兼容。

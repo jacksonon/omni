@@ -75,7 +75,7 @@ export function openMiniExpansion(options: ExpansionOptions): () => void {
     const rows = content.slice(offset, offset + room);
     while (rows.length < room) rows.push('');
     rows.push(dim(truncateToWidth(`  ctrl+t collapse · ↑↓ scroll · PgUp/PgDn · Esc return  ${offset + 1}/${Math.max(1, content.length)}`, width)), ...footer);
-    write('\x1b[?2026h\x1b[?25l\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}\x1b[0m\x1b[K`).join('') + '\x1b[?2026l');
+    write('\x1b[?2026h\x1b[?25l\x1b[H\x1b[2J' + rows.map((row, i) => `\x1b[${i + 1};1H${row}${row.endsWith('\x1b[K') ? '\x1b[0m' : '\x1b[0m\x1b[K'}`).join('') + '\x1b[?2026l');
   };
   const schedule = () => { if (!timer && !closed) timer = setTimeout(paint, 32); };
   const close = () => {

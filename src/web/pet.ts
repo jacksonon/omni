@@ -8,8 +8,13 @@ import { json } from './http-util.js';
 import { petState, emitEvent } from './state.js';
 
 const MAX_BYTES = 20 * 1024 * 1024;
+const DEFAULT_PET = 'omni-dog';
 const ID = /^[a-f0-9]{32}$/;
 interface PetAsset { id: string; name: string; rows: number; mime: string; url: string }
+const BUILTINS: PetAsset[] = [
+  { id: 'omni-dog', name: 'Omni 小狗', rows: 0, mime: 'image/svg+xml', url: '' },
+  { id: 'omni', name: 'Omni 小猫', rows: 0, mime: 'image/svg+xml', url: '' },
+];
 export interface PetSettings { enabled: boolean; selected: string }
 function root(): string { return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'omni', 'pets'); }
 async function atomic(file: string, content: string | Buffer): Promise<void> {
@@ -21,11 +26,11 @@ async function atomic(file: string, content: string | Buffer): Promise<void> {
 export async function petSettings(): Promise<PetSettings> {
   try {
     const v = JSON.parse(await readFile(path.join(root(), 'settings.json'), 'utf8'));
-    return { enabled: v.enabled !== false, selected: v.selected === 'omni' || ID.test(v.selected) ? v.selected : 'omni' };
-  } catch { return { enabled: true, selected: 'omni' }; }
+    return { enabled: v.enabled !== false, selected: BUILTINS.some(p => p.id === v.selected) || ID.test(v.selected) ? v.selected : DEFAULT_PET };
+  } catch { return { enabled: true, selected: DEFAULT_PET }; }
 }
 export async function petCatalog(): Promise<PetAsset[]> {
-  const result: PetAsset[] = [{ id: 'omni', name: 'Omni 小猫', rows: 0, mime: 'image/svg+xml', url: '' }];
+  const result: PetAsset[] = [...BUILTINS];
   const files = await readdir(root()).catch(() => [] as string[]);
   for (const file of files.filter(f => /^[a-f0-9]{32}\.json$/.test(f)).slice(0, 100)) {
     try {
@@ -39,7 +44,7 @@ export async function petCatalog(): Promise<PetAsset[]> {
 }
 export async function petSnapshot(): Promise<Record<string, unknown>> {
   const [settings, pets] = await Promise.all([petSettings(), petCatalog()]);
-  if (!pets.some(p => p.id === settings.selected)) settings.selected = 'omni';
+  if (!pets.some(p => p.id === settings.selected)) settings.selected = DEFAULT_PET;
   return { version: 1, cwd: process.cwd(), settings, pets, tasks: petState.snapshot().map(t => ({ ...t, cwd: process.cwd(), source: 'shared' })) };
 }
 export function spriteGeometry(buf: Buffer): { rows: number; mime: string } {
@@ -113,7 +118,7 @@ export async function handlePetRequest(req: http.IncomingMessage, res: http.Serv
       if (req.method === 'DELETE') {
         await unlink(path.join(root(), `${id}.json`)); await unlink(path.join(root(), `${id}.image`)).catch(() => {});
         const settings = await petSettings();
-        if (settings.selected === id) await atomic(path.join(root(), 'settings.json'), JSON.stringify({ ...settings, selected: 'omni' }));
+        if (settings.selected === id) await atomic(path.join(root(), 'settings.json'), JSON.stringify({ ...settings, selected: DEFAULT_PET }));
         emitEvent('pet.changed', {}); json(res, 200, { ok: true }); return true;
       }
     }

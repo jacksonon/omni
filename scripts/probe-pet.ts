@@ -54,6 +54,7 @@ async function main() {
     const auth={authorization:`Bearer ${connection.token}`,'content-type':'application/json'};
     const aggregate=async()=>await(await fetch(connection!.serverUrl+'/_omni/pet',{headers:auth})).json() as {tasks:PetTask[]};
     const snapshot=async()=>a.request<{tasks:PetTask[];settings:{selected:string};pets:any[]}>('/api/pet');
+    check('新环境默认小狗且猫狗均可选',(await snapshot()).settings.selected==='omni-dog'&&(await snapshot()).pets.some(p=>p.id==='omni'));
     check('未认证宠物聚合接口拒绝访问',(await fetch(connection.serverUrl+'/_omni/pet')).status===401);
     const stream=await fetch(connection.serverUrl+'/_omni/pet/events',{headers:auth,signal:eventAbort.signal});
     const reader=stream.body!.getReader(); await reader.read();
@@ -106,13 +107,17 @@ async function main() {
     check('独立 CLI 结束更新宠物完成状态',true);
     await mockConfig({slow:false});
     check('拒绝脚本或非法网格图像',(await fetch(connection.url+'/api/pet/import',{method:'POST',headers:auth,body:JSON.stringify({dataUrl:'data:image/png;base64,YWJj'})})).status===400);
+    check('内置目录包含原创小狗',(await snapshot()).pets.some(p=>p.id==='omni-dog'&&p.url===''));
+    await a.request('/api/pet/settings',{selected:'omni-dog'});
+    check('小狗形象选择可持久读取',(await snapshot()).settings.selected==='omni-dog');
+    await a.request('/api/pet/settings',{selected:'omni'});
     for(const h of [1872,2288]){
       const png=spritePng(h), uploaded=await a.request<{id:string;url:string;rows:number}>('/api/pet/import',{name:'测试精灵图',dataUrl:'data:image/png;base64,'+png.toString('base64')});
       check(`合法 PNG v${h===1872?1:2} 导入`,uploaded.rows===h/208);
       await a.request('/api/pet/settings',{selected:uploaded.id});
       check('选用图像并通过认证资源地址读取',(await snapshot()).settings.selected===uploaded.id&&(await fetch(connection.url+uploaded.url,{headers:auth})).headers.get('content-type')==='image/png');
       const removed=await fetch(connection.url+uploaded.url,{method:'DELETE',headers:auth});
-      check('删除选用形象后回退原创小猫',removed.ok&&(await snapshot()).settings.selected==='omni');
+      check('删除选用形象后回退默认小狗',removed.ok&&(await snapshot()).settings.selected==='omni-dog');
     }
     for(const resource of ['pet.html','pet.css','pet.js'])check('分发宠物资源 '+resource,(await fetch(connection.url+'/'+resource,{headers:auth})).status===200);
     const statusChild=spawn(process.execPath,[...command.args,'pet','status'],{cwd:aDir,env:{...process.env},stdio:['ignore','pipe','pipe']});

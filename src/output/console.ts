@@ -29,6 +29,17 @@ export interface ConsoleOutputOptions {
   stream: boolean;
 }
 
+interface ActiveTool {
+  seq?: number;
+  name: string;
+  preview: string;
+  args?: Record<string, unknown>;
+  inner: number;
+  boxOpen: boolean;
+  boxOpenSeq?: number;
+  liveOutCount: number;
+}
+
 export class ConsoleOutput implements Output {
   readonly thinking: ThinkingDisplay;
   private spinner: Spinner | null = null;
@@ -45,6 +56,7 @@ export class ConsoleOutput implements Output {
   }
 
   onRound(step: number, maxSteps: number): void {
+    this.spinner?.stop();
     this.spinner = createSpinner(`思考中…（第 ${step + 1} 轮）`);
   }
 
@@ -54,7 +66,8 @@ export class ConsoleOutput implements Output {
   }
 
   onAnswer(text: string): void {
-    if (!this.opts.stream) return;
+    if (!this.opts.stream || !text) return;
+    this.outSeq++;
     // 流式 LaTeX→Unicode（与 TUI/Web 对齐）：按行缓冲，只转换已完整的行——
     // chunk 可能把 `$\rightarrow$` 从中间切开，逐 chunk 直接转会漏（保持原文）。
     // 数学 span 不含 \n，行完整即 span 完整；围栏 ``` 按行判定，围栏内代码原样。
@@ -87,14 +100,8 @@ export class ConsoleOutput implements Output {
     if (this.answerBuf.length > 0) {
       const line = this.answerBuf;
       this.answerBuf = '';
-      if (this.isFenceLine(line)) {
-        process.stdout.write(line + '\n');
-        this.answerInFence = !this.answerInFence;
-      } else {
-        process.stdout.write((this.answerInFence ? line : inlineMathToText(line)) + '\n');
-      }
-    } else {
-      process.stdout.write('\n');
+      this.writeAnswerLine(line);
+      this.outSeq++;
     }
     this.answerInFence = false;
   }
@@ -130,10 +137,11 @@ export class ConsoleOutput implements Output {
     }
   }
 
-  /** 当前打开的卡片框内容宽（结果到达时续填收框） */
-  private boxInner: number | null = null;
-  /** 管道模式暂存的命令摘要（无光标控制，结果到达时一次成框，避免 ⏳ 与结果叠放） */
-  private boxStep: string | null = null;
+  /** 并行/串行工具调用记录（按 toolSeq 精确配对，无序号时 FIFO 兜底） */
+  private activeTools = new Map<number, ActiveTool>();
+  private fallbackTools: ActiveTool[] = [];
+  /** 输出单调计数：防止并行输出打乱后误用 \x1b[1A 回删他人行 */
+  private outSeq = 0;
 
   /** 终端可见列数（管道模式无 columns → 80 兜底） */
   private termInner(): number {
@@ -141,62 +149,112 @@ export class ConsoleOutput implements Output {
     return Math.max(2, cols - 6); // 左缩进 2 + 两侧边框 2×2
   }
 
-  /** 当前工具调用类型与参数，用于差异化渲染 */
-  private currentTool: { name: string; preview: string; args?: Record<string, unknown> } | null = null;
+  private popActiveTool(toolSeq?: number): ActiveTool | null {
+    if (toolSeq !== undefined) {
+      const hit = this.activeTools.get(toolSeq);
+      if (hit) {
+        this.activeTools.delete(toolSeq);
+        return hit;
+      }
+    }
+    return this.fallbackTools.shift() ?? null;
+  }
 
-  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>): void {
+  private findLiveCommandTool(toolSeq?: number): ActiveTool | undefined {
+    if (toolSeq !== undefined) {
+      const hit = this.activeTools.get(toolSeq);
+      if (hit) return hit;
+    }
+    for (let i = this.fallbackTools.length - 1; i >= 0; i--) {
+      if (this.fallbackTools[i]?.name === 'run_command') return this.fallbackTools[i];
+    }
+    let lastCmd: ActiveTool | undefined;
+    for (const t of this.activeTools.values()) {
+      if (t.name === 'run_command') lastCmd = t;
+    }
+    return lastCmd;
+  }
+
+  onToolStep(step: number, maxSteps: number, name: string, argsPreview: string, args?: Record<string, unknown>, toolSeq?: number): void {
     if (!this.opts.stream) return;
-    this.currentTool = { name, preview: argsPreview, args };
+    this.spinner?.stop();
+    this.spinner = null;
     const inner = this.termInner();
-    this.boxInner = inner;
+    const entry: ActiveTool = {
+      seq: toolSeq,
+      name,
+      preview: argsPreview,
+      args,
+      inner,
+      boxOpen: false,
+      liveOutCount: 0,
+    };
+    if (toolSeq !== undefined) this.activeTools.set(toolSeq, entry);
+    else this.fallbackTools.push(entry);
 
     if (name === 'read_file') {
       console.log(`\n  ${dim('→ Explored — 1 read')}`);
+      this.outSeq++;
       return;
     }
 
     if (name === 'search_code' || name === 'list_directory') {
       console.log(`\n  ${dim('→ Explored — 1 search')}`);
+      this.outSeq++;
       return;
     }
 
     if (name === 'web_fetch') {
       console.log(`\n  ${dim('→ Explored — 1 fetch')}`);
+      this.outSeq++;
       return;
     }
 
     if (name === 'write_file' || name === 'edit_file') {
       console.log(`\n  ${bold(argsPreview)}\n`);
+      this.outSeq++;
       return;
     }
 
     if (name === 'run_command') {
-      console.log(`\n  ${green('●')} ${bold('Bash')}${dim(argsPreview.replace(/^●\s*Bash/, ''))}`);
+      const cmdPart = argsPreview.replace(/^●\s*Bash\s*/, '').trim();
+      console.log(`\n  ${green('●')} ${bold('Bash')}${cmdPart ? ` ${dim(cmdPart)}` : ''}`);
+      this.outSeq++;
       return;
     }
 
     if (isTTY) {
-      // TTY：常规工具开框（顶边 + 命令 + ⏳ 执行中），结果到达时原位收口
+      // TTY：常规工具开框（顶边 + 命令 + ⏳ 执行中），若后续无其它输出则原地收口
       console.log(`\n  ${`╭${'─'.repeat(inner)}╮`}`);
       for (const seg of wrapText(argsPreview, inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
       console.log(`  ${dim(cardContentLine('⏳ 执行中…', inner))}`);
+      entry.boxOpen = true;
+      this.outSeq++;
+      entry.boxOpenSeq = this.outSeq;
     } else {
-      // 管道：无光标控制，暂存命令，等结果一次成框
-      this.boxStep = argsPreview;
+      this.outSeq++;
     }
   }
 
-  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail): void {
+  onToolResult(ok: boolean, chars: number, preview?: string[], detail?: ToolResultDetail, toolSeq?: number): void {
     if (!this.opts.stream) return;
-    const tool = this.currentTool;
-    this.currentTool = null;
+    const tool = this.popActiveTool(toolSeq);
+    const errPreview = (preview ?? []).filter((l) => l.trim() && !isExitCodeZeroLine(l));
 
     if (tool?.name === 'read_file') {
-      // 图 1 风格：read 工具执行后无需额外方框
+      if (!ok) {
+        console.log(`  ${red('✗')} ${dim(errPreview[0] ?? `${tool.preview} 失败`)}`);
+        this.outSeq++;
+      }
       return;
     }
 
     if (tool?.name === 'search_code') {
+      if (!ok) {
+        console.log(`  ${red('✗')} ${dim(errPreview[0] ?? `${tool.preview} 失败`)}`);
+        this.outSeq++;
+        return;
+      }
       // 图 1 风格：输出 * Grep "..." in ... (N matches)
       let matches = 0;
       if (preview && preview.length) {
@@ -207,10 +265,16 @@ export class ConsoleOutput implements Output {
       }
       const matchSuffix = matches > 0 ? ` (${matches} match${matches > 1 ? 'es' : ''})` : ' (0 matches)';
       console.log(`  ${dim(tool.preview + matchSuffix)}`);
+      this.outSeq++;
       return;
     }
 
     if (tool?.name === 'list_directory') {
+      if (!ok) {
+        console.log(`  ${red('✗')} ${dim(errPreview[0] ?? `${tool.preview} 失败`)}`);
+        this.outSeq++;
+        return;
+      }
       // 图 1 风格：输出 path (N items)
       let count = 0;
       if (preview && preview.length) {
@@ -221,10 +285,27 @@ export class ConsoleOutput implements Output {
       }
       const countSuffix = count > 0 ? ` (${count} item${count > 1 ? 's' : ''})` : '';
       console.log(`  ${dim(tool.preview + countSuffix)}`);
+      this.outSeq++;
+      return;
+    }
+
+    if (tool?.name === 'web_fetch') {
+      if (!ok) {
+        console.log(`  ${red('✗')} ${dim(errPreview[0] ?? `${tool.preview} 失败`)}`);
+      } else {
+        console.log(`  ${dim(`${tool.preview} (${chars} chars)`)}`);
+      }
+      this.outSeq++;
       return;
     }
 
     if (tool?.name === 'write_file' || tool?.name === 'edit_file') {
+      if (!ok) {
+        console.log(`  ${red('✗')} ${dim(errPreview[0] ?? `${tool.preview} 失败`)}`);
+        for (const l of errPreview.slice(1, 4)) console.log(`  ${dim(l)}`);
+        this.outSeq++;
+        return;
+      }
       // 图 2 风格：输出带行号和红绿背景的高亮 unified diff
       const diffData = detail?.diff
         ? unifiedDiff(detail.diff.original, detail.diff.content)
@@ -252,50 +333,63 @@ export class ConsoleOutput implements Output {
         if (diffData.truncated) {
           console.log(`  ${dim('…（diff 超长，已截断）')}`);
         }
+        this.outSeq++;
       }
       return;
     }
 
-    const inner = this.boxInner ?? this.termInner();
-    this.boxInner = null;
-    const stepCmd = this.boxStep;
-    this.boxStep = null;
-    if (isTTY) {
+    if (tool?.name === 'run_command') {
+      if (tool.liveOutCount === 0) {
+        for (const line of errPreview) console.log(`  ${dim('│ ' + line)}`);
+      }
+      if (ok) {
+        console.log(`  ${green('✓')} ${dim(`执行成功 · ${chars} 字符`)}`);
+      } else {
+        console.log(`  ${red('✗')} ${red('执行失败')}${chars > 0 ? dim(` · ${chars} 字符`) : ''}`);
+      }
+      this.outSeq++;
+      return;
+    }
+
+    const inner = tool?.inner ?? this.termInner();
+    const canCloseInPlace = isTTY && !!tool?.boxOpen && tool.boxOpenSeq === this.outSeq;
+    if (canCloseInPlace) {
       // 原位收口：光标上移 1 行 + 清行，把「⏳ 执行中…」替换为结果块（框原地长高）
       process.stdout.write('\x1b[1A\x1b[K');
-    } else if (stepCmd != null) {
-      // 管道：补开框（顶边 + 命令）
+    } else {
+      // 管道模式或已有其它并行输出：完整补开框（顶边 + 命令）
       console.log(`\n  ${`╭${'─'.repeat(inner)}╮`}`);
-      for (const seg of wrapText(stepCmd, inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
+      for (const seg of wrapText(tool?.preview ?? '(tool)', inner - 1)) console.log(`  ${cardContentLine(seg, inner)}`);
     }
     console.log(`  ${dim(cardContentLine(ok ? `✓ 执行成功 · ${chars} 字符` : '✗ 执行失败', inner))}`);
     console.log(`  ${dim(cardSepLine(inner))}`);
     // 展示层过滤「退出码: 0」行（成功已由 ✓ 传达，用户要求不显示；完整结果仍回传模型）
-    for (const line of (preview ?? []).filter((l) => !isExitCodeZeroLine(l))) {
+    for (const line of errPreview) {
       for (const seg of wrapText(line, inner - 1)) console.log(`  ${dim(cardContentLine(seg, inner))}`);
     }
     console.log(`  ${cardBottomLine(inner)}`);
+    this.outSeq++;
   }
 
   onMaxSteps(max: number): void {
     console.log(`\n${yellow('⚠️ 已达到最大步数')}（${max}），任务可能未完成。可增大 OMNI_MAX_STEPS 重试。`);
+    this.outSeq++;
   }
 
   /**
    * run_command 实时输出：dim 行写到 stderr（不污染 stdout 管道结果）。
-   * 累积一个 ring buffer（最多 8 行）写到卡片框下；新行超出时把最早的顶出。
    * 不在卡片上原地刷新（console 终端控制能力有限），改用"持续 dim 行追加"——
    * 用户感受是命令在持续输出（远比"卡半天不出"好）；最终结果由 onToolResult 收尾。
    */
-  private liveOutLines: string[] = [];
-  onCommandOutput(chunk: string, isError: boolean, _toolSeq?: number): void {
+  onCommandOutput(chunk: string, isError: boolean, toolSeq?: number): void {
     if (!this.opts.stream || !isTTY) return; // 管道模式：忽略实时（最终结果仍回传）
+    const cmdTool = this.findLiveCommandTool(toolSeq);
     // chunk 已经是单行（run_command 内部按 \n 拆好）；按 \n 再切一次防御
     for (const line of chunk.split('\n')) {
       if (!line) continue;
-      this.liveOutLines.push(line);
-      if (this.liveOutLines.length > 8) this.liveOutLines.shift();
-      // 写到 stderr：dim 灰，前缀 `│` 与卡片右边框呼应
+      if (cmdTool) cmdTool.liveOutCount++;
+      this.outSeq++;
+      // 写到 stderr：dim 灰，前缀 `│` 与命令头呼应
       process.stderr.write(`  ${dim('│ ' + line)}\n`);
     }
   }
@@ -305,6 +399,10 @@ export class ConsoleOutput implements Output {
   }
 
   onTurnEnd(): void {
+    this.spinner?.stop();
+    this.spinner = null;
+    this.activeTools.clear();
+    this.fallbackTools = [];
     // 本轮用量 dim 行（无用量不打印；成本 >0 才附带，避免未知单价时误导性 $0）
     if (this.turnPrompt > 0 || this.turnCompletion > 0) {
       const costSeg = this.turnCost > 0 ? ` · 预估成本 $${this.turnCost.toFixed(6)}` : '';
@@ -408,7 +506,10 @@ export class ConsoleOutput implements Output {
   }
 
   private async promptApproval(req: ApprovalRequest): Promise<boolean> {
-    if (!isTTY) return false; // 管道模式自动拒绝（无法交互）
+    if (!isTTY || !input.isTTY) return false; // 管道模式自动拒绝（无法交互）
+    this.spinner?.stop();
+    this.spinner = null;
+    this.outSeq++;
     const rl = readline.createInterface({ input, output: errOut });
     try {
       const ans = await rl.question(
@@ -442,7 +543,10 @@ export class ConsoleOutput implements Output {
   }
 
   private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
-    if (!isTTY) return null; // 管道模式无法交互
+    if (!isTTY || !input.isTTY) return null; // 管道模式无法交互
+    this.spinner?.stop();
+    this.spinner = null;
+    this.outSeq++;
     const rl = readline.createInterface({ input, output: errOut });
     try {
       const lines = options.map((o, i) => `  ${i + 1}. ${o}`);

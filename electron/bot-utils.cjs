@@ -11,7 +11,7 @@ function normalizeSettings(value) {
     notifications: v.notifications !== false,
     petEnabled: v.petEnabled !== false,
   };
-  for (const name of ['botBounds', 'fullBounds', 'petBounds']) {
+  for (const name of ['botBounds', 'fullBounds', 'petBounds', 'petChatBounds']) {
     const b = v[name];
     if (b && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(b[k]))) result[name] = Object.fromEntries(['x', 'y', 'width', 'height'].map(k => [k, Math.round(b[k])]));
   }

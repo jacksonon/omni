@@ -1,6 +1,6 @@
 {
   "name": "omni",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "Omni - Agent CLI & Engineering Assistant",
   "author": "Jackson <wang542413041@gmail.com> (https://github.com/jacksonon)",
   "homepage": "https://github.com/jacksonon/omni",
@@ -94,6 +94,7 @@
     "probe:desktop-capture": "tsx scripts/probe-desktop-capture.ts",
     "probe:memory": "tsx scripts/probe-memory-freshness.ts",
     "probe:pet": "tsx scripts/probe-pet.ts",
+    "probe:pet-ui": "node scripts/probe-pet-ui.cjs",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && tsc && npm run bundle",
     "start": "node dist/index.js",

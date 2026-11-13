@@ -9,7 +9,7 @@ const vm = require('node:vm');
 async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-desktop-test-'));
   const app = new EventEmitter();
-  let ready, win, pet, tray, aggregate = null;
+  let ready, win, pet, petChat, tray, aggregate = null;
   const notifications = [];
   let clipboardText = 'fixture error: missing SDK', clipboardReads = 0;
   const captures = [];
@@ -27,15 +27,20 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
       this.webContents.mainFrame = { url: '' };
       this.webContents.getURL = () => this.webContents.mainFrame.url;
       this.webContents.session = { cookies: { set: async cookie => { this.cookie = cookie; } } };
-      this.webContents.send = (_name, action) => { this.action = action; };
+      this.messages = []; this.webContents.send = (name, action) => { this.action = action; this.messages.push({ name, action }); };
       this.webContents.setWindowOpenHandler = callback => { this.external = callback; };
-      if (options.title === 'Omni Pet') pet = this; else win = this;
+      if (options.title === 'Omni Pet') pet = this;
+      else if (options.title === 'Omni · 宠物对话') petChat = this;
+      else win = this;
     }
-    async loadURL(url) { this.webContents.mainFrame.url = url; this.webContents.emit('did-navigate', {}, url); this.webContents.emit('did-finish-load'); }
+    async loadURL(url) {
+      this.webContents.mainFrame.url = url; this.webContents.emit('did-navigate', {}, url); this.webContents.emit('did-finish-load');
+      if (this === petChat) await handlers.get('omni:pet-chat')({sender:this.webContents,senderFrame:this.webContents.mainFrame},'ready');
+    }
     isDestroyed() { return false; } isVisible() { return this.visible; } isFocused() { return this.focused; }
     isMinimized() { return false; } isMaximized() { return false; }
-    show() { this.visible = true; } hide() { this.visible = false; } focus() { this.focused = true; }
-    showInactive() { this.visible = true; }
+    show() { this.visible = true; this.emit('show'); } hide() { this.visible = false; this.emit('hide'); } focus() { this.focused = true; }
+    showInactive() { this.visible = true; this.emit('show'); }
     setIgnoreMouseEvents(value, options) { this.ignoreMouse = value; this.forwardMouse = options?.forward; }
     getBounds() { return { x: this.bounds.x, y: this.bounds.y, width: this.bounds.width, height: this.bounds.height }; }
     setBounds(value) { this.bounds = value; } setMinimumSize() {} setTitle() {} setSkipTaskbar(value) { this.skipTaskbar = value; }
@@ -77,7 +82,7 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
     require: name => name === 'electron' ? electron : name === 'node:child_process' ? { spawn: fakeSpawn } : name === 'node:fs' ? { ...fs, existsSync: file => file.endsWith('omni.cjs') || fs.existsSync(file) } : name === './bot-utils.cjs' ? require('./bot-utils.cjs') : require(name),
     __dirname, process: { argv: ['electron', '.', ...argv], env: {}, execPath: '/test/Electron', cwd: () => dir, platform, pid: process.pid },
     URL, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout,
-    setInterval: fn => { intervals.push(fn); return 1; }, clearInterval() {},
+    setInterval: fn => { intervals.push(fn); return intervals.length; }, clearInterval: id => { if(id) intervals[id-1]=null; },
     fetch: async (url, options) => {
       if (url.endsWith('/api/events') || url.endsWith('/_omni/pet/events')) return new Promise((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
       if (url.endsWith('/_omni/pet')) return { ok: true, json: async () => ({ version: 1, tasks: [], pets: [{id:'omni',name:'Omni 小猫',url:''}], settings:{enabled:true,selected:'omni'} }) };
@@ -86,7 +91,7 @@ async function harness(argv = ['--bot', '--hidden'], platform = 'darwin') {
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'), context);
   await ready; await new Promise(resolve => setImmediate(resolve));
-  return { app, dir, get win() { return win; }, get pet() { return pet; }, get clipboardReads() { return clipboardReads; }, captures, tray, shortcuts, handlers, spawned, context, intervals, notifications, setClipboard(value) { clipboardText = value; }, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
+  return { app, dir, screen:electron.screen, get win() { return win; }, get pet() { return pet; }, get petChat(){return petChat;}, get clipboardReads() { return clipboardReads; }, captures, tray, shortcuts, handlers, spawned, context, intervals, notifications, setClipboard(value) { clipboardText = value; }, setAggregate(value) { aggregate = value; }, cleanup() { app.quit(); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 test('bot hidden startup, global shortcut, close-to-tray, full window share one renderer', async () => {
   const h = await harness();
@@ -146,6 +151,38 @@ test('untrusted frame rejected, shortcut collision restores previous registered 
     await assert.rejects(h.handlers.get('omni:bot-settings')(sender, { shortcut: 'CommandOrControl+Alt+J', notifications: 'invalid' }), /通知设置无效/);
     assert.equal(h.shortcuts.has('CommandOrControl+Shift+Space'), true);
   } finally { h.cleanup(); }
+});
+test('bot 输入与展开态均可隐藏，再唤起保留同一 renderer 与任务宿主', async () => {
+  const h = await harness(['--bot']);
+  try {
+    const sender = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    const window=h.win,children=h.spawned.length;
+    await h.handlers.get('omni:hide')(sender);assert.equal(window.visible,false);
+    h.shortcuts.get('CommandOrControl+Shift+Space')();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(window.visible,true);
+    await h.handlers.get('omni:bot-expand')(sender);
+    await h.handlers.get('omni:hide')(sender);assert.equal(window.visible,false);
+    h.shortcuts.get('CommandOrControl+Shift+Space')();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(h.win,window);assert.equal(window.visible,true);assert.equal(h.spawned.length,children);
+    assert.ok(h.spawned.every(x=>!x.child.killed));
+  } finally { h.cleanup(); }
+});
+test('快速窗口菜单向上借位、输入底边固定，关闭/隐藏还原且不污染展开尺寸', async () => {
+  const h=await harness(['--bot']);
+  try {
+    const sender={sender:h.win.webContents,senderFrame:h.win.webContents.mainFrame};
+    const resize=height=>h.handlers.get('omni:bot-popover')(sender,height);
+    h.win.setBounds({...h.win.getBounds(),y:400});
+    const base=h.win.getBounds();
+    resize(300);const menu=h.win.getBounds();
+    assert.equal(menu.height,base.height+300);assert.equal(menu.y+menu.height,base.y+base.height);
+    resize(200);assert.equal(h.win.bounds.height,base.height+200,'反复定位不累加高度');
+    resize(0);assert.deepEqual(h.win.getBounds(),base);
+    assert.throws(()=>resize(99999),/无效/);assert.throws(()=>resize('300'),/无效/);
+    resize(280);await h.handlers.get('omni:hide')(sender);assert.deepEqual(h.win.getBounds(),base);
+    await h.handlers.get('omni:bot-expand')(sender);const expanded=h.win.getBounds();
+    resize(200);assert.deepEqual(h.win.getBounds(),expanded,'展开态不借位');
+  } finally {h.cleanup();}
 });
 test('普通唤起不读取剪贴板，导入快捷键只预览、截图先隐藏窗口且发送仍需用户操作', async () => {
   const h = await harness();
@@ -216,7 +253,7 @@ test('独立宠物不抢焦点、IPC 隔离、移动保存与隐藏恢复', asyn
     assert.equal(JSON.parse(fs.readFileSync(path.join(h.dir, 'bot-settings.json'), 'utf8')).petBounds.x, before.x - 20);
     await h.handlers.get('omni:pet-action')(sender, 'hide'); assert.equal(h.pet.visible, false);
     await h.handlers.get('omni:pet-enable')(primary, true); assert.equal(h.pet.visible, true);
-    await h.handlers.get('omni:pet-action')(sender, 'chat'); assert.equal(h.win.visible, true);
+    await h.handlers.get('omni:pet-action')(sender, 'chat'); assert.equal(h.petChat.visible, true);assert.equal(h.win.visible,false);
   } finally { h.cleanup(); }
 });
 test('Linux 无 forward 时保持宠物可点击', async () => {
@@ -226,5 +263,87 @@ test('Linux 无 forward 时保持宠物可点击', async () => {
     const sender = { sender: h.pet.webContents, senderFrame: h.pet.webContents.mainFrame };
     await h.handlers.get('omni:pet-action')(sender, 'hit', { interactive: false });
     assert.equal(h.pet.ignoreMouse, false);
+  } finally { h.cleanup(); }
+});
+test('小步拖动越过四屏边界，松手后只校正目标屏并保存负坐标',async()=>{
+  const h=await harness(['--bot','--pet']);
+  try{
+    const areas=[{x:0,y:25,width:1440,height:875},{x:-1920,y:0,width:1920,height:1080},{x:1440,y:0,width:2560,height:1440},{x:0,y:-1080,width:1920,height:1080}];
+    h.screen.getDisplayMatching=b=>{
+      let best=areas[0],overlap=-1;
+      for(const area of areas){const n=Math.max(0,Math.min(b.x+b.width,area.x+area.width)-Math.max(b.x,area.x))*Math.max(0,Math.min(b.y+b.height,area.y+area.height)-Math.max(b.y,area.y));if(n>overlap){best=area;overlap=n;}}
+      return {workArea:best};
+    };
+    const sender={sender:h.pet.webContents,senderFrame:h.pet.webContents.mainFrame};
+    const action=(name,input)=>h.handlers.get('omni:pet-action')(sender,name,input);
+    h.pet.setBounds({x:1200,y:400,width:240,height:286});
+    for(let i=0;i<30;i++)await action('move',{dx:20,dy:0});
+    assert.equal(h.pet.bounds.x,1800,'原实现会一直被夹在 x=1200');
+    await action('position');assert.equal(h.pet.bounds.x,1800);
+    for(let i=0;i<40;i++)await action('move',{dx:-60,dy:0});
+    await action('position');assert.equal(h.pet.bounds.x,-600);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.dir,'bot-settings.json'),'utf8')).petBounds.x,-600);
+    for(let i=0;i<20;i++)await action('move',{dx:40,dy:-60});
+    await action('position');assert.equal(h.pet.bounds.x,200);assert.equal(h.pet.bounds.y,-800);
+    for(let i=0;i<20;i++)await action('move',{dx:80,dy:60});
+    await action('position');assert.equal(h.pet.bounds.x,1800);assert.equal(h.pet.bounds.y,400);
+  }finally{h.cleanup();}
+});
+test('点击宠物只打开独立对话窗，隐藏/重开保留同一页，IPC 与普通 bot 隔离',async()=>{
+  const h=await harness(['--bot','--pet']);
+  try{
+    const sender={sender:h.pet.webContents,senderFrame:h.pet.webContents.mainFrame};
+    await h.handlers.get('omni:pet-action')(sender,'chat');
+    const chat=h.petChat;assert.ok(chat);assert.equal(chat.visible,true);assert.equal(h.win.visible,false);
+    assert.ok(chat.webContents.getURL().includes('petChat=1'));assert.equal(chat.options.webPreferences.nodeIntegration,false);
+    h.app.emit('activate');await new Promise(resolve=>setImmediate(resolve));assert.equal(h.win.visible,false,'激活宠物对话不得弹出快捷框');
+    const chatSender={sender:chat.webContents,senderFrame:chat.webContents.mainFrame};
+    const mainSender={sender:h.win.webContents,senderFrame:h.win.webContents.mainFrame};
+    const info=await h.handlers.get('omni:pet-chat')(chatSender,'info');assert.equal(info.petChat,true);assert.equal(info.compact,false);
+    await assert.rejects(h.handlers.get('omni:pet-chat')(mainSender,'hide'),/不受信任/);
+    await h.handlers.get('omni:pet-chat')(chatSender,'hide');assert.equal(chat.visible,false);
+    const url=chat.webContents.getURL();await h.handlers.get('omni:pet-action')(sender,'chat');
+    assert.equal(h.petChat,chat);assert.equal(chat.webContents.getURL(),url);assert.equal(h.win.visible,false);
+    await h.handlers.get('omni:pet-chat')(chatSender,'session','pet-session');
+    await h.handlers.get('omni:pet-chat')(chatSender,'hide');chat.focused=false;
+    h.context.notify('任务完成','点击查看','pet-session',{url:'http://127.0.0.1:3080/w/abcd',cwd:h.dir});
+    h.notifications.at(-1).emit('click');await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(chat.visible,true);assert.equal(h.win.visible,false,'宠物会话通知返回专属窗口');
+    h.shortcuts.get('CommandOrControl+Shift+Space')();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(h.win.visible,true);assert.equal(chat.visible,true,'显式快捷键仍打开普通 bot，宠物对话独立');
+  }finally{h.cleanup();}
+});
+test('系统暂时夹回旧屏时仍累计期望坐标，跨过负 Y 边界后可进入上方屏幕',async()=>{
+  const h=await harness(['--bot','--pet']);
+  try{
+    const set=h.pet.setBounds.bind(h.pet);
+    h.pet.setBounds=b=>set(b.y<25&&b.y+b.height/2>=0?{...b,y:25}:b);
+    h.pet.setBounds({x:500,y:25,width:240,height:286});
+    h.screen.getDisplayMatching=b=>({workArea:b.y<0?{x:0,y:-1080,width:1920,height:1080}:{x:0,y:25,width:1440,height:875}});
+    const sender={sender:h.pet.webContents,senderFrame:h.pet.webContents.mainFrame};
+    for(let i=0;i<15;i++)await h.handlers.get('omni:pet-action')(sender,'move',{dx:0,dy:-20});
+    assert.equal(h.pet.bounds.y,-275,'必须累计输入增量，不能重新读取每帧被系统夹住的窗口位置');
+    await h.handlers.get('omni:pet-action')(sender,'position');assert.equal(h.pet.bounds.y,-286);
+  }finally{h.cleanup();}
+});
+test('桌面注视只向受信宠物页发送变化坐标，隐藏/停用/退出释放采样', async () => {
+  const h = await harness(['--bot', '--pet']);
+  try {
+    const sender = { sender: h.pet.webContents, senderFrame: h.pet.webContents.mainFrame };
+    const primary = { sender: h.win.webContents, senderFrame: h.win.webContents.mainFrame };
+    const action = (name, input) => h.handlers.get('omni:pet-action')(sender, name, input);
+    await assert.rejects(h.handlers.get('omni:pet-action')(primary, 'watch-pointer', { enabled:true }), /不受信任/);
+    await assert.rejects(action('watch-pointer', { enabled:'yes' }), /无效/);
+    assert.equal(h.intervals.filter(Boolean).length, 1, '未请求注视时只有服务轮询');
+    await action('watch-pointer', { enabled:true });
+    const sample=h.intervals.at(-1);sample();sample();
+    const messages=h.pet.messages.filter(m=>m.name==='omni:pet-pointer');
+    assert.equal(messages.length,1,'静止鼠标不重复发送');
+    assert.equal(messages[0].action.x,300-h.pet.bounds.x);
+    assert.equal(messages[0].action.y,300-h.pet.bounds.y);
+    await action('hide');assert.equal(h.intervals.filter(Boolean).length,1);
+    await h.handlers.get('omni:pet-enable')(primary,true);assert.equal(h.intervals.filter(Boolean).length,2);
+    await action('watch-pointer',{enabled:false});assert.equal(h.intervals.filter(Boolean).length,1);
+    await action('watch-pointer',{enabled:true});h.app.quit();assert.equal(h.intervals.filter(Boolean).length,0);
   } finally { h.cleanup(); }
 });

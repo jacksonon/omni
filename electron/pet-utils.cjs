@@ -13,4 +13,15 @@ function isPetPage(url, connection) {
 function taskForAction(tasks, input) {
   return tasks.find(t => t.sessionId === input?.sessionId && (t.url || '') === (input?.url || ''));
 }
-module.exports = { petBounds, isPetPage, taskForAction };
+/** 对话窗始终放在宠物所在屏幕，优先左侧，其次右侧；支持负坐标和上下排列。 */
+function petChatBounds(pet, area, saved) {
+  const gap = 12, margin = 8;
+  const width = Math.min(Math.max(saved?.width || 480, 360), Math.max(1, area.width - margin * 2));
+  const height = Math.min(Math.max(saved?.height || 600, 360), Math.max(1, area.height - margin * 2));
+  let x = pet.x - width - gap;
+  if (x < area.x + margin) x = pet.x + pet.width + gap;
+  x = Math.min(Math.max(x, area.x + margin), area.x + area.width - margin - width);
+  const y = Math.min(Math.max(pet.y + pet.height - height, area.y + margin), area.y + area.height - margin - height);
+  return { x: Math.round(x), y: Math.round(y), width, height };
+}
+module.exports = { petBounds, petChatBounds, isPetPage, taskForAction };

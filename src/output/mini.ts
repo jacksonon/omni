@@ -932,9 +932,13 @@ export class MiniOutput implements Output {
       rows: width => this.expandedRows(width),
       footer: width => {
         const bg = miniPanelBackground();
-        const draft = truncateToWidth(`› ${this.rl?.line || 'Ask Omni to do anything'}`, width);
+        const rawLine = this.rl?.line;
+        const body = rawLine
+          ? truncateToWidth(`› ${rawLine}`, Math.max(1, width - 1))
+          : `› ${dim(truncateToWidth('Ask Omni to do anything', Math.max(0, width - 3)))}`;
+        const draft = `${bg}${body}${bg}`;
         const status = { ...(this.composerStatus?.() ?? { model: 'Omni', plan: false }), running: !!this.inputActions?.busy() || this.turnStart !== null };
-        return [bg + '\x1b[K', bg + draft + '\x1b[K', bg + '\x1b[K', miniComposerStatus(status, width), dim(truncateToWidth('  键入返回编辑 · ctrl+t 收起', width))];
+        return [bg + '\x1b[K', draft + '\x1b[K', bg + '\x1b[K', miniComposerStatus(status, width), dim(truncateToWidth('  键入返回编辑 · ctrl+t 收起', width))];
       },
       onClose: () => {
         this.expansion = undefined;
@@ -993,6 +997,9 @@ export class MiniOutput implements Output {
   }
 
   hasComposer(): boolean { return this.composer !== null; }
+
+  /** 清空停驻在页底的输入栏，供交互提示写入滚动区后再重绘 */
+  clearComposer(): void { this.composer?.clearInput(); }
 
   private pickerActive = false;
 
@@ -1819,7 +1826,7 @@ export class MiniOutput implements Output {
   }
 
   private async promptApproval(req: ApprovalRequest): Promise<'once' | 'session' | 'deny'> {
-    if (!isTTY) return 'deny';
+    if (!isTTY || !input.isTTY) return 'deny';
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
@@ -1856,7 +1863,7 @@ export class MiniOutput implements Output {
 
 
   private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
-    if (!isTTY) return null;
+    if (!isTTY || !input.isTTY) return null;
     this.yieldInput();
     this.stopWorking();
     this.live.clear();

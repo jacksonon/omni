@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { TestSuite } from './framework.js';
 import {
   MiniOutput,
@@ -142,20 +143,20 @@ export function miniSuite(): TestSuite {
     const g = pickMiniGreeting();
     suite.assert(typeof g === 'string' && g.length > 0 && (MINI_GREETINGS as readonly string[]).includes(g), '问候语来自目录');
     const head = renderMiniBanner({ directory: process.cwd(), permission: 'full' }, 80, 'Hello, you. Got an idea?');
-    const text = head.join('\n');
+    const text = stripVTControlCharacters(head.join('\n'));
     suite.assert(!text.includes('╭') && !text.includes('╰') && !text.includes('│'), '无框（borderless）');
     suite.assert(text.includes('>_ Omni (v') && text.includes('Hello, you. Got an idea?'), '标题 + 问候语');
     suite.assert(text.includes('~'), '目录行（home 简写 ~）');
     suite.assert(!text.includes('model:'), '无模型行（上游已删 boxed model row）');
     suite.assert(text.includes('permissions: YOLO mode'), 'YOLO 行保留');
     // YOLO 判定（codex has_yolo_permissions：full + 沙箱近乎关闭；沙箱收紧即非 YOLO）
-    const sandboxed = renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'read-only' }, 80, 'hi').join('\n');
+    const sandboxed = stripVTControlCharacters(renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'read-only' }, 80, 'hi').join('\n'));
     suite.assert(!sandboxed.includes('YOLO mode'), 'full + 沙箱收紧不显示 YOLO');
-    const danger = renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'danger-full-access' }, 80, 'hi').join('\n');
+    const danger = stripVTControlCharacters(renderMiniBanner({ directory: '/tmp', permission: 'full', sandbox: 'danger-full-access' }, 80, 'hi').join('\n'));
     suite.assert(danger.includes('YOLO mode'), 'full + 无 OS 沙箱保持 YOLO');
-    const plain = renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, 'hi').join('\n');
+    const plain = stripVTControlCharacters(renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, 'hi').join('\n'));
     suite.assert(!plain.includes('permissions:'), '非 YOLO 无权限行');
-    const nogreet = renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, null).join('\n');
+    const nogreet = stripVTControlCharacters(renderMiniBanner({ directory: '/tmp', permission: 'safe' }, 80, null).join('\n'));
     suite.assert(!nogreet.includes('hi') && nogreet.includes('>_ Omni (v'), 'greeting=null 省略问候行');
     // 窄终端：目录居中截断，不超屏
     for (const cols of [80, 60, 44, 30]) {
@@ -185,7 +186,7 @@ export function miniSuite(): TestSuite {
 
   suite.test('工具块：3 行预览 + 折叠提示 / 空输出 / 失败 / diff 统计', () => {
     const out = new MiniOutput({ showThinking: false, stream: true });
-    const text = renderAt(80, () => {
+    const text = stripVTControlCharacters(renderAt(80, () => {
       out.onToolStep(0, 50, 'run_command', '$ npm test', { command: 'npm test' }, 1);
       out.onToolResult(true, 200, MOCK_CMD_OUTPUT, undefined, 1, MOCK_CMD_OUTPUT.length);
       out.onToolStep(1, 50, 'run_command', '$ echo hi', { command: 'echo hi' }, 2);
@@ -198,7 +199,7 @@ export function miniSuite(): TestSuite {
       out.onToolResult(true, 10, ['已写入'], { diff: { original: 'a\nb\nc\n', content: 'a\nB\nc\nd\n' } }, 5, 1);
       out.onToolStep(5, 50, 'read_file', '* Read src/a.ts', { path: 'src/a.ts' }, 6);
       out.onToolResult(true, 10, ['a', 'b'], undefined, 6, 2);
-    });
+    }));
     suite.assert(text.includes('• Ran npm test'), '工具块首行 `• Ran <命令>`');
     suite.assert(text.includes('  └ line-1'), '输出首行用 `  └ ` 起头');
     suite.assert(text.includes('    line-2') && text.includes('    line-3'), '续行缩进 4 空格');
