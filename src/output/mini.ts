@@ -1143,7 +1143,7 @@ export class MiniOutput implements Output {
 
   private yieldInput(): void {
     this.closeExpansion();
-    if (!this.capturing) return;
+    if (this.yieldedInput) return;
     this.yieldedInput = true;
     this.endInputCapture();
     // 审批/提问用的是另一个 readline：确认回车若同时进主 rl，会被 for-await
@@ -1158,6 +1158,7 @@ export class MiniOutput implements Output {
     for (const l of this.savedKeypress ?? []) process.stdin.on('keypress', l);
     this.savedKeypress = null;
     if (this.turnStart != null) this.beginInputCapture();
+    if (!this.pickerActive && !this.rl?.closed) this.rl?.prompt(true);
   }
 
   /** readline 句柄注入（runInteractive 的 onRl 回调） */
@@ -1760,33 +1761,8 @@ export class MiniOutput implements Output {
   }
 
   // ── 审批 / 提问（readline，写 stderr 不污染 stdout） ────────────
-  /**
-   * 问答消费行吞没队列（双 readline 实锤两连 bug 之二：审批/提问的答案字节会同时进主 rl
-   * 行缓冲，下一轮被当成用户消息误发给模型；其一是次 readline close() 会 pause 共享
-   * stdin 致主循环饿死，见 input.resume() 处注释）。
-   * 只记非空原文（trimmed，与主循环比对口径一致）；FIFO 队首命中；上限 10 防堆积。
-   */
-  private swallowedQa: string[] = [];
-  private recordSwallowedQa(ans: string): void {
-    const t = ans.trim();
-    if (!t) return;
-    this.swallowedQa.push(t);
-    while (this.swallowedQa.length > 10) this.swallowedQa.shift();
-  }
-
-  /**
-   * 主循环调用：行文本命中队首消费记录则返回 true（调用方跳过本行）。
-   * 不命中不清理（乱序到达的消费行仍在队首等后面的轮次）。
-   */
-  swallowQaLine(line: string): boolean {
-    if (this.swallowedQa.length > 0 && this.swallowedQa[0] === line.trim()) {
-      this.swallowedQa.shift();
-      return true;
-    }
-    return false;
-  }
-
-  private approvalTail: Promise<void> = Promise.resolve();
+  /** 审批和提问共用单一输入区，跨类型也串行展示。 */
+  private interactionTail: Promise<void> = Promise.resolve();
   /** 本会话记住的审批（codex "allow for session"）：键 = 工具 + 精确摘要，同命令才自动放行 */
   private sessionApprovals = new Set<string>();
   /** 预置会话记住（测试 / 外部面板用；与审批 UI 中按 `a` 等效） */
@@ -1797,26 +1773,35 @@ export class MiniOutput implements Output {
   clearSessionApprovals(): void {
     this.sessionApprovals.clear();
   }
-  requestApproval(req: ApprovalRequest): Promise<boolean> {
+  requestApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return Promise.resolve(false);
     let resolveMe!: (b: boolean) => void;
     const p = new Promise<boolean>((r) => (resolveMe = r));
-    this.approvalTail = this.approvalTail.then(async () => {
+    const complete = (value: boolean) => {
+      signal?.removeEventListener('abort', onAbort);
+      resolveMe(signal?.aborted ? false : value);
+    };
+    const onAbort = () => complete(false);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    this.interactionTail = this.interactionTail.then(async () => {
       try {
-        resolveMe(await this.decideApproval(req));
+        complete(await this.decideApproval(req, signal));
       } catch {
-        resolveMe(false);
+        complete(false);
       }
     });
     return p;
   }
 
-  private async decideApproval(req: ApprovalRequest): Promise<boolean> {
+  private async decideApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     const key = approvalSessionKey(req.tool, req.summary);
     if (this.sessionApprovals.has(key)) {
       if (this.opts.stream) this.print(`${PREFIX}${dim(`✓ 会话已记住 ${req.tool}（自动放行）`)}`);
       return true;
     }
-    const ans = await this.promptApproval(req);
+    const ans = await this.promptApproval(req, signal);
+    if (signal?.aborted) return false;
     if (ans === 'session') {
       this.sessionApprovals.add(key);
       if (this.opts.stream) this.print(`${PREFIX}${dim(`已记住：本会话内 ${req.tool} 同类操作自动放行`)}`);
@@ -1825,8 +1810,9 @@ export class MiniOutput implements Output {
     return ans === 'once';
   }
 
-  private async promptApproval(req: ApprovalRequest): Promise<'once' | 'session' | 'deny'> {
-    if (!isTTY || !input.isTTY) return 'deny';
+  private async promptApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<'once' | 'session' | 'deny'> {
+    if (!isTTY || !input.isTTY || signal?.aborted) return 'deny';
+    const wasRaw = input.isRaw;
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
@@ -1838,63 +1824,74 @@ export class MiniOutput implements Output {
         { label: '允许本次', value: 'once' },
         { label: '本会话记住此操作', value: 'session' },
         { label: '拒绝', value: 'deny' },
-      ], { placement: 'inline', title: '操作审批', selected: 2 });
+      ], { placement: 'inline', title: '操作审批', selected: 2, signal });
       return selected === 0 ? 'once' : selected === 1 ? 'session' : 'deny';
     } finally {
+      if (!input.destroyed && !this.rl?.closed) input.setRawMode(wasRaw);
       this.finishPicker();
       this.resumeInput();
       input.resume();
     }
   }
 
-  private askTail: Promise<void> = Promise.resolve();
-  askUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
+  askUser(question: string, options: string[], multiple: boolean, signal?: AbortSignal): Promise<AskResult | null> {
+    if (signal?.aborted) return Promise.resolve(null);
     let resolveMe!: (r: AskResult | null) => void;
     const p = new Promise<AskResult | null>((r) => (resolveMe = r));
-    this.askTail = this.askTail.then(async () => {
+    const complete = (value: AskResult | null) => {
+      signal?.removeEventListener('abort', onAbort);
+      resolveMe(signal?.aborted ? null : value);
+    };
+    const onAbort = () => complete(null);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    this.interactionTail = this.interactionTail.then(async () => {
       try {
-        resolveMe(await this.promptAskUser(question, options, multiple));
+        complete(await this.promptAskUser(question, options, multiple, signal));
       } catch {
-        resolveMe(null);
+        complete(null);
       }
     });
     return p;
   }
 
 
-  private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
-    if (!isTTY || !input.isTTY) return null;
+  private async promptAskUser(question: string, options: string[], multiple: boolean, signal?: AbortSignal): Promise<AskResult | null> {
+    if (!isTTY || !input.isTTY || signal?.aborted) return null;
+    const wasRaw = input.isRaw;
     this.yieldInput();
     this.stopWorking();
     this.live.clear();
     this.preparePicker();
-    if (options.length) {
-      const marked = multiple ? new Set<number>() : undefined;
-      const selected = await this.pickMenu(input, [
-        ...options.map(label => ({ label, value: label })),
-        { label: '自定义回答…', value: '__custom__' },
-      ], { placement: 'inline', title: question, selected: 0, marked,
-        hint: multiple ? '↑↓ 导航 · 空格勾选 · Enter 确认 · Esc 取消' : undefined });
-      if (selected < options.length) {
-        this.resumeInput();
-        input.resume();
-        return selected < 0 ? null : parseAskAnswer(marked?.size
-          ? [...marked].filter(i => i < options.length).map(i => i + 1).join(',')
-          : String(selected + 1), options);
-      }
-    }
-    this.preparePicker();
-    this.print(`${PREFIX}${question}`);
-    this.print(`${PREFIX}${dim('输入自定义回答，空输入取消')}`);
-    const rl = readline.createInterface({ input, output: process.stdout });
-    const composer = this.composerStatus ? installMiniComposer(rl, () => ({ ...this.composerStatus!(), running: false })) : null;
+    let rl: ReturnType<typeof readline.createInterface> | undefined;
+    let composer: MiniComposer | null = null;
     try {
-      const ans = await rl.question('› ');
-      this.recordSwallowedQa(ans);
+      if (options.length) {
+        const marked = multiple ? new Set<number>() : undefined;
+        const selected = await this.pickMenu(input, [
+          ...options.map(label => ({ label, value: label })),
+          { label: '自定义回答…', value: '__custom__' },
+        ], { placement: 'inline', title: question, selected: 0, marked, signal,
+          hint: multiple ? '↑↓ 导航 · 空格勾选 · Enter 确认 · Esc 取消' : undefined });
+        if (selected < options.length) {
+          return selected < 0 ? null : parseAskAnswer(marked?.size
+            ? [...marked].filter(i => i < options.length).map(i => i + 1).join(',')
+            : String(selected + 1), options);
+        }
+      }
+      this.preparePicker();
+      this.print(`${PREFIX}${question}`);
+      this.print(`${PREFIX}${dim('输入自定义回答，空输入取消')}`);
+      if (signal?.aborted) return null;
+      rl = readline.createInterface({ input, output: process.stdout });
+      composer = this.composerStatus ? installMiniComposer(rl, () => ({ ...this.composerStatus!(), running: false })) : null;
+      const ans = await rl.question('› ', { signal });
+      if (signal?.aborted) return null;
       return parseAskAnswer(ans, options);
     } finally {
       composer?.dispose();
-      rl.close();
+      rl?.close();
+      // 次 readline.close() 会关闭共享 stdin 的 raw 模式，主输入仍然需要控制键。
+      if (!input.destroyed && !this.rl?.closed) input.setRawMode(wasRaw);
       this.finishPicker();
       this.resumeInput();
       input.resume();

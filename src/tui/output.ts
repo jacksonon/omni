@@ -116,6 +116,8 @@ export class TuiOutput implements Output {
   /** 当次对话轮（onTurnStart → onTurnEnd）内每次 LLM 请求的 token 用量（onUsage 按
    *  请求顺序收集；onTurnEnd 组装成 tokens 模块插入对话流——收起=汇总/展开=逐次明细） */
   private turnUsages: TokenUsage[] = [];
+  /** 历史回放也会调用 onTurnEnd；只有真实 onTurnStart 的收尾才清理本轮交互。 */
+  private turnActive = false;
   private turnLlmMs = 0;
   private turnGenMs = 0;
   private turnFirstTokenSum = 0;
@@ -327,6 +329,7 @@ export class TuiOutput implements Output {
   }
 
   onTurnStart(): void {
+    this.turnActive = true;
     // 轮数：交互模式每轮用户提交 / 单次任务各 1 次（runAgent 开头触发）
     this.state.stats.turns += 1;
     this.turnUsages = []; // 新一轮：重置当次 token 收集
@@ -755,25 +758,52 @@ export class TuiOutput implements Output {
    * 无需反向依赖 TuiOutput 即可完成审批。
    */
   private approvalQueue: { req: ApprovalRequest; resolve: (b: boolean) => void }[] = [];
-  requestApproval(req: ApprovalRequest): Promise<boolean> {
+  private activeApproval: { req: ApprovalRequest; resolve: (b: boolean) => void } | null = null;
+  private interactionAdvanceQueued = false;
+  /** 下一张交互卡片延后到当前按键广播结束，避免一次 Enter 同时消费两张卡片。 */
+  private advanceInteractions(): void {
+    if (this.interactionAdvanceQueued) return;
+    this.interactionAdvanceQueued = true;
+    queueMicrotask(() => {
+      this.interactionAdvanceQueued = false;
+      this.showNextApproval();
+      this.showNextAsk();
+    });
+  }
+
+  requestApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
     return new Promise((resolve) => {
-      this.approvalQueue.push({ req, resolve });
+      if (signal?.aborted) { resolve(false); return; }
+      let settled = false;
+      const cancel = () => entry.resolve(false);
+      const entry = { req, resolve: (allow: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', cancel);
+        const index = this.approvalQueue.indexOf(entry);
+        if (index >= 0) this.approvalQueue.splice(index, 1);
+        if (this.activeApproval === entry) {
+          this.activeApproval = null;
+          this.state.approval = null;
+          this.state.approvalResolve = null;
+          this.state.status = '';
+        }
+        resolve(allow);
+        this.schedulePaint();
+        this.advanceInteractions();
+      } };
+      signal?.addEventListener('abort', cancel, { once: true });
+      this.approvalQueue.push(entry);
       this.showNextApproval();
     });
   }
 
   private showNextApproval(): void {
-    if (this.state.approval || this.approvalQueue.length === 0) return; // 已有卡片在等 → 排队
+    if (this.state.approval || this.state.ask || this.approvalQueue.length === 0) return;
     const next = this.approvalQueue.shift()!;
+    this.activeApproval = next;
     this.state.approval = { tool: next.req.tool, summary: next.req.summary, reason: next.req.reason };
-    this.state.approvalResolve = (allow: boolean) => {
-      this.state.approval = null;
-      this.state.approvalResolve = null;
-      this.state.status = '';
-      next.resolve(allow);
-      this.schedulePaint();
-      this.showNextApproval(); // 串行：处理队列里的下一条
-    };
+    this.state.approvalResolve = next.resolve;
     this.state.status = tf(this.state.language, 'status.approval', { tool: next.req.tool });
     this.schedulePaint();
   }
@@ -785,16 +815,39 @@ export class TuiOutput implements Output {
    * 并行多个提问串行展示（与审批卡片同队列模式）。
    */
   private askQueue: { question: string; options: string[]; multiple: boolean; resolve: (r: AskResult | null) => void }[] = [];
-  askUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
+  private activeAsk: { question: string; options: string[]; multiple: boolean; resolve: (r: AskResult | null) => void } | null = null;
+  askUser(question: string, options: string[], multiple: boolean, signal?: AbortSignal): Promise<AskResult | null> {
     return new Promise((resolve) => {
-      this.askQueue.push({ question, options, multiple, resolve });
+      if (signal?.aborted) { resolve(null); return; }
+      let settled = false;
+      const cancel = () => entry.resolve(null);
+      const entry = { question, options, multiple, resolve: (answer: AskResult | null) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', cancel);
+        const index = this.askQueue.indexOf(entry);
+        if (index >= 0) this.askQueue.splice(index, 1);
+        if (this.activeAsk === entry) {
+          this.activeAsk = null;
+          this.state.ask = null;
+          this.state.askResolve = null;
+          this.state.status = '';
+        }
+        resolve(answer);
+        this.schedulePaint();
+        this.advanceInteractions();
+      } };
+      signal?.addEventListener('abort', cancel, { once: true });
+      this.askQueue.push(entry);
       this.showNextAsk();
     });
   }
 
   private showNextAsk(): void {
-    if (this.state.ask || this.askQueue.length === 0) return; // 已有面板在等 → 排队
+    if (this.state.ask || this.state.approval || this.askQueue.length === 0) return;
+    if (this.approvalQueue.length > 0) { this.showNextApproval(); return; }
     const next = this.askQueue.shift()!;
+    this.activeAsk = next;
     this.state.ask = {
       question: next.question,
       options: next.options,
@@ -803,14 +856,7 @@ export class TuiOutput implements Output {
       custom: '',
       cursor: 0,
     };
-    this.state.askResolve = (r: AskResult | null) => {
-      this.state.ask = null;
-      this.state.askResolve = null;
-      this.state.status = '';
-      next.resolve(r);
-      this.schedulePaint();
-      this.showNextAsk(); // 串行：处理队列里的下一条
-    };
+    this.state.askResolve = next.resolve;
     this.state.status = t(this.state.language, 'status.ask');
     this.schedulePaint();
   }
@@ -835,6 +881,12 @@ export class TuiOutput implements Output {
   }
 
   onTurnEnd(): void {
+    // 取消/异常收尾不会再等待交互结果；释放对应 Promise 和 UI，避免跨轮残留。
+    if (this.turnActive) {
+      this.turnActive = false;
+      for (const entry of [...(this.activeApproval ? [this.activeApproval] : []), ...this.approvalQueue]) entry.resolve(false);
+      for (const entry of [...(this.activeAsk ? [this.activeAsk] : []), ...this.askQueue]) entry.resolve(null);
+    }
     // 兜底清理回合视觉（思考中/执行中阶段被取消时，onStreamStart/onToolResult 的清空
     // 不会执行——状态栏会残留「⠋ 思考中」+ spinner 定时器继续跑，用户反馈 ESC 后仍显示）
     this.stopSpinner();

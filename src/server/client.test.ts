@@ -150,3 +150,74 @@ test('explicit server URLs reject credentials and insecure remote links', () => 
   assert.throws(() => serverConnection('https://example.com/?token=secret'), /查询参数/);
   assert.equal(serverConnection('http://127.0.0.1:3080/w/a/').url, 'http://127.0.0.1:3080/w/a');
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const until = Date.now() + 3000;
+  while (!predicate()) {
+    assert.ok(Date.now() < until, '交互生命周期等待超时');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+for (const transition of ['resolved', 'run.end', 'reset', 'select', 'close']) {
+  test(`shared interaction UI is dismissed on ${transition} and late answers never reach another session`, async () => {
+    const h = await harness(() => {});
+    const signals: AbortSignal[] = [];
+    const finishers: (() => void)[] = [];
+    // 故意保留不遵守取消的异步 UI，用于验证传输层也挡住迟到响应。
+    const ui: Output = {
+      ...output([]),
+      requestApproval: (_req, signal) => new Promise(resolve => {
+        assert.ok(signal);
+        signals.push(signal);
+        finishers.push(() => resolve(true));
+      }),
+      askUser: (_question, _options, _multiple, signal) => new Promise(resolve => {
+        assert.ok(signal);
+        signals.push(signal);
+        finishers.push(() => resolve({ choice: 'one', choices: ['one'], custom: false }));
+      }),
+    };
+    try {
+      await h.session.start(ui);
+      h.emit('approval.request', { approvalId: 'cancel-a', tool: 'write_file', summary: 'write', reason: 'ask' });
+      h.emit('ask.request', { askId: 'cancel-q', question: 'pick', options: ['one', 'two'] });
+      await waitFor(() => signals.length === 2);
+      assert.ok(signals.every(signal => !signal.aborted));
+      if (transition === 'resolved') {
+        h.emit('approval.resolved', { approvalId: 'cancel-a', allow: true });
+        h.emit('ask.resolved', { askId: 'cancel-q', choices: ['two'] });
+      } else if (transition === 'run.end') h.emit('run.end', { reason: 'aborted' });
+      else if (transition === 'reset') h.reset();
+      else if (transition === 'select') await h.session.select('s2');
+      else await h.session.close();
+      await waitFor(() => signals.every(signal => signal.aborted));
+      for (const finish of finishers) finish();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(h.posts.filter(post => /\/(ask|approval)$/.test(post.path)).length, 0);
+    } finally { await h.close(); }
+  });
+}
+
+test('resolved interaction only dismisses its own UI while a following question remains active', async () => {
+  const h = await harness(() => {});
+  const signals = new Map<string, AbortSignal>();
+  const ui: Output = {
+    ...output([]),
+    askUser: (question, _options, _multiple, signal) => new Promise(resolve => {
+      assert.ok(signal);
+      signals.set(question, signal);
+      signal.addEventListener('abort', () => resolve(null), { once: true });
+    }),
+  };
+  try {
+    await h.session.start(ui);
+    h.emit('ask.request', { askId: 'q-first', question: 'first', options: ['one', 'two'] });
+    h.emit('ask.request', { askId: 'q-next', question: 'next', options: ['one', 'two'] });
+    await waitFor(() => signals.size === 2);
+    h.emit('ask.resolved', { askId: 'q-first', choices: ['two'] });
+    await waitFor(() => signals.get('first')!.aborted);
+    assert.equal(signals.get('next')!.aborted, false);
+    assert.equal(h.posts.filter(post => post.path.endsWith('/ask')).length, 0);
+  } finally { await h.close(); }
+});

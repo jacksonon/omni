@@ -1568,6 +1568,26 @@ export function miniSuite(): TestSuite {
     suite.assert(result.code === 0, '普通/短窄窗口：普通对话、流式、工具、中断、命令取消与草稿编辑', result.output);
   });
 
+  for (const [script, label] of [
+    ['mini-mention-pty.py', '文件菜单完整滚动、亮暗状态色与草稿取消'],
+    ['mini-interaction-cancel-pty.py', '审批/提问独立取消、跨类型排队与草稿/监听恢复'],
+  ]) {
+    suite.test(`端到端：mini ${label}（PTY）`, async () => {
+      const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+        const child = spawn('python3', [`scripts/feature-tests/${script}`], {
+          cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, OMNI_LOCAL: '1', OMNI_PET: 'off' },
+        });
+        let output = '';
+        child.stdout.on('data', data => output += data);
+        child.stderr.on('data', data => output += data);
+        const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', code => { clearTimeout(timer); resolve({ code, output }); });
+      });
+      suite.assert(result.code === 0, label, result.output);
+    });
+  }
+
   suite.test('端到端：mini 工具输出完整展开/收起与草稿恢复（PTY）', async () => {
     for (const [width, height] of [[100, 40], [50, 24]]) {
       const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {

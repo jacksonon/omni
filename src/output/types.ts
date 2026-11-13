@@ -122,8 +122,9 @@ export interface Output {
    * 工具调用审批（安全护栏，权限分级需要确认时调用）：返回 true = 允许执行。
    * 实现方负责 UI——console 用 readline 询问、TUI 用审批卡片（y/n 或鼠标左右半区）；
    * 非交互（管道）自动拒绝（fail-safe）。可选：缺省时 loop 直接拒绝。
+   * signal 取消表示该请求已失效：关闭对应交互并返回 false，不影响其它排队请求。
    */
-  requestApproval?(req: ApprovalRequest): Promise<boolean>;
+  requestApproval?(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean>;
   /**
    * run_command 实时输出增量（live streaming）。每收到一行 stdout/stderr 推一次。
    * TUI 用 ANSI 原地刷新；Web 用流式追加；console 用 last-N 行滚动。
@@ -134,8 +135,9 @@ export interface Output {
    * 向用户提问（ask_user 工具）：返回用户选择（选项文本列表/自定义内容），null = 取消。
    * multiple = 是否允许多选（TUI 竖向勾选列表、console readline 序号输入）。
    * 实现方负责 UI——TUI 输入区上方勾选面板、console readline；非交互（管道）返回 null。
+   * signal 取消时关闭对应问答并返回 null，恢复输入区及草稿。
    */
-  askUser?(question: string, options: string[], multiple?: boolean): Promise<AskResult | null>;
+  askUser?(question: string, options: string[], multiple?: boolean, signal?: AbortSignal): Promise<AskResult | null>;
   /** 达到最大步数 */
   onMaxSteps(max: number): void;
   /** 交互模式：回显用户输入的消息（TUI 白字灰底气泡；console 直接回显） */

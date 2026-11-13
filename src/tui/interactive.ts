@@ -1,6 +1,6 @@
 import { requestGeneration } from '../output/token-rate.js';
 import { runRemoteCommand, remoteAttachments } from '../server/terminal.js';
-import { syncRemoteRunOptions } from '../server/client.js';
+import { syncRemoteTuiState } from './remote-state.js';
 /**
  * TUI 交互模式：底部输入框 + 消息滚动区，多轮对话全部在 TUI 内完成。
  *
@@ -53,13 +53,7 @@ async function runCommand(ctx: TuiCommandContext, command: string): Promise<'exi
   if (!remote || /^\/(exit|quit|theme|vim)(\s|$)/.test(command)) return runLocalCommand(ctx, command);
   const lines = await runRemoteCommand(remote, command, ctx.out, (_title, values, current, head) =>
     pickRemoteMenu(ctx.state, head, values, current, ctx.runOpts?.models));
-  syncRemoteRunOptions(remote, ctx.runOpts!);
-  ctx.state.model = remote.status.model ?? ctx.state.model;
-  ctx.state.models = (ctx.runOpts?.models ?? []).map(model => model.name);
-  ctx.state.permission = ctx.runOpts?.permission ?? 'safe';
-  ctx.state.planMode = ctx.runOpts?.planMode ?? false;
-  ctx.state.reasoningEffort = ctx.runOpts?.reasoningEffort ?? '';
-  ctx.state.restoreHint = `omni -s ${remote.id}`;
+  syncRemoteTuiState(remote, ctx.runOpts!, ctx.state, ctx.out);
   if (lines.length) {
     openCmdPanel(ctx.state, command);
     for (const text of lines) pushCmdLine(ctx.state, { kind: 'meta', text });
@@ -411,7 +405,13 @@ export async function runTuiInteractive(
       void session.paint().catch(() => {});
     }
   }, 30);
-  const unsubKey = session.onKeyPress((key) => {    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
+  const unsubKey = session.onKeyPress((key) => {
+    if (key.defaultPrevented) {
+      state.approvalKeyJustConsumed = false;
+      state.askKeyJustConsumed = false;
+      return;
+    }
+    // 全局监听先于输入框执行：输入框的 buffer 此时还未更新（按键刚按下）。
     // 联想列表需要按「更新后的文本」过滤，所以这里额外延迟一帧重绘（setTimeout 0），
     // 让输入框先插入字符、repaintTree 再读到最新文本。合并 pending：连发按键只挂一个定时器。
     const paintNow = (): void => void session.paint().catch(() => {});
@@ -709,7 +709,7 @@ export async function runTuiInteractive(
     state.activeVariant = runOpts.activeVariant ?? null;
     // 可用模型列表：顶层 model + config `models`（/model 面板列出）；当前模型初始取运行时
     state.models = (runOpts.models ?? []).map((m) => m.name);
-    state.model = runOpts.modelRuntime?.model ?? model;
+    state.model = runOpts.remote?.status.model ?? runOpts.modelRuntime?.model ?? model;
     // 当前模型所属 provider 组（footer 模型行显示 `模型名 组名`；不在分组内为空）
     state.provider = (runOpts.models ?? []).find((m) => m.name === state.model)?.provider
       ?? findProviderForModel(runOpts.models ?? [], state.model)
@@ -746,6 +746,11 @@ export async function runTuiInteractive(
       state.activeVariant = endpoint.variant ?? null;
     };
     const syncModel = (): void => {
+      if (runOpts.remote) {
+        currentModel = state.model;
+        state.modelProvider = null;
+        return; // 共享模式的端点仅含展示元数据；不能创建本地 SDK 或覆盖服务端状态。
+      }
       // 对比 state.model（/model 面板确认后变更）与当前运行时模型，变了才真正切换：
       // 从 runOpts.models 找目标端点（baseURL/apiKey/userAgent 已按配置展开），重建 client
       // 并更新 runOpts.modelRuntime——主循环（每轮读它）与 delegate 子代理（闭包持有）同步生效
@@ -890,15 +895,8 @@ export async function runTuiInteractive(
             openCmdPanel(state, cmd);
             for (const line of lines) pushCmdLine(state, { kind: 'meta', text: line });
           }
-          syncRemoteRunOptions(runOpts.remote, runOpts);
-          state.model = runOpts.remote.status.model ?? state.model;
+          syncRemoteTuiState(runOpts.remote, runOpts, state, out);
           currentModel = state.model;
-          state.models = (runOpts.models ?? []).map(model => model.name);
-          state.permission = runOpts.permission ?? 'safe';
-          state.planMode = runOpts.planMode ?? false;
-          state.reasoningEffort = runOpts.reasoningEffort ?? '';
-          state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? [];
-          state.restoreHint = `omni -s ${runOpts.remote.id}`;
           messages.splice(0, messages.length, ...runOpts.remote.messages);
           await session.paint();
         } catch (error) {

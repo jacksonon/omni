@@ -1,4 +1,5 @@
 import { MiniInputBuffer, type MiniInputKey } from './mini-input.js';
+import { ConsoleOutput } from '../output/console.js';
 /**
  * 交互模式：readline 循环，消息跨轮次保留（上下文连续）。
  * 支持 /exit、/clear、/settings help 等命令。
@@ -242,6 +243,7 @@ export async function runInteractive(
     }
   }
   opts.onRl?.(rl);
+  if (out instanceof ConsoleOutput) out.attachInput(rl);
   if (out instanceof MiniOutput) {
     out.setMultilineHandler((lines: string[]) => {
       if (lines.length === 0) return;

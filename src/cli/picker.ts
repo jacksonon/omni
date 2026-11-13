@@ -33,6 +33,8 @@ export interface PickerOptions {
   filterable?: boolean;
   /** 多选面板：空格勾选，Enter 提交；索引对应原始 items。 */
   marked?: Set<number>;
+  /** 当前交互已在其它端解决或会话结束时，关闭此面板并返回取消。 */
+  signal?: AbortSignal;
 }
 
 /** 终端 Bracketed Paste 开启/关闭转义序列 */
@@ -388,7 +390,7 @@ export async function pickFromList(
   items: PickerItem[],
   opts: PickerOptions
 ): Promise<number> {
-  if (!stdin.isTTY || items.length === 0) return -1;
+  if (!stdin.isTTY || items.length === 0 || opts.signal?.aborted) return -1;
   // 确保有 keypress 事件（重复调用加守卫，避免叠加 data 解码器）
   const flagged = stdin as NodeJS.ReadStream & { __omniKeypressOn?: boolean };
   if (!flagged.__omniKeypressOn) {
@@ -486,6 +488,7 @@ export async function pickFromList(
       stdin.removeListener('keypress', onKey);
       out.removeListener('resize', paint);
       stdin.removeListener('end', onEnd);
+      opts.signal?.removeEventListener('abort', onAbort);
       for (const fn of saved) stdin.on('keypress', fn as (...args: unknown[]) => void);
       resolve(n);
     };
@@ -560,9 +563,11 @@ export async function pickFromList(
       }
     };
     const onEnd = (): void => done(-1);
+    const onAbort = (): void => done(-1);
     stdin.on('keypress', onKey as (...args: unknown[]) => void);
     stdin.once('end', onEnd);
     out.on('resize', paint);
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
     for (const fn of saved) stdin.removeListener('keypress', fn as (...args: unknown[]) => void);
   });
 }

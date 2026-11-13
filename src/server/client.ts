@@ -82,7 +82,7 @@ export class ServerSession {
   private watchAbort = new AbortController();
   private output: Output | null = null;
   private ended: ((reason: string) => void) | null = null;
-  private pending = new Set<string>();
+  private pending = new Map<string, AbortController>();
   private resolved = new Set<string>();
   private callbacks: { status?: (status: Record<string, any>) => void; event?: (event: ServerEvent) => void; meta?: (text: string) => void } = {};
   private suppressUser = 0;
@@ -110,6 +110,12 @@ export class ServerSession {
     this.watcher = this.watch();
   }
   private restorePending(snapshot: ServerSnapshot): void {
+    const active = new Set([
+      ...(snapshot.approvals ?? []).filter(request => request.sessionId === this.id).map(request => request.approvalId),
+      ...(snapshot.asks ?? []).filter(request => request.sessionId === this.id).map(request => request.askId),
+    ]);
+    // 缓冲区重置可能丢失 resolved 事件：快照里已不存在的交互也要关闭。
+    for (const id of this.pending.keys()) if (!active.has(id)) this.dismissInteraction(id);
     for (const request of snapshot.approvals ?? []) this.dispatch({ seq: this.cursor, type: 'approval.request', data: request });
     for (const request of snapshot.asks ?? []) this.dispatch({ seq: this.cursor, type: 'ask.request', data: request });
   }
@@ -154,6 +160,7 @@ export class ServerSession {
     }
   }
   private finish(reason: string): void {
+    this.dismissInteractions();
     this.lastReason = reason;
     this.running = false;
     const resolve = this.ended;
@@ -199,35 +206,54 @@ export class ServerSession {
       case 'run.end': this.finish(String(data.reason ?? 'completed')); break;
       case 'approval.request': void this.resolveApproval(data); break;
       case 'ask.request': void this.resolveAsk(data); break;
-      case 'approval.resolved': this.resolved.add(data.approvalId); break;
-      case 'ask.resolved': this.resolved.add(data.askId); break;
+      case 'approval.resolved': this.dismissInteraction(data.approvalId); break;
+      case 'ask.resolved': this.dismissInteraction(data.askId); break;
     }
+  }
+  /** 其它客户端已回答、任务结束或会话切换时撤下对应 UI，迟到回答不再提交。 */
+  private dismissInteraction(id: string): void {
+    this.resolved.add(id);
+    this.pending.get(id)?.abort();
+  }
+  private dismissInteractions(): void {
+    for (const id of this.pending.keys()) this.dismissInteraction(id);
+    this.pending.clear();
   }
   private async resolveApproval(data: Record<string, any>): Promise<void> {
     const id = data.approvalId;
     if (!id || this.pending.has(id) || this.resolved.has(id)) return;
-    this.pending.add(id);
+    const controller = new AbortController();
+    const sessionId = this.id;
+    this.pending.set(id, controller);
     try {
-      const allow = await this.output?.requestApproval?.({ tool: data.tool, summary: data.summary, reason: data.reason });
-      if (!this.resolved.has(id) && !this.watchAbort.signal.aborted) {
-        await this.client.request(`/api/sessions/${encodeURIComponent(this.id)}/approval`, { approvalId: id, allow: allow === true });
+      const allow = await this.output?.requestApproval?.({ tool: data.tool, summary: data.summary, reason: data.reason }, controller.signal);
+      if (!controller.signal.aborted && !this.resolved.has(id) && !this.watchAbort.signal.aborted && this.id === sessionId) {
+        await this.client.request(`/api/sessions/${encodeURIComponent(sessionId)}/approval`, { approvalId: id, allow: allow === true });
       }
     } catch (error) {
       if (!(error instanceof ServerHttpError && error.status === 404)) this.callbacks.meta?.(`审批提交失败：${(error as Error).message}`);
-    } finally { this.pending.delete(id); this.resolved.add(id); }
+    } finally {
+      if (this.pending.get(id) === controller) this.pending.delete(id);
+      this.resolved.add(id);
+    }
   }
   private async resolveAsk(data: Record<string, any>): Promise<void> {
     const id = data.askId;
     if (!id || this.pending.has(id) || this.resolved.has(id)) return;
-    this.pending.add(id);
+    const controller = new AbortController();
+    const sessionId = this.id;
+    this.pending.set(id, controller);
     try {
-      const result = await this.output?.askUser?.(data.question, data.options ?? [], data.multiple === true);
-      if (!this.resolved.has(id) && !this.watchAbort.signal.aborted) {
-        await this.client.request(`/api/sessions/${encodeURIComponent(this.id)}/ask`, { askId: id, choices: result?.choices ?? (result?.choice ? [result.choice] : null) });
+      const result = await this.output?.askUser?.(data.question, data.options ?? [], data.multiple === true, controller.signal);
+      if (!controller.signal.aborted && !this.resolved.has(id) && !this.watchAbort.signal.aborted && this.id === sessionId) {
+        await this.client.request(`/api/sessions/${encodeURIComponent(sessionId)}/ask`, { askId: id, choices: result?.choices ?? (result?.choice ? [result.choice] : null) });
       }
     } catch (error) {
       if (!(error instanceof ServerHttpError && error.status === 404)) this.callbacks.meta?.(`提问提交失败：${(error as Error).message}`);
-    } finally { this.pending.delete(id); this.resolved.add(id); }
+    } finally {
+      if (this.pending.get(id) === controller) this.pending.delete(id);
+      this.resolved.add(id);
+    }
   }
   async run(text: string, options: { runOpts?: RunOptions; attachments?: unknown[]; echoed?: boolean; config?: Record<string, unknown>; shell?: boolean } = {}): Promise<string> {
     if (!this.output || !this.watcher) throw new Error('ServerSession.start 必须先于 run');
@@ -281,15 +307,16 @@ export class ServerSession {
   }
   async select(id: string): Promise<void> {
     if (this.running) throw new Error('请先取消当前运行，再切换会话');
+    this.dismissInteractions();
     this.id = id;
     this.suppressUser = 0;
-    this.pending.clear();
     await this.history();
     const snapshot = await this.snapshot();
     this.restorePending(snapshot);
   }
   async close(): Promise<void> {
     this.watchAbort.abort();
+    this.dismissInteractions();
     await this.watcher;
     this.finish('disconnected');
   }

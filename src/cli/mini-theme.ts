@@ -15,6 +15,15 @@ export function miniSelection(): string {
   return useColor ? '\x1b[48;2;88;151;245m\x1b[30m' : '';
 }
 
+/** 状态文字按亮暗背景取色；未知背景沿用终端前景，避免浅色终端浅金字难读。 */
+export function miniStatusColor(running = false): string {
+  if (!useColor) return '';
+  if (dark === undefined) return '\x1b[39m';
+  return running
+    ? (dark ? '\x1b[38;2;181;145;229m' : '\x1b[38;2;109;40;217m')
+    : (dark ? '\x1b[38;2;215;180;124m' : '\x1b[38;2;146;64;14m');
+}
+
 /** 在 readline 安装前查询背景，避免终端应答被当成用户输入。 */
 export async function detectMiniTheme(): Promise<void> {
   const input = process.stdin;

@@ -70,6 +70,7 @@ import { inlineMathToText } from './markdown.js';
 import { visualWidth } from './width.js';
 import {
   abovePadCarrier,
+  askPanelWindow,
   cmdPanelRows,
   computeRows,
   delegatePanelRows,
@@ -134,6 +135,8 @@ export interface TuiKey {
   super?: boolean;
   /** Alt/Option（OpenTUI 里 Option 键记作 option，与 meta 同源但 kitty 协议下可独立） */
   option?: boolean;
+  /** 先注册的审批/提问处理器已消费此键时，后续交互监听不得再次分发。 */
+  readonly defaultPrevented?: boolean;
   /** 阻止后续 renderable（输入框）处理该按键 */
   preventDefault(): void;
   stopPropagation(): void;
@@ -227,6 +230,8 @@ export interface TuiTree {
   /** ask_user 提问面板（bottomBlock 内、待发送区上方：问题 + 选项 + 提示；非空时可见） */
   askBox: BoxRenderable | null;
   askCells: TextRenderable[];
+  /** 提问面板内部行 → 交互类型，屏幕命中坐标由已布局的细胞计算。 */
+  askRowMap: Map<number, { kind: 'opt' | 'custom' | 'confirm'; idx?: number }>;
   /** 每次重绘刷新：ask 面板行的屏幕 y → 行类型（鼠标点击勾选/确认用） */
   askRects: Map<number, { kind: 'opt' | 'custom' | 'confirm'; idx?: number }>;
   /**
@@ -610,7 +615,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
   // ask_user 提问面板（输入区上方、待发送区上方）：问题 + 选项行 + 自定义输入 + 操作提示。
   // **扁平面板 + 输入区同款底色**（用户要求：像 command 面板一样有背景色——
   // theme.footerBg 填充，无边框；顶部留白 1 行 + 问题 1 + 选项 n + 自定义 1 + 确认 1 + 提示 1；
-  // 预算同步 computeRows options+5）。
+  // 预算由 askPanelWindow 与 computeRows 共用；长列表为上下滚动提示保留空间）。
   askBox = new BoxRenderable(ctx, {
     flexDirection: 'column',
     paddingX: 1,
@@ -618,7 +623,7 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     visible: false,
     backgroundColor: theme.footerBg,
   });
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 16; i++) {
     const c = new TextRenderable(ctx, { content: '', wrapMode: 'none' });
     askBox.add(c);
     askCells.push(c);
@@ -696,7 +701,10 @@ export function mountTree(ctx: RenderContext, state: TuiState, opts?: { withInpu
     approvalRect: null,
     askBox,
     askCells,
-    askRects: new Map(),
+    askRowMap: new Map(),
+    get askRects() {
+      return new Map([...this.askRowMap].map(([row, action]) => [this.askCells[row]!.screenY, action]));
+    },
     suggestBox,
     suggestCells,
     suggestRect: null,
@@ -1865,7 +1873,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
   if (tree.askBox) {
     const a = state.ask;
     tree.askBox.visible = !!a && !!opts?.withInput;
-    tree.askRects.clear();
+    tree.askRowMap.clear();
     if (a && opts?.withInput) {
       tree.askBox.backgroundColor = theme.footerBg; // 主题切换（/theme）每帧跟随（同命令面板底色）
       const lang = state.language;
@@ -1874,22 +1882,28 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       const modeTag = a.multiple ? t(lang, 'ask.multiple') : t(lang, 'ask.single');
       aRows.push({ text: `? ${fitAsk(a.question, Math.max(10, (width ?? 80) - 12))}（${modeTag}）`, style: { fg: 'cyan', bold: true } });
       const optCols = Math.max(10, (width ?? 80) - 8);
-      for (let i = 0; i < a.options.length; i++) {
+      const window = askPanelWindow(state, height ?? 24, todoRows + pendingRows + delegateRows);
+      const optionRows = new Map<number, number>();
+      if (window.above > 0) aRows.push({ text: tf(lang, 'suggest.hint', { arrow: '↑', n: window.above }), style: { dim: true } });
+      for (let i = window.top; i < window.end; i++) {
         const on = a.selected.has(i);
         const cur = a.cursor === i;
-        const label = `${String.fromCharCode(65 + i)}) ${fitAsk(a.options[i]!, optCols - 5)}`;
+        const label = `${i < 26 ? String.fromCharCode(65 + i) : i + 1}) ${fitAsk(a.options[i]!, optCols - 5)}`;
+        optionRows.set(aRows.length, i);
         aRows.push({
           text: `${cur ? '›' : ' '} [${on ? 'x' : ' '}] ${label}`,
-          style: cur ? { fg: 'blue', bold: true } : on ? { bold: true } : {},
+          style: cur ? { fg: theme.accentBlue, bold: true } : on ? { bold: true } : {},
         });
       }
+      if (window.below > 0) aRows.push({ text: tf(lang, 'suggest.hint', { arrow: '↓', n: window.below }), style: { dim: true } });
       const curCustom = a.cursor === a.options.length;
       const customOn = a.custom.trim().length > 0;
       // 独立输入行：有内容显示内容、无内容显示占位；光标在高亮行时追加 ▏（输入位置提示）
       const customText = a.custom ? fitAsk(a.custom, optCols - 7) : t(lang, 'ask.customPlaceholder');
+      const customRow = aRows.length;
       aRows.push({
         text: `${curCustom ? '›' : ' '} [${customOn ? 'x' : ' '}] ${t(lang, 'ask.custom')}：${customText}${curCustom ? '▏' : ''}`,
-        style: curCustom ? { fg: 'blue', bold: true } : customOn ? { bold: true } : { dim: true },
+        style: curCustom ? { fg: theme.accentBlue, bold: true } : customOn ? { bold: true } : { dim: true },
       });
       aRows.push({ text: `✓ ${t(lang, 'ask.confirm')}（Enter）`, style: { fg: 'green', bold: true } });
       aRows.push({ text: t(lang, 'ask.hint'), style: { dim: true } });
@@ -1908,16 +1922,10 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         applyRowToCell(cell, aRows[i], theme);
         paintPanelCell(cell, theme);
       }
-      // 面板底 = footer 顶 - todoRows - pendingRows - delegateRows（delegate/todo/待发送区在面板与灰色块之间）；
-      // 顶 = 底 - 行数（hero 居中再减 heroOffset）
-      const aBottom = (height ?? 24) - 6 - state.inputLines - todoRows - pendingRows - delegateRows - heroOffset;
-      const aTop = aBottom - aRows.length;
-      // 行 y → 类型：顶部留白行后，问题行下标 1、选项行下标 2+i、自定义行 2+n、确认行 3+n
-      for (let i = 0; i < a.options.length; i++) {
-        tree.askRects.set(aTop + 2 + i, { kind: 'opt', idx: i });
-      }
-      tree.askRects.set(aTop + 2 + a.options.length, { kind: 'custom' });
-      tree.askRects.set(aTop + 3 + a.options.length, { kind: 'confirm' });
+      // 空态/多行/缩放会改变实际布局位置；只记相对行，命中时读取细胞 screenY。
+      for (const [row, idx] of optionRows) tree.askRowMap.set(row, { kind: 'opt', idx });
+      tree.askRowMap.set(customRow, { kind: 'custom' });
+      tree.askRowMap.set(customRow + 1, { kind: 'confirm' });
     }
   }
 }
@@ -1973,6 +1981,8 @@ export function handleTuiMouseEvent(
   /** 点击本地文件链接时的回调（startTui 注入：挂起 TUI → $EDITOR 打开 → 恢复 + 重绘）；未注入则命中链接不消费 */
   onOpenFile?: (path: string) => void,
 ): void {
+  const withinX = (box: BoxRenderable | null): boolean => !!box && typeof e.x === 'number' &&
+    e.x >= box.screenX && e.x < box.screenX + box.width;
   const mark = tree.omniTitle;
   if (e.type === 'down' && e.button === 0 && mark?.visible &&
       !state.menu && !state.ask && !tree.suggestBox?.visible && !tree.cmdPanelOverlay?.visible &&
@@ -2021,6 +2031,9 @@ export function handleTuiMouseEvent(
     if (
       !state.menu &&
       !state.cmdPanel &&
+      !state.ask &&
+      !state.approval &&
+      !(tree.suggestBox?.visible && withinX(tree.suggestBox) && e.y >= tree.suggestBox.screenY && e.y < tree.suggestBox.screenY + tree.suggestBox.height) &&
       e.y >= 1 &&
       e.y <= tree.lastRows.length
     ) {
@@ -2037,7 +2050,7 @@ export function handleTuiMouseEvent(
   // 放在 cmdPanel 守卫之前：菜单确认后 pushCmdLine 会打开命令输出面板，若面板还开着
   // （测试/边界态），重新打开的菜单点击仍应优先命中菜单，而不是被面板守卫整体吞掉。
   if (state.menu) {
-    if (e.type === 'down' && e.button === 0 && typeof e.y === 'number' && tree.menuOverlay) {
+    if (e.type === 'down' && e.button === 0 && typeof e.y === 'number' && tree.menuOverlay && withinX(tree.menuOverlay)) {
       const overlayTop = (tree.menuOverlay.top ?? 0) as number;
       const panelIdx = e.y - overlayTop;
       const optIdx = panelIdx >= 0 && panelIdx < tree.menuRowMap.length ? tree.menuRowMap[panelIdx] : -1;
@@ -2086,7 +2099,7 @@ export function handleTuiMouseEvent(
     }
     // ask_user 提问面板：竖向勾选列表——点击选项行 = 勾选/取消（单选互斥）、
     // 自定义行 = 光标移过去（输入框键入内容）、确认行 = 提交；面板区域优先于内容
-    if (state.ask) {
+    if (state.ask && withinX(tree.askBox)) {
       const rowOpt = tree.askRects.get(e.y);
       if (rowOpt) {
         if (rowOpt.kind === 'opt' && rowOpt.idx !== undefined) {
@@ -2112,7 +2125,7 @@ export function handleTuiMouseEvent(
     const picker = state.cmdSuggest ?? state.mention;
     if (picker && tree.suggestRect && tree.input) {
       const { top, bottom } = tree.suggestRect;
-      if (e.y >= top && e.y <= bottom) {
+      if (e.y >= top && e.y <= bottom && withinX(tree.suggestBox)) {
         const idx = e.y - top;
         const itemIdx = tree.suggestRowMap[idx];
         const sel = itemIdx !== undefined && itemIdx >= 0 ? picker.items[itemIdx] : undefined;
@@ -2231,7 +2244,7 @@ export function onAskKeyPress(
   }
   // Backspace/Delete：删除自定义输入末字符（独立输入缓冲）
   if (n === 'backspace' || n === 'delete') {
-    if (ask.custom.length > 0) ask.custom = ask.custom.slice(0, -1);
+    if (ask.custom.length > 0) ask.custom = [...ask.custom].slice(0, -1).join('');
     key.preventDefault();
     paint();
     return;
@@ -2271,11 +2284,12 @@ export function onAskKeyPress(
   // 可打印字符（含粘贴多字符）：进面板独立的自定义输入缓冲（不进主输入框——
   // 用户要求 ask 自带独立输入框）；Ctrl/Meta 组合键不放行不消费
   const seq = key.sequence ?? '';
-  if (seq.length > 0 && !key.ctrl && !key.meta && !key.super && !key.option) {
+  if (seq.length > 0 && !/[\u0000-\u001f\u007f-\u009f]/u.test(seq) && !key.ctrl && !key.meta && !key.super && !key.option) {
     ask.custom += seq;
-    key.preventDefault();
+    ask.cursor = ask.options.length;
     paint();
   }
+  key.preventDefault(); // 其余控制键也不进入主输入框或自定义文本。
 }
 
 /**

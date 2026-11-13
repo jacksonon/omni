@@ -5923,21 +5923,20 @@ async function main(): Promise<void> {
       console.error(`✗ 场景 45 高亮行 › 前缀缺失:\n${frame45}`);
       process.exit(1);
     }
-    // askRects：面板底 = 24-6-1 = 17；行数 = 1+3+1+1+1 = 7 → 顶 10。
-    // 选项 i 在 y = 10+1+i（11/12/13）、自定义 14、确认 15
-    const rOpt = tree45.askRects.get(12);
+    // 命中区须对应已布局的实际行；空态隐藏 meta 行后不能套用固定 y 公式。
+    const rOpt = tree45.askRects.get(frame45.split('\n').findIndex(line => line.includes('[x] B)')));
     if (!rOpt || rOpt.kind !== 'opt' || rOpt.idx !== 1) {
-      console.error(`✗ 场景 45 askRects 选项行映射错误: y12 → ${JSON.stringify(rOpt)}: ${JSON.stringify([...tree45.askRects])}`);
+      console.error(`✗ 场景 45 askRects 未对应实际选项行: ${JSON.stringify(rOpt)}: ${JSON.stringify([...tree45.askRects])}`);
       process.exit(1);
     }
-    const rCus = tree45.askRects.get(14);
+    const rCus = tree45.askRects.get(frame45.split('\n').findIndex(line => line.includes('自定义')));
     if (!rCus || rCus.kind !== 'custom') {
-      console.error(`✗ 场景 45 askRects 自定义行映射错误: y14 → ${JSON.stringify(rCus)}`);
+      console.error(`✗ 场景 45 askRects 未对应实际自定义行: ${JSON.stringify(rCus)}`);
       process.exit(1);
     }
-    const rCfm = tree45.askRects.get(15);
+    const rCfm = tree45.askRects.get(frame45.split('\n').findIndex(line => line.includes('✓ 确认')));
     if (!rCfm || rCfm.kind !== 'confirm') {
-      console.error(`✗ 场景 45 askRects 确认行映射错误: y15 → ${JSON.stringify(rCfm)}`);
+      console.error(`✗ 场景 45 askRects 未对应实际确认行: ${JSON.stringify(rCfm)}`);
       process.exit(1);
     }
     // 内容区预算收缩：ask 打开时 cap 减 options+5 行（留白 1 + 问题 1 + 选项 3 + 自定义 1 + 确认 1 + 提示 1）

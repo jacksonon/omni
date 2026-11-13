@@ -26,10 +26,10 @@ import { runTuiInteractive } from './tui/interactive.js';
 import { startTui, type TuiSession } from './tui/render.js';
 import { TuiOutput } from './tui/output.js';
 import { createTuiState } from './tui/state.js';
+import { syncRemoteTuiState } from './tui/remote-state.js';
 import { dim, isBun, isTTY, red } from './ui.js';
 import { VERSION } from './version.js';
 import { prepareServerTerminal, remoteAttachments } from './server/terminal.js';
-import { syncRemoteRunOptions } from './server/client.js';
 
 // 崩溃处理器：先于任何异步逻辑安装。未捕获异常落盘 + 尽力恢复终端后退出；
 // 未处理拒绝只记录不退出（不致命，但日志能揭示与重绘/按键的关联）。
@@ -104,14 +104,7 @@ async function run(): Promise<void> {
   if (connected) {
     await connected.remote.start(output, {
       status: (status) => {
-        syncRemoteRunOptions(connected.remote, runOpts);
-        state.model = status.model ?? state.model;
-        state.models = (runOpts.models ?? []).map(model => model.name);
-        state.permission = runOpts.permission ?? 'safe';
-        state.planMode = runOpts.planMode ?? false;
-        state.reasoningEffort = runOpts.reasoningEffort ?? '';
-        state.reasoningEffortOptions = runOpts.reasoningEffortOptions ?? [];
-        state.contextLimit = status.contextLimit ?? state.contextLimit;
+        syncRemoteTuiState(connected.remote, runOpts, state, output);
         state.schedulePaint?.();
       },
       meta: text => output.pushToast(text, 'info'),

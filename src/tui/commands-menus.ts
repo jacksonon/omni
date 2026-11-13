@@ -126,7 +126,7 @@ export function handleMenuKey(key: TuiKey, state: TuiState): boolean {
         confirmMenu(state);
         return true;
       }
-      return false;
+      return true; // 模态选择期间其它按键也不能泄漏到主输入框。
     }
   }
 }

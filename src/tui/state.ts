@@ -259,7 +259,7 @@ export interface TuiApproval {
 export interface TuiAsk {
   /** 问题（模型 ask_user 的 question） */
   question: string;
-  /** 候选选项（2-6 个；面板每行一个） */
+  /** 候选选项（工具通常 2-6 个，远程会话选择可能更多；按窗口每行一个显示） */
   options: string[];
   /** true = 多选（可勾选多个选项）；false = 单选（勾选自动互斥） */
   multiple: boolean;
@@ -270,6 +270,8 @@ export interface TuiAsk {
   custom: string;
   /** 高亮行光标（0..options.length；options.length = 自定义行） */
   cursor: number;
+  /** 长候选列表的可见窗口首项，由渲染随高亮项收敛。 */
+  top?: number;
 }
 
 /**

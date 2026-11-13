@@ -8,6 +8,7 @@
  * - 管道模式（非 TTY）：思考不内联，仅提示落盘路径；颜色自动禁用
  */
 import readline from 'node:readline/promises';
+import type { Interface as ReadlineInterface } from 'node:readline';
 import { stdin as input, stderr as errOut } from 'node:process';
 import { printBanner } from '../cli/banner.js';
 import { printHelp } from '../cli/args.js';
@@ -470,57 +471,61 @@ export class ConsoleOutput implements Output {
    * y/回车 = 允许，其余 = 拒绝；非 TTY（管道）自动拒绝（fail-safe）。
    * 并行工具调用的多个审批通过 promise 链串行（readline 接口不并发）。
    */
-  /**
-   * 问答消费行吞没队列（mini 同款双 readline 教训：答案字节同时进主 rl 行缓冲，
-   * 次 close() 还会 pause 共享 stdin；记录供主循环跳过，关闭后恢复流动）。
-   */
-  private swallowedQa: string[] = [];
-  private recordSwallowedQa(ans: string): void {
-    const t = ans.trim();
-    if (!t) return;
-    this.swallowedQa.push(t);
-    while (this.swallowedQa.length > 10) this.swallowedQa.shift();
+  private primaryInput: (ReadlineInterface & { closed?: boolean }) | null = null;
+  attachInput(rl: ReadlineInterface): void {
+    this.primaryInput = rl;
   }
 
-  /** 主循环调用：命中队首消费记录返回 true（跳过本行），不命中不清理 */
-  swallowQaLine(line: string): boolean {
-    if (this.swallowedQa.length > 0 && this.swallowedQa[0] === line.trim()) {
-      this.swallowedQa.shift();
-      return true;
+  /** 临时问答独占按键；关闭后恢复主草稿、raw 模式和提示符。 */
+  private async question(prompt: string, signal?: AbortSignal): Promise<string> {
+    const raw = input.isRaw;
+    const saved = input.listeners('keypress') as ((...args: any[]) => void)[];
+    for (const listener of saved) input.off('keypress', listener);
+    const rl = readline.createInterface({ input, output: errOut });
+    try {
+      return await rl.question(prompt, { signal });
+    } finally {
+      rl.close();
+      if (!this.primaryInput?.closed) {
+        if (input.isTTY) input.setRawMode(raw);
+        for (const listener of saved) input.on('keypress', listener);
+        input.resume();
+        this.primaryInput?.prompt(true);
+      }
     }
-    return false;
   }
 
-  private approvalTail: Promise<void> = Promise.resolve();
-  requestApproval(req: ApprovalRequest): Promise<boolean> {
+  /** 审批与提问共用 stdin，同一时间只展示一个交互。 */
+  private interactionTail: Promise<void> = Promise.resolve();
+  requestApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return Promise.resolve(false);
     let resolveMe!: (b: boolean) => void;
     const p = new Promise<boolean>((r) => (resolveMe = r));
-    this.approvalTail = this.approvalTail.then(async () => {
+    const cancel = () => resolveMe(false);
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.interactionTail = this.interactionTail.then(async () => {
       try {
-        resolveMe(await this.promptApproval(req));
+        resolveMe(signal?.aborted ? false : await this.promptApproval(req, signal));
       } catch {
         resolveMe(false); // 审批异常 → fail-safe 拒绝
+      } finally {
+        signal?.removeEventListener('abort', cancel);
       }
     });
     return p;
   }
 
-  private async promptApproval(req: ApprovalRequest): Promise<boolean> {
-    if (!isTTY || !input.isTTY) return false; // 管道模式自动拒绝（无法交互）
+  private async promptApproval(req: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted || !isTTY || !input.isTTY) return false; // 管道模式自动拒绝（无法交互）
     this.spinner?.stop();
     this.spinner = null;
     this.outSeq++;
-    const rl = readline.createInterface({ input, output: errOut });
-    try {
-      const ans = await rl.question(
-        `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n${dim(prefixLines(req.reason, '  '))}\n  批准执行？[y/N] `
-      );
-      this.recordSwallowedQa(ans);
-      return /^y/i.test(ans.trim());
-    } finally {
-      rl.close();
-      input.resume();
-    }
+    const ans = await this.question(
+      `\n${yellow('⚠️ 需要审批')} ${req.tool}\n  ${req.summary}\n${dim(prefixLines(req.reason, '  '))}\n  批准执行？[y/N] `,
+      signal
+    );
+    if (signal?.aborted) return false;
+    return /^y/i.test(ans.trim());
   }
 
   /**
@@ -528,45 +533,44 @@ export class ConsoleOutput implements Output {
    * 输入选项序号（单选 1 个 / 多选逗号分隔）或自定义文本，Enter 确认；空 = 取消；
    * 非 TTY（管道）返回 null（无法交互）。串行队列与审批一致（readline 不并发）。
    */
-  private askTail: Promise<void> = Promise.resolve();
-  askUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
+  askUser(question: string, options: string[], multiple: boolean, signal?: AbortSignal): Promise<AskResult | null> {
+    if (signal?.aborted) return Promise.resolve(null);
     let resolveMe!: (r: AskResult | null) => void;
     const p = new Promise<AskResult | null>((r) => (resolveMe = r));
-    this.askTail = this.askTail.then(async () => {
+    const cancel = () => resolveMe(null);
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.interactionTail = this.interactionTail.then(async () => {
       try {
-        resolveMe(await this.promptAskUser(question, options, multiple));
+        resolveMe(signal?.aborted ? null : await this.promptAskUser(question, options, multiple, signal));
       } catch {
         resolveMe(null); // 提问异常 → 视为取消（不阻塞任务）
+      } finally {
+        signal?.removeEventListener('abort', cancel);
       }
     });
     return p;
   }
 
-  private async promptAskUser(question: string, options: string[], multiple: boolean): Promise<AskResult | null> {
-    if (!isTTY || !input.isTTY) return null; // 管道模式无法交互
+  private async promptAskUser(question: string, options: string[], multiple: boolean, signal?: AbortSignal): Promise<AskResult | null> {
+    if (signal?.aborted || !isTTY || !input.isTTY) return null; // 管道模式无法交互
     this.spinner?.stop();
     this.spinner = null;
     this.outSeq++;
-    const rl = readline.createInterface({ input, output: errOut });
-    try {
-      const lines = options.map((o, i) => `  ${i + 1}. ${o}`);
-      const ans = await rl.question(
-        `\n${cyan('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`
-      );
-      this.recordSwallowedQa(ans);
-      const t = ans.trim();
-      if (!t) return null; // 空输入 = 取消
-      // 纯数字/逗号 = 选项序号（多选逗号分隔）；其它 = 自定义输入
-      if (/^[\d,\s]+$/.test(t)) {
-        const idxs = [...new Set(t.split(/[,，\s]+/).map((s) => parseInt(s, 10)).filter((n) => n >= 1 && n <= options.length))];
-        if (idxs.length === 0) return { choice: t, custom: true, choices: [t] };
-        const picked = idxs.map((i) => options[i - 1]!);
-        return { choice: picked.join('、'), custom: false, choices: picked };
-      }
-      return { choice: t, custom: true, choices: [t] };
-    } finally {
-      rl.close();
-      input.resume();
+    const lines = options.map((o, i) => `  ${i + 1}. ${o}`);
+    const ans = await this.question(
+      `\n${cyan('?')} ${question}（${multiple ? '多选' : '单选'}）\n${lines.join('\n')}\n  ${dim('自定义：直接输入内容')}\n  输入选项序号${multiple ? '（逗号分隔可多选）' : ''}或自定义文本，回车确认；空输入取消：`,
+      signal
+    );
+    if (signal?.aborted) return null;
+    const t = ans.trim();
+    if (!t) return null; // 空输入 = 取消
+    // 纯数字/逗号 = 选项序号（多选逗号分隔）；其它 = 自定义输入
+    if (/^[\d,\s]+$/.test(t)) {
+      const idxs = [...new Set(t.split(/[,，\s]+/).map((s) => parseInt(s, 10)).filter((n) => n >= 1 && n <= options.length))];
+      if (idxs.length === 0) return { choice: t, custom: true, choices: [t] };
+      const picked = idxs.map((i) => options[i - 1]!);
+      return { choice: picked.join('、'), custom: false, choices: picked };
     }
+    return { choice: t, custom: true, choices: [t] };
   }
 }

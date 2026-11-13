@@ -966,6 +966,22 @@ export function delegatePanelRows(state: TuiState): number {
   return rows;
 }
 
+/** 提问列表窗口与高度预算共用；确认/自定义始终保留，不被长列表挤出视口。 */
+export function askPanelWindow(state: TuiState, height: number, reservedRows = 0): { top: number; end: number; above: number; below: number; rows: number } {
+  const ask = state.ask;
+  if (!ask) return { top: 0, end: 0, above: 0, below: 0, rows: 0 };
+  const win = Math.min(ask.options.length, Math.max(1, Math.min(6, height - 17 - Math.max(1, state.inputLines) - reservedRows)));
+  const maxTop = Math.max(0, ask.options.length - win);
+  let top = Math.max(0, Math.min(ask.top ?? 0, maxTop));
+  const cursor = Math.min(ask.cursor, Math.max(0, ask.options.length - 1));
+  if (cursor < top) top = cursor;
+  else if (cursor >= top + win) top = Math.max(0, cursor - win + 1);
+  ask.top = top;
+  const end = Math.min(ask.options.length, top + win);
+  const below = ask.options.length - end;
+  return { top, end, above: top, below, rows: end - top + 5 + (top > 0 ? 1 : 0) + (below > 0 ? 1 : 0) };
+}
+
 /** 状态 → 可见内容行（尾部窗口 + 滚动）。状态栏、灰色块与路径/token 行是独立的
  * renderable，不在这里。
  *
@@ -1008,9 +1024,9 @@ export function computeRows(
   const todoRows = todoCount > 0 ? Math.min(4, todoCount) + (todoCount > 4 ? 1 : 0) + (carrier === 'todo' ? 1 : 0) : 0;
   // ask_user 提问面板（输入区上方）：留白 1 + ? 问题行 1 + 每选项 1 行 + 自定义行 1 +
   // 确认行 1 + 提示行 1（空间不足时提示行被截，确认行恒保留）；预算同步收缩（同 pendingRows 语义）。
-  const askRows = opts?.withInput && state.ask ? state.ask.options.length + 5 : 0;
   // 运行中 delegate 面板（输入区上方、ask 之下）：每条 delegate 折叠 1 行 / 展开含明细
   const delegateRows = opts?.withInput ? delegatePanelRows(state) : 0;
+  const askRows = opts?.withInput ? askPanelWindow(state, height, pendingRows + todoRows + delegateRows).rows : 0;
   // 根 Box paddingY(2) 固定；交互模式再占 状态栏间距(1) + 状态栏(1) + 灰色块(inputLines+4，含圆角边框与输入/模型间距 1) + 灰块外底行间距(1) + 灰块外底行(1) + 任务清单(todoRows) + 待发送区(pendingRows) + ask 面板(askRows) + delegate 面板(delegateRows)
   const cap = Math.max(0, (height ?? 24) - 2 - (opts?.withInput ? 2 + inputLines + 6 + pendingRows + todoRows + askRows + delegateRows : 2));
   const total = body.length;

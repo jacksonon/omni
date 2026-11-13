@@ -1,6 +1,6 @@
 import { isMiniSteerKey, miniExtendedKey, type MiniInputActions, type MiniInputKey, type MiniPendingInput } from './mini-input.js';
 import { dockMiniViewport, restoreMiniViewport } from './mini-viewport.js';
-import { miniPanelBackground, miniSelection } from './mini-theme.js';
+import { miniPanelBackground, miniSelection, miniStatusColor } from './mini-theme.js';
 /** mini 输入区装饰：原生 readline 负责编辑，显示层补灰底、占位与两行状态。 */
 import { applyMentionInsert, fuzzySlashMatch, matchMention, MINI_SLASH_DESCRIPTIONS } from './picker.js';
 import { formatTokenCount } from '../config/model-context.js';
@@ -37,9 +37,9 @@ export function miniComposerStatus(status: MiniComposerStatus, width: number): s
   const text = visualWidth(plain) <= width - 1 ? plain : truncateToWidth(plain, Math.max(1, width - 1));
   if (!useColor) return text;
   const colored = status.running && text.endsWith('Working')
-    ? text.slice(0, -7) + '\x1b[38;2;181;145;229mWorking'
+    ? text.slice(0, -7) + miniStatusColor(true) + 'Working'
     : text;
-  return `\x1b[38;2;215;180;124m${colored}\x1b[0m`;
+  return `${miniStatusColor()}${colored}\x1b[0m`;
 }
 
 /** 跟进消息属于输入区上方的临时对话流；消费后由正式用户消息接替。 */
@@ -136,7 +136,7 @@ export function installMiniComposer(input: object, getStatus: () => MiniComposer
     if (!mention || mention.cands.length === 0) return null;
     const key = `m:${mention.atIndex}:${mention.query}`;
     if (key !== lastQuery) { selected = 0; lastQuery = key; }
-    return { kind: 'mention', items: mention.cands.slice(0, 15), atIndex: mention.atIndex, query: mention.query, dismissedKey: line };
+    return { kind: 'mention', items: mention.cands, atIndex: mention.atIndex, query: mention.query, dismissedKey: line };
   };
   const positions = () => {
     const cursor = rl.cursor;

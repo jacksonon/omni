@@ -15,6 +15,8 @@
 
 > **2026-11-13**：可旋转编织 O 通过 `theme.markText` 取亮色纯黑/深色纯白。模型选择由 `modelMenuRows` 单独生成中性色 sheet，标题带可用模型计数，选中项整行蓝底白字，当前模型标记靠右；窗口预算预留标题、留白、上下滚动提示及底部快捷键，与输入区间隔一行。共享 Server 的 `/model` 等选择命令通过 `pickRemoteMenu` 复用 TUI 菜单，不再借用 `ask_user`；`TuiMenu.resolve` 只返回选择/取消，确认后由 Server 执行切换，避免本地运行时或持久化副作用。模型分组编码值保留 provider，当前项匹配与鼠标行映射均使用该值。回归见 `scripts/probe-tui-model-menu.ts`。
 
+> **同日交互复核**：菜单/联想/提问的点击先检查实际 `screenX/width`，模态未识别按键也消费；自定义输入按码点删除且拒绝终端控制序列。`askPanelWindow` 统一提问预算与窗口滚动，替代全量 `options.length + 5`；`askRowMap` 记录相对行，`askRects` 在命中时读取已布局细胞的 `screenY`，修正空态/resize 的确认行偏移。审批与提问相互排斥、审批优先，取消当前/排队请求仅清对应 UI 和监听，推进下一张卡片用 microtask，避免同一次 Enter 被两张卡片消费；轮末兜底释放剩余交互。`remote-state.ts` 统一共享状态展示。验证入口：`scripts/probe-tui-interactions.ts` 与真实 PTY 交互回归。
+
 ### TUI 渲染（src/tui/，重要背景）
 
 > **为什么不用 OpenTUI 的 solid 集成？** 踩坑结论：`@opentui/solid` 的 JSX 转换依赖 preload 注册插件，而**入口文件在插件注册前就被转换**（bun 的时序问题），JSX 被编译成 react 风格（静态求值），信号变更完全无法触发重绘（`createEffect` 一次都不执行）。bunfig preload、动态 import + 手动 `plugin()`、Bun.build + 显式插件均无法修复。
