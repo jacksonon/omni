@@ -3671,6 +3671,7 @@ async function switchWorkspace(dir, sessionId) {
     const dest = new URL(result.redirectUrl, location.origin);
     if (sessionId) dest.searchParams.set('session', sessionId);
     if (desktopMode) dest.searchParams.set('bot', '1');
+    if (petChatMode) dest.searchParams.set('petChat', '1');
     if (desktop?.stageWorkspaceDraft && (input.value || state.attachments.length)) {
       await desktop.stageWorkspaceDraft(dest.href, { text: input.value, attachments: state.attachments });
     }
@@ -4462,6 +4463,11 @@ async function listMentionCandidates(query) {
 }
 
 let mentionRenderId = 0; // 防止异步竞态
+function closeMentionPop() {
+  mentionRenderId++; // 关闭/离开 @ 后，迟到查询不得重新打开列表。
+  mentionPop.classList.add('hidden');
+  mentionItems = [];
+}
 async function renderMention(query) {
   const myId = ++mentionRenderId;
   const items = await listMentionCandidates(query);
@@ -4514,8 +4520,7 @@ function insertMention(item) {
   input.value = before + insert + after;
   const newCursor = (before + insert).length;
   input.setSelectionRange(newCursor, newCursor);
-  mentionPop.classList.add('hidden');
-  mentionItems = [];
+  closeMentionPop();
   autoResize();
   input.focus();
 }
@@ -5512,13 +5517,20 @@ function autoResize() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 200) + 'px';
 }
+let inputWidth = input.clientWidth;
+new ResizeObserver(() => {
+  const width = input.clientWidth;
+  if (width === inputWidth) return;
+  inputWidth = width;
+  autoResize(); // 窗口/侧栏改变宽度后，已有草稿也要按新折行数增高。
+}).observe(input);
 input.addEventListener('input', () => {
   autoResize();
   const text = input.value;
   // 斜杠命令联想
   if (text.startsWith('/') && !text.includes('\n')) {
     renderCmdPalette(text);
-    mentionPop.classList.add('hidden');
+    closeMentionPop();
     return;
   }
   cmdPalette.classList.add('hidden');
@@ -5528,8 +5540,7 @@ input.addEventListener('input', () => {
     mentionAtPos = input.selectionStart - atMatch[0].length;
     renderMention(atMatch[1]);
   } else {
-    mentionPop.classList.add('hidden');
-    mentionItems = [];
+    closeMentionPop();
   }
 });
 input.addEventListener('keydown', (e) => {
@@ -5539,14 +5550,14 @@ input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveCmdSel(1); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); moveCmdSel(-1); return; }
     if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); acceptCmdSel(); return; }
-    if (e.key === 'Escape') { e.preventDefault(); cmdPalette.classList.add('hidden'); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cmdPalette.classList.add('hidden'); return; }
   }
   // @ 提及导航
   if (!mentionPop.classList.contains('hidden')) {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionSel(1); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionSel(-1); return; }
     if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); acceptMention(); return; }
-    if (e.key === 'Escape') { e.preventDefault(); mentionPop.classList.add('hidden'); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMentionPop(); return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -5575,7 +5586,7 @@ document.addEventListener('keydown', (e) => {
   // ⌘/Ctrl+K 新建会话、/ 聚焦搜索已移入快捷键注册表（Doc/specs/keyboard-shortcuts-spec.md）：
   // ⌘N=新建、⌘K=会话快速切换、/ = 聚焦搜索（裸键，输入框聚焦时不触发）
   if (e.key === 'Escape') {
-    if (e.isComposing || e.keyCode === 229) return;
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     if (!$('#screen-capture-modal').classList.contains('hidden')) { e.preventDefault(); closeScreenCapture(); return; }
     if (!$('#attachment-preview').classList.contains('hidden')) { e.preventDefault(); closeAttachmentPreview(); return; }
     if ($('#desktop-settings')?.classList.contains('hidden') === false) { $('#desktop-settings').classList.add('hidden'); return; }
@@ -5591,7 +5602,7 @@ document.addEventListener('keydown', (e) => {
     else if (!$('#settings-modal').classList.contains('hidden')) { closeSettings(); escConsumed = true; }
     else if (!$('#cmd-panel').classList.contains('hidden')) { closeCmdPanel(); escConsumed = true; }
     else if (cmdPalette && !cmdPalette.classList.contains('hidden')) { cmdPalette.classList.add('hidden'); escConsumed = true; }
-    else if (mentionPop && !mentionPop.classList.contains('hidden')) { mentionPop.classList.add('hidden'); escConsumed = true; }
+    else if (mentionPop && !mentionPop.classList.contains('hidden')) { closeMentionPop(); escConsumed = true; }
     else if ($('#app').classList.contains('sidebar-open')) { $('#app').classList.remove('sidebar-open'); escConsumed = true; }
     // 无任何浮层/面板打开且当前会话运行中 → Esc 停止回复（对标 TUI 的 Esc 取消）
     if (!escConsumed && desktopMode && desktop?.hide) {
@@ -6071,7 +6082,10 @@ function renderModelPop(s) {
           renderModelPop(state.status || {});
           notify(t('notify.modelSwitched', { model: (picked ? modelLabel(picked) : v) }), 'success');
         })
-        .catch((err) => notify(t('err.switchModel', { msg: err.message }), 'error'));
+        .catch((err) => {
+          notify(t('err.switchModel', { msg: err.message }), 'error');
+          sel.value = state.status?.model || s.model;
+        });
     });
     pop.appendChild(sel);
   }
@@ -6177,7 +6191,12 @@ function renderModelPop(s) {
       if (pos === applied) return;
       applySettings({ reasoningEffort: v })
         .then(() => { applied = pos; }) // 不关闭：用户可能反复调整思考级别，点弹层外才关闭
-        .catch((err) => { notify(t('err.settings', { msg: err.message }), 'error'); range.value = String(applied); });
+        .catch((err) => {
+          notify(t('err.settings', { msg: err.message }), 'error');
+          range.value = String(applied);
+          wrap.classList.remove('dragging');
+          setFill(applied); setTicks(applied, false);
+        });
     });
   }
   // 上下文窗口：默认（跟随模型）+ 256K/400K/512K/750K/1000K 档位滑条（与思考级别同交互：
@@ -6276,7 +6295,12 @@ function renderModelPop(s) {
       const v = stops[pos].v;
       applySettings({ contextLimit: v === null ? null : v })
         .then(() => { applied = pos; })
-        .catch((err) => { notify(t('err.settings', { msg: err.message }), 'error'); range.value = String(applied); });
+        .catch((err) => {
+          notify(t('err.settings', { msg: err.message }), 'error');
+          range.value = String(applied);
+          wrap.classList.remove('dragging');
+          setFill(applied); setTicks(applied, false);
+        });
     });
   }
 }
