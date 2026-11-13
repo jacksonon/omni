@@ -223,7 +223,9 @@ for step in 1..maxSteps:
 
 - TUI 空会话首页使用 `src/tui/omni-mark.ts` 的 Braille 点阵编织 O 标识，点击图标随机执行圆心正反转、X/Y/斜轴翻转、翻滚或螺旋旋转，避免连续重复；开始对话后隐藏。
 
-- 品牌标识跨端共用 `src/tui/omni-mark.ts`：Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。
+- 品牌标识跨端共用 `src/tui/omni-mark.ts`：TUI/Web/Electron 可旋转图标随亮暗主题显示纯黑/纯白，Web/Electron 首页支持点击随机旋转，mini 首次启动居中静态展示。`npm run icons:generate` 更新 Web PNG 与 Electron PNG/ICO/ICNS；`npm run web:sync` 同步浏览器动画脚本及内嵌资源。
+
+- TUI 模型选择使用专用 sheet：中性色标题与模型计数、整行蓝底白字选中、右侧当前模型标记，长列表窗口滚动且与输入区留一行间隔。共享 Server 与 `--local` 共用菜单渲染，确认后才发送服务端切换，Esc 取消不发送命令；`bun run scripts/probe-tui-model-menu.ts` 验证主题、分组当前项、窄窗口、缩放与鼠标/键盘确认取消。
 
 - 桌面 bot 支持显式导入剪贴板文字/图片与截图选区，复用 Web 附件预览和消息协议；普通快捷键唤起不读取剪贴板。切换工作区时保留未发送的草稿和附件，用户确认发送后才进入模型请求。桌面采集 IPC 继续校验受信 workspace 页面。
 

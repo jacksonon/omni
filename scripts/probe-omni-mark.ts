@@ -11,6 +11,17 @@ for (const height of [20, 32]) {
   const cell = tree.omniCells[0]!;
   assert.equal(tree.omniTitle!.visible, true);
   assert.ok(Math.abs(cell.screenX + cell.width / 2 - 40) <= 1);
+  for (const [mode, expected] of [['light', [0, 0, 0]], ['dark', [255, 255, 255]]] as const) {
+    state.themeMode = 'system';
+    state.detectedTheme = mode;
+    repaintTree(t.renderer, tree, state, { withInput: true });
+    await t.renderOnce();
+    assert.deepEqual(cell.fg.toInts().slice(0, 3), [...expected]);
+    state.themeMode = mode;
+    state.detectedTheme = mode === 'light' ? 'dark' : 'light';
+    repaintTree(t.renderer, tree, state, { withInput: true });
+    assert.deepEqual(cell.fg.toInts().slice(0, 3), [...expected]);
+  }
   handleTuiMouseEvent({ type: 'down', button: 0, x: cell.screenX + 9, y: cell.screenY + 4 }, tree, state, 80, async () => {});
   assert.ok(state.markSpinStartedAt > 0);
   const click = () => handleTuiMouseEvent({ type: 'down', button: 0, x: cell.screenX + 9, y: cell.screenY + 4 }, tree, state, 80, async () => {});
@@ -37,4 +48,4 @@ for (const height of [20, 32]) {
   assert.equal(tree.omniTitle!.visible, false);
   t.renderer.destroy();
 }
-console.log('Omni mark: centered, clickable, rotating, settled, hidden after conversation');
+console.log('Omni mark: black/light, white/dark, centered, clickable, rotating, settled, hidden after conversation');

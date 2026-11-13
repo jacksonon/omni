@@ -2360,10 +2360,10 @@ body.cmd-open::before {
 
 /* Omni 编织 O：与终端共享 Braille 点阵，按钮支持键盘与触屏。 */
 .empty-session .hero-heading { display: flex; flex-direction: column; gap: 10px; }
-.omni-mark-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 12px; background: transparent; color: #476479; cursor: pointer; touch-action: manipulation; }
+.omni-mark-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 12px; background: transparent; color: #000; cursor: pointer; touch-action: manipulation; }
 .omni-mark-button:focus-visible { outline: 2px solid var(--text); outline-offset: 6px; }
 .omni-mark-dots { display: block; width: 200px; height: 200px; aspect-ratio: 1; user-select: none; }
 .omni-mark-dots svg { display: block; width: 100%; height: 100%; fill: currentColor; stroke: none; }
-@media (prefers-color-scheme: dark) { :root:not(.theme-light) .omni-mark-button { color: #7893a5; } }
-:root.theme-dark .omni-mark-button { color: #7893a5; }
+@media (prefers-color-scheme: dark) { :root:not(.theme-light) .omni-mark-button { color: #fff; } }
+:root.theme-dark .omni-mark-button { color: #fff; }
 @media (max-width: 600px) { .omni-mark-dots { width: 160px; height: 160px; } }

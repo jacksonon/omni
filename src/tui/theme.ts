@@ -48,6 +48,8 @@ export interface TuiTheme {
   placeholder: string;
   /** 内容区默认文字色（AI 回答/meta/工具卡片正文等） */
   contentText: string;
+  /** 可旋转编织 O：亮色纯黑、深色纯白。 */
+  markText: string;
   /** 内容区浅色文字（思考/meta/提示行：dark 走 dim 属性，light 显式深灰） */
   contentDim: string;
   /** 命令联想/提及浮层底色（独立下拉面板，与 footer 灰块区分） */
@@ -111,6 +113,7 @@ const DARK_THEME: TuiTheme = {
   inputText: '#e2e8f0',
   placeholder: '#6b7280',
   contentText: '#e2e8f0',
+  markText: '#ffffff',
   contentDim: '#9ca3af',
   suggestBg: '#27272a', // 比 footer 深一档（zinc-800），浮层从灰块中浮出
   suggestBorder: '#52525b', // zinc-600：圆角边框略亮于面板底，勾出圆角轮廓
@@ -154,6 +157,7 @@ const LIGHT_THEME: TuiTheme = {
   inputText: '#27272a',
   placeholder: '#9ca3af', // zinc-400
   contentText: '#27272a', // 内容区文字改深色（修复浅底白字）
+  markText: '#000000',
   contentDim: '#52525b', // zinc-600：思考/meta/提示在浅底上仍清晰
   suggestBg: '#ffffff', // 亮色下浮层用白底，与淡灰 footer 区分
   suggestBorder: '#a1a1aa', // zinc-400：亮色下圆角边框用中灰

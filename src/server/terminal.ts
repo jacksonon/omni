@@ -126,7 +126,7 @@ export async function remoteAttachments(text: string, initial: string[] = []): P
 
 /** 各终端保留自己的输入菜单；选择确认才发送命令。 */
 export async function runRemoteCommand(remote: ServerSession, command: string, out: Output,
-  pick?: (title: string, values: string[], current?: string) => Promise<string | null>
+  pick?: (title: string, values: string[], current: string | undefined, command: string) => Promise<string | null>
 ): Promise<string[]> {
   const [head, ...args] = command.trim().split(/\s+/);
   if (head === '/new') {
@@ -169,7 +169,10 @@ export async function runRemoteCommand(remote: ServerSession, command: string, o
     else values = ['默认', '256', '400', '512', '750', '1000'];
     if (!values.length) return remote.command(command);
     const title = head === '/model' ? 'Select Model' : head === '/variants' ? 'Select Reasoning Effort' : head === '/permission' ? 'Select Permission' : 'Context Window';
-    const selected = pick ? await pick(title, values, remote.status.model)
+    const current = head === '/model' ? remote.status.model : head === '/variants'
+      ? remote.status.reasoningEffort : head === '/permission' ? remote.status.permission
+      : remote.status.contextOverride ? String(remote.status.contextLimit / 1000) : '默认';
+    const selected = pick ? await pick(title, values, current, head)
       : (await out.askUser?.(title, values, false))?.choice;
     if (!selected) return [];
     return remote.command(`${head} ${selected}`);

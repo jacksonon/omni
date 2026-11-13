@@ -331,12 +331,60 @@ function flatPanelLine(text: string, width: number): string {
   return ` ${t}${' '.repeat(Math.max(0, width - 1 - visualWidth(t)))}`;
 }
 
+/** 模型专用 sheet：中性色标题/计数、整行蓝底选择、右侧当前标记。 */
+export function modelMenuRows(menu: TuiMenu, contentWidth: number, lang: TuiLang, maxVisible: number, theme: TuiTheme): Row[] {
+  const win = Math.max(1, Math.min(maxVisible, menu.options.length));
+  const maxTop = Math.max(0, menu.options.length - win);
+  let top = Math.max(0, Math.min(menu.scrollTop, maxTop));
+  if (menu.selectedIndex < top) top = menu.selectedIndex;
+  else if (menu.selectedIndex >= top + win) top = menu.selectedIndex - win + 1;
+  menu.scrollTop = top;
+  const line = (text: string, fg = theme.suggestText, bg = theme.suggestBg, bold = false): Row => ({
+    text: flatPanelLine(text, contentWidth),
+    style: {},
+    chunks: [{ text: flatPanelLine(text, contentWidth), fg, bg, bold }],
+  });
+  const count = menu.options.filter(option => !option.group).length;
+  const title = truncateToWidth(menu.title, Math.max(1, contentWidth - 8));
+  const summary = tf(lang, 'menu.model.count', { n: count });
+  const countText = contentWidth - visualWidth(title) - visualWidth(summary) >= 9 ? `  ${summary}` : '';
+  const gap = ' '.repeat(Math.max(1, contentWidth - visualWidth(title + countText) - 5));
+  const header = ` ${title}${countText}${gap}esc `;
+  const rows: Row[] = [line(''), {
+    text: header,
+    style: {},
+    chunks: [
+      { text: ` ${title}`, fg: theme.suggestText, bg: theme.suggestBg, bold: true },
+      { text: `${countText}${gap}esc `, fg: theme.footerDim, bg: theme.suggestBg },
+    ],
+  }, line('')];
+  if (top > 0) rows.push(line(tf(lang, 'suggest.hint', { arrow: '↑', n: top }), theme.footerDim));
+  for (let k = top; k < top + win; k++) {
+    const option = menu.options[k]!;
+    if (option.group) {
+      rows.push(line(option.label.replace(/^\[(.*)\]$/, '$1'), theme.suggestGroup));
+      continue;
+    }
+    const selected = k === menu.selectedIndex;
+    const marker = option.value === menu.currentValue ? `✓ ${t(lang, 'menu.model.current')}` : '';
+    const available = Math.max(1, contentWidth - 5 - (marker ? visualWidth(marker) + 2 : 0));
+    const label = truncateToWidth(option.label, available);
+    const prefix = selected ? '› ' : '  ';
+    const space = ' '.repeat(Math.max(1, contentWidth - 2 - visualWidth(prefix + label + marker)));
+    const row = line(`${prefix}${label}${space}${marker}`, selected ? '#ffffff' : theme.suggestText,
+      selected ? '#2563eb' : theme.suggestBg, selected);
+    row.menuIdx = k;
+    rows.push(row);
+  }
+  const below = Math.max(0, menu.options.length - top - win);
+  if (below > 0) rows.push(line(tf(lang, 'suggest.hint', { arrow: '↓', n: below }), theme.footerDim));
+  rows.push(line(''), line(t(lang, 'menu.model.hint'), theme.footerDim));
+  return rows;
+}
+
 /**
- * 菜单面板行（/theme /permission /variants /model /session 等）：扁平面板 + 选项列表。
- * 选项超面板高度时**窗口滚动**（同联想浮层 suggestBox 模式）：`menu.scrollTop` 记录
- * 窗口首项下标，渲染时收敛到合法区间且**选中项恒在窗口内**（交互层 ↑/↓ 移动
- * selectedIndex，这里兜底跟随滚动——连续按键逐帧重绘即连续滚动）；窗口外上下各一条
- * 「↑/↓ 还有 N 个（↑/↓ 滚动）」提示行。maxVisible 缺省 = 全部（无滚动，旧行为）。
+ * 通用菜单面板行：扁平面板 + 选项列表；选项超高时按 scrollTop 窗口滚动，
+ * 保持选中项可见，窗口上下显示剩余项数。模型 sheet 单独走 modelMenuRows。
  */
 export function menuPanelRows(
   menu: TuiMenu,

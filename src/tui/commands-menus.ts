@@ -464,7 +464,8 @@ export function applyContextLimitChoice(
 export function openModelMenu(
   state: TuiState,
   entries: string[] | { label: string; value: string }[] = state.models,
-  endpoints?: import('../client.js').ModelEndpoint[]
+  endpoints?: import('../client.js').ModelEndpoint[],
+  current = state.model
 ): void {
   const base = (entries.length > 0 ? entries : [state.model || 'gpt-4o-mini']).map((m) =>
     typeof m === 'string' ? { label: m, value: m } : m
@@ -485,17 +486,50 @@ export function openModelMenu(
   } else {
     options.push(...base);
   }
-  const current = state.model;
-  let idx = Math.max(0, options.findIndex((o) => o.value === current && !o.group));
+  let currentOption = options.findIndex((o) => !o.group &&
+    (o.value === current || o.value === `${state.provider}\u0000${current}`));
+  if (currentOption < 0) currentOption = options.findIndex(o => !o.group && o.value.split('\u0000').pop() === current);
+  let idx = Math.max(0, currentOption);
   if (options[idx]?.group) idx = Math.max(0, options.findIndex((o) => !o.group)); // 兜底：初始不在组头
   state.menu = {
     id: 'model',
     title: t(state.language, 'menu.model.title'),
     options,
     selectedIndex: idx,
-    currentValue: current,
+    currentValue: currentOption >= 0 ? options[currentOption]!.value : current,
     scrollTop: 0,
   };
+}
+
+/** 共享模式复用本地菜单；选择完成后才向 Server 发送命令，不经过 ask_user。 */
+export function pickRemoteMenu(
+  state: TuiState,
+  command: string,
+  values: string[],
+  current?: string,
+  endpoints?: import('../client.js').ModelEndpoint[]
+): Promise<string | null> {
+  const id = command.slice(1);
+  if (id === 'model') {
+    openModelMenu(state, values.map(value => ({
+      label: endpoints?.find(model => model.name === value)?.displayName || value,
+      value,
+    })), endpoints, current ?? state.model);
+  } else {
+    state.menu = {
+      id,
+      title: t(state.language, `menu.${id}.title`),
+      options: values.map(value => ({ label: value, value })),
+      selectedIndex: Math.max(0, values.indexOf(current ?? '')),
+      currentValue: current ?? '',
+      scrollTop: 0,
+    };
+  }
+  state.cmdPanel = null;
+  return new Promise(resolve => {
+    state.menu!.resolve = value => resolve(value?.split('\u0000').pop() ?? null);
+    state.schedulePaint?.();
+  });
 }
 
 /** 打开思考级别面板（/variants）：字符串级别 + 命名 variants（1.0 P0-3）混合列表；
@@ -573,6 +607,12 @@ export function confirmMenu(state: TuiState): void {
   if (!menu) return;
   const opt = menu.options[menu.selectedIndex];
   if (!opt || opt.group) return; // 组头行不可选中
+  if (menu.resolve) {
+    state.menu = null;
+    state.status = '';
+    menu.resolve(opt.value);
+    return;
+  }
   const lang = state.language;
   const label = opt.label; // 会话恢复等保留确认面板的菜单项用
   if (menu.id === 'theme') {
@@ -696,8 +736,10 @@ export function confirmMenu(state: TuiState): void {
 
 /** 取消面板：原样关闭（导出供测试/其它调用方复用） */
 export function closeMenu(state: TuiState): void {
+  const resolve = state.menu?.resolve;
   state.menu = null;
   state.status = '';
+  resolve?.(null);
 }
 /**
  * 执行型命令完成后的面板自动收起：run() 返回后短暂停留（默认 1.5s，让确认可见）

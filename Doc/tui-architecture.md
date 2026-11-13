@@ -13,6 +13,8 @@
 > - **ask 提问面板扁平化**：与命令面板同款无边框风格、紧贴输入区；自定义输入独立缓冲（不进主输入框）。
 > - **快照场景增至 51**（布局/滚动/命令/审批/权限/上下文/记忆/计划/会话/轨迹/ask/hero 等）。
 
+> **2026-11-13**：可旋转编织 O 通过 `theme.markText` 取亮色纯黑/深色纯白。模型选择由 `modelMenuRows` 单独生成中性色 sheet，标题带可用模型计数，选中项整行蓝底白字，当前模型标记靠右；窗口预算预留标题、留白、上下滚动提示及底部快捷键，与输入区间隔一行。共享 Server 的 `/model` 等选择命令通过 `pickRemoteMenu` 复用 TUI 菜单，不再借用 `ask_user`；`TuiMenu.resolve` 只返回选择/取消，确认后由 Server 执行切换，避免本地运行时或持久化副作用。模型分组编码值保留 provider，当前项匹配与鼠标行映射均使用该值。回归见 `scripts/probe-tui-model-menu.ts`。
+
 ### TUI 渲染（src/tui/，重要背景）
 
 > **为什么不用 OpenTUI 的 solid 集成？** 踩坑结论：`@opentui/solid` 的 JSX 转换依赖 preload 注册插件，而**入口文件在插件注册前就被转换**（bun 的时序问题），JSX 被编译成 react 风格（静态求值），信号变更完全无法触发重绘（`createEffect` 一次都不执行）。bunfig preload、动态 import + 手动 `plugin()`、Bun.build + 显式插件均无法修复。

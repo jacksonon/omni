@@ -45,12 +45,14 @@ import { t, tf } from './i18n.js';
 import type { TuiOutput } from './output.js';
 import type { TuiSession, TuiKey } from './render.js';
 import { pushCmdLine, pushLine, openCmdPanel, type ScrollAction, type TuiState } from './state.js';
+import { pickRemoteMenu } from './commands-menus.js';
 
 /** 快捷键和运行中的命令也必须经过共享传输，避免绕回本地运行时。 */
 async function runCommand(ctx: TuiCommandContext, command: string): Promise<'exit' | void> {
   const remote = ctx.runOpts?.remote;
   if (!remote || /^\/(exit|quit|theme|vim)(\s|$)/.test(command)) return runLocalCommand(ctx, command);
-  const lines = await runRemoteCommand(remote, command, ctx.out);
+  const lines = await runRemoteCommand(remote, command, ctx.out, (_title, values, current, head) =>
+    pickRemoteMenu(ctx.state, head, values, current, ctx.runOpts?.models));
   syncRemoteRunOptions(remote, ctx.runOpts!);
   ctx.state.model = remote.status.model ?? ctx.state.model;
   ctx.state.models = (ctx.runOpts?.models ?? []).map(model => model.name);
@@ -882,7 +884,8 @@ export async function runTuiInteractive(
       // 共享模式保留终端输入/选择/滚动；命令的运行时和文件副作用只发生在 server。
       if (runOpts.remote && cmd.startsWith('/') && !/^\/(exit|quit|theme|vim)(\s|$)/.test(cmd)) {
         try {
-          const lines = await runRemoteCommand(runOpts.remote, cmd, out);
+          const lines = await runRemoteCommand(runOpts.remote, cmd, out, (_title, values, current, head) =>
+            pickRemoteMenu(state, head, values, current, runOpts.models));
           if (lines.length) {
             openCmdPanel(state, cmd);
             for (const line of lines) pushCmdLine(state, { kind: 'meta', text: line });

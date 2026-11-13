@@ -234,6 +234,8 @@ export interface TuiMenu {
    * selectedIndex，渲染兜底把窗口跟随到选中项）。
    */
   scrollTop: number;
+  /** 共享 Server 菜单：确认/取消只返回选择，运行时切换由服务端执行。 */
+  resolve?: (value: string | null) => void;
 }
 
 /**

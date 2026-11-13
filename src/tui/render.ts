@@ -79,6 +79,7 @@ import {
   hitTestTokens,
   markRowSelected,
   menuPanelRows,
+  modelMenuRows,
   selectionMoved,
   selectionText,
   type CardRect,
@@ -902,7 +903,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
     const frame = omniMarkFrame(spinning ? 1 - Math.pow(1 - t, 3) : 0, state.markSpinAxis);
     for (let i = 0; i < tree.omniCells.length; i++) {
       tree.omniCells[i]!.content = frame[i]!;
-      tree.omniCells[i]!.fg = parseColor(isLightTheme(theme) ? '#476479' : '#7893a5');
+      tree.omniCells[i]!.fg = parseColor(theme.markText);
     }
     (tree.status as { visible?: boolean }).visible = false; // hero 下隐藏「就绪」状态栏
     // 无对话（hero）时输入区宽度：用户要求可用宽的 0.75（不到满宽、留两侧白）。
@@ -1661,6 +1662,9 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
       tree.menuOverlay.visible = false;
       tree.menuRowMap = [];
     } else {
+      const isModel = menu.id === 'model';
+      const panelBg = isModel ? theme.suggestBg : theme.footerBg;
+      tree.menuOverlay.backgroundColor = panelBg;
       // 与输入区同宽同左、底边贴住灰色块（footerTop = 灰块顶，hero 居中模式按 heroOffset
       // 钳到居中灰块上缘）——像联想下拉一样是输入区的上延（用户要求：不居中显示、
       // 打开面板不得把输入区拉到底部）；超高时 menuMaxVisible 内部滚动
@@ -1670,20 +1674,22 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         ? Math.max(32, Math.round(Math.max(24, vwMenu - CONTENT_PAD) * 0.75))
         : Math.max(16, vwMenu - CONTENT_PAD);
       const panelW = Math.max(12, footerW - 1); // 卡片宽 = 输入区宽 - 左侧竖线 1 列
-      // 窗口滚动预算：留白 1 + 标题 1 + 窗口 + 上下提示 ≤2 + 操作提示 1 ≤ footerTop - 1
-      //（顶 ≥1、底贴灰块）→ 窗口 ≤ footerTop - 6；不滚动时更宽松
-      const menuMaxVisible = Math.max(2, Math.min(12, footerTop - 6));
-      const panelRows = menuPanelRows(menu, panelW, state.language, menuMaxVisible);
+      // 通用菜单预留 6 行；模型 sheet 另加标题下/快捷键上留白及输入区间隔，
+      // 共预留 9 行，保证窗口上下提示同时出现时仍不遮住输入区。
+      const menuMaxVisible = Math.max(isModel ? 1 : 2, Math.min(12, footerTop - (isModel ? 9 : 6)));
+      const panelRows = isModel
+        ? modelMenuRows(menu, panelW, state.language, menuMaxVisible, theme)
+        : menuPanelRows(menu, panelW, state.language, menuMaxVisible);
       tree.menuOverlay.visible = true;
-      tree.menuOverlay.top = Math.max(1, footerTop - panelRows.length);
+      tree.menuOverlay.top = Math.max(1, footerTop - panelRows.length - (isModel ? 1 : 0));
       tree.menuOverlay.left = heroFooter ? Math.max(1, 1 + Math.round((vwMenu - 2 - footerW) / 2)) : 1;
       tree.menuOverlay.width = panelW + 1; // 显式宽度（竖线 1 列 + 卡片 panelW）= 输入区同宽
       // 左侧深灰竖线：按面板行数同步（同输入区蓝线按 inputLines 同步）
       if (tree.menuBar) {
         tree.menuBar.height = panelRows.length;
         tree.menuBar.content = Array(panelRows.length).fill(ACCENT_BAR).join('\n');
-        tree.menuBar.fg = parseColor(theme.suggestBorder);
-        tree.menuBar.bg = parseColor(theme.footerBg);
+        tree.menuBar.fg = parseColor(isModel ? panelBg : theme.suggestBorder);
+        tree.menuBar.bg = parseColor(panelBg);
       }
       // 菜单行 → 选项下标映射（点击命中用；标题 0 / 提示 / 底边 = -1）：
       // 直接取每行自带的 menuIdx（窗口滚动后行与下标不再连续，逐行标记最稳）；
@@ -1700,7 +1706,7 @@ export function repaintTree(ctx: RenderContext, tree: TuiTree, state: TuiState, 
         cell.visible = true;
         try {
           applyRowToCell(cell, panelRows[i], theme);
-          paintPanelCell(cell, theme); // 行自带底（面板行已铺满 panelW，整行实底）
+          cell.bg = parseColor(panelBg); // 复用细胞时清除上一菜单底色
         } catch (e) {
           logCrash('menu-row', e);
         }
