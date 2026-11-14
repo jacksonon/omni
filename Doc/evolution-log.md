@@ -1,5 +1,7 @@
 # Omni 演进日志
 
+- **2026-11-14（Web 宠物设置归位与默认隐藏）**：`omni web` 移除侧栏底部独立的「宠物」按钮，在设置弹窗 `#settings-modal` 中新增 `宠物`（`data-pane="pet"`）分类面板统一承载显示开关、猫狗与自定义形象选择/删除、精灵图导入及 Electron 独立桌面宠物开关；点击宠物浮窗「形象」、托盘 `pet-settings` 动作或 `/settings pet` 均直达该设置页。同时将 Web 端宠物默认展示改为关闭（仅设置主动开启 `enabled: true` 时显示），Electron 独立桌面宠物保持原行为；同步更新 `src/web/assets.ts` 与 `omni pet --help`、`src/web/pet.test.ts`、`scripts/probe-web-ui.cjs`。验证：`typecheck` ✓、单元测试 133/133 ✓、桌面测试 27/27 ✓、`probe:web` ✓、`probe:pet-ui` 31/31 ✓、`probe-web-ui.cjs` 24/24 ✓。
+
 - **2026-11-14（TUI 设置切换静默）**：共享 Server 模式下 `/model`、`/variants`、`/permission`、`/context`、`/plan` 成功切换后不再弹“已切换/已保存”命令面板，与本地 TUI 一致；模型切换 toast 同步移除，当前状态继续由 footer 呈现。错误、未知选项和持久化失败仍完整显示。验证：typecheck ✓、TUI 快照 51 场景 ✓（新增成功静默与失败保留断言）。
 
 - **2026-11-13（终端显示与交互复核）**：修复 TUI 菜单/联想/提问面板外同一行误选、模态按键泄漏、Unicode 删除和控制序列进入自定义文本；长提问按窗口显示并以实际细胞坐标命中确认，统一共享状态的模型组/variant/思考展示/工作区同步，共享模式不重建本地 SDK。mini 文件菜单不再静默截成 15 项，亮色状态文字提高对比度。终端审批与提问串行占用输入，共享请求支持独立取消，外部已解决、任务结束、重连或切会话时撤下旧 UI 并阻止迟到答案误投新会话；恢复 mini/console 草稿、raw 模式与 stdin，移除会误吞后续同文本消息的旧答案记录。TUI 推进下一交互不复用当前按键，历史回放收尾保留 pending 交互。新增实际渲染、客户端生命周期和真 PTY 回归。

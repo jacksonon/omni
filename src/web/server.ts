@@ -1697,9 +1697,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
         }
         return { lines };
       }
-      const panes = ['general（通用）', 'theme（主题）', 'apikey（模型配置）', 'mcp（MCP 服务）', 'skills（技能）', 'shortcuts（快捷键）', 'about（关于）'];
+      const panes = ['general（通用）', 'theme（主题）', 'pet（宠物）', 'apikey（模型配置）', 'mcp（MCP 服务）', 'skills（技能）', 'shortcuts（快捷键）', 'about（关于）'];
       if (!arg) {
-        add('Web 设置面板已在前端打开（通用 / 主题 / 模型配置 / MCP 服务 / 技能 / 快捷键 / 关于）。');
+        add('Web 设置面板已在前端打开（通用 / 主题 / 宠物 / 模型配置 / MCP 服务 / 技能 / 快捷键 / 关于）。');
         add(`可用面板：${panes.join(' / ')}（用法：/settings <面板名>，如 /settings theme；/settings help 查看命令帮助）`);
       } else {
         add(`Web 设置面板已在前端打开（请求面板：${arg}）。`);

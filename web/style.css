@@ -931,6 +931,8 @@ body.omni-bot .composer-tools { gap: 4px; }
 .mono-value { max-width: 340px; color: var(--text-secondary); font: 12px/19px var(--mono); overflow-wrap: anywhere; }
 .cfg-text { width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 10px; outline: 0; color: var(--text); background: var(--surface); font-size: 13px; }
 .cfg-text:focus { border-color: var(--blue); }
+.pet-skin-controls, .pet-import-controls { display: flex; flex: none; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.pet-skin-controls .setting-control { width: 190px; }
 
 /* 分段选择（思考级别） */
 .seg-group { display: inline-flex; align-self: flex-start; gap: 2px; padding: 3px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface-muted); }
@@ -1404,6 +1406,9 @@ body.omni-bot .composer-tools { gap: 4px; }
   .mc-form-row { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 12px; }
   .mc-form-row > label { width: auto; }
   .mc-form-row-top > label { padding-top: 0; }
+  .settings-pane[data-pane="pet"] .setting-row { flex-wrap: wrap; gap: 12px; }
+  .pet-skin-controls, .pet-import-controls { width: 100%; justify-content: flex-start; }
+  .pet-skin-controls .setting-control { flex: 1; min-width: 140px; }
 }
 
 /* 右上角通知（Alert notification）：复制成功 / 错误 / 模型切换等所有瞬时提示 */

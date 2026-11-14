@@ -18,6 +18,7 @@ if (!process.versions.electron) {
   app.disableHardwareAcceleration();
   const calls = [], sockets = new Set();
   let failSettings = false;
+  const petSnap = { version: 1, tasks: [], pets: [{ id: 'omni-dog', name: 'Omni 小狗', rows: 0, url: '' }, { id: 'omni', name: 'Omni 小猫', rows: 0, url: '' }], settings: { enabled: false, selected: 'omni-dog' } };
   const status = { version: 'probe', cwd: '/fixture', language: 'zh', webTheme: 'light', model: 'model-a',
     models: [{ name: 'model-a' }, { name: 'model-b' }], tools: [], permission: 'safe',
     reasoningEffortOptions: ['low', 'medium', 'high', 'max'], reasoningEffort: 'medium', contextLimit: 64000 };
@@ -31,7 +32,20 @@ if (!process.versions.electron) {
     if (route === '/api/status') return json(status);
     if (route === '/api/sessions') return json([]);
     if (route === '/api/snapshot') return json({ status, sessions: [], pending: [] });
-    if (route === '/_omni/pet') return json({ tasks: [], pets: [], settings: { enabled: false } });
+    if (route === '/_omni/pet' || route === '/api/pet') return json(petSnap);
+    if (route === '/api/pet/settings' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const patch = JSON.parse(body || '{}');
+          if (typeof patch.enabled === 'boolean') petSnap.settings.enabled = patch.enabled;
+          if (typeof patch.selected === 'string') petSnap.settings.selected = patch.selected;
+        } catch { /* ignore */ }
+        json(petSnap);
+      });
+      return;
+    }
     if (route === '/api/settings') return json(failSettings ? { error: 'probe settings rejected' } : status, failSettings ? 503 : 200);
     if (route === '/api/files') return setTimeout(() => json([{ name: 'fixture.ts', path: 'fixture.ts', isDir: false }]), 180);
     if (route === '/api/workspace') return json({ redirectUrl: '/w/abcdef/' });
@@ -113,8 +127,31 @@ if (!process.versions.electron) {
       check('上下文滑条失败后值/填充/高亮同时回退', context.value === '0' && Number(context.fill) === 0 && context.active === 0, context);
       await run(`const select=document.querySelector('#model-pop select');select.value='model-b';select.dispatchEvent(new Event('change'));`); await pause(100);
       check('模型切换失败后选择器保持服务端当前模型', await run(`return document.querySelector('#model-pop select').value===state.status.model;`));
-      // 专属宠物对话切工作区应保留 petChat 查询参数，防止进入普通 bot 布局。
+      // 普通 Web 下侧栏无宠物按钮、宠物默认隐藏，且可通过设置页开启/关闭并直接打开宠物页。
       failSettings = false;
+      await run(`applyDesktopMode(false,false,false);`);
+      await pause(80);
+      const sidebarBtns = await run(`return [...document.querySelectorAll('.sidebar-foot-row button')].map(b=>b.id);`);
+      check('侧栏底部只保留设置按钮（无宠物按钮）', sidebarBtns.length === 1 && sidebarBtns[0] === 'btn-settings', sidebarBtns);
+      const petDefault = await run(`const el=document.querySelector('.omni-pet.pet-web');return {exists:!!el,hidden:el?.hidden,display:el?getComputedStyle(el).display:null};`);
+      check('Web 宠物默认隐藏', petDefault.exists && petDefault.hidden === true && petDefault.display === 'none', petDefault);
+      await run(`document.getElementById('btn-settings').click();document.querySelector('.settings-nav-item[data-pane="pet"]').click();`);
+      await pause(120);
+      const petPaneOff = await run(`return {paneOpen:document.querySelector('#settings-modal .settings-pane[data-pane="pet"]').classList.contains('active'),checked:document.getElementById('set-pet-enabled').checked,skins:document.getElementById('set-pet-select').options.length};`);
+      check('设置内包含宠物面板且默认开关关闭', petPaneOff.paneOpen && petPaneOff.checked === false && petPaneOff.skins >= 2, petPaneOff);
+      await run(`const on=document.getElementById('set-pet-enabled');on.checked=true;on.dispatchEvent(new Event('change'));`);
+      await pause(120);
+      const petShown = await run(`const el=document.querySelector('.omni-pet.pet-web');return {hidden:el.hidden,display:getComputedStyle(el).display,enabled:petSnapEnabled=document.getElementById('set-pet-enabled').checked};`);
+      check('在设置中开启宠物后显示', petShown.hidden === false && petShown.display !== 'none' && petShown.enabled === true, petShown);
+      await run(`closeSettings();document.querySelector('.pet-web .pet-controls button:nth-child(2)').click();`);
+      await pause(100);
+      const openedFromWidget = await run(`return {modalOpen:!document.getElementById('settings-modal').classList.contains('hidden'),petActive:document.querySelector('#settings-modal .settings-pane[data-pane="pet"]').classList.contains('active'),dialogCount:document.querySelectorAll('dialog.pet-dialog').length};`);
+      check('点击宠物「形象」直接打开设置内宠物页', openedFromWidget.modalOpen && openedFromWidget.petActive && openedFromWidget.dialogCount === 0, openedFromWidget);
+      await run(`const on=document.getElementById('set-pet-enabled');on.checked=false;on.dispatchEvent(new Event('change'));`);
+      await pause(120);
+      check('在设置中关闭宠物后重新隐藏', await run(`return document.querySelector('.omni-pet.pet-web').hidden === true;`));
+      await run(`closeSettings();`);
+      // 专属宠物对话切工作区应保留 petChat 查询参数，防止进入普通 bot 布局。
       let navigation = null;
       win.webContents.on('will-navigate', (event, url) => { event.preventDefault(); navigation = url; });
       await run(`applyDesktopMode(true,false,true);input.value='keep draft';await switchWorkspace('/another');`); await pause(100);

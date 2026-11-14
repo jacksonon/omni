@@ -26,8 +26,8 @@ async function atomic(file: string, content: string | Buffer): Promise<void> {
 export async function petSettings(): Promise<PetSettings> {
   try {
     const v = JSON.parse(await readFile(path.join(root(), 'settings.json'), 'utf8'));
-    return { enabled: v.enabled !== false, selected: BUILTINS.some(p => p.id === v.selected) || ID.test(v.selected) ? v.selected : DEFAULT_PET };
-  } catch { return { enabled: true, selected: DEFAULT_PET }; }
+    return { enabled: v.enabled === true, selected: BUILTINS.some(p => p.id === v.selected) || ID.test(v.selected) ? v.selected : DEFAULT_PET };
+  } catch { return { enabled: false, selected: DEFAULT_PET }; }
 }
 export async function petCatalog(): Promise<PetAsset[]> {
   const result: PetAsset[] = [...BUILTINS];

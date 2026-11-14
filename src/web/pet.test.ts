@@ -10,12 +10,14 @@ test('小狗默认、猫狗均可选用，保留显式小猫偏好',async()=>{
   try{
     const catalog=await petCatalog();assert.deepEqual(catalog.map(p=>p.id),['omni-dog','omni']);
     assert.ok(catalog.every(p=>p.rows===0&&p.url===''));
-    assert.equal((await petSettings()).selected,'omni-dog');
+    assert.deepEqual(await petSettings(),{enabled:false,selected:'omni-dog'});
     const dir=path.join(temp,'omni','pets');await mkdir(dir,{recursive:true});
+    await writeFile(path.join(dir,'settings.json'),JSON.stringify({selected:'omni'}));
+    assert.deepEqual(await petSettings(),{enabled:false,selected:'omni'});
     await writeFile(path.join(dir,'settings.json'),JSON.stringify({selected:'omni-dog',enabled:true}));
-    assert.equal((await petSettings()).selected,'omni-dog');
+    assert.deepEqual(await petSettings(),{enabled:true,selected:'omni-dog'});
     await writeFile(path.join(dir,'settings.json'),JSON.stringify({selected:'omni',enabled:true}));
-    assert.equal((await petSettings()).selected,'omni');
+    assert.deepEqual(await petSettings(),{enabled:true,selected:'omni'});
   }finally{if(previous===undefined)delete process.env.XDG_CONFIG_HOME;else process.env.XDG_CONFIG_HOME=previous;await rm(temp,{recursive:true,force:true});}
 });
 test('精灵图真实格式、网格与大小限定，支持 WebP 两种无损头和 PNG', () => {

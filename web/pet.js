@@ -59,7 +59,7 @@
     const native=options.desktop===true, prefix=/^\/w\/[a-f0-9]+/.exec(location.pathname)?.[0]||'';
     const scoped=p=>prefix+p;
     const request=async(p,body,method)=>{const r=await window.fetch(scoped(p),{method:method||(body?'POST':'GET'),headers:body?{'content-type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||`HTTP ${r.status}`);return j;};
-    const root=node('div','omni-pet '+(native?'':'pet-web'));root.dataset.phase='idle';host.append(root);
+    const root=node('div','omni-pet '+(native?'':'pet-web'));root.dataset.phase='idle';if(!native)root.hidden=true;host.append(root);
     const figure=button('',()=>{if(Date.now()<ignoreClick)return;touch();if(native)void window.omniPet.action('chat');else if(task)void openTask(task);},'pet-figure');figure.setAttribute('aria-label','Omni 宠物：点击查看任务，拖动移动');figure.innerHTML=DOG;
     const sprite=node('div','pet-sprite');sprite.hidden=true;figure.append(sprite);
     const badge=node('span','pet-sprite-status');badge.setAttribute('aria-hidden','true');figure.append(badge);
@@ -69,7 +69,7 @@
     const panel=node('div','pet-panel');panel.hidden=true;
     controls.append(button('任务',()=>{panel.hidden=!panel.hidden;renderTasks();}),button('形象',()=>native?window.omniPet.action('settings'):openSettings()),button('隐藏',()=>native?window.omniPet.action('hide'):void save({enabled:false})));
     root.append(figure,label,caption,controls,panel);
-    let snapshot={tasks:[],settings:{enabled:true,selected:'omni-dog'},pets:[]}, selected=options.sessionId||null, task=null, connected=true, refreshPromise=null, dirty=false, disposed=false, imageKey='', frameTimer=0, touched=0, ignoreClick=0;
+    let snapshot={tasks:[],settings:{enabled:false,selected:'omni-dog'},pets:[]}, selected=options.sessionId||null, task=null, connected=true, refreshPromise=null, dirty=false, disposed=false, imageKey='', frameTimer=0, touched=0, ignoreClick=0;
     let attentionTimer=0, gazeTimer=0, gazeFrame=0, gazePoint=null, gazeDirection=null, watching=false, drag=null, dragDirection=1;
     const reminders=new Map();let builtIn='omni-dog';
     const motion=matchMedia('(prefers-reduced-motion: reduce)');
@@ -154,7 +154,7 @@
       if(native&&alphaUrl!==url){alphaUrl=url;alphaImage=new Image();alphaImage.src=url;}
     }
     function render(){
-      if(disposed)return;root.hidden=!native&&snapshot.settings?.enabled===false;
+      if(disposed)return;root.hidden=!native&&snapshot.settings?.enabled!==true;
       // 未跟随的会话开始新一轮时也撤销旧提醒，避免同一会话下次完成被当成重复快照。
       if(connected)for(const t of snapshot.tasks||[]){const id=key(t),entry=reminders.get(id);if(entry&&entry.phase!==phase(t))reminders.delete(id);}
       task=choose();const p=phase(task);root.dataset.phase=p;
@@ -184,8 +184,9 @@
     }
     async function save(patch){snapshot=await request('/api/pet/settings',patch);render();}
     function openSettings(){
+      if(!native&&typeof options.openSettings==='function'){options.openSettings();return;}
       const d=node('dialog','pet-dialog');d.innerHTML='<h2>你的 Omni 伙伴</h2><p>宠物跟随任务，陪你一起工作。</p>';
-      const on=node('input');on.type='checkbox';on.checked=snapshot.settings?.enabled!==false;const show=node('label','','在对话页显示宠物');show.append(on);
+      const on=node('input');on.type='checkbox';on.checked=snapshot.settings?.enabled===true;const show=node('label','','在对话页显示宠物');show.append(on);
       const select=node('select');for(const p of snapshot.pets||[]){const o=node('option','',p.name);o.value=p.id;select.append(o);}select.value=snapshot.settings?.selected||'omni-dog';const skin=node('label','','宠物形象');skin.append(select);
       const file=node('input');file.type='file';file.accept='image/png,image/webp';const note=node('p','','导入透明 PNG/WebP：1536×1872 或 1536×2288，最多 20 MiB。v2 形象支持空闲时看向鼠标。');const error=node('div','pet-error');error.setAttribute('role','status');
       const isBuiltIn=()=>['omni','omni-dog'].includes(select.value);

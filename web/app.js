@@ -195,6 +195,21 @@ const I18N_ZH = {
   'empty.searchSessions': '没有匹配的会话',
   'pet.settings': '宠物',
   'pet.settingsTitle': '桌宠设置',
+  'pet.paneTitle': '宠物',
+  'pet.paneSub': '宠物跟随任务，陪你一起工作。默认关闭，开启后在对话页显示。',
+  'pet.showWeb': '在对话页显示宠物',
+  'pet.showWebDesc': '开启后在 Web 对话页右上角显示桌面伙伴。',
+  'pet.skin': '宠物形象',
+  'pet.skinDesc': '选择内置猫狗形象，或切换到下方导入的自定义形象。',
+  'pet.deleteSkin': '删除此形象',
+  'pet.confirmDelete': '删除自定义宠物形象「{name}」？此操作不可撤销。',
+  'pet.importTitle': '导入自定义形象',
+  'pet.importDesc': '导入透明 PNG/WebP：1536×1872 或 1536×2288，最多 20 MiB。v2 形象支持空闲时看向鼠标。',
+  'pet.importBtn': '导入形象…',
+  'pet.errSize': '图像不能超过 20 MiB',
+  'pet.errDimensions': '图像尺寸不符合宠物网格（需 1536×1872 或 1536×2288）',
+  'pet.desktopTitle': '独立桌面宠物窗口',
+  'pet.desktopDesc': '在桌面悬浮显示独立的 Omni 宠物窗口，可跨屏拖动。',
   'history.more': '显示更早 {n} 条（{t} 轮）',
   // 设置面板（tab 与字段）
   'settings.general': '通用',
@@ -685,6 +700,21 @@ const I18N_EN = {
   'empty.searchSessions': 'No matching sessions',
   'pet.settings': 'Pet',
   'pet.settingsTitle': 'Pet settings',
+  'pet.paneTitle': 'Pet',
+  'pet.paneSub': 'A companion that follows your tasks. Hidden by default; turn it on to display it in chat.',
+  'pet.showWeb': 'Show pet in chat',
+  'pet.showWebDesc': 'Display the companion widget in the top-right corner of the Web chat page.',
+  'pet.skin': 'Appearance',
+  'pet.skinDesc': 'Choose a built-in dog/cat skin or switch to an imported custom sprite.',
+  'pet.deleteSkin': 'Delete skin',
+  'pet.confirmDelete': 'Delete custom pet skin "{name}"? This cannot be undone.',
+  'pet.importTitle': 'Import custom sprite',
+  'pet.importDesc': 'Import transparent PNG/WebP (1536×1872 or 1536×2288, max 20 MiB). v2 sprites gaze toward the cursor when idle.',
+  'pet.importBtn': 'Import sprite…',
+  'pet.errSize': 'Image must not exceed 20 MiB',
+  'pet.errDimensions': 'Image dimensions must be 1536×1872 or 1536×2288',
+  'pet.desktopTitle': 'Floating desktop pet',
+  'pet.desktopDesc': 'Show the standalone Omni pet window on your desktop (draggable across screens).',
   'history.more': 'Show {n} earlier ({t} turns)',
   'settings.general': 'General',
   'settings.theme': 'Theme',
@@ -3793,7 +3823,10 @@ function connectSSE() {
 /* ---------------- 事件处理 ---------------- */
 
 bus.on('ready', () => {});
-bus.on('pet.changed', () => petWidget?.refresh());
+bus.on('pet.changed', () => {
+  petWidget?.refresh();
+  if (isSettingsPaneActive('pet')) void loadPetPane();
+});
 const syncRunningSessions = (st) => {
   const list = Array.isArray(st?.runningSessions) ? st.runningSessions : (st?.running && st.runningSession ? [st.runningSession] : []);
   state.runningSessions = new Set(list);
@@ -4625,14 +4658,16 @@ function parseSlash(cmd) {
   if (sp < 0) return { base: s, arg: '' };
   return { base: s.slice(0, sp), arg: s.slice(sp + 1).trim() };
 }
-/** 打开设置面板并直达指定 pane（general/theme/apikey/shortcuts/about；大小写/中文别名兼容） */
+/** 打开设置面板并直达指定 pane（general/theme/pet/apikey/shortcuts/about；大小写/中文别名兼容） */
 function openSettingsPane(arg) {
+  const wasPetActive = $(`#settings-modal .settings-pane[data-pane="pet"]`)?.classList.contains('active');
   openSettings();
   const a = String(arg || '').trim().toLowerCase();
   if (!a) return;
   const alias = {
     general: 'general', '通用': 'general',
     theme: 'theme', '主题': 'theme',
+    pet: 'pet', '宠物': 'pet',
     apikey: 'apikey', api: 'apikey', model: 'apikey', '模型': 'apikey', '模型配置': 'apikey',
     mcp: 'mcp',
     skills: 'skills', skill: 'skills', '技能': 'skills',
@@ -4646,6 +4681,7 @@ function openSettingsPane(arg) {
   if (target === 'mcp') loadMcpPane();
   else if (target === 'skills') loadSkillPane();
   else if (target === 'plugins') loadPluginPane();
+  else if (target === 'pet' && !wasPetActive) void loadPetPane();
 }
 /** 设置面板直达某 pane（导航与内容同步切换） */
 function activateSettingsPane(pane) {
@@ -5930,6 +5966,7 @@ function openSettings() {
   $('#settings-modal').classList.remove('hidden');
   document.body.classList.add('settings-open');
   renderShortcutsSettings();
+  if (isSettingsPaneActive('pet')) void loadPetPane();
 }
 function closeSettings() {
   $('#settings-modal').classList.add('hidden');
@@ -6343,8 +6380,9 @@ document.querySelectorAll('.settings-nav-item').forEach((item) => {
     document.querySelectorAll('.settings-nav-item').forEach((n) => n.classList.toggle('active', n === item));
     const pane = item.dataset.pane;
     document.querySelectorAll('#settings-modal .settings-pane').forEach((p) => p.classList.toggle('active', p.dataset.pane === pane));
-    // MCP/技能/插件页懒加载（打开即刷新，其它页不受影响）
-    if (pane === 'mcp') loadMcpPane();
+    // 宠物/MCP/技能/插件页懒加载（打开即刷新，其它页不受影响）
+    if (pane === 'pet') void loadPetPane();
+    else if (pane === 'mcp') loadMcpPane();
     else if (pane === 'skills') loadSkillPane();
     else if (pane === 'plugins') loadPluginPane();
   });
@@ -6764,6 +6802,147 @@ $('#set-show-cost').addEventListener('change', (e) => {
 });
 /** 成本展示是否开启（默认开；配置 showCost=false 关闭） */
 function showCostOn() { return state.status?.showCost !== false; }
+
+/* ---------------- 设置 · 宠物页 ---------------- */
+const BUILTIN_PET_IDS = new Set(['omni', 'omni-dog']);
+function isSettingsPaneActive(pane) {
+  return !$('#settings-modal')?.classList.contains('hidden')
+    && $(`#settings-modal .settings-pane[data-pane="${pane}"]`)?.classList.contains('active');
+}
+function updatePetSkinActions(select) {
+  const del = $('#btn-pet-delete');
+  if (!del || !select) return;
+  const builtIn = !select.value || BUILTIN_PET_IDS.has(select.value);
+  del.disabled = builtIn;
+  del.classList.toggle('hidden', builtIn);
+}
+function renderPetPane(snap) {
+  const on = $('#set-pet-enabled');
+  const select = $('#set-pet-select');
+  if (!on || !select) return;
+  const settings = snap?.settings || {};
+  const pets = Array.isArray(snap?.pets) ? snap.pets : [];
+  on.checked = settings.enabled === true;
+  select.innerHTML = '';
+  for (const p of pets) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    select.appendChild(opt);
+  }
+  const selected = settings.selected || 'omni-dog';
+  if (pets.some((p) => p.id === selected)) select.value = selected;
+  select.dataset.prev = select.value;
+  updatePetSkinActions(select);
+}
+async function loadPetPane() {
+  const rowDesktop = $('#row-desktop-pet');
+  const desktopToggle = $('#set-desktop-pet-enabled');
+  if (desktop?.setPetEnabled && desktop?.desktopInfo) {
+    rowDesktop?.classList.remove('hidden');
+    if (desktopToggle) {
+      desktop.desktopInfo().then((info) => {
+        desktopToggle.checked = info.petEnabled !== false;
+      }).catch(() => {});
+    }
+  } else {
+    rowDesktop?.classList.add('hidden');
+  }
+  try {
+    const snap = await api('/api/pet');
+    renderPetPane(snap);
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+async function savePetSettings(patch) {
+  const snap = await api('/api/pet/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  renderPetPane(snap);
+  petWidget?.refresh();
+  return snap;
+}
+$('#set-pet-enabled')?.addEventListener('change', (e) => {
+  const next = e.target.checked;
+  savePetSettings({ enabled: next })
+    .then(() => notify(t('notify.saved'), 'success'))
+    .catch((err) => {
+      e.target.checked = !next;
+      notify(err.message, 'error');
+    });
+});
+$('#set-pet-select')?.addEventListener('change', (e) => {
+  const prev = e.target.dataset.prev || 'omni-dog';
+  const next = e.target.value;
+  updatePetSkinActions(e.target);
+  savePetSettings({ selected: next })
+    .then(() => { notify(t('notify.saved'), 'success'); })
+    .catch((err) => {
+      e.target.value = prev;
+      updatePetSkinActions(e.target);
+      notify(err.message, 'error');
+    });
+});
+$('#btn-pet-delete')?.addEventListener('click', async () => {
+  const select = $('#set-pet-select');
+  const id = select?.value;
+  if (!id || BUILTIN_PET_IDS.has(id)) return;
+  const label = select.options[select.selectedIndex]?.textContent || id;
+  if (!(await uiConfirm(t('pet.confirmDelete', { name: label })))) return;
+  try {
+    await api(`/api/pet/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await loadPetPane();
+    petWidget?.refresh();
+    notify(t('notify.saved'), 'success');
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+});
+$('#btn-pet-import')?.addEventListener('click', () => {
+  $('#set-pet-file')?.click();
+});
+$('#set-pet-file')?.addEventListener('change', async (e) => {
+  const inputFile = e.target;
+  const file = inputFile.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 20 * 1024 * 1024) throw new Error(t('pet.errSize'));
+    const im = await createImageBitmap(file);
+    const valid = im.width === 1536 && [1872, 2288].includes(im.height);
+    im.close();
+    if (!valid) throw new Error(t('pet.errDimensions'));
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error(r.error?.message || 'Read failed'));
+      r.readAsDataURL(file);
+    });
+    const imported = await api('/api/pet/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: file.name.replace(/\.[^.]+$/, ''), dataUrl }),
+    });
+    await savePetSettings({ selected: imported.id });
+    notify(t('notify.saved'), 'success');
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    inputFile.value = '';
+  }
+});
+$('#set-desktop-pet-enabled')?.addEventListener('change', (e) => {
+  if (!desktop?.setPetEnabled) return;
+  const next = e.target.checked;
+  desktop.setPetEnabled(next)
+    .then(() => notify(t('notify.saved'), 'success'))
+    .catch((err) => {
+      e.target.checked = !next;
+      notify(err.message, 'error');
+    });
+});
 
 /* 设置 · 通用并发滑条（复用输入区 slider 结构：1..16 档，拖动跟手、松手吸附落盘） */
 const CC_MIN = 1, CC_MAX = 16;
@@ -7958,14 +8137,11 @@ function initDesktopBridge() {
   initComposerPopovers();
   initDesktopBridge();
   const petHost = document.createElement('div'); document.body.append(petHost);
-  petWidget = window.OmniPet?.mount(petHost, { openSession: selectSession, focus: () => input.focus() });
-  const petSettingsButton = el('button', 'settings-button');
-  petSettingsButton.type = 'button';
-  petSettingsButton.dataset.i18nTitle = 'pet.settingsTitle';
-  petSettingsButton.title = t('pet.settingsTitle');
-  petSettingsButton.innerHTML = `<svg><use href="#i-spark"/></svg><span data-i18n="pet.settings">${esc(t('pet.settings'))}</span>`;
-  petSettingsButton.addEventListener('click', () => petWidget?.openSettings());
-  $('#btn-settings')?.parentElement.append(petSettingsButton);
+  petWidget = window.OmniPet?.mount(petHost, {
+    openSession: selectSession,
+    openSettings: () => openSettingsPane('pet'),
+    focus: () => input.focus(),
+  });
   initScrollFollow();
   try {
     await refreshStatus();
