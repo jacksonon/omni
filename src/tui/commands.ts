@@ -271,6 +271,33 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
   return result;
 }
 
+/**
+ * 共享 Server 仍会为 Web 等客户端返回设置切换结果；TUI 中模型/权限/思考级别等
+ * 已由 footer 或界面状态即时呈现，成功时不再额外弹确认面板。错误和持久化失败
+ * 必须原样展示，避免把「切换成功但保存失败」静默掉。
+ */
+export function filterTuiCommandPanelLines(command: string, lines: readonly string[]): string[] {
+  const head = command.trim().split(/\s+/, 1)[0] ?? '';
+  if (!['/model', '/variants', '/permission', '/context', '/plan'].includes(head) || lines.length === 0) {
+    return [...lines];
+  }
+  const first = lines[0] ?? '';
+  const success = [
+    /^(?:已添加并切换|已切换)模型\s*→/,
+    /^已是当前模型(?:\s|$)/,
+    /^已保存默认模型\s*→/,
+    /^已切换(?:思考级别|命名变体|安全权限)\s*→/,
+    /^已(?:覆盖上下文窗口|清除手动覆盖)(?:\s|（|$)/,
+    /^已(?:进入|退出)计划模式(?:\s|（|$)/,
+  ].some((pattern) => pattern.test(first));
+  if (!success) return [...lines];
+  // 保存失败等后续告警必须连同前一行一起展示，不能只隐藏整段结果。
+  if (lines.some((line) => /失败|错误|未知|无法|不可用|未信任|只能|请先|用法：|手动添加/.test(line))) {
+    return [...lines];
+  }
+  return [];
+}
+
 /** 命令注册表：新增命令在这里登记（interactive.ts 按此分发） */
 export const TUI_COMMANDS: TuiCommand[] = [
   {

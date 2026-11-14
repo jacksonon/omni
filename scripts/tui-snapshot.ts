@@ -3659,6 +3659,33 @@ async function main(): Promise<void> {
     console.error(`✗ 场景 34 /model 确认未记录持久化意图: ${JSON.stringify(s34.modelSave)}`);
     process.exit(1);
   }
+  // 共享 Server 的切换/保存成功行由 TUI 过滤（footer 已呈现状态）；错误仍须显示。
+  const quietModelLines = cmd34.filterTuiCommandPanelLines('/model', [
+    '已切换模型 → moonshot-v1-8k',
+    '已保存默认模型 → /tmp/omni.json（下次启动默认使用 moonshot-v1-8k）',
+  ]);
+  if (quietModelLines.length !== 0) {
+    console.error(`✗ 场景 34 模型切换成功不应弹命令面板: ${JSON.stringify(quietModelLines)}`);
+    process.exit(1);
+  }
+  const failedSaveLines = cmd34.filterTuiCommandPanelLines('/model', [
+    '已切换模型 → moonshot-v1-8k',
+    '写入配置失败：permission denied',
+  ]);
+  if (failedSaveLines.length !== 2) {
+    console.error(`✗ 场景 34 模型保存失败必须保留提示: ${JSON.stringify(failedSaveLines)}`);
+    process.exit(1);
+  }
+  if (cmd34.filterTuiCommandPanelLines('/model', ['未知模型「missing」']).length !== 1) {
+    console.error('✗ 场景 34 模型切换错误不应被 TUI 静默');
+    process.exit(1);
+  }
+  const s34ctx = createTuiState();
+  cmd34.applyContextLimitChoice(s34ctx, undefined, undefined, 'deepseek-chat', 400000);
+  if (s34ctx.cmdPanel !== null) {
+    console.error(`✗ 场景 34 /context 成功不应弹确认面板: ${JSON.stringify(s34ctx.cmdPanel)}`);
+    process.exit(1);
+  }
   // 数字键 1 直接选中第一个模型
   openModelMenu(s34);
   handleMenuKey34({ name: '1', ...key34 }, s34);
@@ -3961,8 +3988,8 @@ async function main(): Promise<void> {
     const s35c2 = createTuiState();
     const cfg35c = {};
     await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 400');
-    if (!(s35c2.cmdPanel?.lines ?? []).some((l) => String(l).includes('400k')) || (cfg35c as { contextLimit?: number }).contextLimit !== 400000 || s35c2.contextLimit !== 400000) {
-      console.error(`✗ 场景 35 /context 设档位未生效: ${JSON.stringify(s35c2.cmdPanel?.lines)} cfg=${JSON.stringify(cfg35c)}`);
+    if ((cfg35c as { contextLimit?: number }).contextLimit !== 400000 || s35c2.contextLimit !== 400000 || s35c2.cmdPanel !== null) {
+      console.error(`✗ 场景 35 /context 设档位未静默生效: panel=${JSON.stringify(s35c2.cmdPanel)} cfg=${JSON.stringify(cfg35c)} limit=${s35c2.contextLimit}`);
       process.exit(1);
     }
     await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 999');
@@ -3971,8 +3998,8 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     await cmd35.runCommand({ state: s35c2, out: {}, session: {}, input: {}, messages: [], cfg: cfg35c } as never, '/context 默认');
-    if ((cfg35c as { contextLimit?: number }).contextLimit !== undefined) {
-      console.error(`✗ 场景 35 /context 默认未清除覆盖: cfg=${JSON.stringify(cfg35c)}`);
+    if ((cfg35c as { contextLimit?: number }).contextLimit !== undefined || s35c2.cmdPanel !== null) {
+      console.error(`✗ 场景 35 /context 默认未静默清除覆盖: panel=${JSON.stringify(s35c2.cmdPanel)} cfg=${JSON.stringify(cfg35c)}`);
       process.exit(1);
     }
   } finally {
@@ -4119,7 +4146,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   fs.rmSync(tmp35, { recursive: true, force: true });
-  console.log('✓ 场景 35 通过：/status（含上下文用量）/context（窗口档位查看/设置/清除）/rename /export /mcp /diff /redo（含 undo 栈 round-trip）/resume（含标题还原）/doctor');
+  console.log('✓ 场景 35 通过：/status（含上下文用量）/context（窗口档位查看/静默设置与清除）/rename /export /mcp /diff /redo（含 undo 栈 round-trip）/resume（含标题还原）/doctor');
 
   // 场景 36：@ 提及文件选择（输入框含 @ 时列出候选，Tab/Enter/点击插入）+ 圆角浮层共用
   const { detectMention: detectMention36, insertMention: insertMention36, listMentionCandidates: listMention36 } = await import('../src/tui/mention.js');

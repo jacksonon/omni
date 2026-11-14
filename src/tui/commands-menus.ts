@@ -446,16 +446,15 @@ export function applyContextLimitChoice(
     if (cfg) delete cfg.contextLimit;
     if (runOpts?.context) runOpts.context.contextLimit = curEp?.limit?.context;
     state.contextLimit = curEp?.limit?.context ?? 0;
-    pushCmdLine(state, { kind: 'meta', text: '已清除手动覆盖（跟随模型自动识别）' });
   } else {
     if (cfg) cfg.contextLimit = choice;
     if (runOpts?.context) runOpts.context.contextLimit = choice;
     state.contextLimit = choice;
-    pushCmdLine(state, { kind: 'meta', text: `已覆盖上下文窗口 → ${formatTokenCount(choice)}（${choice} tokens；压缩预算与用量分母即时生效）` });
   }
   if (cfg) {
     const res = persistContextLimitToConfig(choice === 'clear' ? null : choice, cfg);
-    pushCmdLine(state, { kind: res.ok ? 'meta' : 'warn', text: res.message });
+    // 上下文窗口已在 footer 即时更新；成功静默，只有落盘失败才提示。
+    if (!res.ok) pushCmdLine(state, { kind: 'warn', text: res.message });
   }
 }
 /** 打开模型切换面板（/model）：列出可用模型（附元数据摘要），高亮当前；↑/↓/数字 + Enter/Esc 操作。

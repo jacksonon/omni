@@ -31,7 +31,7 @@ import { EventRecorder } from '../agent/events.js';
 import { closeMcpClients, discoverMcpServers, buildMcpTools, mcpInstructionsMessage, type McpServerConfig } from '../tools/mcp.js';
 import { setTerminalTitle } from '../ui.js';
 import { resolveContextLimit } from '../config/model-context.js';
-import { applyContextLimitChoice, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand as runLocalCommand, scheduleCmdPanelAutoClose, taskDetailLines, type TuiCommandContext } from './commands.js';
+import { applyContextLimitChoice, filterTuiCommandPanelLines, handleMenuKey, mcpServerDetailLines, pushSkillShow, runCommand as runLocalCommand, scheduleCmdPanelAutoClose, taskDetailLines, type TuiCommandContext } from './commands.js';
 import { matchShortcutKey } from './shortcuts.js';
 import { persistLanguageToConfig, persistModelDefaultToConfig, persistReasoningEffortToConfig, persistVariantToConfig } from '../config/write.js';
 
@@ -54,9 +54,12 @@ async function runCommand(ctx: TuiCommandContext, command: string): Promise<'exi
   const lines = await runRemoteCommand(remote, command, ctx.out, (_title, values, current, head) =>
     pickRemoteMenu(ctx.state, head, values, current, ctx.runOpts?.models));
   syncRemoteTuiState(remote, ctx.runOpts!, ctx.state, ctx.out);
-  if (lines.length) {
+  const panelLines = filterTuiCommandPanelLines(command, lines);
+  if (panelLines.length) {
     openCmdPanel(ctx.state, command);
-    for (const text of lines) pushCmdLine(ctx.state, { kind: 'meta', text });
+    for (const text of panelLines) pushCmdLine(ctx.state, { kind: 'meta', text });
+  } else {
+    ctx.state.cmdPanel = null;
   }
 }
 
@@ -766,8 +769,7 @@ export async function runTuiInteractive(
       }
       applyEndpoint(endpoint);
       state.modelProvider = null;
-      // 模型切换成功 → 右上角 toast（✓ 已切换到 X；面板确认与 /model <名称> 两条路径共用）
-      out.pushToast(tf(state.language, 'toast.modelSwitched', { model: endpoint.name }), 'success');
+      // 模型切换已在 footer 即时呈现，不再额外弹 toast。
     };
     // /model 面板确认的即时应用回调：confirmMenu（纯 state）记录意图后调用
     // syncModel——键盘 Enter/数字与鼠标点选两条确认路径共用（见 state.applyModelSwitch）
@@ -891,9 +893,12 @@ export async function runTuiInteractive(
         try {
           const lines = await runRemoteCommand(runOpts.remote, cmd, out, (_title, values, current, head) =>
             pickRemoteMenu(state, head, values, current, runOpts.models));
-          if (lines.length) {
+          const panelLines = filterTuiCommandPanelLines(cmd, lines);
+          if (panelLines.length) {
             openCmdPanel(state, cmd);
-            for (const line of lines) pushCmdLine(state, { kind: 'meta', text: line });
+            for (const line of panelLines) pushCmdLine(state, { kind: 'meta', text: line });
+          } else {
+            state.cmdPanel = null;
           }
           syncRemoteTuiState(runOpts.remote, runOpts, state, out);
           currentModel = state.model;
