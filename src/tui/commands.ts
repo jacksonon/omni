@@ -272,13 +272,13 @@ export async function runCommand(ctx: TuiCommandContext, raw: string): Promise<T
 }
 
 /**
- * 共享 Server 仍会为 Web 等客户端返回设置切换结果；TUI 中模型/权限/思考级别等
- * 已由 footer 或界面状态即时呈现，成功时不再额外弹确认面板。错误和持久化失败
+ * 共享 Server 仍会为 Web 等客户端返回设置/状态切换结果；TUI 中模型/权限/思考级别/
+ * 计划/自动审批/清屏等已由界面即时呈现，成功时不再额外弹确认面板。错误和持久化失败
  * 必须原样展示，避免把「切换成功但保存失败」静默掉。
  */
 export function filterTuiCommandPanelLines(command: string, lines: readonly string[]): string[] {
   const head = command.trim().split(/\s+/, 1)[0] ?? '';
-  if (!['/model', '/variants', '/permission', '/context', '/plan'].includes(head) || lines.length === 0) {
+  if (!['/model', '/variants', '/permission', '/context', '/plan', '/auto', '/clear'].includes(head) || lines.length === 0) {
     return [...lines];
   }
   const first = lines[0] ?? '';
@@ -289,13 +289,32 @@ export function filterTuiCommandPanelLines(command: string, lines: readonly stri
     /^已切换(?:思考级别|命名变体|安全权限)\s*→/,
     /^已(?:覆盖上下文窗口|清除手动覆盖)(?:\s|（|$)/,
     /^已(?:进入|退出)计划模式(?:\s|（|$)/,
+    /^AI 自动审批：已(?:开启|关闭)(?:（|$)/,
+    /^已清空上下文(?:，|$)/,
   ].some((pattern) => pattern.test(first));
   if (!success) return [...lines];
-  // 保存失败等后续告警必须连同前一行一起展示，不能只隐藏整段结果。
-  if (lines.some((line) => /失败|错误|未知|无法|不可用|未信任|只能|请先|用法：|手动添加/.test(line))) {
+  // 保存失败等后续告警必须连同前一行一起展示，不能只隐藏整段结果（首行成功说明文案本身如「失败回退人工」不误判）。
+  if (lines.slice(1).some((line) => /失败|错误|未知|无法|不可用|未信任|只能|请先|用法：|手动添加/.test(line))) {
     return [...lines];
   }
   return [];
+}
+
+function toggleGlobalBoolCommand(
+  ctx: TuiCommandContext,
+  field: 'autoReview' | 'vimMode',
+  label: string,
+  current = ctx.runOpts?.cfg?.[field] === true,
+): boolean {
+  const cfg = ctx.runOpts?.cfg;
+  const arg = (ctx.args ?? '').trim().toLowerCase();
+  const next = arg === 'on' ? true : arg === 'off' ? false : !current;
+  if (cfg) cfg[field] = next;
+  const res = persistGlobalBoolToConfig(field, next, label);
+  // 开关状态即时生效；成功静默，只有落盘失败才提示。
+  if (!res.ok) pushCmdLine(ctx.state, { kind: 'warn', text: res.message });
+  ctx.state.schedulePaint?.();
+  return next;
 }
 
 /** 命令注册表：新增命令在这里登记（interactive.ts 按此分发） */
@@ -343,6 +362,9 @@ export const TUI_COMMANDS: TuiCommand[] = [
       ctx.state.thinkingShow = next;
       ctx.out.showThinking = next;
       if (ctx.runOpts) ctx.runOpts.showThinking = next;
+      if (ctx.runOpts?.remote?.status && typeof ctx.runOpts.remote.status.showThinking === 'boolean') {
+        ctx.runOpts.remote.status.showThinking = next;
+      }
       ctx.state.expandedThinking.clear();
       ctx.state.collapsedThinking.clear();
     },
@@ -1513,18 +1535,8 @@ export const TUI_COMMANDS: TuiCommand[] = [
     description: 'AI 自动审批开关：/auto [on|off]（需要审批的操作先经模型审阅，不改变权限/沙箱边界）',
     descriptionEn: 'AI auto-approval toggle: /auto [on|off]',
     group: 'system',
-    autoClose: true, // 纯提示（2 行确认）：执行完自动收起，无需 Esc
     run: (ctx) => {
-      const cfg = ctx.runOpts?.cfg;
-      const arg = (ctx.args ?? '').trim().toLowerCase();
-      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.autoReview === true);
-      if (cfg) cfg.autoReview = next;
-      const res = persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
-      pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
-      const msg = `AI 自动审批：${next ? '已开启（审阅失败自动回退人工审批）' : '已关闭'}`;
-      pushCmdLine(ctx.state, { kind: 'meta', text: msg });
-      ctx.out.pushToast(`✓ ${msg}`, 'success');
-      ctx.state.schedulePaint?.();
+      toggleGlobalBoolCommand(ctx, 'autoReview', '自动审批开关');
     },
   },
   {
@@ -1532,21 +1544,11 @@ export const TUI_COMMANDS: TuiCommand[] = [
     description: 'Vim 键位开关（输入框）：/vim [on|off]（Esc 进 normal / i 回 insert）',
     descriptionEn: 'Vim keybindings toggle: /vim [on|off]',
     group: 'system',
-    autoClose: true, // 纯提示（2 行确认）：执行完自动收起，无需 Esc
     run: (ctx) => {
-      const cfg = ctx.runOpts?.cfg;
-      const arg = (ctx.args ?? '').trim().toLowerCase();
-      const next = arg === 'on' ? true : arg === 'off' ? false : !(cfg?.vimMode === true);
-      if (cfg) cfg.vimMode = next;
+      const next = toggleGlobalBoolCommand(ctx, 'vimMode', 'Vim 键位开关', ctx.runOpts?.cfg?.vimMode ?? ctx.state.vimMode);
       ctx.state.vimMode = next;
       ctx.state.vimPending = '';
       if (!next) ctx.state.vimInsert = true;
-      const res = persistGlobalBoolToConfig('vimMode', next, 'Vim 键位开关');
-      pushCmdLine(ctx.state, { kind: 'meta', text: res.message });
-      const msg = `Vim 键位：${next ? '已开启（Esc 进 normal 模式；再次 /vim off 关闭）' : '已关闭'}`;
-      pushCmdLine(ctx.state, { kind: 'meta', text: msg });
-      ctx.out.pushToast(`✓ ${msg}`, 'success');
-      ctx.state.schedulePaint?.();
     },
   },
   {

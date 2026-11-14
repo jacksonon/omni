@@ -1,17 +1,20 @@
 /** TUI 交互审计回归：实际渲染、命中范围、长提问窗口、跨类交互取消和共享状态。 */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createTestRenderer } from '@opentui/core/testing';
 import { handleMenuKey, openModelMenu } from '../src/tui/commands-menus.js';
 import { mountTree, repaintTree, handleTuiMouseEvent, onAskKeyPress, type TuiKey, type TuiSession } from '../src/tui/render.js';
 import { createTuiState, pushLine } from '../src/tui/state.js';
 import { TuiOutput } from '../src/tui/output.js';
 import { syncRemoteTuiState } from '../src/tui/remote-state.js';
-import { runTuiInteractive } from '../src/tui/interactive.js';
+import { isLocalTuiCommand, runTuiInteractive } from '../src/tui/interactive.js';
 import type { ServerSession } from '../src/server/client.js';
 import type { RunOptions } from '../src/agent/types.js';
 
 const key = (name: string, sequence = '') => ({ name, sequence, preventDefault: () => {} } as TuiKey);
-const pause = () => new Promise<void>(resolve => queueMicrotask(resolve));
+const pause = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const request = (name: string) => ({ tool: name, summary: name, reason: 'test' });
 
 async function main(): Promise<void> {
@@ -121,16 +124,84 @@ async function main(): Promise<void> {
     remote.status = { model: 'unknown', models: [], showThinking: true };
     syncRemoteTuiState(remote, runOpts, state, out);
     assert.equal(state.provider, ''); assert.equal(state.activeVariant, null); assert.equal(state.contextLimit, 0);
-    remote.status = { model: 'old', models: [{ name: 'old' }, { name: 'new', reasoningEffort: 'medium', variant: 'stale' }], showThinking: true };
-    const remoteOptions = { remote, models: remote.status.models, tools: [], context: { autoMemory: false }, cfg: {} } as unknown as RunOptions;
-    const session = { input: tree.input, paint: async () => {}, onKeyPress: () => () => {} } as unknown as TuiSession;
-    const interaction = runTuiInteractive({} as never, 'old', [], remoteOptions, out, session, state);
-    await pause();
-    remote.status = { ...remote.status, model: 'new', reasoningEffort: 'low', activeVariant: 'fast', contextLimit: 64000 };
-    syncRemoteTuiState(remote, remoteOptions, state, out);
-    state.applyModelSwitch!();
-    assert.equal(state.reasoningEffort, 'low'); assert.equal(state.activeVariant, 'fast'); assert.equal(state.contextLimit, 64000);
-    tree.input!.setText('/exit'); tree.input!.submit(); await interaction;
+    assert.equal(isLocalTuiCommand('/thinking'), true);
+    assert.equal(isLocalTuiCommand('/settings theme'), true);
+    assert.equal(isLocalTuiCommand('/vim on'), true);
+    assert.equal(isLocalTuiCommand('/auto off'), false);
+    assert.equal(isLocalTuiCommand('/clear'), false);
+    assert.equal(isLocalTuiCommand('/plan'), false);
+
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-probe-tui-'));
+    try {
+      process.env.XDG_CONFIG_HOME = tmpXdg;
+      const remoteCommands: string[] = [];
+      const clientRequests: Array<{ route: string; body: unknown }> = [];
+      const interactiveRemote = {
+        id: 'remote-test-2',
+        messages: [],
+        status: { model: 'old', models: [{ name: 'old' }, { name: 'new', reasoningEffort: 'medium', variant: 'stale' }], showThinking: true, language: 'zh' },
+        command: async (command: string) => {
+          remoteCommands.push(command);
+          if (command === '/clear') return ['已清空上下文，开始新一轮对话。'];
+          if (command.startsWith('/auto')) return ['AI 自动审批：已开启（需要审批的操作先经模型审阅，失败回退人工）'];
+          if (command === '/plan') return ['已进入计划模式（只读调研，不会修改文件；/plan 退出）。'];
+          return [];
+        },
+        history: async () => [],
+        client: { request: async (route: string, body: unknown) => { clientRequests.push({ route, body }); return {}; } },
+      } as unknown as ServerSession;
+      const remoteOptions = { remote: interactiveRemote, models: interactiveRemote.status.models, tools: [], context: { autoMemory: false }, cfg: {} } as unknown as RunOptions;
+      const session = { input: tree.input, paint: async () => {}, onKeyPress: () => () => {} } as unknown as TuiSession;
+      const interaction = runTuiInteractive({} as never, 'old', [], remoteOptions, out, session, state);
+      await pause();
+      interactiveRemote.status = { ...interactiveRemote.status, model: 'new', reasoningEffort: 'low', activeVariant: 'fast', contextLimit: 64000 };
+      syncRemoteTuiState(interactiveRemote, remoteOptions, state, out);
+      state.applyModelSwitch!();
+      assert.equal(state.reasoningEffort, 'low'); assert.equal(state.activeVariant, 'fast'); assert.equal(state.contextLimit, 64000);
+
+      // 共享模式下 /thinking 与 /settings 走本地 TUI，不再回落 Web 提示，且成功切换无额外弹窗或 toast。
+      state.cmdPanel = null; state.toast = null; state.thinkingShow = true; out.showThinking = true;
+      tree.input!.setText('/thinking'); tree.input!.submit(); await pause();
+      assert.equal(remoteCommands.length, 0, '共享模式下 /thinking 不应发送到服务端');
+      assert.equal(state.thinkingShow, false); assert.equal(out.showThinking, false);
+      assert.equal(interactiveRemote.status.showThinking, false);
+      assert.equal(state.cmdPanel, null); assert.equal(state.toast, null);
+      syncRemoteTuiState(interactiveRemote, remoteOptions, state, out);
+      assert.equal(state.thinkingShow, false);
+
+      tree.input!.setText('/settings tokens'); tree.input!.submit(); await pause();
+      assert.equal(remoteCommands.length, 0);
+      assert.equal(state.cmdPanel, null); assert.equal(state.toast, null);
+
+      tree.input!.setText('/settings theme'); tree.input!.submit(); await pause();
+      assert.equal(remoteCommands.length, 0);
+      assert.equal(state.menu?.id, 'theme');
+      state.menu = null;
+
+      // 未消费的 languageSave 不会被旧服务端 status 覆盖；消费后同步 /api/settings。
+      state.language = 'en'; state.languageSave = 'en';
+      syncRemoteTuiState(interactiveRemote, remoteOptions, state, out);
+      assert.equal(state.language, 'en');
+      tree.input!.setText('/vim on'); tree.input!.submit(); await pause();
+      assert.equal(state.vimMode, true);
+      assert.equal(state.cmdPanel, null); assert.equal(state.toast, null);
+      assert.equal(interactiveRemote.status.language, 'en');
+      assert.ok(clientRequests.some(r => r.route === '/api/settings' && (r.body as { language?: string }).language === 'en'));
+
+      // /clear /auto /plan 走服务端但成功确认被 TUI 静默。
+      tree.input!.setText('/clear'); tree.input!.submit(); await pause();
+      tree.input!.setText('/auto on'); tree.input!.submit(); await pause();
+      tree.input!.setText('/plan'); tree.input!.submit(); await pause();
+      assert.deepEqual(remoteCommands, ['/clear', '/auto on', '/plan']);
+      assert.equal(state.cmdPanel, null); assert.equal(state.toast, null);
+
+      tree.input!.setText('/exit'); tree.input!.submit(); await interaction;
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
   } finally { await out.flush(); await pause(); test.renderer.destroy(); }
   console.log('TUI interactions: long ask windows, pointer bounds, modal keys, Unicode, cancellable serial prompts and remote state passed');
 }

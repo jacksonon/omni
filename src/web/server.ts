@@ -916,8 +916,9 @@ export async function startWebService(opts: WebServiceOptions): Promise<http.Ser
       cfg.autoReview = next;
       if (commandOptions.cfg) commandOptions.cfg.autoReview = next;
       const { persistGlobalBoolToConfig } = await import('../config/write.js');
-      persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
+      const res = persistGlobalBoolToConfig('autoReview', next, '自动审批开关');
       add(`AI 自动审批：${next ? '已开启（需要审批的操作先经模型审阅，失败回退人工）' : '已关闭'}`);
+      if (!res.ok) add(res.message);
       return { lines };
     }
     if (cmd === '/plugin' || cmd.startsWith('/plugin ')) {

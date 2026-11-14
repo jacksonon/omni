@@ -3680,6 +3680,53 @@ async function main(): Promise<void> {
     console.error('✗ 场景 34 模型切换错误不应被 TUI 静默');
     process.exit(1);
   }
+  if (cmd34.filterTuiCommandPanelLines('/auto', ['AI 自动审批：已开启（需要审批的操作先经模型审阅，失败回退人工）']).length !== 0
+    || cmd34.filterTuiCommandPanelLines('/clear', ['已清空上下文，开始新一轮对话。']).length !== 0) {
+    console.error('✗ 场景 34 /auto 与 /clear 成功确认不应弹命令面板');
+    process.exit(1);
+  }
+  if (cmd34.filterTuiCommandPanelLines('/auto', ['AI 自动审批：已开启', '写入全局配置失败：EACCES']).length !== 2
+    || cmd34.filterTuiCommandPanelLines('/clear', ['（无当前会话）']).length !== 1) {
+    console.error('✗ 场景 34 /auto 失败与 /clear 提示不应被静默');
+    process.exit(1);
+  }
+  // 本地 /vim 与 /auto 成功切换静默（无 cmdPanel、无 toast）；JSONC 持久化失败仍告警。
+  const prevXdg34 = process.env.XDG_CONFIG_HOME;
+  const tmpXdg34 = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-tui-toggle-'));
+  try {
+    process.env.XDG_CONFIG_HOME = tmpXdg34;
+    const toggleCfg34: Record<string, unknown> = {};
+    const s34tog = createTuiState();
+    let toastCount34 = 0;
+    const togCtx = {
+      state: s34tog,
+      out: { pushToast: () => { toastCount34++; } },
+      session: {},
+      input: {},
+      messages: [],
+      runOpts: { cfg: toggleCfg34 },
+      cfg: toggleCfg34,
+    };
+    await cmd34.runCommand(togCtx as never, '/vim on');
+    await cmd34.runCommand(togCtx as never, '/auto on');
+    if (!s34tog.vimMode || toggleCfg34.vimMode !== true || toggleCfg34.autoReview !== true
+      || s34tog.cmdPanel !== null || toastCount34 !== 0) {
+      console.error(`✗ 场景 34 /vim 或 /auto 未静默切换: vim=${s34tog.vimMode} panel=${JSON.stringify(s34tog.cmdPanel)} toast=${toastCount34}`);
+      process.exit(1);
+    }
+    const jsoncDir34 = path.join(tmpXdg34, 'omni');
+    fs.mkdirSync(jsoncDir34, { recursive: true });
+    fs.writeFileSync(path.join(jsoncDir34, 'omni.json'), '// comment\n{}', 'utf8');
+    await cmd34.runCommand(togCtx as never, '/vim off');
+    if (s34tog.vimMode || !s34tog.cmdPanel?.lines.some((l) => l.includes('JSONC'))) {
+      console.error(`✗ 场景 34 JSONC 持久化失败未展示告警: ${JSON.stringify(s34tog.cmdPanel)}`);
+      process.exit(1);
+    }
+  } finally {
+    if (prevXdg34 === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg34;
+    fs.rmSync(tmpXdg34, { recursive: true, force: true });
+  }
   const s34ctx = createTuiState();
   cmd34.applyContextLimitChoice(s34ctx, undefined, undefined, 'deepseek-chat', 400000);
   if (s34ctx.cmdPanel !== null) {

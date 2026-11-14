@@ -47,20 +47,35 @@ import type { TuiSession, TuiKey } from './render.js';
 import { pushCmdLine, pushLine, openCmdPanel, type ScrollAction, type TuiState } from './state.js';
 import { pickRemoteMenu } from './commands-menus.js';
 
+/** 纯 TUI 本地的命令与开关，共享模式下也在当前进程执行（避免误走 Web 提示）。 */
+export function isLocalTuiCommand(command: string): boolean {
+  return /^\/(exit|quit|theme|vim|thinking|settings)(\s|$)/.test(command.trim());
+}
+
+async function executeRemoteTuiCommand(
+  remote: NonNullable<RunOptions['remote']>,
+  runOpts: RunOptions,
+  state: TuiState,
+  out: TuiOutput,
+  command: string,
+): Promise<void> {
+  const lines = await runRemoteCommand(remote, command, out, (_title, values, current, head) =>
+    pickRemoteMenu(state, head, values, current, runOpts.models));
+  syncRemoteTuiState(remote, runOpts, state, out);
+  const panelLines = filterTuiCommandPanelLines(command, lines);
+  if (panelLines.length) {
+    openCmdPanel(state, command);
+    for (const text of panelLines) pushCmdLine(state, { kind: 'meta', text });
+  } else {
+    state.cmdPanel = null;
+  }
+}
+
 /** 快捷键和运行中的命令也必须经过共享传输，避免绕回本地运行时。 */
 async function runCommand(ctx: TuiCommandContext, command: string): Promise<'exit' | void> {
   const remote = ctx.runOpts?.remote;
-  if (!remote || /^\/(exit|quit|theme|vim)(\s|$)/.test(command)) return runLocalCommand(ctx, command);
-  const lines = await runRemoteCommand(remote, command, ctx.out, (_title, values, current, head) =>
-    pickRemoteMenu(ctx.state, head, values, current, ctx.runOpts?.models));
-  syncRemoteTuiState(remote, ctx.runOpts!, ctx.state, ctx.out);
-  const panelLines = filterTuiCommandPanelLines(command, lines);
-  if (panelLines.length) {
-    openCmdPanel(ctx.state, command);
-    for (const text of panelLines) pushCmdLine(ctx.state, { kind: 'meta', text });
-  } else {
-    ctx.state.cmdPanel = null;
-  }
+  if (!remote || isLocalTuiCommand(command)) return runLocalCommand(ctx, command);
+  await executeRemoteTuiCommand(remote, ctx.runOpts!, ctx.state, ctx.out, command);
 }
 
 /**
@@ -807,8 +822,12 @@ export async function runTuiInteractive(
           if (!res.ok) {
             pushCmdLine(state, { kind: 'warn', text: res.message }, '/settings language');
           }
-          await session.paint();
         }
+        if (runOpts.remote) {
+          runOpts.remote.status.language = lang;
+          await runOpts.remote.client.request('/api/settings', { language: lang }).catch(() => {});
+        }
+        await session.paint();
       }
       // /model 默认模型保存意图：切换已即时生效（interactive syncModel 重建 client +
       // 更新 modelRuntime）——这里把配置**持久化**（顶层 model 字段，下次启动默认使用）；
@@ -889,18 +908,9 @@ export async function runTuiInteractive(
       const cmd = text.trim();
       if (!cmd) continue;
       // 共享模式保留终端输入/选择/滚动；命令的运行时和文件副作用只发生在 server。
-      if (runOpts.remote && cmd.startsWith('/') && !/^\/(exit|quit|theme|vim)(\s|$)/.test(cmd)) {
+      if (runOpts.remote && cmd.startsWith('/') && !isLocalTuiCommand(cmd)) {
         try {
-          const lines = await runRemoteCommand(runOpts.remote, cmd, out, (_title, values, current, head) =>
-            pickRemoteMenu(state, head, values, current, runOpts.models));
-          const panelLines = filterTuiCommandPanelLines(cmd, lines);
-          if (panelLines.length) {
-            openCmdPanel(state, cmd);
-            for (const line of panelLines) pushCmdLine(state, { kind: 'meta', text: line });
-          } else {
-            state.cmdPanel = null;
-          }
-          syncRemoteTuiState(runOpts.remote, runOpts, state, out);
+          await executeRemoteTuiCommand(runOpts.remote, runOpts, state, out, cmd);
           currentModel = state.model;
           messages.splice(0, messages.length, ...runOpts.remote.messages);
           await session.paint();

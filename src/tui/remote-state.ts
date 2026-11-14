@@ -19,7 +19,7 @@ export function syncRemoteTuiState(remote: ServerSession, runOpts: RunOptions, s
   state.contextLimit = typeof status.contextLimit === 'number' ? status.contextLimit
     : resolveContextLimit(runOpts.cfg?.contextLimit, model?.limit?.context) ?? 0;
   if (typeof status.cwd === 'string') state.cwd = status.cwd;
-  if (status.language === 'zh' || status.language === 'en') state.language = status.language;
+  if (!state.languageSave && (status.language === 'zh' || status.language === 'en')) state.language = status.language;
   if (typeof status.showThinking === 'boolean') {
     state.thinkingShow = status.showThinking;
     out.showThinking = status.showThinking;

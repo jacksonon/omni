@@ -1,5 +1,7 @@
 # Omni 演进日志
 
+- **2026-11-14（TUI 状态切换提示补全清理）**：修复默认共享 Server 模式下 `/thinking` 与 `/settings`（含 `Ctrl+X h/s/t/?`、`/settings theme|language|tokens|doctor|help|models`）误走到后端返回 Web 提示文本的问题，统一通过 `isLocalTuiCommand` 留在本地 TUI 静默切换或打开对应 TUI 菜单，并同步远端 `language`/`showThinking` 状态防 SSE 覆盖回退；移除本地 `/vim` 与 `/auto` 的成功确认面板和 toast（仅保留配置保存失败告警），同步拓展 `filterTuiCommandPanelLines` 静默共享模式下的 `/auto` 与 `/clear` 成功确认并修正“失败回退人工”等成功文案的误匹配。验证：`typecheck` ✓、`tui:snapshot` ✓、`probe-tui-interactions` ✓、单元测试 133/133 ✓、`probe:bot` 21/21 ✓。
+
 - **2026-11-14（Web 宠物设置归位与默认隐藏）**：`omni web` 移除侧栏底部独立的「宠物」按钮，在设置弹窗 `#settings-modal` 中新增 `宠物`（`data-pane="pet"`）分类面板统一承载显示开关、猫狗与自定义形象选择/删除、精灵图导入及 Electron 独立桌面宠物开关；点击宠物浮窗「形象」、托盘 `pet-settings` 动作或 `/settings pet` 均直达该设置页。同时将 Web 端宠物默认展示改为关闭（仅设置主动开启 `enabled: true` 时显示），Electron 独立桌面宠物保持原行为；同步更新 `src/web/assets.ts` 与 `omni pet --help`、`src/web/pet.test.ts`、`scripts/probe-web-ui.cjs`。验证：`typecheck` ✓、单元测试 133/133 ✓、桌面测试 27/27 ✓、`probe:web` ✓、`probe:pet-ui` 31/31 ✓、`probe-web-ui.cjs` 24/24 ✓。
 
 - **2026-11-14（TUI 设置切换静默）**：共享 Server 模式下 `/model`、`/variants`、`/permission`、`/context`、`/plan` 成功切换后不再弹“已切换/已保存”命令面板，与本地 TUI 一致；模型切换 toast 同步移除，当前状态继续由 footer 呈现。错误、未知选项和持久化失败仍完整显示。验证：typecheck ✓、TUI 快照 51 场景 ✓（新增成功静默与失败保留断言）。
